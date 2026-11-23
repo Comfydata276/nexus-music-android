@@ -105,9 +105,20 @@ class PlayerConnection(
     private val convertedNow = MutableStateFlow(false)
 
     private val reportedNow = MutableStateFlow(false)
+    private val entryNow = MutableStateFlow(AppCommands.NONE)
+
+    /** A failed or dropped connection is tried again by itself, with a pause between tries,
+     *  for as long as the screens want the player. */
+    private val again = Reconnect(
+        post = { run, delay -> main.postDelayed(run, delay) },
+        cancel = { run -> main.removeCallbacks(run) },
+        connect = { connect() },
+    )
 
     /** The song playing (or paused on); null with an empty queue. */
     val song: StateFlow<Song?> = currentSong.asStateFlow()
+    /** The queue entry playing, by its own number: the same song twice in a row is two. */
+    val entry: StateFlow<Long> = entryNow.asStateFlow()
     val playing: StateFlow<Boolean> = playingNow.asStateFlow()
     /** Waiting for the stream. */
     val buffering: StateFlow<Boolean> = bufferingNow.asStateFlow()
@@ -158,6 +169,7 @@ class PlayerConnection(
             this@PlayerConnection.controller = null
             future = null
             forget()
+            again.lost()
         }
     }
 
@@ -170,6 +182,7 @@ class PlayerConnection(
     }
 
     fun connect() {
+        again.wanted()
         if (future != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val pending = MediaController.Builder(context, token).setListener(listener).buildAsync()
@@ -177,7 +190,10 @@ class PlayerConnection(
         pending.addListener({
             val connected = runCatching { pending.get() }.getOrNull()
             if (connected == null) {
-                if (future === pending) future = null
+                if (future === pending) {
+                    future = null
+                    again.lost()
+                }
                 return@addListener
             }
             if (future !== pending) {
@@ -186,12 +202,14 @@ class PlayerConnection(
                 return@addListener
             }
             controller = connected
+            again.connected()
             connected.addListener(listener)
             read(queueToo = true)
         }, ContextCompat.getMainExecutor(context))
     }
 
     fun release() {
+        again.stop()
         main.removeCallbacks(ticker)
         controller?.removeListener(listener)
         controller = null
@@ -205,6 +223,7 @@ class PlayerConnection(
     /** Clears everything the player reported. */
     private fun forget() {
         currentSong.value = null
+        entryNow.value = AppCommands.NONE
         playingNow.value = false
         bufferingNow.value = false
         positionNow.value = 0
@@ -221,6 +240,7 @@ class PlayerConnection(
         val index = c.currentMediaItemIndex
         val song = c.currentMediaItem?.let(::songOf)
         currentSong.value = song
+        entryNow.value = (c.currentMediaItem?.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid ?: AppCommands.NONE
         val playing = c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)
         playingNow.value = playing
         bufferingNow.value = c.playWhenReady && c.playbackState == Player.STATE_BUFFERING
@@ -378,5 +398,49 @@ class PlayerConnection(
 
     private companion object {
         const val TICK_MILLIS = 250L
+    }
+}
+
+/**
+ * When to try connecting to the player again: after a failure or a drop, once after a pause
+ * that doubles each time (1, 2, 4, 8, 16 seconds, then every 30), for as long as the screens
+ * want the player; a connection that holds starts the count again. Plain Kotlin, with the
+ * waiting handed in, so it can be tested on its own.
+ */
+internal class Reconnect(
+    private val post: (Runnable, Long) -> Unit,
+    private val cancel: (Runnable) -> Unit,
+    private val connect: () -> Unit,
+) {
+    private var wanted = false
+    private var tries = 0
+    private val attempt = Runnable { if (wanted) connect() }
+
+    /** The screens want the player (they are in front). */
+    fun wanted() {
+        wanted = true
+    }
+
+    fun connected() {
+        tries = 0
+        cancel(attempt)
+    }
+
+    /** It failed to connect, or the connection dropped. */
+    fun lost() {
+        if (!wanted) return
+        cancel(attempt)
+        post(attempt, pauseBefore(tries++))
+    }
+
+    /** The screens have let the player go: no more tries. */
+    fun stop() {
+        wanted = false
+        tries = 0
+        cancel(attempt)
+    }
+
+    companion object {
+        fun pauseBefore(attempt: Int): Long = (1_000L shl attempt.coerceAtMost(5)).coerceAtMost(30_000L)
     }
 }

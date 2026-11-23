@@ -30,7 +30,8 @@ import org.medianexus.music.ui.theme.Theme
 /**
  * A bar to drag along, for a song's place or a volume: `value` runs from 0 to 1. While a
  * finger is on it the bar shows where it would go (`onMove`), and lets go with `onRelease`,
- * so a seek happens once, not at every step.
+ * so a seek happens once, not at every step. A drag that ends any other way (the system took
+ * the gesture, the bar was switched off or left the screen) says so with `onCancel`.
  */
 @Composable
 fun Slider(
@@ -40,12 +41,15 @@ fun Slider(
     onMove: (Float) -> Unit = {},
     onRelease: (Float) -> Unit,
     enabled: Boolean = true,
+    onCancel: () -> Unit = {},
 ) {
     val colors = Theme.colors
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
     val move by rememberUpdatedState(onMove)
     val release by rememberUpdatedState(onRelease)
+    val cancel by rememberUpdatedState(onCancel)
+
     val shown = if (dragging) dragValue else value.coerceIn(0f, 1f)
     val knob by animateDpAsState(if (dragging) 16.dp else 12.dp, label = "knob")
     val fill = if (dragging) colors.accentBright else colors.text
@@ -70,21 +74,33 @@ fun Slider(
                         detectTapGestures { offset -> release(at(offset.x, size.width)) }
                     }
                     .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onDragStart = { offset ->
-                                dragging = true
-                                dragValue = at(offset.x, size.width)
+                        try {
+                            detectHorizontalDragGestures(
+                                onDragStart = { offset ->
+                                    dragging = true
+                                    dragValue = at(offset.x, size.width)
+                                    move(dragValue)
+                                },
+                                onDragEnd = {
+                                    dragging = false
+                                    release(dragValue)
+                                },
+                                onDragCancel = {
+                                    dragging = false
+                                    cancel()
+                                },
+                            ) { change, _ ->
+                                change.consume()
+                                dragValue = at(change.position.x, size.width)
                                 move(dragValue)
-                            },
-                            onDragEnd = {
+                            }
+                        } finally {
+                            // The gesture's own work was stopped part-way (the bar left the
+                            // screen, or was switched off).
+                            if (dragging) {
                                 dragging = false
-                                release(dragValue)
-                            },
-                            onDragCancel = { dragging = false },
-                        ) { change, _ ->
-                            change.consume()
-                            dragValue = at(change.position.x, size.width)
-                            move(dragValue)
+                                cancel()
+                            }
                         }
                     },
             ),

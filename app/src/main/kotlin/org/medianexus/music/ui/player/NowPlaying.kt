@@ -361,31 +361,31 @@ private fun BigPlay(playing: Boolean, onClick: () -> Unit) {
 }
 
 /** The seek bar and the times either side of it. Only this reads the position, so only this
- *  redraws as the song plays. A seek being dragged when the song changes is abandoned: the
- *  bar starts afresh for the new song, and nothing is sent. */
+ *  redraws as the song plays. A drag belongs to the queue entry it began on, not the song (the
+ *  same song twice in a row is two): when the entry changes it is abandoned, the bar starts
+ *  afresh, and nothing is sent. The time shown while dragging goes whenever the drag ends,
+ *  however it ends. */
 @Composable
 private fun SeekBar() {
     val player = LocalUi.current.player
     val colors = Theme.colors
     val position by player.position.collectAsStateWithLifecycle()
     val duration by player.duration.collectAsStateWithLifecycle()
-    val song by player.song.collectAsStateWithLifecycle()
-    val id = song?.id.orEmpty()
-    // Everything about a drag belongs to the song it began on.
-    key(id) {
-        var dragging by remember { mutableStateOf<Float?>(null) }
-        val shown = dragging?.let { (it * duration).toLong() } ?: position
+    val entry by player.entry.collectAsStateWithLifecycle()
+    key(entry) {
+        val drag = remember { SeekDrag(entry) }
+        val shown = drag.at?.let { (it * duration).toLong() } ?: position
         Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
             Slider(
                 value = if (duration > 0) position.toFloat() / duration else 0f,
                 label = stringResource(R.string.seek),
-                onMove = { dragging = it },
-                onRelease = {
-                    dragging = null
-                    // Let go after the song has changed (the old bar is gone, but its gesture's
-                    // end can still arrive): not for this song.
-                    if (duration > 0 && player.song.value?.id.orEmpty() == id) player.seek((it * duration).toLong())
+                onMove = drag::move,
+                onRelease = { place ->
+                    // Let go after the entry has changed (the old bar is gone, but its
+                    // gesture's end can still arrive): not for this one.
+                    drag.end(place, player.entry.value)?.let { if (duration > 0) player.seek((it * duration).toLong()) }
                 },
+                onCancel = drag::cancel,
                 enabled = duration > 0,
             )
             Row(Modifier.fillMaxWidth()) {
@@ -397,5 +397,33 @@ private fun SeekBar() {
                 )
             }
         }
+    }
+}
+
+/**
+ * A seek being dragged on Now Playing: the queue entry it began on, and where the finger is
+ * (shown as the time, until the drag ends). Plain state, so it can be tested without a
+ * screen.
+ */
+@androidx.compose.runtime.Stable
+class SeekDrag(val entry: Long) {
+    /** Where the finger is, 0 to 1, while dragging. */
+    var at: Float? by mutableStateOf(null)
+        private set
+
+    fun move(to: Float) {
+        at = to
+    }
+
+    /** Let go at `place`, with `entryNow` playing: where to seek, or null if the entry has
+     *  changed since the drag began. Either way the drag is over. */
+    fun end(place: Float, entryNow: Long): Float? {
+        at = null
+        return place.takeIf { entryNow == entry }
+    }
+
+    /** Ended some other way: nothing to seek to. */
+    fun cancel() {
+        at = null
     }
 }

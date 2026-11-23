@@ -559,7 +559,10 @@ How it is built (M1b):
 - **What the player said** goes when the connection to it is lost (song, queue, buffering,
   error). After Android has stopped the app, "nothing playing" isn't believed until the
   service has put back the saved queue and says which song it is settled on
-  (`PlayerConnection.reported`): Now Playing stays open meanwhile.
+  (`PlayerConnection.reported`): Now Playing stays open meanwhile. A connection that fails or
+  drops is tried again by itself while the screens are in front, after 1, 2, 4, 8 and 16
+  seconds and then every 30 (`Reconnect`); once the player has answered with nothing to play,
+  Now Playing closes.
 - **Likes have one owner** (`Likes`): what the server last said, from every page that says
   whether something is liked, and what has been done here and is still being sent. Every
   heart, album hearts too, and Liked songs itself are read from it. Changes to one item go to
@@ -577,7 +580,10 @@ How it is built (M1b):
   Only the line reads the position, and only while drawing.
 - **Now Playing**: the play button there is Windows' transport button (a circle in the text
   colour), not the accent one pages use; buffering and "Lost the connection…" replace the
-  format line in words. On its side, the cover sits beside the controls. Swipe down or
+  format line in words. On its side, the cover sits beside the controls. A seek being
+  dragged belongs to the queue entry it began on (`SeekDrag`), not the song, so the same song
+  twice in a row doesn't carry it over; the time shown while dragging goes however the drag
+  ends. Swipe down or
   back (predictive) to close.
 - **The queue sheet** is the Windows queue panel (its rows, its menu and every command name
   a song by its queue entry's own number, as the person saw it): "Now playing", then "Next in queue" with
