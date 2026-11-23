@@ -16,8 +16,13 @@ interface ByteSource {
  *  it is switched off. */
 class NotKeptOffline : IOException("Offline mode is on, and this song isn't kept on the phone")
 
-/** Something opened: its bytes, and how many there are from here on (-1 if not known). */
-class Opened(val source: ByteSource, val length: Long)
+/** Something opened: its bytes, how many there are from here on (-1 if not known), and
+ *  whether the server said it can be asked for from any byte (`Accept-Ranges: bytes`). */
+class Opened(val source: ByteSource, val length: Long, val ranged: Boolean = false)
+
+/** The read was given up after being asked for again several times: asking yet again, at
+ *  once, is no use. (The player waits for the server to come back before it does.) */
+class GaveUp(cause: IOException) : IOException("The stream kept failing", cause)
 
 /**
  * Where a [SongReader] gets its bytes. In the app this is Media3's HTTP and cache data
@@ -56,6 +61,11 @@ interface SongStreams {
 
     /** Forgets whatever is kept under `key`. */
     fun drop(key: String)
+
+    /** Whether a read that failed this way may succeed if asked for again: a dropped
+     *  connection, a stall, a server in trouble. Not a refusal, and not the read being
+     *  called off. */
+    fun mayPass(error: IOException): Boolean = true
 }
 
 /**
@@ -86,7 +96,18 @@ class ConversionWriters {
  * for 320 kbps of a 161 kbps file, Navidrome sends 160), and the tag is hundreds of bytes,
  * or tens of thousands when it carries lyrics.
  */
-data class ConversionHead(val audioStart: Long, val bytesPerSecond: Int) {
+data class ConversionHead(
+    val audioStart: Long,
+    val bytesPerSecond: Int,
+    /**
+     * The server sent this with a length and said it can be asked for from any byte. That is
+     * not a fresh conversion: it is the file itself (asked for MP3 at a limit the file is
+     * already an MP3 within, Navidrome sends the file as it is, and takes no notice of a
+     * time to start from), or a conversion the server has whole in its own cache. Either
+     * way a place in it is asked for as what it is, a byte.
+     */
+    val ranged: Boolean = false,
+) {
     /** Where to start a conversion so as to arrive at byte `position` of the whole one. */
     fun startFor(position: Long): Start {
         val into = (position - audioStart).coerceAtLeast(0)
@@ -234,7 +255,13 @@ class HeadSniffer {
  *   pieced together with the server's bytes, and one read at a time keeps a conversion
  *   ([ConversionWriters]).
  */
-class SongReader(private val streams: SongStreams, private val heads: ConversionHeads, private val writers: ConversionWriters = ConversionWriters()) {
+class SongReader(
+    private val streams: SongStreams,
+    private val heads: ConversionHeads,
+    private val writers: ConversionWriters = ConversionWriters(),
+    /** Waits this many milliseconds before asking for a stream again. */
+    private val pause: (Long) -> Unit = { Thread.sleep(it) },
+) {
     private var where: SongWhere? = null
     private var source: ByteSource? = null
     /** The place in the whole stream of the next byte to be given. */
@@ -255,6 +282,10 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
     /** The place the stream ends at, when the server said how long it is; -1 when it didn't. */
     private var endsAt = -1L
     private var sniffer: HeadSniffer? = null
+    /** Whether the stream being sniffed came with a length and takes byte ranges. */
+    private var sniffingRanged = false
+    /** How many times in a row a conversion has been asked for again after failing. */
+    private var resumes = 0
 
     /**
      * Opens the song at byte `at`. Returns how many bytes there are from there, or -1 if
@@ -273,11 +304,14 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         toSkip = 0
         tagToSkip = false
         sniffer = null
+        sniffingRanged = false
+        resumes = 0
         endsAt = -1
         this.offline = offline
         if (offline) {
             val whole = streams.wholeLength(where.key, where.form.converted)
             if (whole < 0) throw NotKeptOffline()
+            if (at >= whole) return atItsEnd()
             source = streams.keptOnly(where.key, at).source
             fromKept = true
             return (whole - at).coerceAtLeast(0)
@@ -289,6 +323,10 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         }
         val whole = streams.wholeLength(where.key)
         if (whole >= 0) {
+            // A place at or past the end of a copy kept whole (a seek to the last moment of
+            // the bar, or the library thinking the song longer than it is): the song has
+            // ended. Not a fault in the copy, which stays kept.
+            if (at >= whole) return atItsEnd()
             try {
                 val opened = streams.keptOnly(where.key, at)
                 source = opened.source
@@ -301,6 +339,14 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
             }
         }
         return fresh(where, at)
+    }
+
+    /** Opened at or past the end of what there is: nothing to read, and no error. */
+    private fun atItsEnd(): Long {
+        source = null
+        fromKept = true
+        ended = true
+        return 0
     }
 
     /** Opens a conversion from the server: from its start, or from a time. */
@@ -327,6 +373,7 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
             val opened = kept ?: streams.server(where.stream(0), 0)
             source = opened.source
             sniffer = HeadSniffer()
+            sniffingRanged = opened.ranged && opened.length >= 0
             // Whatever length the server gives is only passed on; none is made up. When it
             // gives one, the player reads that many bytes and stops, without ever being
             // told "that's the end": so the end is noticed here, by count.
@@ -334,7 +381,17 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
             return opened.length
         }
         keeping = false
-        val head = heads[where.key] ?: ConversionHead(0, where.form.bitrate * 125)
+        val known = heads[where.key]
+        if (known?.ranged == true) {
+            // Not a fresh conversion (see ConversionHead.ranged): a time to start from would
+            // be ignored, and the song would begin again from its start at this place. It is
+            // asked for from the byte, which this server honours for it.
+            val opened = streams.server(where.stream(0), at)
+            source = opened.source
+            if (opened.length >= 0) endsAt = at + opened.length
+            return opened.length
+        }
+        val head = known ?: ConversionHead(0, where.form.bitrate * 125)
         val start = head.startFor(at)
         if (start.seconds == 0) {
             // Inside the first second: the whole conversion again, up to the place.
@@ -354,6 +411,39 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         val where = where ?: throw IOException("Not open")
         if (ended) return -1
         if (length == 0) return 0
+        while (true) {
+            val got = try {
+                next(where, buffer, offset, length)
+            } catch (e: IOException) {
+                when {
+                    fromKept && !offline && where.form.converted -> {
+                        // The kept copy gave out part-way (the phone cleared some of it):
+                        // forget it, and carry on from the server at the place reached.
+                        runCatching { source?.close() }
+                        source = null
+                        streams.drop(where.key)
+                        fresh(where, position)
+                    }
+                    where.form.converted && !offline && !fromKept -> again(where, e)
+                    else -> throw e
+                }
+                continue
+            }
+            if (got < 0) return finish(where)
+            resumes = 0
+            sniffer?.let { sniffing ->
+                sniffing.feed(buffer, offset, got)
+                sniffing.head?.let { heads[where.key] = it.copy(ranged = sniffingRanged); sniffer = null }
+            }
+            position += got
+            if (endsAt in 0..position) finish(where)
+            return got
+        }
+    }
+
+    /** The next bytes of the stream as it is open now, once whatever comes before the place
+     *  has been passed over; -1 at its end. */
+    private fun next(where: SongWhere, buffer: ByteArray, offset: Int, length: Int): Int {
         if (tagToSkip) {
             tagToSkip = false
             toSkip += tagLength(source ?: throw IOException("Not open"))
@@ -361,29 +451,53 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         while (toSkip > 0) {
             val scratch = ByteArray(minOf(toSkip, 16_384L).toInt())
             val got = (source ?: throw IOException("Not open")).read(scratch, 0, scratch.size)
-            if (got < 0) return finish(where)
+            if (got < 0) return -1
             toSkip -= got
         }
-        val got = try {
-            (source ?: throw IOException("Not open")).read(buffer, offset, length)
-        } catch (e: IOException) {
-            if (!fromKept || offline || !where.form.converted) throw e
-            // The kept copy gave out part-way (the phone cleared some of it): forget it, and
-            // carry on from the server at the place reached.
-            runCatching { source?.close() }
-            source = null
-            streams.drop(where.key)
-            fresh(where, position)
-            return read(buffer, offset, length)
+        return (source ?: throw IOException("Not open")).read(buffer, offset, length)
+    }
+
+    /**
+     * A conversion's stream failed part-way (the connection dropped, or stalled). It is
+     * asked for again here, from the place reached, a little further apart each time, and
+     * the read carries on as if nothing had happened.
+     *
+     * It has to be done here. Left to the player, a stream whose length isn't known is taken
+     * for a live broadcast, and a broadcast that fails is started again from its beginning:
+     * the song would begin again (Media3's `ProgressiveMediaPeriod.configureRetry`). Only
+     * this reader knows that a conversion can be picked up at a time.
+     *
+     * What was being kept of it is forgotten: what follows the drop is another conversion's
+     * bytes, and the two together are not a copy of anything. After the last wait the
+     * failure is passed on as final ([GaveUp]), so the player doesn't begin its own round.
+     */
+    private fun again(where: SongWhere, error: IOException) {
+        runCatching { source?.close() }
+        source = null
+        if (keeping) runCatching { streams.drop(where.key) }
+        keeping = false
+        unclaim()
+        sniffer = null
+        var failure = error
+        while (true) {
+            if (!streams.mayPass(failure)) throw failure
+            val wait = RESUME_WAITS.getOrNull(resumes++) ?: throw GaveUp(failure)
+            try {
+                pause(wait)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw java.io.InterruptedIOException()
+            }
+            try {
+                // From the start if nothing had been given yet, kept as it goes by as before.
+                fresh(where, position)
+                return
+            } catch (e: IOException) {
+                runCatching { source?.close() }
+                source = null
+                failure = e
+            }
         }
-        if (got < 0) return finish(where)
-        sniffer?.let { sniffing ->
-            sniffing.feed(buffer, offset, got)
-            sniffing.head?.let { heads[where.key] = it; sniffer = null }
-        }
-        position += got
-        if (endsAt in 0..position) finish(where)
-        return got
     }
 
     /** The source has ended. Whether what was kept of it is worth keeping is decided when
@@ -424,6 +538,12 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
             tagToSkip = false
             sniffer = null
         }
+    }
+
+    private companion object {
+        /** Waits before asking again for a conversion that failed part-way, as Windows waits
+         *  (and as the player's own policy waits for a file as it is). */
+        val RESUME_WAITS = listOf(1_000L, 2_000L, 4_000L, 8_000L)
     }
 
     /** Reads the first ten bytes of a stream. If they head an ID3v2 tag, returns how much of

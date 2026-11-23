@@ -32,8 +32,15 @@ val NATIVE_SUFFIXES = setOf("mp3", "flac", "m4a", "mp4", "aac", "ogg", "oga", "o
  * the phone can play it and no limit is set, otherwise MP3 at the limit (320 kbps when it's a
  * file the phone can't play and there is no limit).
  */
-fun streamForm(native: Boolean, cap: Int, suffix: String): StreamForm =
-    if (native && cap == 0) StreamForm(0, suffix) else StreamForm(if (cap == 0) 320 else cap, "mp3")
+fun streamForm(native: Boolean, cap: Int, suffix: String, fileKbps: Int = 0): StreamForm = when {
+    native && cap == 0 -> StreamForm(0, suffix)
+    // An MP3 already at or under the limit: asked for "MP3 at the limit", Navidrome sends the
+    // file as it is (it converts nothing), with its length, and takes no notice of a time to
+    // start from. So it is asked for as what it will be, the file, and read like any other
+    // file. (Windows asks for a conversion here; this is where the phone differs.)
+    native && suffix == "mp3" && fileKbps in 1..cap -> StreamForm(0, suffix)
+    else -> StreamForm(if (cap == 0) 320 else cap, "mp3")
+}
 
 /** What a song's audio is kept under among the kept songs: its id and the form, never the
  *  address (which carries a sign-in token that changes). */
@@ -128,6 +135,8 @@ class SongDataSource(
     private val upstream: DataSource.Factory,
     private val heads: ConversionHeads,
     private val writers: ConversionWriters,
+    /** Waits before a conversion that failed is asked for again (see [SongReader]). */
+    private val pause: (Long) -> Unit = { Thread.sleep(it) },
 ) : DataSource {
     private val listeners = mutableListOf<TransferListener>()
     private var lease: SongLease? = null
@@ -152,7 +161,7 @@ class SongDataSource(
         // Refused here if the account this was made for has gone.
         val lease = leases.lease(generation).also { this.lease = it }
         val where = lease.resolve(id)
-        val reader = SongReader(Streams(lease.cache, dataSpec), heads, writers).also { this.reader = it }
+        val reader = SongReader(Streams(lease.cache, dataSpec), heads, writers, pause).also { this.reader = it }
         return guarded { reader.open(where, dataSpec.position, lease.offline) }
     }
 
@@ -252,7 +261,9 @@ class SongDataSource(
                 throw e
             }
             // What kind of file it is, for the player to pick how to read it.
-            headers = source.responseHeaders.filterKeys { it.equals("Content-Type", ignoreCase = true) }
+            val answered = source.responseHeaders
+            headers = answered.filterKeys { it.equals("Content-Type", ignoreCase = true) }
+            val ranged = answered.entries.any { (name, values) -> name.equals("Accept-Ranges", ignoreCase = true) && values.any { it.trim().equals("bytes", ignoreCase = true) } }
             return Opened(
                 object : ByteSource {
                     override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
@@ -261,7 +272,17 @@ class SongDataSource(
                     override fun close() = source.close()
                 },
                 length,
+                ranged,
             )
+        }
+
+        override fun mayPass(error: IOException): Boolean {
+            // Called off (the player has moved on), not failed. (A stalled read is a kind of
+            // "interrupted" to Java, and is a failure.)
+            if (Thread.currentThread().isInterrupted) return false
+            if (generateSequence<Throwable>(error) { it.cause }.take(8).any { it is java.io.InterruptedIOException && it !is java.net.SocketTimeoutException }) return false
+            val kind = StreamFailure.of(error)
+            return !kind.refused && !kind.offline
         }
     }
 
@@ -279,11 +300,11 @@ class SongDataSource(
     }
 
     /** Makes one for each read the player starts, for the account signed in at that moment. */
-    class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory) : DataSource.Factory {
+    class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory, private val pause: (Long) -> Unit = { Thread.sleep(it) }) : DataSource.Factory {
         private val heads = ConversionHeads()
         private val writers = ConversionWriters()
 
-        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream, heads, writers)
+        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream, heads, writers, pause)
     }
 }
 
@@ -295,7 +316,7 @@ class SongDataSource(
  * a controller, cause and message included.
  */
 @OptIn(UnstableApi::class)
-class StreamFailure private constructor(message: String, reason: Int, val status: Int) : DataSourceException(message, null, reason) {
+class StreamFailure private constructor(message: String, reason: Int, val status: Int, val spent: Boolean = false) : DataSourceException(message, null, reason) {
     /** The server answered, and said no: asking again won't help. */
     val refused: Boolean get() = status in 400..499
 
@@ -311,18 +332,55 @@ class StreamFailure private constructor(message: String, reason: Int, val status
             // Every cause, as the HTTP data source wraps the real one.
             val chain = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
             val status = chain.firstNotNullOfOrNull { (it as? HttpDataSource.InvalidResponseCodeException)?.responseCode } ?: 0
+            // Asked for again several times already (see SongReader.again): `spent`.
+            val spent = chain.any { it is GaveUp }
             return when {
                 chain.any { it is NotKeptOffline } -> StreamFailure("Offline mode is on, and the song isn't kept on the phone", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, OFFLINE)
-                status != 0 -> StreamFailure("The server answered with status $status", PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, status)
+                status != 0 -> StreamFailure("The server answered with status $status", PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, status, spent)
                 chain.any { it is java.net.SocketTimeoutException } ->
-                    StreamFailure("The server took too long to answer", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT, 0)
+                    StreamFailure("The server took too long to answer", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT, 0, spent)
                 chain.any { it is HttpDataSource.HttpDataSourceException || it is java.net.SocketException || it is java.net.UnknownHostException } ->
-                    StreamFailure("The connection to the server failed", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED, 0)
-                else -> StreamFailure("The song couldn't be read (${error.javaClass.simpleName})", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, 0)
+                    StreamFailure("The connection to the server failed", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED, 0, spent)
+                else -> StreamFailure("The song couldn't be read (${error.javaClass.simpleName})", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, 0, spent)
             }
         }
     }
 }
+
+/**
+ * Rides out a bad connection: a stream that fails is asked for again, a little further apart
+ * each time, for about fifteen seconds, before the player stops to wait for the server (see
+ * the service's `onPlayerError`). The server saying no (a 4xx) is not a connection problem
+ * and isn't retried; nor is a conversion that has already been asked for again that many
+ * times where only it can be (see [SongReader]).
+ */
+@OptIn(UnstableApi::class)
+class RideOut : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy() {
+    override fun getRetryDelayMsFor(loadErrorInfo: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+        val error = loadErrorInfo.exception
+        if (error is StreamFailure && (error.refused || error.offline || error.spent)) return C.TIME_UNSET
+        if (error !is IOException) return super.getRetryDelayMsFor(loadErrorInfo)
+        return RETRY_WAITS.getOrElse(loadErrorInfo.errorCount - 1) { RETRY_WAITS.last() }
+    }
+
+    override fun getMinimumLoadableRetryCount(dataType: Int) = RETRY_WAITS.size
+
+    companion object {
+        /** Waits between tries at a stream that keeps failing, as Windows waits: after these,
+         *  the song waits for the server. */
+        val RETRY_WAITS = listOf(1_000L, 2_000L, 4_000L, 8_000L)
+    }
+}
+
+/**
+ * How the player reads a song's file. Conversions are MP3 at a constant bit rate with no
+ * index: seeking in them goes by bit rate, even before their length is known (see
+ * [SongReader]).
+ */
+@OptIn(UnstableApi::class)
+fun songExtractors(): androidx.media3.extractor.DefaultExtractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
+    .setConstantBitrateSeekingEnabled(true)
+    .setConstantBitrateSeekingAlwaysEnabled(true)
 
 /**
  * Songs the phone turned out not to be able to play as they are (a file type it plays in

@@ -200,6 +200,27 @@ class KeptConversionTest {
     }
 
     @Test
+    fun aPlacePastTheEndOfAKeptConversionIsItsEndAndTheCopyStays() {
+        answers += conversion(150_000)
+        play()
+        // A seek to the very end of the bar, or to a place the library believes in and the
+        // conversion never reached (it thought the song longer). Media3's cache calls a place
+        // past the end an error; that used to be taken for a damaged copy, which was thrown
+        // away, and offline it failed the song instead of ending it.
+        for (place in listOf(150_000L, 150_001L, 400_000L)) {
+            for (without in listOf(false, true)) {
+                offline = without
+                val source = open(place)
+                assertEquals("at byte $place", 0, read(source).size)
+                source.close()
+            }
+        }
+        offline = false
+        assertArrayEquals(conversion(150_000), playsOffline())
+        assertEquals(listOf("from byte 0"), asked)
+    }
+
+    @Test
     fun aConversionWithoutTheMarkIsNeverPlayedAndIsClearedAway() {
         // Every byte of it in the cache, and the cache sure of its length: what an older
         // build left for a conversion that ended early, or a read that was never closed

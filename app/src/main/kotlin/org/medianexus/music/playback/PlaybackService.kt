@@ -25,9 +25,6 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.util.EventLogger
-import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
-import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
@@ -173,11 +170,7 @@ class PlaybackService : MediaLibraryService() {
         // with a shorter limit on a read that has stalled.
         val http = OkHttpDataSource.Factory(Http.forStreams(graph.http))
         val sources = SongDataSource.Factory(Leases(), http)
-        // Conversions are MP3 at a constant bit rate with no index: allow seeking in them by
-        // bit rate, even before their length is known (see SongDataSource).
-        val extractors = DefaultExtractorsFactory()
-            .setConstantBitrateSeekingEnabled(true)
-            .setConstantBitrateSeekingAlwaysEnabled(true)
+        val extractors = songExtractors()
         val mediaSources = DefaultMediaSourceFactory(sources, extractors).setLoadErrorHandlingPolicy(RideOut())
         exo = ExoPlayer.Builder(this, renderers(), mediaSources)
             // Handling audio focus is what makes it give way to a navigation prompt or a call.
@@ -629,28 +622,11 @@ class PlaybackService : MediaLibraryService() {
         val song = player.songFor(songId)
         val suffix = song?.suffix?.lowercase().orEmpty()
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in needsConverting
-        val form = streamForm(native, graph.settings.value.bitrate, suffix)
+        val form = streamForm(native, graph.settings.value.bitrate, suffix, song?.bitRate ?: 0)
         // Here, in later versions, a downloaded copy is chosen first, then one kept from
         // fetching ahead; only then the server.
         val least = if (form.converted && song != null) leastBytes(song.duration, form.bitrate, song.bitRate) else 0
         return SongWhere(form, cacheKey(songId, form), least) { offset -> api.streamUrl(songId, form.bitrate, offset) }
-    }
-
-    /**
-     * Rides out a bad connection: a stream that fails is asked for again, a little further
-     * apart each time, for about fifteen seconds, before the player stops to wait for the
-     * server (see `onPlayerError`). The server
-     * saying no (a 4xx) is not a connection problem and isn't retried.
-     */
-    private class RideOut : DefaultLoadErrorHandlingPolicy() {
-        override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
-            val error = loadErrorInfo.exception
-            if (error is StreamFailure && (error.refused || error.offline)) return C.TIME_UNSET
-            if (error !is IOException) return super.getRetryDelayMsFor(loadErrorInfo)
-            return RETRY_WAITS.getOrElse(loadErrorInfo.errorCount - 1) { RETRY_WAITS.last() }
-        }
-
-        override fun getMinimumLoadableRetryCount(dataType: Int) = RETRY_WAITS.size
     }
 
     // ---- The queue changing -----------------------------------------------------------------
@@ -1534,10 +1510,6 @@ class PlaybackService : MediaLibraryService() {
          *  constants for these two). */
         private const val EXTRA_MEDIA_PLAYLIST = "android.intent.extra.playlist"
         private const val EXTRA_MEDIA_GENRE = "android.intent.extra.genre"
-
-        /** Waits between tries at a stream that keeps failing, as Windows waits: after these,
-         *  the song waits for the server, tried again every [SERVER_WAIT_MILLIS]. */
-        private val RETRY_WAITS = listOf(1_000L, 2_000L, 4_000L, 8_000L)
 
         /** How often to try again once the player has given up waiting for the server. */
         private const val SERVER_WAIT_MILLIS = 15_000L

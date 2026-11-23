@@ -47,6 +47,13 @@ class SongReaderTest {
     private var endsAfter = -1L
     /** The connection drops part-way through a conversion asked for from its start. */
     private var drops = false
+    /** It drops part-way through whatever is asked for, every time. */
+    private var alwaysDrops = false
+    /** The song is already an MP3 within the limit: asked for "MP3 at the limit", the server
+     *  sends the file as it is, with its length, whatever time it was asked to start from. */
+    private var sendsTheFile = false
+    /** The waits the reader asked for before asking for a stream again. */
+    private val waits = mutableListOf<Long>()
 
     /** An ID3v2 tag of this many bytes in all. */
     private fun tag(size: Int): ByteArray {
@@ -93,8 +100,8 @@ class SongReaderTest {
                 }
                 val rate = givenKbps.takeIf { it > 0 } ?: url.queryParameter("maxBitRate")!!.toInt()
                 val offset = url.queryParameter("timeOffset")?.toInt() ?: 0
-                var bytes = conversion(rate, offset)
-                if (offset == 0 && warm) {
+                var bytes = conversion(rate, if (sendsTheFile) 0 else offset)
+                if ((offset == 0 && warm) || sendsTheFile) {
                     val body = Buffer().write(bytes, from.toInt(), bytes.size - from.toInt())
                     return MockResponse.Builder().code(if (range != null) 206 else 200).setHeader("Accept-Ranges", "bytes").body(body).build()
                 }
@@ -102,7 +109,7 @@ class SongReaderTest {
                 // length.
                 if (endsAfter >= 0) bytes = bytes.copyOf(minOf(endsAfter, bytes.size.toLong()).toInt())
                 val response = MockResponse.Builder().setHeader("Accept-Ranges", "none")
-                if (offset == 0 && drops) {
+                if ((offset == 0 && drops) || alwaysDrops) {
                     // Some of it is sent, and the line goes dead.
                     return response.chunkedBody(Buffer().write(bytes), 8_192).onResponseBody(SocketEffect.CloseSocket()).build()
                 }
@@ -140,6 +147,7 @@ class SongReaderTest {
                     override fun close() = response.close()
                 },
                 response.header("Content-Length")?.toLongOrNull() ?: -1,
+                response.header("Accept-Ranges") == "bytes",
             )
         }
 
@@ -176,6 +184,7 @@ class SongReaderTest {
                     override fun close() = upstream.source.close()
                 },
                 if (upstream.length >= 0) upstream.length + have - position else -1,
+                upstream.ranged,
             )
         }
 
@@ -263,7 +272,7 @@ class SongReaderTest {
         // The catalogue says 40 seconds; the conversion runs for 60. A length worked out
         // from the catalogue used to be enforced as the end, and the last 20 seconds cut.
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         val where = converted(catalogueSeconds = 40)
         assertEquals("no length is promised", -1L, reader.open(where, 0))
         val all = reader.take()
@@ -281,9 +290,9 @@ class SongReaderTest {
     fun aKeptConversionIsReadFromThePhoneAndTheServerIsNotAsked() {
         val streams = Streams()
         val where = converted()
-        SongReader(streams, heads).apply { open(where, 0); take(); close() }
+        SongReader(streams, heads, pause = { waits += it }).apply { open(where, 0); take(); close() }
         val before = asked.size
-        val again = SongReader(streams, heads)
+        val again = SongReader(streams, heads, pause = { waits += it })
         // Now its length is known, from any place in it.
         assertEquals(conversion(128, 0).size.toLong(), again.open(where, 0))
         assertArrayEquals(conversion(128, 0), again.take())
@@ -300,7 +309,7 @@ class SongReaderTest {
     @Test
     fun aSeekAsksForTheSecondBeforeAndLandsOnThePlaceAsked() {
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         val where = converted()
         // The player reads the start (which is where it learns the rate), then seeks.
         reader.open(where, 0)
@@ -334,7 +343,7 @@ class SongReaderTest {
         givenKbps = 160
         tagBytes = 40_000
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         val where = converted(kbps = 320, fileKbps = 161)
         reader.open(where, 0)
         // The tag goes by in pieces before the first frame does.
@@ -355,7 +364,7 @@ class SongReaderTest {
     fun aSeekBeforeAnythingIsKnownOfTheConversionStillArrivesSomewhereSensible() {
         // Nothing read from the start first (it doesn't happen with the player, which reads
         // the start to find out what it is playing): the rate asked for is the best guess.
-        val reader = SongReader(Streams(), ConversionHeads())
+        val reader = SongReader(Streams(), ConversionHeads(), pause = { waits += it })
         reader.open(converted(), byteFor(20_000, 128))
         val landed = firstFrameMs(reader.take(2_000))
         reader.close()
@@ -367,7 +376,7 @@ class SongReaderTest {
     @Test
     fun partOfAConversionIsNeverKeptAndNeverPiecedTogether() {
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         val where = converted()
         // The start is read, and then the player moves on (a seek, the next song).
         reader.open(where, 0)
@@ -398,7 +407,7 @@ class SongReaderTest {
         // closed. It is the end as far as this play goes; it must not be the song from now on.
         endsAfter = conversion(128, 0).size / 3L
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         val where = converted()
         reader.open(where, 0)
         assertEquals(endsAfter, reader.take().size.toLong())
@@ -419,50 +428,123 @@ class SongReaderTest {
         assertEquals(conversion(128, 0).size.toLong(), streams.wholeLength(where.key))
     }
 
+    /** The time each frame in these bytes starts at, in order. */
+    private fun frames(bytes: ByteArray): List<Int> {
+        val times = ArrayList<Int>()
+        var i = 0
+        while (i < bytes.size - 8) {
+            if (bytes[i] == 0xff.toByte() && bytes[i + 1] == 0xfb.toByte() && bytes[i + 3] == 0x44.toByte()) {
+                times += (bytes[i + 4].toInt() and 0xff shl 24) or (bytes[i + 5].toInt() and 0xff shl 16) or (bytes[i + 6].toInt() and 0xff shl 8) or (bytes[i + 7].toInt() and 0xff)
+                i += 8
+            } else {
+                i++
+            }
+        }
+        return times
+    }
+
     @Test
-    fun aDroppedConnectionCarriesOnFromWhereItGotTo() {
+    fun aDroppedConnectionCarriesOnFromWhereItGotToWithinTheSameRead() {
+        // The line goes dead part-way through. The player is told nothing: left to itself it
+        // takes a stream of unknown length for a broadcast and starts a failed one again from
+        // its beginning. The reader asks for the song again from the time it had reached, and
+        // the bytes carry on.
         drops = true
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         val where = converted()
         reader.open(where, 0)
-        val got = ByteArrayOutputStream()
+        val all = reader.take()
+        reader.close()
+        val times = frames(all)
+        // From the first frame to the real end of the song, never going back.
+        assertEquals(0, times.first())
+        assertTrue("ended at ${times.last()} ms", times.last() in 59_970..59_999)
+        assertTrue("the song went back on itself", times.zipWithNext().all { (a, b) -> b > a })
+        // Carried on within a second's worth of frames of where it stopped (and not a frame
+        // of it repeated: what was already given is thrown away up to the place).
+        val gaps = times.zipWithNext().map { (a, b) -> b - a }
+        assertTrue("a gap of ${gaps.max()} ms", gaps.max() <= 48)
+        // Asked for once from the start and once from a time, after the first wait.
+        assertEquals(2, asked.size)
+        assertTrue(asked[1], "timeOffset=" in asked[1] && "bytes=" !in asked[1])
+        assertEquals(listOf(1_000L), waits)
+        // What was kept of the first part is not a copy of the song, and isn't kept.
+        assertNull(streams.kept[where.key])
+        assertEquals(-1L, streams.wholeLength(where.key))
+    }
+
+    @Test
+    fun aStreamThatKeepsFailingIsGivenUpAsFinalAfterTheUsualWaits() {
+        alwaysDrops = true
+        val reader = SongReader(Streams(), heads, pause = { waits += it })
+        reader.open(converted(), 0)
         try {
-            val buffer = ByteArray(5_000)
-            while (true) {
-                val n = reader.read(buffer, 0, buffer.size)
-                if (n < 0) fail("the dropped connection was taken for the end of the song")
-                got.write(buffer, 0, n)
-            }
-        } catch (_: IOException) {
-            // What the player's loader sees; it closes and opens again at the byte it had.
+            reader.take()
+            fail("read to an end through a connection that never stays up")
+        } catch (e: GaveUp) {
+            // The player doesn't begin a round of its own after this one.
         }
         reader.close()
-        assertTrue("${got.size()} bytes before the drop", got.size() in 20_000 until conversion(128, 0).size - 20_000)
-        assertNull("the part that arrived is not kept", streams.kept[where.key])
+        // Each time it gets a little further before the line goes, so it is making progress:
+        // the waits start again from the shortest. With none at all, they run out.
+        assertTrue("$waits", waits.isNotEmpty() && waits.all { it in listOf(1_000L, 2_000L, 4_000L, 8_000L) })
+    }
+
+    @Test
+    fun aRefusalIsNotAskedForAgain() {
+        drops = true
+        val refusing = object : SongStreams by Streams() {
+            override fun mayPass(error: IOException) = false
+        }
+        val reader = SongReader(refusing, heads, pause = { waits += it })
+        reader.open(converted(), 0)
+        try {
+            reader.take()
+            fail("carried on after a failure that can't pass")
+        } catch (e: IOException) {
+            assertFalse(e is GaveUp)
+        }
+        reader.close()
+        assertTrue(waits.isEmpty())
+        assertEquals(1, asked.size)
+    }
+
+    @Test
+    fun anMp3TheServerSendsAsItIsIsAskedForByByteNotByTime() {
+        // Asked for MP3 at 320 kbps, of a file that is already an MP3 under that: Navidrome
+        // converts nothing. It sends the file, says how long it is and that it takes byte
+        // ranges, and takes no notice of a time to start from. Asked for "from second 45",
+        // it sent the whole file again, and the song began again at 0:45 on the clock.
+        sendsTheFile = true
+        val streams = Streams()
+        val reader = SongReader(streams, heads, pause = { waits += it })
+        val where = converted(kbps = 320, fileKbps = 128)
+        givenKbps = 128
+        val whole = conversion(128, 0).size.toLong()
+        assertEquals(whole, reader.open(where, 0))
+        reader.take(4_000)
+        reader.close()
+        assertTrue(heads[where.key]!!.ranged)
         asked.clear()
-        val place = got.size().toLong()
-        reader.open(where, place)
+        val place = byteFor(45_000, 128)
+        assertEquals("told how much is left, as of a file", whole - place, reader.open(where, place))
         val rest = reader.take()
         reader.close()
-        // By time, and at the right place: the next frame is the one that was due.
-        assertTrue(asked.single(), "timeOffset=${(place - tagBytes) / 16_000}" in asked.single())
-        val due = ((place - tagBytes) / 16).toInt()
-        assertTrue("carried on at ${firstFrameMs(rest)} ms, was at $due ms", firstFrameMs(rest) in due - 30..due + 30)
-        // To the real end of the song.
-        assertTrue(firstFrameMs(rest.copyOfRange(rest.size - 384, rest.size)) in 59_970..59_999)
-        assertEquals(-1L, streams.wholeLength(where.key))
+        assertEquals(45_000, firstFrameMs(rest))
+        assertTrue(asked.single(), "bytes=$place-" in asked.single() && "timeOffset" !in asked.single())
+        assertTrue(frames(rest).last() in 59_970..59_999)
     }
 
     @Test
     fun aKeptCopyThatGivesOutPartWayCarriesOnFromTheServer() {
         val streams = Streams()
         val where = converted()
-        SongReader(streams, heads).apply { open(where, 0); take(); close() }
+        SongReader(streams, heads, pause = { waits += it }).apply { open(where, 0); take(); close() }
         // The phone clears part of it away while it is being played.
         streams.keptFailsAfter = 300_000
         asked.clear()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         reader.open(where, 0)
         val all = reader.take()
         reader.close()
@@ -476,21 +558,22 @@ class SongReaderTest {
     }
 
     @Test
-    fun aConversionTheServerHasWholeIsStillOpenedByTimeAndKeptWhenReadThrough() {
-        // The server says how long it is and would honour a range. There is no telling that
-        // without asking, so anywhere but the start is still asked for by time.
+    fun aConversionTheServerHasWholeIsOpenedByByteAndKeptWhenReadThrough() {
+        // The server says how long it is and that it takes byte ranges: it has the whole
+        // conversion in its own cache. Its start has said so by the time anywhere else is
+        // asked for, so a place in it is asked for as a byte, which is exact.
         warm = true
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         val where = converted()
         assertEquals(conversion(128, 0).size.toLong(), reader.open(where, 0))
         reader.take(4_000)
         reader.close()
         asked.clear()
         reader.open(where, byteFor(45_000, 128))
-        assertTrue(firstFrameMs(reader.take(2_000)) in 44_950..45_030)
+        assertEquals(45_000, firstFrameMs(reader.take(2_000)))
         reader.close()
-        assertTrue(asked.single(), "timeOffset=45" in asked.single() && "bytes=" !in asked.single())
+        assertTrue(asked.single(), "bytes=${byteFor(45_000, 128)}-" in asked.single() && "timeOffset" !in asked.single())
         // Told the length, the player reads exactly that many bytes and closes: it never
         // reads once more to be told "that's the end". That is still a read to the end.
         val length = reader.open(where, 0)
@@ -508,7 +591,7 @@ class SongReaderTest {
     @Test
     fun withNoKeptSongsAConversionIsReadStraightFromTheServer() {
         val streams = Streams(keeps = false)
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         reader.open(converted(), 0)
         assertArrayEquals(conversion(128, 0), reader.take())
         reader.close()
@@ -521,7 +604,7 @@ class SongReaderTest {
     fun inOfflineModeNothingIsAskedOfTheServer() {
         // Offline mode stopped the pages being fetched and left the player fetching songs.
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         for (where in listOf(converted(), asItIs())) {
             asked.clear()
             try {
@@ -562,7 +645,7 @@ class SongReaderTest {
     @Test
     fun aFileAsItIsIsReadFromAnyByteByRange() {
         val streams = Streams()
-        val reader = SongReader(streams, heads)
+        val reader = SongReader(streams, heads, pause = { waits += it })
         assertEquals(original.size.toLong(), reader.open(asItIs(), 0))
         assertArrayEquals(original, reader.take())
         reader.close()
@@ -573,7 +656,7 @@ class SongReaderTest {
         reader.close()
         assertEquals(0, asked.size)
         // With nothing kept, a place in it is a range, which the server honours for a file.
-        val direct = SongReader(Streams(keeps = false), heads)
+        val direct = SongReader(Streams(keeps = false), heads, pause = { waits += it })
         assertEquals(original.size - 250_000L, direct.open(asItIs(), 250_000))
         assertArrayEquals(original.copyOfRange(250_000, original.size), direct.take())
         direct.close()
@@ -622,5 +705,23 @@ class SongReaderTest {
         assertEquals(ConversionHead.Start(0, 15_999), head.startFor(572 + 15_999))
         assertEquals(ConversionHead.Start(1, 0), head.startFor(572 + 16_000))
         assertEquals(ConversionHead.Start(37, 4_800), head.startFor(572 + 37 * 16_000 + 4_800))
+    }
+
+    @Test
+    fun anMp3AlreadyWithinTheLimitIsAskedForAsTheFileItIs() {
+        // Navidrome converts nothing when the file is already an MP3 at or under the rate
+        // asked for: it sends the file. So it is asked for as the file, and read as one.
+        assertEquals(StreamForm(0, "mp3"), streamForm(native = true, cap = 320, suffix = "mp3", fileKbps = 128))
+        assertEquals(StreamForm(0, "mp3"), streamForm(native = true, cap = 128, suffix = "mp3", fileKbps = 128))
+        // Over the limit, it is converted down; so is any other kind of file.
+        assertEquals(StreamForm(128, "mp3"), streamForm(native = true, cap = 128, suffix = "mp3", fileKbps = 192))
+        assertEquals(StreamForm(128, "mp3"), streamForm(native = true, cap = 128, suffix = "flac", fileKbps = 96))
+        // A rate the library doesn't know: asked for converted, and found out from the answer
+        // (see ConversionHead.ranged).
+        assertEquals(StreamForm(128, "mp3"), streamForm(native = true, cap = 128, suffix = "mp3", fileKbps = 0))
+        // No limit: the file; a file the phone can't play: converted, as before.
+        assertEquals(StreamForm(0, "mp3"), streamForm(native = true, cap = 0, suffix = "mp3", fileKbps = 320))
+        assertEquals(StreamForm(320, "mp3"), streamForm(native = false, cap = 0, suffix = "ape", fileKbps = 900))
+        assertEquals(StreamForm(128, "mp3"), streamForm(native = false, cap = 128, suffix = "mp3", fileKbps = 96))
     }
 }
