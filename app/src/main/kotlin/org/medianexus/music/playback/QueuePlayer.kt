@@ -53,12 +53,19 @@ class QueuePlayer(
     /** A clock that only has to run steadily, in milliseconds. */
     private val clock: () -> Long = android.os.SystemClock::elapsedRealtime,
     /**
-     * Told just before the player is asked to play, whoever asked: the session (a car, a
+     * Asked just before the player is asked to play, whoever asked: the session (a car, a
      * headset, the notification, the app's screens) or this class itself. The service uses it
      * to be in the foreground before the player asks Android for the sound (see the
-     * service's `holdForeground`).
+     * service's `holdForeground`), and says no when Android will not have it there: then the
+     * player is not asked to play at all (see [refuseStart]).
      */
-    private val aboutToPlay: () -> Unit = {},
+    private val mayPlay: () -> Boolean = { true },
+    /**
+     * Something to say in the player's error line while nothing is wrong with the player
+     * itself: that playing could not be started from where it was asked for (see
+     * [refuseStart]). Null for nothing.
+     */
+    private val notice: () -> PlaybackException? = { null },
 ) : ForwardingSimpleBasePlayer(exo) {
     /** The media items of the entries the player holds, by entry number. */
     private val items = HashMap<Long, MediaItem>()
@@ -161,7 +168,13 @@ class QueuePlayer(
             // look for a shuffled order underneath it.
             builder.setPlaylist(InOrderTimeline(exo.currentTimeline), exo.currentTracks, exo.mediaMetadata)
         }
-        exo.playerError?.let { error -> explain(error, queue.current())?.let { builder.setPlayerError(it) } }
+        val failed = exo.playerError
+        if (failed != null) {
+            explain(failed, queue.current())?.let { builder.setPlayerError(it) }
+        } else if (exo.playbackState == STATE_IDLE) {
+            // (An error is only ever shown by a player that is stopped: Media3's rule.)
+            notice()?.let { builder.setPlayerError(it) }
+        }
         return builder.build()
     }
 
@@ -173,15 +186,46 @@ class QueuePlayer(
     val ahead: Int get() = (queue.order.size - queue.cursor - 1).coerceAtLeast(0)
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        if (playWhenReady) aboutToPlay()
+        if (playWhenReady) {
+            if (!mayPlay()) return Futures.immediateVoidFuture()
+            // A start that was refused left the player stopped (see refuseStart): a Play that
+            // is allowed makes it ready again, whether or not whoever pressed it thought to.
+            if (refused) {
+                refused = false
+                if (exo.playbackState == STATE_IDLE) exo.prepare()
+            }
+        }
         return super.handleSetPlayWhenReady(playWhenReady)
     }
 
     /** Starts the player playing what it holds, from this class's own doing. */
     private fun startPlaying() {
-        aboutToPlay()
+        if (!mayPlay()) return
+        refused = false
         exo.prepare()
         exo.play()
+    }
+
+    /** Whether the player was stopped by [refuseStart] and has not been started since. */
+    private var refused = false
+
+    /**
+     * Playing can't be started (Android would not let the service into the foreground, or
+     * would not give it the sound): the queue stays as it was chosen, at its place, and the
+     * player is stopped rather than left looking as if it were about to play. Stopped, it can
+     * carry the service's word on why ([notice]) where a car shows a player's error, with its
+     * Play button still there: the next Play that is allowed carries on from here.
+     */
+    fun refuseStart() {
+        refused = true
+        if (exo.playWhenReady) exo.pause()
+        if (exo.playbackState != STATE_IDLE) {
+            val place = exo.currentPosition
+            exo.stop()
+            // (Stopping keeps the place; said again in case a seek was still on its way.)
+            if (exo.mediaItemCount > 0) exo.seekTo(exo.currentMediaItemIndex, place)
+        }
+        invalidateState()
     }
 
     override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {

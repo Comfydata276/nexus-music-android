@@ -37,4 +37,76 @@ object Recovery {
         fun stillStands(generation: Long?, uid: Long?, failed: Boolean): Boolean =
             failed && generation == this.generation && uid == this.uid
     }
+
+    /**
+     * How long the server has been out of reach, for one account's turn at the player and one
+     * entry of its queue.
+     *
+     * Counted from when things were last known to be going well for that entry, not from the
+     * first error: the player rides out a bad connection by itself for a while (four tries,
+     * each of which may wait ten seconds for a read that has stalled) before it says anything
+     * has failed, and all of that is time the server was out of reach. And it belongs to the
+     * entry and the account: another song, or another account's server, starts from nothing.
+     * It used to be one number for the life of the service, set at the first error and never
+     * taken off when the song or the account changed, so the song after an outage could be
+     * given up on at its first hiccup.
+     */
+    class Outage {
+        private var generation = 0L
+        private var uid = 0L
+        private var since = -1L
+
+        /**
+         * Things are going well for this entry at `now` (it is playing, it has just become
+         * the song playing, or Play has just been pressed for it): anything that goes wrong
+         * from here is counted from here.
+         */
+        fun well(generation: Long, uid: Long, now: Long) {
+            this.generation = generation
+            this.uid = uid
+            since = now
+        }
+
+        /**
+         * The server couldn't be reached for this entry at `now`: how long it has been out of
+         * reach for it. An entry or an account this has not been counting for starts afresh.
+         */
+        fun waited(generation: Long, uid: Long, now: Long): Long {
+            if (since < 0 || generation != this.generation || uid != this.uid) well(generation, uid, now)
+            return (now - since).coerceAtLeast(0)
+        }
+
+        /** Nothing is being counted any more (the account has gone). */
+        fun clear() {
+            since = -1
+        }
+    }
+
+    /** What to do when the time allowed for a start runs out (see [whenHoldRunsOut]). */
+    enum class Held {
+        /** Something asked for is still being looked up: look again when it has been. */
+        WAIT,
+
+        /** The player is playing, or about to, and Media3 has not taken the foreground over
+         *  with its own notification: ask it to, and keep what is held meanwhile. */
+        HAND_OVER,
+
+        /** Nothing came of it: leave the foreground. */
+        STAND_DOWN,
+    }
+
+    /**
+     * The service entered the foreground with a notification of its own, for a start, and
+     * the time allowed for that start has run out with Media3's notification still not in its
+     * place. `looking` is how many requests are still being looked up; `busy` whether the
+     * player means to play and is playing, getting ready, or waiting for the server.
+     *
+     * That the player looks busy is not taken to mean Media3 has the foreground: it used to
+     * be, and the temporary notification was then simply forgotten, whoever held it.
+     */
+    fun whenHoldRunsOut(looking: Int, busy: Boolean): Held = when {
+        looking > 0 -> Held.WAIT
+        busy -> Held.HAND_OVER
+        else -> Held.STAND_DOWN
+    }
 }

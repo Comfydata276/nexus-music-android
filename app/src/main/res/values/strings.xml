@@ -197,6 +197,8 @@
     <string name="local_network_why">Your server is on your home network. Android will now ask whether Nexus Music may find and connect to nearby devices: that is what lets it reach your server.</string>
     <string name="local_network_refused">Nexus Music isn\'t allowed to reach devices on your home network. If your server is there, that may be why it can\'t be reached. Allow it, and it connects again.</string>
     <string name="local_network_blocked">Nexus Music isn\'t allowed to reach your home network, where your server is, so nothing can be played from it.</string>
+    <!-- The car asked for music and Android would not let the app start playing from where it was (not in front, and no standing to play in the background). -->
+    <string name="car_open_to_play">When it\'s safe, open Nexus Music on your phone to start playing</string>
     <string name="car_local_network">When it\'s safe, open Nexus Music on your phone and allow it to reach your home network</string>
     <string name="local_network_maybe">Can\'t reach your server. If it\'s on your home network, that may be because Nexus Music isn\'t allowed to reach it.</string>
     <string name="local_network_short">Nexus Music isn\'t allowed to reach your home network</string>

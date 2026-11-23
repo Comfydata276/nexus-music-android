@@ -272,7 +272,7 @@ class QueueTapTest {
         // an app in the background only if it is already running a foreground service, so it
         // must be told before the player asks, not when playback is seen to have begun.
         val wasPlaying = mutableListOf<Boolean>()
-        val told = QueuePlayer(exo, Queue(), { MediaMetadata.EMPTY }, changed = {}, aboutToPlay = { wasPlaying += exo.playWhenReady })
+        val told = QueuePlayer(exo, Queue(), { MediaMetadata.EMPTY }, changed = {}, mayPlay = { wasPlaying += exo.playWhenReady; true })
         told.play(songs.take(5), 0, "A list", playNow = false)
         settle()
         assertEquals(emptyList<Boolean>(), wasPlaying)
