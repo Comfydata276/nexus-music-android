@@ -56,7 +56,35 @@ fun coverImageLoader(context: Context, accounts: Accounts): ImageLoader {
         .fetcherCoroutineContext(kotlinx.coroutines.Dispatchers.IO.limitedParallelism(FETCHES_AT_ONCE))
         .bitmapFactoryMaxParallelism(DECODES_AT_ONCE)
         .crossfade(120)
+        .apply { if (org.medianexus.music.BuildConfig.DEBUG) eventListener(CoverCounts) }
         .build()
+}
+
+/**
+ * Debug builds only: how the memory cache does, logged (tag `NexusCovers`) every 25 covers
+ * drawn. A cover drawn from memory is a hit; one decoded again although it was drawn before is
+ * one the cache had let go. What the cache's size was chosen by (see docs/TESTING.md).
+ */
+private object CoverCounts : coil3.EventListener() {
+    private val seen = java.util.Collections.synchronizedSet(HashSet<String>())
+    private var hits = 0
+    private var fresh = 0
+    private var again = 0
+
+    @Synchronized
+    override fun onSuccess(request: coil3.request.ImageRequest, result: coil3.request.SuccessResult) {
+        val key = result.memoryCacheKey?.key ?: return
+        when {
+            result.dataSource == DataSource.MEMORY_CACHE -> hits++
+            key in seen -> again++
+            else -> fresh++
+        }
+        seen += key
+        if ((hits + fresh + again) % 25 == 0) {
+            val cache = coil3.SingletonImageLoader.get(request.context).memoryCache
+            android.util.Log.i("NexusCovers", "drawn ${hits + fresh + again}: from memory $hits, first time $fresh, again after being let go $again; held ${(cache?.size ?: 0) / 1024} KiB of ${(cache?.maxSize ?: 0) / 1024}")
+        }
+    }
 }
 
 /** Decoded pictures held in memory at most. See [coverImageLoader]. */
