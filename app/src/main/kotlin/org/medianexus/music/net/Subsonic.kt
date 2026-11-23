@@ -6,7 +6,11 @@ import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
+import java.security.cert.CertPathBuilderException
+import java.security.cert.CertPathValidatorException
+import java.security.cert.CertificateException
 import javax.net.ssl.SSLException
+import javax.net.ssl.SSLPeerUnverifiedException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
@@ -21,6 +25,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import okhttp3.ConnectionPool
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -60,6 +65,9 @@ class Subsonic private constructor(
 
     /** The server's address, tidied (see `normalizeServerUrl`). */
     val server: String = normalizeServerUrl(server)
+
+    /** The server's host name, kept out of error messages. */
+    private val host: String? = this.server.toHttpUrlOrNull()?.host
 
     /** In offline mode nothing is sent: requests fail straight away. */
     fun setOffline(on: Boolean) {
@@ -137,7 +145,7 @@ class Subsonic private constructor(
             val error = body["error"] as? JsonObject
             val code = (error?.get("code") as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: 0
             val message = (error?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "unknown error"
-            throw ApiError.Server(code, message)
+            throw ApiError.Server(code, safeServerMessage(message))
         }
         return body
     }
@@ -160,14 +168,27 @@ class Subsonic private constructor(
         try {
             json.decodeFromJsonElement(serializer, value)
         } catch (e: IllegalArgumentException) {
-            throw ApiError.NotSubsonic("Unexpected response from $endpoint: ${e.message}")
+            // The decoder's message quotes what the server sent; only the place it went
+            // wrong (made of this app's own field names) is passed on.
+            val at = e.message?.let { PATH.find(it)?.groupValues?.get(1) }
+            throw ApiError.NotSubsonic("Unexpected response from $endpoint${if (at != null) " (at $at)" else ""}.")
         }
+    }
+
+    /** What the server said went wrong, unless it could give away the sign-in, the address
+     *  or a chunk of the request (some servers echo it back): then nothing. */
+    private fun safeServerMessage(text: String): String {
+        val giveaways = listOfNotNull(token, salt, host).filter { it.isNotEmpty() }
+        val risky = text.length > 200 || "://" in text || '{' in text || '[' in text ||
+            giveaways.any { text.contains(it, ignoreCase = true) }
+        return if (risky) "" else text
     }
 
     private inline fun buildRequest(url: String, method: Request.Builder.() -> Request.Builder): Request = try {
         Request.Builder().url(url).method().build()
-    } catch (e: IllegalArgumentException) {
-        throw ApiError.Network("(${e.message})")
+    } catch (_: IllegalArgumentException) {
+        // OkHttp's message quotes the address, token and all.
+        throw ApiError.Network("The server's address isn't one the app can use. Check it.")
     }
 
     /** Sends a request, giving up after `limitMillis` overall (none if null), and returns
@@ -426,6 +447,9 @@ class Subsonic private constructor(
         const val API_VERSION = "1.16.1"
         const val CLIENT_NAME = "NexusMusic"
 
+        /** Where a decoding error happened, as kotlinx.serialization puts it: `$.song[0].duration`. */
+        private val PATH = Regex("""at path: (\$[A-Za-z0-9_.\[\]]*)""")
+
         /** Requests with addresses longer than this go as a form POST. */
         internal const val FORM_POST_OVER = 1800
 
@@ -453,13 +477,30 @@ class Subsonic private constructor(
  *  system's error (a refused connection inside "Failed to connect"), so the causes and the
  *  attempts it gave up on are read too. */
 internal fun networkHint(error: IOException): String {
-    val text = error.message ?: error.javaClass.simpleName
-    val chain = generateSequence<Throwable>(error) { it.cause }.take(6).toList()
-    val all = chain + chain.flatMap { it.suppressed.asList() }
+    // Every cause, and every attempt given up on with its own causes, a few dozen at most.
+    val all = mutableListOf<Throwable>()
+    val waiting = ArrayDeque<Throwable>().apply { add(error) }
+    while (waiting.isNotEmpty() && all.size < 32) {
+        val next = waiting.removeFirst()
+        if (all.any { it === next }) continue
+        all += next
+        next.cause?.let { waiting += it }
+        waiting += next.suppressed
+    }
     val lower = all.joinToString(" ") { it.message.orEmpty() }.lowercase()
     fun any(kind: Class<*>) = all.any { kind.isInstance(it) }
     return when {
         any(InsecureRedirect::class.java) -> all.first { it is InsecureRedirect }.message!!
+        // First among the rest: a server whose certificate was turned down was reached, even
+        // if another of its addresses then refused (OkHttp tries them all). The system's own
+        // words name the host and quote the certificate, so they aren't passed on.
+        any(SSLPeerUnverifiedException::class.java) ->
+            "The server's certificate is for a different address. Check the address."
+        // Android says "trust anchor … not found"; the desktop JVM the tests run on says
+        // "unable to find valid certification path".
+        any(CertificateException::class.java) || any(CertPathValidatorException::class.java) ||
+            any(CertPathBuilderException::class.java) || "trust anchor" in lower || "certification path" in lower ->
+            "The server's certificate isn't one this phone trusts."
         any(UnknownHostException::class.java) || "dns" in lower || "resolve" in lower || "lookup" in lower ->
             "The server name couldn't be found. Check the address."
         "refused" in lower ->
@@ -467,8 +508,10 @@ internal fun networkHint(error: IOException): String {
         any(SocketTimeoutException::class.java) || "timeout" in lower || "timed out" in lower ->
             "The connection timed out. Check the address and your network."
         any(SSLException::class.java) || "certificate" in lower || "tls" in lower ->
-            "The secure connection failed ($text)."
-        else -> "($text)"
+            "The secure connection failed."
+        // Others ("unexpected end of stream on <address>") can quote the address: only the
+        // kind of failure is given.
+        else -> "(The connection failed: ${error.javaClass.simpleName}.)"
     }
 }
 

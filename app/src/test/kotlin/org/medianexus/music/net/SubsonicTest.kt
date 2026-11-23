@@ -130,7 +130,7 @@ class SubsonicTest {
         // A field of the wrong kind says which call it was.
         ok(""""album":{"id":"1","songCount":"many"}""")
         val odd = expect<ApiError.NotSubsonic> { client().album("1") }
-        assertTrue(odd.message, odd.message!!.startsWith("That address didn't answer like a Navidrome server. Unexpected response from getAlbum:"))
+        assertEquals("That address didn't answer like a Navidrome server. Unexpected response from getAlbum (at $.songCount).", odd.message)
     }
 
     @Test
@@ -311,6 +311,56 @@ class SubsonicTest {
         cancelsMidBody(http) { api.ping() }
         slowAnswer()
         cancelsMidBody(http) { api.fetchBytes(api.coverUrl("c1", 300), 10_000_000) }
+    }
+
+    /** Nothing private in an error's words: not the host, the token, its salt, or `also`. */
+    private fun assertNothingPrivate(error: Throwable, vararg also: String) {
+        val text = error.toString()
+        val token = Subsonic.md5Hex("sesame" + "abcdefghijklmnop")
+        for (secret in listOf(server.hostName, "abcdefghijklmnop", token) + also) {
+            assertFalse("\"$secret\" in: $text", text.contains(secret, ignoreCase = true))
+        }
+        assertNull(error.cause)
+    }
+
+    @Test
+    fun errorsSayNothingPrivate() = runBlocking {
+        val token = Subsonic.md5Hex("sesame" + "abcdefghijklmnop")
+        // The decoder's own message would quote the answer.
+        ok(""""album":{"id":"1","songCount":"secret-payload"}""")
+        val odd = expect<ApiError.NotSubsonic> { client().album("1") }
+        assertNothingPrivate(odd, "secret-payload", "{")
+        // A server that echoes the request back in its error.
+        failed(10, "Required parameter is missing: u=Ada&t=$token&s=abcdefghijklmnop")
+        val echoed = expect<ApiError.Server> { client().ping() }
+        assertEquals("The server reported an error (code 10).", echoed.message)
+        assertEquals("", echoed.serverMessage)
+        assertNothingPrivate(echoed)
+        failed(0, "Couldn't reach ${server.hostName} for this")
+        assertNothingPrivate(expect<ApiError.Server> { client().ping() })
+        failed(0, "bad request: {\\\"id\\\":\\\"x\\\"}")
+        assertEquals("The server reported an error (code 0).", expect<ApiError.Server> { client().ping() }.message)
+        // An ordinary message still comes through.
+        failed(10, "Required parameter is missing")
+        assertEquals("The server reported: Required parameter is missing", expect<ApiError.Server> { client().ping() }.message)
+        // An address OkHttp can't use: its complaint would quote the whole signed address.
+        val bad = Subsonic("http://bad host:4533", "Ada Lovelace", "sesame", http, salt = "abcdefghijklmnop")
+        val unusable = expect<ApiError.Network> { bad.ping() }
+        assertEquals("Can't reach the server. The server's address isn't one the app can use. Check it.", unusable.message)
+        assertNothingPrivate(unusable, "bad host")
+    }
+
+    @Test
+    fun aDroppedConnectionIsReportedWithoutTheAddress() {
+        val dropped = java.io.IOException("unexpected end of stream on http://music.example.org:4533/...")
+        val hint = networkHint(dropped)
+        assertEquals("(The connection failed: IOException.)", hint)
+        val unverified = javax.net.ssl.SSLPeerUnverifiedException(
+            "Hostname music.example.org not verified: certificate: sha256/AAAA DN: CN=music.example.org",
+        )
+        assertEquals("The server's certificate is for a different address. Check the address.", networkHint(unverified))
+        val handshake = javax.net.ssl.SSLHandshakeException("Received fatal alert for music.example.org")
+        assertEquals("The secure connection failed.", networkHint(handshake))
     }
 
     @Test

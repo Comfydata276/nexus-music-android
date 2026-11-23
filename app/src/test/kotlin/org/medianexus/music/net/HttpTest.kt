@@ -14,6 +14,7 @@ import okhttp3.Request
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -97,7 +98,45 @@ class HttpTest {
         assertEquals(0, plain.requestCount)
     }
 
+    /** Nothing private in an error's words: not the host, the token or its salt. */
+    private fun assertNothingPrivate(error: Throwable, vararg also: String) {
+        val text = error.toString()
+        for (secret in listOf("localhost", "127.0.0.1", SALT, Subsonic.md5Hex("sesame$SALT"), "CN=", "sha256/") + also) {
+            assertFalse("\"$secret\" in: $text", text.contains(secret, ignoreCase = true))
+        }
+        assertNull(error.cause)
+    }
+
+    @Test
+    fun aCertificateForAnotherNameIsReportedWithoutItsDetails() = runBlocking {
+        // The certificate is for "localhost"; the address is 127.0.0.1.
+        val api = Subsonic(secure.url("/").newBuilder().host("127.0.0.1").build().toString(), "ada", "sesame", http, salt = SALT)
+        val error = try {
+            api.ping()
+            null
+        } catch (e: ApiError.Network) {
+            e
+        }!!
+        assertEquals("Can't reach the server. The server's certificate is for a different address. Check the address.", error.message)
+        assertNothingPrivate(error)
+    }
+
+    @Test
+    fun anUntrustedCertificateIsReportedWithoutItsDetails() = runBlocking {
+        // A client that doesn't trust the test certificate.
+        val api = Subsonic(secure.named("/").toString(), "ada", "sesame", Http.client("test"), salt = SALT)
+        val error = try {
+            api.ping()
+            null
+        } catch (e: ApiError.Network) {
+            e
+        }!!
+        assertEquals("Can't reach the server. The server's certificate isn't one this phone trusts.", error.message)
+        assertNothingPrivate(error)
+    }
+
     private companion object {
         val PASSWORD = "testing".toCharArray()
+        const val SALT = "abcdefghijklmnop"
     }
 }
