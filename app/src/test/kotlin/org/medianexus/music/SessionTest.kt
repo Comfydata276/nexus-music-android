@@ -23,10 +23,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.OfflineSwitch
 import org.medianexus.music.net.Subsonic
 import org.medianexus.music.store.PasswordVault
@@ -246,6 +248,31 @@ class SessionTest {
         assertTrue(result.settingsNotSaved)
         assertEquals(SessionState.SignedOut, session.state.value)
         assertFalse(File(dir, "password.sealed").exists())
+    }
+
+    @Test
+    fun signingInWorksInOfflineModeAndLeavesItOn() = runBlocking {
+        // Saved as offline, with no password that can be opened: the sign-in screen.
+        val dir = folder.newFolder()
+        SettingsStore.save(File(dir, "settings.json"), Settings(offline = true))
+        val offline = OfflineSwitch(initially = true)
+        val (session, settings, _) = session(dir, offline = offline)
+        assertEquals(SessionState.SignedOut, withTimeout(5_000) { session.restored() })
+        session.signInHere()
+        // Signed in, and still offline: the setting is as it was, and the client kept
+        // doesn't go out.
+        assertTrue(offline.on)
+        settings.flush()
+        assertTrue(settings.value.offline)
+        assertTrue(SettingsStore.read(File(dir, "settings.json"))!!.offline)
+        val api = (session.state.value as SessionState.SignedIn).api
+        val before = answered.get()
+        try {
+            api.ping()
+            fail("went out in offline mode")
+        } catch (_: ApiError.Network) {
+        }
+        assertEquals(before, answered.get())
     }
 
     @Test

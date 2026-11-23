@@ -151,7 +151,10 @@ class Session(
             var answer: Result<Pair<Subsonic, ServerInfo>> = Result.failure(ApiError.Network("No address was given."))
             val addresses = addressesToTry(server)
             for ((index, address) in addresses.withIndex()) {
-                val client = Subsonic(address, name, password, http, offline)
+                // Asking to sign in always goes out, offline mode or not, as on Windows where
+                // signing in makes a client of its own. The client kept afterwards shares the
+                // app's switch, so offline mode stays as it was.
+                val client = Subsonic(address, name, password, http, OfflineSwitch())
                 // HTTPS was a guess: if nothing answers there soon, go on to plain HTTP
                 // without waiting out the full time a real server is given.
                 if (index + 1 < addresses.size && !client.answersWithin(GUESS_LIMIT_MILLIS)) continue
@@ -164,7 +167,7 @@ class Session(
                 val error = answer.exceptionOrNull()
                 if (error == null || error is ApiError.Server) break
             }
-            val client = answer.getOrNull()?.first
+            val client = answer.getOrNull()?.first?.sharing(offline)
             if (client == null) {
                 val error = answer.exceptionOrNull()
                 // HTTPS was the only thing tried, and not because the person said so.

@@ -68,6 +68,9 @@ class Subsonic private constructor(
     /** The server's host name, kept out of error messages. */
     private val host: String? = this.server.toHttpUrlOrNull()?.host
 
+    /** The same sign-in, under another offline switch. */
+    fun sharing(offline: OfflineSwitch): Subsonic = Subsonic(server, username, salt, token, http, offline, io)
+
     /** In offline mode nothing is sent: requests fail straight away. */
     fun setOffline(on: Boolean) {
         offline.on = on
