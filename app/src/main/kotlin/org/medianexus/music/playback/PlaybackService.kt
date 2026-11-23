@@ -1635,7 +1635,10 @@ class PlaybackService : MediaLibraryService() {
     private fun callerOf(session: MediaSession, controller: MediaSession.ControllerInfo): Caller {
         val own = controller.uid == android.os.Process.myUid()
         return Access.caller(
-            trusted = controller.isTrusted,
+            // Media3's "trusted" is taken only from a caller whose name is its own: on
+            // Android 9 to 12 nobody has checked the name a platform controller gives, and
+            // "trusted" can rest on that name alone (see Callers.namedTruly).
+            trusted = controller.isTrusted && namedTruly(controller),
             // Asked of the system only for a caller that has no other standing: its package
             // name and its signing certificate, against Google's list (see KnownHosts).
             knownHost = !own && !controller.isTrusted && graph.callers.knownHost(controller.packageName, controller.uid),
@@ -1645,6 +1648,9 @@ class PlaybackService : MediaLibraryService() {
             notification = session.isMediaNotificationController(controller),
         )
     }
+
+    private fun namedTruly(controller: MediaSession.ControllerInfo): Boolean =
+        graph.callers.namedTruly(controller.packageName, controller.uid, checkedBySystem = controller.isPackageNameVerified)
 
     /** Notes who asked to connect and what became of it (see [org.medianexus.music.Diagnostics]):
      *  on a real phone in a real car this is the only account there is of whether Android
@@ -1661,7 +1667,10 @@ class PlaybackService : MediaLibraryService() {
             Caller.OWN_INTERFACE -> "let in as the app's own screens"
         }
         graph.diagnostics.note(
-            "connection from ${controller.packageName} by $how: $outcome. Android trusts it: ${yes(controller.isTrusted)}; known host: ${yes(known)}",
+            "connection from ${controller.packageName} by $how: $outcome. Android trusts it: ${yes(controller.isTrusted)}; known host: ${yes(known)}" +
+                // (Said only when it is why: a caller on an older phone giving a name the
+                // system says is not that caller's.)
+                if (controller.isTrusted && !namedTruly(controller)) "; its name is not its own" else "",
             now = caller == Caller.REFUSED,
         )
     }

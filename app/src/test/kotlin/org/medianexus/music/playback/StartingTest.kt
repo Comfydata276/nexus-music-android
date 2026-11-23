@@ -230,4 +230,27 @@ class StartingTest {
             server.stop()
         }
     }
+
+    // ---- Who is asking ------------------------------------------------------------------------
+
+    @Test
+    fun onAnOlderPhoneACallerIsNotTrustedUnderANameThatIsNotItsOwn() {
+        // Android 9 to 12, the platform's own transport: the name comes from the caller and
+        // nobody has checked it, and Media3's "trusted" includes "an app with notification
+        // access", which it looks up by that name alone. So an app that gives the name of
+        // one that has it (the system's own, a watch's companion) arrives as trusted.
+        val borrowed = MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            "com.example.watch", 4_321, 10_555, MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, Bundle.EMPTY, false,
+        )
+        assertFalse("let in under another app's name", inside.callback.onConnect(inside.session, borrowed).isAccepted)
+        assertTrue(noted().any { it.startsWith("connection from com.example.watch") && it.contains("refused") && it.contains("its name is not its own") })
+        // The app that really has that name, at its own uid, is let in.
+        org.robolectric.Shadows.shadowOf(app.packageManager).setPackagesForUid(10_556, "com.example.watch")
+        val real = MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            "com.example.watch", 4_322, 10_556, MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, Bundle.EMPTY, false,
+        )
+        assertTrue(inside.callback.onConnect(inside.session, real).isAccepted)
+        // And where the system has checked the name (Android 13 and later), nothing more is asked.
+        assertTrue(inside.callback.onConnect(inside.session, car).isAccepted)
+    }
 }

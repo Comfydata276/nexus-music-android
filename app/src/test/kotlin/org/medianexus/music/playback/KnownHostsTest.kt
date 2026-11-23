@@ -105,12 +105,104 @@ class KnownHostsTest {
     }
 
     /** A phone with these apps on it: each a uid, a name and the certificate it is signed with. */
-    private class Phone(private val apps: List<Triple<Int, String, ByteArray>>, private val trusts: Set<Int> = emptySet()) : Callers.Phone {
+    private class Phone(apps: List<Triple<Int, String, ByteArray>>, private val trusts: Set<Int> = emptySet()) : Callers.Phone {
+        var apps = apps
+        /** The system can't say who a uid is just now (the lookup throws). */
+        var failing = false
+        var lookups = 0
+        private var told: (String) -> Unit = {}
+
         override val ownUid = 10_001
-        override fun packagesOf(uid: Int) = apps.filter { it.first == uid }.map { it.second }
+        override fun packagesOf(uid: Int): List<String> {
+            lookups++
+            if (failing) throw IllegalStateException("Package manager has died")
+            return apps.filter { it.first == uid }.map { it.second }
+        }
         override fun signedWith(packageName: String, sha256: ByteArray) =
             apps.any { it.second == packageName && MessageDigest.getInstance("SHA-256").digest(it.third).contentEquals(sha256) }
         override fun trustedForMedia(packageName: String, pid: Int, uid: Int) = uid in trusts
+        override fun onPackageChanged(changed: (packageName: String) -> Unit) {
+            told = changed
+        }
+
+        /** The system's broadcast that an app has been installed, updated or removed. */
+        fun changed(packageName: String) = told(packageName)
+    }
+
+    @Test
+    fun whatWasWorkedOutForAnAppIsForgottenWhenThatAppIsInstalledUpdatedOrRemoved() {
+        val googles = KnownHosts.bytes(autoKey)
+        // Android Auto as a phone might ship it: a build signed with a key the list doesn't
+        // have. Not a known host.
+        val phone = Phone(listOf(Triple(10_200, auto, "a key the list does not have".toByteArray())))
+        val asGoogle = object : Callers.Phone by phone {
+            // (The list holds SHA-256s; this stand-in "signs" an app with whatever bytes it
+            // is given, so Google's key is stood for by an app whose bytes hash to nothing
+            // listed, and by a flag for the real thing.)
+            override fun signedWith(packageName: String, sha256: ByteArray) = packageName == auto && updated && sha256.contentEquals(googles)
+            var updated = false
+        }
+        val callers = Callers(asGoogle, listed)
+        assertFalse(callers.knownHost(auto, 10_200))
+        // It is updated from the Play Store to Google's own build, same uid. The system says
+        // so; the answer worked out before is forgotten. It used to be kept for the life of
+        // the process: the car went on being refused until the app was restarted.
+        asGoogle.updated = true
+        phone.changed(auto)
+        assertTrue(callers.knownHost(auto, 10_200))
+        // Removed, and something else installed under its name, which Android gives the
+        // same uid as it happens.
+        asGoogle.updated = false
+        phone.changed(auto)
+        assertFalse(callers.knownHost(auto, 10_200))
+        // Another app's coming and going changes nothing, and nothing is asked again.
+        val before = phone.lookups
+        phone.changed("com.example.other")
+        assertFalse(callers.knownHost(auto, 10_200))
+        assertEquals(before, phone.lookups)
+    }
+
+    @Test
+    fun aNoThatCameFromALookupFailingIsNotRemembered() {
+        val certificate = "the probe's certificate".toByteArray()
+        val phone = Phone(listOf(Triple(10_200, "org.medianexus.carprobe", certificate)))
+        // (No extra hosts are remembered apart; this is the release path, with the probe on
+        // a list of its own for the test.)
+        val callers = Callers(phone, KnownHosts(mapOf("org.medianexus.carprobe" to setOf(sha256(certificate)))))
+        // The system can't answer just now (the package manager is restarting, the app is
+        // mid-update): not a known host, this time.
+        phone.failing = true
+        assertFalse(callers.knownHost("org.medianexus.carprobe", 10_200))
+        // Asked again when it can: it is one. The "no" used to be kept.
+        phone.failing = false
+        assertTrue(callers.knownHost("org.medianexus.carprobe", 10_200))
+        // Nor is a no kept that came from the system not knowing the uid at all.
+        assertFalse(callers.knownHost("org.medianexus.carprobe", 10_999))
+        phone.apps = phone.apps + Triple(10_999, "org.medianexus.carprobe", certificate)
+        assertTrue(callers.knownHost("org.medianexus.carprobe", 10_999))
+        // A real yes, and a real no, are remembered: nothing is asked twice.
+        val asked = phone.lookups
+        assertTrue(callers.knownHost("org.medianexus.carprobe", 10_200))
+        assertEquals(asked, phone.lookups)
+    }
+
+    @Test
+    fun aNameIsOnlyTakenFromACallerTheSystemHasCheckedOrThatReallyHasIt() {
+        val phone = Phone(listOf(Triple(10_300, "com.example.watch", ByteArray(4)), Triple(10_400, "com.example.pretender", ByteArray(4))))
+        val callers = Callers(phone, listed)
+        // The system checked the name against the caller (Android 13 and later do).
+        assertTrue(callers.namedTruly("com.example.watch", 10_400, checkedBySystem = true))
+        // It didn't (Android 9 to 12, on the platform's own transport): the name is the
+        // caller's only if the system says that uid is that package.
+        assertTrue(callers.namedTruly("com.example.watch", 10_300, checkedBySystem = false))
+        assertFalse("another app's name was taken on its say-so", callers.namedTruly("com.example.watch", 10_400, checkedBySystem = false))
+        assertFalse(callers.namedTruly(null, 10_400, checkedBySystem = false))
+        // This app, and the system itself, are who the uid says they are.
+        assertTrue(callers.namedTruly("anything", phone.ownUid, checkedBySystem = false))
+        assertTrue(callers.namedTruly("android", android.os.Process.SYSTEM_UID, checkedBySystem = false))
+        // If the system can't say, it isn't taken on trust.
+        phone.failing = true
+        assertFalse(callers.namedTruly("com.example.watch", 10_300, checkedBySystem = false))
     }
 
     @Test

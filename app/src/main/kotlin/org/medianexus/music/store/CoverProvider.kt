@@ -42,9 +42,22 @@ class CoverProvider : ContentProvider() {
         val context = context ?: throw FileNotFoundException("Not ready")
         // Who is asking, before what for: a caller that isn't let in learns nothing here,
         // not even which ids are covers.
-        admit(context)
-        val (key, id) = partsOf(uri) ?: throw FileNotFoundException("Not a cover")
-        if (CoverStore.fileName(id) == null || !isKey(key)) throw FileNotFoundException("Not a cover")
+        val asker = admit(context)
+        // What became of it is noted when it is known: "given" used to be written the moment
+        // the asker was let in, before the address had been looked at or any file opened.
+        try {
+            return find(context, uri).also { asker?.noted("given") }
+        } catch (e: FileNotFoundException) {
+            asker?.noted("not given (${e.message})")
+            throw FileNotFoundException("No such cover")
+        }
+    }
+
+    /** The cover an address names, opened; or `FileNotFoundException` saying, in one of a
+     *  few fixed phrases, why not. */
+    private fun find(context: android.content.Context, uri: Uri): ParcelFileDescriptor {
+        val (key, id) = partsOf(uri) ?: throw FileNotFoundException(NO_SUCH)
+        if (CoverStore.fileName(id) == null || !isKey(key)) throw FileNotFoundException(NO_SUCH)
         val accounts = try {
             context.graph.accounts
         } catch (_: UninitializedPropertyAccessException) {
@@ -54,18 +67,18 @@ class CoverProvider : ContentProvider() {
         if (known != null) {
             // Someone is signed in, and it is not who this address was made for: no such
             // cover. At once, with nothing fetched and nothing waited for.
-            if (known.account.key != key) throw FileNotFoundException("No cover $id")
+            if (known.account.key != key) throw FileNotFoundException("it is another account's")
             // A cover already on the phone, for the account signed in: no waiting at all.
             // Handed over only if that account is still the one signed in, as below.
             val file = known.covers.kept(id)
-            if (file != null && accounts.state.value === known) return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            if (file != null && accounts.state.value === known) return open(file)
         }
         // Anything else waits: for the app to start, for the saved sign-in, for the server.
         // This is one of the handful of threads the system gives the app for every call from
         // outside it, the car's browsing and the player's controls among them, so only a few
         // may wait here at once and none for long. A cover that isn't had in time is fetched
         // all the same (see CoverStore.forOutside) and is there the next time it's asked for.
-        if (!waiting.tryAcquire()) throw FileNotFoundException("Busy")
+        if (!waiting.tryAcquire()) throw FileNotFoundException("too many being fetched at once")
         val file = try {
             runBlocking {
                 withTimeoutOrNull(WAIT_MILLIS) {
@@ -82,18 +95,36 @@ class CoverProvider : ContentProvider() {
             }
         } finally {
             waiting.release()
-        } ?: throw FileNotFoundException("No cover $id")
-        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        } ?: throw FileNotFoundException(NO_SUCH)
+        return open(file)
+    }
+
+    private fun open(file: java.io.File): ParcelFileDescriptor = try {
+        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    } catch (_: FileNotFoundException) {
+        // (Cleared away between being found and being opened.)
+        throw FileNotFoundException(NO_SUCH)
+    }
+
+    /** Someone who has been let in, and where to note what became of what they asked for. */
+    private class Asker(private val name: String?, private val standing: org.medianexus.music.playback.Callers.Standing, private val note: (String) -> Unit) {
+        fun noted(outcome: String) = note(
+            "covers asked for by ${name ?: "an app that gave no name"}: $outcome. " +
+                "Android trusts it: ${yes(standing.trusted)}; known host: ${yes(standing.knownHost)}",
+        )
+
+        private fun yes(on: Boolean) = if (on) "yes" else "no"
     }
 
     /**
      * Lets the caller through, or throws: only this app and callers the player would let
      * connect may read covers. Who is calling is the system's word (the uid, and a package
-     * name it has checked against it), never anything in the request.
+     * name it has checked against it), never anything in the request. Null for this app
+     * itself, whose reads are not noted.
      */
-    private fun admit(context: android.content.Context) {
+    private fun admit(context: android.content.Context): Asker? {
         val uid = android.os.Binder.getCallingUid()
-        if (uid == android.os.Process.myUid()) return
+        if (uid == android.os.Process.myUid()) return null
         val name = runCatching { callingPackage }.getOrNull()
         val graph = try {
             context.graph
@@ -102,14 +133,13 @@ class CoverProvider : ContentProvider() {
             throw FileNotFoundException("Not ready")
         }
         val standing = graph.callers.standing(name, android.os.Binder.getCallingPid(), uid)
-        graph.diagnostics.note(
-            "covers asked for by ${name ?: "an app that gave no name"}: ${if (standing.admitted) "given" else "refused"}. " +
-                "Android trusts it: ${yes(standing.trusted)}; known host: ${yes(standing.knownHost)}",
-        )
-        if (!standing.admitted) throw SecurityException("Covers are for the player's own callers")
+        val asker = Asker(name, standing) { graph.diagnostics.note(it) }
+        if (!standing.admitted) {
+            asker.noted("refused")
+            throw SecurityException("Covers are for the player's own callers")
+        }
+        return asker
     }
-
-    private fun yes(on: Boolean) = if (on) "yes" else "no"
 
     /** The app's objects. A provider can be asked for something while the app is still
      *  starting, before they're made: wait for them. */
@@ -136,6 +166,9 @@ class CoverProvider : ContentProvider() {
 
     companion object {
         const val AUTHORITY = "${BuildConfig.APPLICATION_ID}.covers"
+
+        /** Why a cover was not given, when there is nothing more to say than that. */
+        private const val NO_SUCH = "no such cover"
 
         /** The longest a caller is kept, start-up and all; and how long of that a cover not
          *  yet on the phone is waited for. A car's screen gives up on a picture in a few

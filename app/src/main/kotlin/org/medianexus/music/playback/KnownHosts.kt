@@ -104,6 +104,10 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
 
         /** Whether Android trusts the caller to control media. */
         fun trustedForMedia(packageName: String, pid: Int, uid: Int): Boolean
+
+        /** Has `changed` told, from now on, the name of each app that is installed, updated
+         *  or removed. */
+        fun onPackageChanged(changed: (packageName: String) -> Unit) {}
     }
 
     private class AndroidPhone(private val app: Context) : Phone {
@@ -122,12 +126,43 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
         override fun trustedForMedia(packageName: String, pid: Int, uid: Int): Boolean =
             uid == android.os.Process.SYSTEM_UID ||
                 app.getSystemService(MediaSessionManager::class.java).isTrustedForMediaControl(MediaSessionManager.RemoteUserInfo(packageName, pid, uid))
+
+        // The system's own word that an app has come, changed or gone. (It tells an app only
+        // about apps it may see: the known hosts are named in the manifest's <queries>.)
+        override fun onPackageChanged(changed: (packageName: String) -> Unit) {
+            val filter = android.content.IntentFilter().apply {
+                addAction(android.content.Intent.ACTION_PACKAGE_ADDED)
+                addAction(android.content.Intent.ACTION_PACKAGE_REPLACED)
+                addAction(android.content.Intent.ACTION_PACKAGE_REMOVED)
+                addAction(android.content.Intent.ACTION_PACKAGE_FULLY_REMOVED)
+                addAction(android.content.Intent.ACTION_PACKAGE_CHANGED)
+                addDataScheme("package")
+            }
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: android.content.Intent) {
+                    intent.data?.schemeSpecificPart?.let(changed)
+                }
+            }
+            try {
+                androidx.core.content.ContextCompat.registerReceiver(app, receiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+            } catch (_: RuntimeException) {
+                // Never told, then: nothing is remembered wrongly for longer than this run.
+            }
+        }
     }
 
-    /** What was worked out for a caller, by uid and name: an app's certificate doesn't
-     *  change while it keeps its uid. (Not kept when there are extra hosts, which a debug
-     *  build can be given at any time.) */
+    /**
+     * What was worked out for a caller, by uid and name. Kept until the system says that app
+     * has been installed, updated or removed: an update can change what it is signed with
+     * (Android Auto's stub replaced by the real one, on the same uid), and a name can pass to
+     * another app. It used to be kept for the life of the process. (Not kept at all when
+     * there are extra hosts, which a debug build can be given at any time.)
+     */
     private val known = ConcurrentHashMap<String, Boolean>()
+
+    init {
+        phone.onPackageChanged { name -> known.keys.removeAll { it.substringAfter('/') == name } }
+    }
 
     /** How many apps are listed as known hosts. */
     val listed: Int get() = (hosts + more()).packages.size
@@ -140,13 +175,41 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
         if (list.keysOf(packageName).isEmpty()) return false
         val key = "$uid/$packageName"
         if (extra.isEmpty()) known[key]?.let { return it }
-        val result = try {
-            list.matches(packageName, phone.packagesOf(uid), phone::signedWith)
+        // What the system could not say is "no" for now, and is asked again next time: a
+        // lookup that fails (the package manager restarting, the app half-way through an
+        // update) or a uid it knows nothing of is not an answer about the app.
+        val ofCaller = try {
+            phone.packagesOf(uid)
         } catch (_: RuntimeException) {
-            false
+            return false
+        }
+        if (ofCaller.isEmpty()) return false
+        val result = try {
+            list.matches(packageName, ofCaller, phone::signedWith)
+        } catch (_: RuntimeException) {
+            return false
         }
         if (extra.isEmpty()) known[key] = result
         return result
+    }
+
+    /**
+     * Whether the package name a caller gave is its own. On Android 13 and later the system
+     * has checked it against the calling uid before the app is told (`checkedBySystem`). On
+     * Android 9 to 12, over the platform's own media-session transport, it has not: the name
+     * is whatever the caller wrote, and Media3's "trusted" then looks that name up among the
+     * apps with notification access, by name alone. So there the name is only taken if the
+     * system says the calling uid is that package: the same binding the browser path gets
+     * from Android itself. This app and the system are who their uid says they are.
+     */
+    fun namedTruly(packageName: String?, uid: Int, checkedBySystem: Boolean): Boolean {
+        if (checkedBySystem || uid == phone.ownUid || uid == android.os.Process.SYSTEM_UID) return true
+        if (packageName == null) return false
+        return try {
+            packageName in phone.packagesOf(uid)
+        } catch (_: RuntimeException) {
+            false
+        }
     }
 
     /** Whether Android trusts the caller to control media. */

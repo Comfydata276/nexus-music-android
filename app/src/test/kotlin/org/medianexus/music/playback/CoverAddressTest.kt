@@ -121,4 +121,30 @@ class CoverAddressTest {
             }
         }
     }
+
+    @Test
+    fun diagnosticsSaysWhatBecameOfACoverNotOnlyThatItsAskerWasLetIn() {
+        server.signIn(app, "tester")
+        keep("al-1", firstPicture)
+        // Asked by the system's own media controls, not by this app.
+        org.robolectric.shadows.ShadowBinder.setCallingUid(android.os.Process.SYSTEM_UID)
+        org.robolectric.Shadows.shadowOf(covers).setCallingPackage("com.android.systemui")
+        fun noted() = app.graph.diagnostics.entries().map { it.text }.filter { it.startsWith("covers asked for by com.android.systemui") }
+        try {
+            // A cover there is none of: the server has no such picture.
+            try {
+                read(CoverProvider.uriFor(account().account.key, "al-nothing")!!)
+                fail("handed a cover that does not exist")
+            } catch (_: FileNotFoundException) {
+            }
+            // "given" was written as soon as the asker was let in, before the cover had even
+            // been looked for: a drive's worth of "given" beside a car with no pictures.
+            assertEquals(listOf("covers asked for by com.android.systemui: not given (no such cover). Android trusts it: yes; known host: no"), noted())
+            // One that is on the phone.
+            assertArrayEquals(firstPicture, read(CoverProvider.uriFor(account().account.key, "al-1")!!))
+            assertTrue(noted().any { it.startsWith("covers asked for by com.android.systemui: given.") })
+        } finally {
+            org.robolectric.shadows.ShadowBinder.reset()
+        }
+    }
 }
