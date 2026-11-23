@@ -602,6 +602,13 @@ How it is built (M1b):
 - **Library**: chips for Playlists, Albums, Artists and Genres. Liked songs heads the
   playlists, then the pinned ones, then the rest by name. Albums have Windows' seven sorts
   as a second row of chips, sixty at a time as the grid scrolls; Home's "Show all" opens them.
+  Paging (`AlbumPages`): a page that brings only albums already shown still counts as
+  progress, so loading carries on; a page cancelled on its way leaves the pager able to ask
+  again; a refresh leaves the grid as it is until the server's first page comes (the kept
+  copy of it doesn't replace it); a later page shown from the phone's copy is put right when
+  the server's arrives; coming back (after Android stopped the app too) loads as far as the
+  saved place before going there. Paging, like the pages' own feeds, runs only while the app
+  is in front.
 - **Artist**: albums, then singles and EPs, newest first; play plays the songs of their
   first forty releases, newest first as Windows builds it, saying it is getting them and
   how many albums couldn't be fetched, if any. "Popular" and "Fans also like" need the server to ask Last.fm, which

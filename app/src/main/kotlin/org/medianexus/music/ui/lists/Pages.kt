@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -272,21 +273,22 @@ fun GenrePage(route: Route.Genre) {
     val list = org.medianexus.music.net.AlbumList.ByGenre(route.name)
     val feed = rememberPageFeed("genre-first:${route.name}") { it.albums(list, 0, org.medianexus.music.library.Library.GRID_PAGE) }
     val library = ui.account?.library
-    val pages = remember(route.name, library) {
-        org.medianexus.music.ui.library.AlbumPages(org.medianexus.music.library.Library.GRID_PAGE) { offset ->
-            library?.quick(library.albums(list, offset, org.medianexus.music.library.Library.GRID_PAGE)) ?: emptyList()
-        }
-    }
-    LaunchedEffect(pages, feed.page) {
-        feed.value?.let(pages::first)
-        // The rest, one page after another, while the first is already on screen.
-        while (!pages.ended && pages.failed == null) {
-            val before = pages.albums.size
-            pages.more()
-            if (pages.albums.size == before && !pages.asking) break
-        }
-    }
     val scope = rememberCoroutineScope()
+    val pages = remember(route.name, library) {
+        org.medianexus.music.ui.library.AlbumPages(org.medianexus.music.library.Library.GRID_PAGE) { offset, changed ->
+            // A page from the phone's copy is put right when the server's comes (on the
+            // screen's own thread).
+            library?.quick(library.albums(list, offset, org.medianexus.music.library.Library.GRID_PAGE)) { fresh -> scope.launch { changed(fresh) } } ?: emptyList()
+        }
+    }
+    LaunchedEffect(pages, feed.page) { feed.value?.let { pages.first(it, feed.page.fresh) } }
+    // The rest, one page after another, while the first is already on screen; only while the
+    // app is in front, and from where it had got to when it comes back.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(pages, feed.value != null, pages.generation, lifecycle) {
+        if (feed.value == null) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { pages.loadAll() }
+    }
     Column(Modifier.fillMaxSize()) {
         TitleBar(route.name, onBack = ui.navigator::back)
         Refreshable(feed.refreshing, {
@@ -335,7 +337,10 @@ fun <T> CardGrid(
     failed: String? = null,
     onRetry: () -> Unit = {},
     minWidth: androidx.compose.ui.unit.Dp = 150.dp,
-    onNearEnd: (() -> Unit)? = null,
+    /** Near the foot of the grid: ask for more. */
+    onNearEnd: (suspend () -> Unit)? = null,
+    /** What changes each time more has come. */
+    progress: Any? = null,
     header: (@Composable () -> Unit)? = null,
     /** At the foot of the grid: a page on its way, or one that failed. */
     footer: (@Composable () -> Unit)? = null,
@@ -343,7 +348,12 @@ fun <T> CardGrid(
 ) {
     if (onNearEnd != null) {
         val near by remember(state) { androidx.compose.runtime.derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 12 } }
-        LaunchedEffect(near, items.size) { if (near) onNearEnd() }
+        // Asked again whenever a page has come (even one that brought nothing new, which
+        // leaves the grid the same size), and only while the app is in front.
+        val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(near, items.size, progress) {
+            if (near) lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { onNearEnd() }
+        }
     }
     LazyVerticalGrid(
         GridCells.Adaptive(minWidth),

@@ -25,6 +25,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.launch
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
@@ -198,19 +199,21 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
     val list = ALBUM_SORTS[sort.coerceIn(0, ALBUM_SORTS.lastIndex)].second
     val feed = rememberPageFeed("albums:$sort") { it.albums(list, 0, Library.GRID_PAGE) }
     val library = ui.account?.library
+    val scope = rememberCoroutineScope()
     val pages = remember(sort, library) {
-        AlbumPages(Library.GRID_PAGE) { offset ->
+        AlbumPages(Library.GRID_PAGE) { offset, changed ->
             // Kept like any page, so going back (or coming back after the app was stopped)
-            // reads them from the phone.
-            library?.quick(library.albums(list, offset, Library.GRID_PAGE)) ?: emptyList()
+            // reads them from the phone; put right when the server's copy comes.
+            library?.quick(library.albums(list, offset, Library.GRID_PAGE)) { fresh -> scope.launch { changed(fresh) } } ?: emptyList()
         }
     }
-    LaunchedEffect(pages, feed.page) { feed.value?.let(pages::first) }
-    val scope = rememberCoroutineScope()
+    LaunchedEffect(pages, feed.page) { feed.value?.let { pages.first(it, feed.page.fresh) } }
     val grid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
-    // Where the grid was, and how many albums were loaded to get there.
+    // Where the grid was, and how many albums were loaded to get there: kept with the page's
+    // saved state. Each time the grid is made (after Android stopped the app, too) it first
+    // loads as far as that and goes there; so "restoring" is not saved, only the place.
     var loaded by rememberSaveable(sort) { mutableIntStateOf(0) }
-    var restoring by rememberSaveable(sort) { mutableStateOf(true) }
+    var restoring by remember(sort) { mutableStateOf(true) }
     val wantFirst = rememberSaveable(sort) { intArrayOf(-1, 0) }
     LaunchedEffect(pages, pages.albums.size) { if (!restoring) loaded = pages.albums.size }
     LaunchedEffect(grid) {
@@ -221,18 +224,17 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
             }
         }
     }
-    // Brought back after the app was stopped: load as far as it had got, then go there.
-    LaunchedEffect(pages, feed.value != null) {
-        if (feed.value == null) return@LaunchedEffect
-        if (restoring && loaded > pages.albums.size) {
-            while (pages.albums.size < loaded && !pages.ended && pages.failed == null) {
-                val before = pages.albums.size
-                pages.more()
-                if (pages.albums.size == before) break
-            }
+    // Brought back (after the app was stopped, or to this chip): load as far as it had got,
+    // then go there. Only while the app is in front.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(pages, feed.value != null, lifecycle) {
+        if (feed.value == null || !restoring) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            if (!restoring) return@repeatOnLifecycle
+            pages.loadUntil(loaded)
+            if (wantFirst[0] > 0) grid.scrollToItem(wantFirst[0], wantFirst[1])
+            restoring = false
         }
-        if (restoring && wantFirst[0] > 0) grid.scrollToItem(wantFirst[0], wantFirst[1])
-        restoring = false
     }
     Column(Modifier.fillMaxSize()) {
         ChipRow(ALBUM_SORTS.map { stringResource(it.first) }, selected = sort, onChoose = choose)
@@ -256,7 +258,8 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
                         pages.refresh()
                         feed.refresh()
                     },
-                    onNearEnd = { scope.launch { pages.more() } },
+                    onNearEnd = { pages.more() },
+                    progress = pages.fetched,
                     state = grid,
                     footer = when {
                         pages.failed != null -> ({ FailedStrip(pages.failed?.message.orEmpty(), { scope.launch { pages.retry() } }) })
