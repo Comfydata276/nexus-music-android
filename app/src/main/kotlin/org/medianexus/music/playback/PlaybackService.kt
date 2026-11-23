@@ -104,6 +104,8 @@ class PlaybackService : MediaLibraryService() {
         val tree = CarTree(account.library, words)
         val kept = KeptSongs(account.keptSongsDir, database) { graph.settings.value.cacheLimitMb * 1024L * 1024L }
         val searches = SearchResults()
+        /** Who made each search lately: told when one is to be made again. */
+        val searchedBy = java.util.concurrent.ConcurrentHashMap<String, MediaSession.ControllerInfo>()
         /** Done once the saved queue has been read and put back (see [restore]). */
         val restoring = CompletableDeferred<Unit>()
     }
@@ -383,6 +385,9 @@ class PlaybackService : MediaLibraryService() {
             player.restore(revived, (saved.position * 1000).toLong())
         }
         era.restoring.complete(Unit)
+        // The screens are told the queue is as it will be: until now, "nothing playing" only
+        // meant "not read yet".
+        publishExtras()
         // Something started while the saved queue was being read is the queue now.
         if (!player.queue.isEmpty) save()
     }
@@ -561,6 +566,10 @@ class PlaybackService : MediaLibraryService() {
             putString(EXTRA_SOURCE, queue.source)
             putInt(EXTRA_ORIGIN, queue.currentOrigin() ?: -1)
             putBoolean(EXTRA_CONVERTED, queue.current()?.id?.let { it in needsConverting } == true)
+            putBoolean(EXTRA_SETTLED, era?.restoring?.isCompleted == true)
+            // The song these extras are about: the player's own word on what's playing can
+            // reach a controller before or after them.
+            putString(EXTRA_SONG, queue.current()?.id.orEmpty())
         }
         val before = shownExtras
         if (before != null && before.keySet() == extras.keySet() && extras.keySet().all { before.get(it) == extras.get(it) }) return
@@ -762,7 +771,10 @@ class PlaybackService : MediaLibraryService() {
         // every app with a controller, cause and all.
         offline(error) -> PlaybackException(getString(R.string.cant_play_offline), null, error.errorCode)
         network(error) && graph.localAccess.blocked.value -> PlaybackException(getString(R.string.car_local_network), null, error.errorCode, openAppButton())
-        network(error) -> PlaybackException(getString(R.string.lost_connection), null, error.errorCode)
+        // Short, as Windows says it ("Reconnecting"): a car's player has a line for it under
+        // the title. The phone's own Now Playing has room for the whole sentence, and is told
+        // by the extra that this is the lost connection.
+        network(error) -> PlaybackException(getString(R.string.lost_connection_short), null, error.errorCode, Bundle().apply { putBoolean(EXTRA_LOST, true) })
         song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play, song.title), null, error.errorCode)
         // (A file the phone can't decode is about to be asked for again, converted.)
         else -> PlaybackException(null, null, error.errorCode)
@@ -885,7 +897,15 @@ class PlaybackService : MediaLibraryService() {
                         ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                     LibraryResult.ofItemList(ImmutableList.copyOf(slice(entries, page, pageSize).map(CarMedia::item)), params)
                 } catch (e: ApiError) {
-                    LibraryResult.ofError(trouble(browser, e))
+                    // A folder never fetched, and the server out of reach: one entry that says
+                    // so and offers to try again, not the car's own "Something went wrong".
+                    // (Not when the phone isn't allowed to reach it: trying again can't help,
+                    // and the error's button opens the app, where it can be allowed.)
+                    if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
+                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retryFolder(parentId)))), params)
+                    } else {
+                        LibraryResult.ofError(trouble(browser, e))
+                    }
                 }
             }
 
@@ -908,12 +928,20 @@ class PlaybackService : MediaLibraryService() {
                 session.notifySearchResultChanged(browser, query, 0, params)
                 LibraryResult.ofError(signedOut())
             }) { era ->
+                era.searchedBy[query] = browser
                 try {
                     val found = inTime { era.tree.search(query) }
                     era.searches.put(query, found)
                     session.notifySearchResultChanged(browser, query, found.size, params)
                     LibraryResult.ofVoid()
                 } catch (e: ApiError) {
+                    if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
+                        // Out of reach: the one entry that says so, and tries again when tapped.
+                        val retry = listOf(tryAgain(CarIds.retrySearch(query)))
+                        era.searches.put(query, retry)
+                        session.notifySearchResultChanged(browser, query, retry.size, params)
+                        return@answer LibraryResult.ofVoid()
+                    }
                     // A car asking the old way gets its answer only through this: say there's
                     // nothing, rather than leave it waiting, and say why.
                     era.searches.put(query, emptyList())
@@ -928,7 +956,11 @@ class PlaybackService : MediaLibraryService() {
                     val found = era.searches.get(query) ?: inTime { era.tree.search(query) }.also { era.searches.put(query, it) }
                     LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
                 } catch (e: ApiError) {
-                    LibraryResult.ofError(trouble(browser, e))
+                    if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
+                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(query)))), params)
+                    } else {
+                        LibraryResult.ofError(trouble(browser, e))
+                    }
                 }
             }
 
@@ -937,6 +969,13 @@ class PlaybackService : MediaLibraryService() {
          * whole list is queued: the song's album or playlist from it, or what was asked for.
          */
         override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> {
+            // "Tap to try again": the car is asked to load that folder (or search) again, and
+            // nothing about playback changes. Before anything else, so it can't overtake a
+            // choice still being looked up.
+            mediaItems.singleOrNull()?.mediaId?.let(CarIds::retryOf)?.let { target ->
+                tryAgainNow(target)
+                return com.google.common.util.concurrent.Futures.immediateFailedFuture(UnsupportedOperationException("Not something to play"))
+            }
             val mine = ++starts
             return setMediaItems(mine, controller, mediaItems, startIndex, startPositionMs)
         }
@@ -1120,6 +1159,22 @@ class PlaybackService : MediaLibraryService() {
         throw ApiError.Network("(It didn't answer in time.)")
     }
 
+    /** The entry a folder or search shows while the server is out of reach. */
+    private fun tryAgain(id: String) = CarEntry(id, getString(R.string.cant_reach_server), getString(R.string.tap_to_try_again), icon = R.drawable.ic_refresh_cw, playable = true)
+
+    /** A "Tap to try again" was tapped: the car is told the folder, or the search, has
+     *  changed, and asks for it again (fetching it afresh, now). */
+    private fun tryAgainNow(target: CarRetry) {
+        val era = era ?: return
+        when (target) {
+            is CarRetry.Folder -> session.notifyChildrenChanged(target.parentId, Int.MAX_VALUE, null)
+            is CarRetry.Search -> {
+                era.searches.forget(target.query)
+                era.searchedBy[target.query]?.let { session.notifySearchResultChanged(it, target.query, 1, null) }
+            }
+        }
+    }
+
     private fun signedOut() = SessionError(SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED, getString(R.string.car_sign_in), signInButton())
 
     /** What to tell the car when the server couldn't help. */
@@ -1217,6 +1272,12 @@ class PlaybackService : MediaLibraryService() {
         const val EXTRA_SOURCE = "org.medianexus.music.SOURCE"
         const val EXTRA_ORIGIN = "org.medianexus.music.ORIGIN"
         const val EXTRA_CONVERTED = "org.medianexus.music.CONVERTED"
+        /** In the session's extras: the saved queue has been read and put back, so what the
+         *  player says is playing (nothing, perhaps) is so, not merely not known yet. */
+        const val EXTRA_SETTLED = "org.medianexus.music.SETTLED"
+        const val EXTRA_SONG = "org.medianexus.music.SONG"
+        /** On a playback error: it is the lost connection to the server. */
+        const val EXTRA_LOST = "org.medianexus.music.LOST"
 
         /** The extras the Assistant names a playlist and a genre with (MediaStore has no
          *  constants for these two). */

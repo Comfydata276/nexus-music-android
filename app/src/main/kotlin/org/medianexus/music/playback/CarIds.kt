@@ -35,6 +35,12 @@ sealed interface CarNode {
     data class Part(val parent: CarNode, val from: Int, val to: Int) : CarNode
 }
 
+/** What a "Tap to try again" entry loads again: a folder, by its id, or a search. */
+sealed interface CarRetry {
+    data class Folder(val parentId: String) : CarRetry
+    data class Search(val query: String) : CarRetry
+}
+
 /** The list a song is played as part of. */
 sealed interface ListRef {
     data class Album(val id: String) : ListRef
@@ -130,6 +136,24 @@ object CarIds {
             }
             else -> null
         }?.takeIf { node -> node !is CarNode.Track || node.songId.isNotEmpty() }
+    }
+
+    /** The id of the "Tap to try again" entry shown in a folder that couldn't be fetched. It
+     *  names nothing to play: tapping it loads the folder again. */
+    fun retryFolder(parentId: String): String = "retry/folder/${escape(parentId)}"
+
+    /** The same, in the results of a search. */
+    fun retrySearch(query: String): String = "retry/search/${escape(query)}"
+
+    /** What a "Tap to try again" entry's id asks to load again; null for any other id. */
+    fun retryOf(id: String): CarRetry? {
+        val parts = id.split('/')
+        if (parts.size != 3 || parts[0] != "retry") return null
+        return when (parts[1]) {
+            "folder" -> CarRetry.Folder(unescape(parts[2]))
+            "search" -> CarRetry.Search(unescape(parts[2]))
+            else -> null
+        }
     }
 
     /** '%', '/' and '~' as %25, %2F and %7E; everything else as it is. */

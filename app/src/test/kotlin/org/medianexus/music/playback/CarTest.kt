@@ -14,6 +14,19 @@ import org.medianexus.music.net.Song
 
 /** The car's ids, what spoken requests come to, play counting and stream forms. */
 class CarTest {
+    @Test
+    fun aTryAgainEntryNamesWhatToLoadAgainAndNothingToPlay() {
+        for (folder in listOf("albums", "genre/Drum%2FBass", "part/0/200/playlist/p1", "home~album/x")) {
+            val id = CarIds.retryFolder(folder)
+            assertEquals(CarRetry.Folder(folder), CarIds.retryOf(id))
+            // It is no place in the tree: choosing it can't be taken for a song or a list.
+            assertNull(CarIds.parse(id))
+        }
+        assertEquals(CarRetry.Search("paper/lanterns ~ x"), CarIds.retryOf(CarIds.retrySearch("paper/lanterns ~ x")))
+        assertNull(CarIds.retryOf("album/retry"))
+        assertNull(CarIds.retryOf("retry/song/x"))
+    }
+
     // ---- Ids ------------------------------------------------------------------------------
 
     @Test

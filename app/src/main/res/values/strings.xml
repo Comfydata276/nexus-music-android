@@ -89,6 +89,9 @@
     <string name="car_sign_in">When it\'s safe, open Nexus Music on your phone to sign in</string>
     <string name="sign_in">Sign in</string>
     <string name="car_unreachable">Can\'t reach your music server. Check your connection.</string>
+    <string name="lost_connection_short">Reconnecting…</string>
+    <string name="cant_reach_server">Can\'t reach the server</string>
+    <string name="tap_to_try_again">Tap to try again</string>
     <string name="lost_connection">Lost the connection to the server. The music will carry on when it\'s back.</string>
     <string name="couldnt_play">Couldn\'t play “%1$s”.</string>
     <string name="couldnt_find">Couldn\'t find “%1$s” in your library</string>
@@ -185,11 +188,17 @@
 
     <!-- The home network (Android 17) -->
     <string name="local_network_why">Your server is on your home network. Android will now ask whether Nexus Music may find and connect to nearby devices: that is what lets it reach your server.</string>
-    <string name="local_network_refused">Nexus Music isn\'t allowed to reach devices on your home network, so it can\'t connect to a server there. Allow it, then connect again.</string>
+    <string name="local_network_refused">Nexus Music isn\'t allowed to reach devices on your home network. If your server is there, that may be why it can\'t be reached. Allow it, and it connects again.</string>
     <string name="local_network_blocked">Nexus Music isn\'t allowed to reach your home network, where your server is, so nothing can be played from it.</string>
     <string name="car_local_network">When it\'s safe, open Nexus Music on your phone and allow it to reach your home network</string>
+    <string name="local_network_maybe">Can\'t reach your server. If it\'s on your home network, that may be because Nexus Music isn\'t allowed to reach it.</string>
     <string name="local_network_short">Nexus Music isn\'t allowed to reach your home network</string>
     <string name="open_app">Open Nexus Music</string>
     <string name="allow">Allow</string>
     <string name="continue_on">Continue</string>
+    <string name="getting_songs">Getting the songs…</string>
+    <plurals name="some_albums_missing">
+        <item quantity="one">One album couldn\'t be fetched, so its songs aren\'t playing.</item>
+        <item quantity="other">%1$d albums couldn\'t be fetched, so their songs aren\'t playing.</item>
+    </plurals>
 </resources>

@@ -19,6 +19,11 @@ class SearchResults(private val most: Int = MOST) {
     fun get(query: String): List<CarEntry>? = found[query]
 
     @Synchronized
+    fun forget(query: String) {
+        found.remove(query)
+    }
+
+    @Synchronized
     fun size(): Int = found.size
 
     private companion object {
