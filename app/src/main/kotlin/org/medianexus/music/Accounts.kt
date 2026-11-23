@@ -7,13 +7,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import org.medianexus.music.playback.QueueSaver
 
 /**
  * Keeps an [AccountGraph] for whoever is signed in: a new one each time someone signs in,
  * and the old one closed when they sign out.
  */
-class Accounts(private val session: Session, scope: CoroutineScope, private val queueSaver: QueueSaver) {
+class Accounts(private val session: Session, scope: CoroutineScope) {
     private val current = MutableStateFlow<AccountGraph?>(null)
 
     /** The signed-in account's objects; null when nobody is signed in, or it isn't known
@@ -27,7 +26,7 @@ class Accounts(private val session: Session, scope: CoroutineScope, private val 
                 if (now is SessionState.SignedIn) {
                     if (before?.api !== now.api) {
                         before?.close()
-                        current.value = AccountGraph(now.account, now.api, queueSaver)
+                        current.value = AccountGraph(now.account, now.api)
                     }
                 } else if (before != null) {
                     current.value = null

@@ -122,11 +122,11 @@ class LargeQueueTest {
         // ...and off it: working out which queue this is, and writing it.
         val saved = queue.saved(12.5, 1_700_000_000)
         assertQuick("writing 20,000 songs to disk", 3_000.0, millis(runs = 2) { File(folder.root, "queue.json").delete(); QueueFiles.of(folder.root).save(saved) })
-        files.save(saved)
+        files.save(saved, token = 1)
         // Where playback has got to, saved every few seconds: nothing of the queue is
         // copied, hashed or written again.
         val written = File(folder.root, "queue.json").lastModified()
-        assertQuick("saving only the place", 50.0, millis { files.savePlace(101, 33.0, 1_700_000_100) })
+        assertQuick("saving only the place", 50.0, millis { files.savePlace(1, 101, 33.0, 1_700_000_100) })
         assertEquals(written, File(folder.root, "queue.json").lastModified())
         val back = QueueFiles.of(folder.root).load()!!
         assertEquals(count, back.songs.size)

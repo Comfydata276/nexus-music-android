@@ -10,9 +10,7 @@ import kotlinx.coroutines.launch
 import org.medianexus.music.library.Library
 import org.medianexus.music.library.Likes
 import org.medianexus.music.net.Subsonic
-import org.medianexus.music.playback.KeptQueue
 import org.medianexus.music.playback.QueueFiles
-import org.medianexus.music.playback.QueueSaver
 import org.medianexus.music.store.Account
 import org.medianexus.music.store.CoverStore
 import org.medianexus.music.store.PageCache
@@ -26,7 +24,6 @@ import org.medianexus.music.store.PageCache
 class AccountGraph(
     val account: Account,
     val api: Subsonic,
-    queueSaver: QueueSaver,
     io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /** Work for this account; cancelled when it signs out. */
@@ -42,8 +39,10 @@ class AccountGraph(
 
     val likes = Likes(pages, library.liked(), send = { target, id, liked -> api.setStarred(target, id, liked) }, scope)
 
-    /** The play queue as it was left, kept with the account's own data. */
-    val queue = KeptQueue(QueueFiles.of(account.dirs.data), queueSaver)
+    /** The files the play queue is saved in, with the account's own data. What the player
+     *  does with them belongs to the playback service, each time one is made (`KeptQueue`):
+     *  nothing here remembers whether a saved queue has been put back. */
+    val queueFiles = QueueFiles.of(account.dirs.data)
 
     /** Where kept songs go. Opened by the playback service, which owns them. */
     val keptSongsDir = File(account.dirs.cache, "songs")

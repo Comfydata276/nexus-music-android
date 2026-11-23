@@ -94,10 +94,16 @@ fun queueShape(ids: List<String>, order: List<Int>, context: String, source: Str
 class QueueFiles(private val queueFile: File, private val placeFile: File) {
     private var savedShape: ULong? = null
 
+    /** Which hand-over the queue on disk came from (see [KeptQueue]); 0 when it was read
+     *  from disk, cleared, or isn't known. A place is only ever written beside the queue it
+     *  was handed over with. */
+    private var savedToken = 0L
+
     /** Which saved queue this is: two of these on the same file are the same queue. */
     val key: String get() = queueFile.path
 
     fun load(): SavedQueue? {
+        savedToken = 0
         val saved = read(queueFile, SavedQueue.serializer())?.takeIf { it.valid } ?: return null
         val shape = saved.shape()
         savedShape = shape
@@ -109,44 +115,63 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
         }
     }
 
-    /** Writes the queue if it has changed since last written, and the place always. */
-    fun save(queue: SavedQueue) {
+    /**
+     * Writes the queue if it has changed since last written, and the place always. `token`
+     * names this hand-over of the queue, for the places that follow it ([savePlace]).
+     * Returns whether the queue is now on disk: false if it couldn't be written, in which
+     * case what was there before still is, whole, with its own place.
+     */
+    fun save(queue: SavedQueue, token: Long = 0): Boolean {
         if (queue.songs.isEmpty()) {
             clear()
-            return
+            return !queueFile.exists()
         }
         val shape = queue.shape()
         try {
             if (shape != savedShape) {
+                // Until the new queue is in place, no place may be written beside the old
+                // one on the strength of this hand-over.
+                savedToken = 0
                 // Straight into the file: a long queue is too big to build as text first.
                 writeAtomically(queueFile) { out -> json.encodeToStream(SavedQueue.serializer(), queue, out) }
                 savedShape = shape
             }
-            val place = QueuePlace(shape, queue.cursor, queue.position, queue.stamp)
-            writeAtomically(placeFile, json.encodeToString(QueuePlace.serializer(), place).toByteArray())
+            savedToken = token
         } catch (_: IOException) {
-            // Tried again at the next save.
+            return false
         } catch (_: SerializationException) {
             // The same (it wraps a failure to write).
+            return false
         }
+        // The queue is there. Its place, if this can't be written, is the one saved in the
+        // queue itself (an older place file names another queue, and is ignored for that).
+        writePlace(QueuePlace(shape, queue.cursor, queue.position, queue.stamp))
+        return true
     }
 
     /**
-     * Writes only where playback has got to, for the queue last written or read here. The
-     * queue itself is not looked at: nothing of it is copied, hashed or written. Does nothing
-     * if no queue has been written or read yet (the next full save writes both).
+     * Writes only where playback has got to, in the queue handed over as `token`. The queue
+     * itself is not looked at: nothing of it is copied, hashed or written. Does nothing, and
+     * says so, unless the queue on disk is that very one: a place written beside any other
+     * queue would put that queue back at a song it was never at.
      */
-    fun savePlace(cursor: Int, position: Double, stamp: Long) {
-        val shape = savedShape ?: return
-        try {
-            writeAtomically(placeFile, json.encodeToString(QueuePlace.serializer(), QueuePlace(shape, cursor, position, stamp)).toByteArray())
-        } catch (_: IOException) {
-            // Tried again at the next save.
-        }
+    fun savePlace(token: Long, cursor: Int, position: Double, stamp: Long): Boolean {
+        val shape = savedShape ?: return false
+        if (token == 0L || token != savedToken) return false
+        return writePlace(QueuePlace(shape, cursor, position, stamp))
+    }
+
+    private fun writePlace(place: QueuePlace): Boolean = try {
+        writeAtomically(placeFile, json.encodeToString(QueuePlace.serializer(), place).toByteArray())
+        true
+    } catch (_: IOException) {
+        // Tried again at the next save.
+        false
     }
 
     fun clear() {
         savedShape = null
+        savedToken = 0
         queueFile.delete()
         placeFile.delete()
     }
@@ -192,8 +217,10 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
     private val steps = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
     /** What is waiting to be written for one queue: the whole queue (null if it hasn't
-     *  changed since it was last written) and where playback has got to in it. */
-    private class Waiting(val files: QueueFiles, val queue: SavedQueue?, val cursor: Int, val position: Double, val stamp: Long)
+     *  changed since it was last handed over) and where playback has got to in it. `token`
+     *  names the hand-over of the whole queue that the place belongs to; `done` is told
+     *  whether the whole queue was written. */
+    private class Waiting(val files: QueueFiles, val queue: SavedQueue?, val token: Long, val cursor: Int, val position: Double, val stamp: Long, val done: ((Boolean) -> Unit)?)
 
     /** The newest of what hasn't been written yet, for each queue. */
     private val waiting = HashMap<String, Waiting>()
@@ -202,24 +229,35 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
         scope.launch(io) { for (step in steps) step() }
     }
 
-    /** Asks for this snapshot to be written, and returns at once. */
-    fun save(files: QueueFiles, queue: SavedQueue) = line(Waiting(files, queue, queue.cursor, queue.position, queue.stamp))
+    /**
+     * Asks for this snapshot to be written, and returns at once. `token` names it, for the
+     * places handed over after it ([savePlace]); `done` is told, on the writer's thread,
+     * whether it was written (not told if a newer snapshot took its place before its turn).
+     */
+    fun save(files: QueueFiles, queue: SavedQueue, token: Long = 0, done: ((Boolean) -> Unit)? = null) =
+        line(Waiting(files, queue, token, queue.cursor, queue.position, queue.stamp, done))
 
     /**
-     * Asks for only the place to be written: the queue is as it was last saved, and playback
-     * has moved along it. If a snapshot of the whole queue is still waiting, it is written
-     * with this place.
+     * Asks for only the place to be written: the queue is as it was handed over under
+     * `token`, and playback has moved along it. If that snapshot is still waiting, it is
+     * written with this place. If the queue on disk turns out not to be that one (its write
+     * failed), nothing is written.
      */
-    fun savePlace(files: QueueFiles, cursor: Int, position: Double, stamp: Long) = line(Waiting(files, null, cursor, position, stamp))
+    fun savePlace(files: QueueFiles, token: Long, cursor: Int, position: Double, stamp: Long) = line(Waiting(files, null, token, cursor, position, stamp, null))
 
     private fun line(next: Waiting) {
         val alreadyInLine = synchronized(waiting) {
             val before = waiting[next.files.key]
-            // A place alone never takes the place of a queue still waiting to be written.
-            waiting[next.files.key] = if (next.queue == null && before?.queue != null) {
-                Waiting(before.files, before.queue, next.cursor, next.position, next.stamp)
-            } else {
-                next
+            waiting[next.files.key] = when {
+                // A place alone never takes the place of a queue still waiting to be written:
+                // it goes with it, if it is that queue's.
+                next.queue == null && before?.queue != null ->
+                    if (before.token == next.token) Waiting(before.files, before.queue, before.token, next.cursor, next.position, next.stamp, before.done) else before
+                else -> {
+                    // A snapshot that never got its turn was not written.
+                    if (before?.queue != null) before.done?.invoke(false)
+                    next
+                }
             }
             before != null
         }
@@ -228,9 +266,15 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
             // Whatever is newest by the time its turn comes.
             val newest = synchronized(waiting) { waiting.remove(next.files.key) } ?: return@trySend
             if (newest.queue != null) {
-                newest.files.save(newest.queue.copy(cursor = newest.cursor, position = newest.position, stamp = newest.stamp))
+                val written = try {
+                    newest.files.save(newest.queue.copy(cursor = newest.cursor, position = newest.position, stamp = newest.stamp), newest.token)
+                } catch (e: Throwable) {
+                    newest.done?.invoke(false)
+                    throw e
+                }
+                newest.done?.invoke(written)
             } else {
-                newest.files.savePlace(newest.cursor, newest.position, newest.stamp)
+                newest.files.savePlace(newest.token, newest.cursor, newest.position, newest.stamp)
             }
         }
     }
@@ -255,52 +299,77 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
 }
 
 /**
- * One account's saved queue, as the playback service uses it: read once when the account is
- * taken on, then written as the queue changes.
+ * One account's saved queue, as one life of the playback service uses it: read once when the
+ * account is taken on, then written as the queue changes.
  *
- * Until that first read has finished, what is on disk isn't known, and the player's queue
- * (empty, at that moment) is not the account's queue: nothing is written. "Not read yet" and
- * "read, and there was nothing" are different things; only after the second may an empty
- * queue be saved over what was there.
+ * Nothing is written until the queue it read is the player's queue ([settle]). Before then
+ * what the player holds (nothing, while the saved queue is being read and then made ready,
+ * which for a long queue takes a while) is not the account's queue, and an account that
+ * goes, or a service that is destroyed, in that time must not have "empty" written over what
+ * was there. "Read" is not enough: the queue has been read long before it is in the player.
+ *
+ * It belongs to the service that made it and to that account's turn at it, never to the
+ * account: a service made again in the same process starts with a player that is empty
+ * again, and with one of these that has not settled.
  */
 class KeptQueue(private val files: QueueFiles, private val saver: QueueSaver) {
-    /** The saved queue has been read (whether or not there was one). */
+    /** The saved queue is the player's now (or there was none, or the person has started
+     *  something else): from here on what the player holds is what is saved. */
     @Volatile
-    var restored = false
+    var settled = false
         private set
 
-    /** Reads the saved queue; null if there is none, or it doesn't hold together. */
-    suspend fun restore(): SavedQueue? {
-        val saved = saver.load(files)
-        restored = true
-        return saved
+    /** Reads the saved queue; null if there is none, or it doesn't hold together. Saving
+     *  stays off until [settle]. */
+    suspend fun read(): SavedQueue? = saver.load(files)
+
+    /** The queue that was read has been put into the player, or there was none to put. */
+    fun settle() {
+        settled = true
     }
 
-    /** The queue's revision when it was last handed over whole. */
-    private var savedRevision = -1L
+    /** The queue's revision when it was last handed over whole, and the name that hand-over
+     *  was given. Main thread. */
+    private var handedRevision = -1L
+    private var token = 0L
+
+    /** The hand-over that is known not to have been written; set by the writer. */
+    @Volatile
+    private var failedToken = 0L
 
     /** Saves the queue as `snapshot` gives it; does nothing (and takes no snapshot) before
-     *  [restore] has finished. Returns whether it was handed to the writer. */
+     *  [settle]. Returns whether it was handed to the writer. */
     fun save(snapshot: () -> SavedQueue): Boolean {
-        if (!restored) return false
-        savedRevision = -1
+        if (!settled) return false
+        handedRevision = -1
         saver.save(files, snapshot())
         return true
     }
 
     /**
      * As [save], for a queue that says when it has changed (`revision`, see
-     * [Queue.revision]): the snapshot is only taken when it has. Otherwise only the place
-     * (`cursor`, `position`) is handed over, which copies nothing, however long the queue.
+     * [Queue.revision]): the snapshot is only taken when it has, or when the last one handed
+     * over turned out not to have been written (a full disk, say), so that a queue that
+     * failed to save is tried again whole. Otherwise only the place (`cursor`, `position`)
+     * is handed over, which copies nothing, however long the queue; and the writer puts it
+     * beside that queue or not at all ([QueueFiles.savePlace]).
      */
     fun save(revision: Long, cursor: Int, position: Double, stamp: Long, snapshot: () -> SavedQueue): Boolean {
-        if (!restored) return false
-        if (revision != savedRevision) {
-            saver.save(files, snapshot())
-            savedRevision = revision
+        if (!settled) return false
+        if (revision != handedRevision || failedToken == token) {
+            val mine = tokens.incrementAndGet()
+            token = mine
+            handedRevision = revision
+            saver.save(files, snapshot(), mine) { written -> if (!written) failedToken = mine }
         } else {
-            saver.savePlace(files, cursor, position, stamp)
+            saver.savePlace(files, token, cursor, position, stamp)
         }
         return true
+    }
+
+    private companion object {
+        /** Names for hand-overs, never reused while the app runs: two lives of the service
+         *  never share one. */
+        val tokens = java.util.concurrent.atomic.AtomicLong()
     }
 }

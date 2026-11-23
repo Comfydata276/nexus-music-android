@@ -52,7 +52,7 @@ class Graph(context: Context) {
     val queueSaver = QueueSaver(scope, Dispatchers.IO)
 
     /** What belongs to whoever is signed in: their library, covers, likes and queue. */
-    val accounts = Accounts(session, scope, queueSaver)
+    val accounts = Accounts(session, scope)
 
     val toasts = Toasts()
 

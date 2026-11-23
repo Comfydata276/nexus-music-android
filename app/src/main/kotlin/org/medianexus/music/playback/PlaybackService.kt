@@ -106,6 +106,9 @@ class PlaybackService : MediaLibraryService() {
         val searches = SearchResults()
         /** Who made each search lately: told when one is to be made again. */
         val searchedBy = java.util.concurrent.ConcurrentHashMap<String, MediaSession.ControllerInfo>()
+        /** The account's saved queue, for this service's turn at it: nothing is written to
+         *  it until what was read from it is in the player (see [restore]). */
+        val queue = KeptQueue(account.queueFiles, graph.queueSaver)
         /** Done once the saved queue has been read and put back (see [restore]). */
         val restoring = CompletableDeferred<Unit>()
     }
@@ -372,18 +375,22 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
-     * Back to where things were, paused, ready for "play" from anywhere. Until this has
-     * finished nothing is saved (see [KeptQueue]): the player's queue is empty while the
-     * saved one is being read, and an account that goes in that moment must not have "empty"
-     * written over its queue.
+     * Back to where things were, paused, ready for "play" from anywhere. Until the saved
+     * queue is in the player nothing is saved (see [KeptQueue]): the player's queue is empty
+     * while the saved one is being read and then made ready, and an account that goes, or a
+     * service destroyed, in that time must not have "empty" written over its queue. (This
+     * runs in the account's scope: if the account goes meanwhile it stops where it is, and
+     * the queue is never marked as put back.)
      */
     private suspend fun restore(era: Era) {
-        val saved = era.account.queue.restore()
+        val saved = era.queue.read()
         if (saved != null) {
             // Made ready off the main thread: it can be thousands of songs.
             val revived = withContext(Dispatchers.Default) { player.revive(saved) }
             player.restore(revived, (saved.position * 1000).toLong())
         }
+        // Only now: the saved queue is the player's, or there was none.
+        era.queue.settle()
         era.restoring.complete(Unit)
         // The screens are told the queue is as it will be: until now, "nothing playing" only
         // meant "not read yet".
@@ -583,8 +590,11 @@ class PlaybackService : MediaLibraryService() {
      *  the newest it has been given, off the main thread, in order. */
     private fun save() {
         if (leaving) return
-        val kept = account?.queue ?: return
+        val kept = era?.queue ?: return
         val queue = player.queue
+        // Something the person started while the saved queue was still being put back is the
+        // queue now (the saved one is not put over it: see QueuePlayer.restore).
+        if (!kept.settled && !queue.isEmpty) kept.settle()
         val position = exo.currentPosition / 1000.0
         val stamp = System.currentTimeMillis() / 1000
         // The queue is copied for the writer only when it has changed; while it only plays,
