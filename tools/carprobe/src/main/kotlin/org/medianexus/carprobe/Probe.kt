@@ -51,6 +51,9 @@ class Probe : Instrumentation() {
     @Volatile private var state: PlaybackStateCompat? = null
     @Volatile private var metadata: MediaMetadataCompat? = null
     @Volatile private var queue: List<MediaSessionCompat.QueueItem>? = null
+
+    /** How many times the session has sent its queue. */
+    @Volatile private var queuesSent = 0
     @Volatile private var stateChanges = 0
     // Some errors are shown for a moment and withdrawn at once (Media3 does this for errors
     // that do not stop playback), so the last one seen is kept, with when it was seen.
@@ -241,7 +244,7 @@ class Probe : Instrumentation() {
                         s?.errorMessage?.toString()?.takeIf { it.isNotBlank() }?.let { lastError = it; lastErrorAt = SystemClock.elapsedRealtime() }
                     }
                     override fun onMetadataChanged(m: MediaMetadataCompat?) { metadata = m }
-                    override fun onQueueChanged(q: MutableList<MediaSessionCompat.QueueItem>?) { queue = q }
+                    override fun onQueueChanged(q: MutableList<MediaSessionCompat.QueueItem>?) { queue = q; queuesSent++ }
                 })
             }
         }
@@ -871,7 +874,9 @@ class Probe : Instrumentation() {
      * the car is still showing then means another song. This starts a long list ("-e list",
      * part of its name; `scripts/server longlist` makes one), keeps the queue as the car was
      * first shown it, goes far enough down it for the app's part to move, and at once taps
-     * an entry of the queue it kept: the song that entry showed must be the one that plays.
+     * an entry of the queue it kept. Nothing in the tap says which queue it was made on, so
+     * the app can't know which song was meant: it must play neither (above all not the song
+     * that now sits at that place), and must send the queue again so the car redraws.
      */
     private fun queueSlide(root: String) {
         val wanted = args.getString("list") ?: "Long list"
@@ -923,14 +928,22 @@ class Probe : Instrumentation() {
         val tapped = before[(went + 12).coerceAtMost(before.size - 1)]
         val now = queue.orEmpty()
         val wrong = now.getOrNull(tapped.queueId.toInt())
+        val wasPlaying = mediaId()
+        val sentBefore = queuesSent
         onMain { controls.skipToQueueItem(tapped.queueId) }
-        val ms = waitFor(6000) { mediaId() == song(tapped) }
-        SystemClock.sleep(600)
-        check("queue.slide", "A tap on the queue as the car was showing it, just as the player's part of the queue moved, plays the song that was shown",
-            ms >= 0 && mediaId() == song(tapped),
+        // What the app does with it shows within a moment, if it does anything.
+        val changed = waitFor(1200) { mediaId() != wasPlaying }
+        check("queue.slide", "A tap on the queue as the car was showing it, just as the player's part of the queue moved, plays no song the driver did not tap",
+            changed < 0 || mediaId() == song(tapped),
             "tapped \"${tapped.description.title}\" (place ${tapped.queueId} of the queue the car was showing); what plays is ${nowPlaying()}" +
                 if (song(wrong) != null && mediaId() == song(wrong)) ", which is the song now at that place" else "",
-            "\"${tapped.description.title}\"; the queue had moved from starting at \"${before.first().description.title}\" to \"${now.firstOrNull()?.description?.title}\"", ms)
+            (if (changed < 0) "nothing was played" else "\"${tapped.description.title}\" plays") +
+                "; the queue had moved from starting at \"${before.first().description.title}\" to \"${now.firstOrNull()?.description?.title}\"")
+        if (changed < 0) {
+            val resent = waitFor(2000) { queuesSent > sentBefore }
+            check("queue.resent", "A tap that could mean two songs has the queue sent again, for the car to redraw", resent >= 0,
+                "the queue was not sent again after the tap that was ignored", "sent again", resent)
+        }
         // And once the car has caught up, a place means what it says.
         SystemClock.sleep(1500)
         val settled = queue.orEmpty()
@@ -1049,6 +1062,26 @@ class Probe : Instrumentation() {
             SystemClock.sleep(120)
         }
         SystemClock.sleep(1500)
+        // And the notification's own buttons, by the names any app can read out of the
+        // session: like, shuffle, repeat ("-e forge_buttons", the actions).
+        val buttonActions = args.getString("forge_buttons").orEmpty().split(';').filter { it.isNotBlank() }
+        if (buttonActions.isNotEmpty()) {
+            fun buttons() = state?.customActions.orEmpty().joinToString { "\"${it.name}\"" }
+            fun modes() = onMain { "shuffle ${this.controller?.shuffleMode}, repeat ${this.controller?.repeatMode}" }
+            val buttonsBefore = buttons()
+            val modesBefore = modes()
+            var sent = 0
+            for (action in buttonActions) {
+                val intent = Intent(ACTION_CUSTOM).setComponent(service).putExtra(EXTRA_CUSTOM_ACTION, action).putExtra(EXTRA_CUSTOM_ACTION_EXTRAS, Bundle())
+                runCatching { context.startService(intent) }.onSuccess { sent++ }
+                SystemClock.sleep(150)
+            }
+            SystemClock.sleep(1500)
+            check("outsider.forged_buttons", "Intents made to look like the notification's like, shuffle and repeat buttons change nothing",
+                buttons() == buttonsBefore && modes() == modesBefore,
+                "the buttons were $buttonsBefore ($modesBefore) and are ${buttons()} (${modes()})",
+                "$sent of ${buttonActions.size} intents reached the service; the buttons are still $buttonsBefore ($modesBefore)")
+        }
         val after = titles()
         val placeAfter = place()
         // The song may have run on into the next by itself meanwhile; no further.

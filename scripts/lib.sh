@@ -45,7 +45,8 @@ container_running() {
 }
 
 # --- which emulator a command talks to -------------------------------------------------
-# Two devices are defined: the phone (default) and the car (Android Automotive OS).
+# The devices: the phone (default, Android 17), the same on Android 16 (phone36) and on
+# Android 9 (phone28), and the car (Android Automotive OS).
 # Choose with `-d car` on scripts/emu, or NEXUS_DEVICE=car for the other scripts.
 device_setup() {
   device="${1:-${NEXUS_DEVICE:-phone}}"
@@ -56,6 +57,13 @@ device_setup() {
       # (which the measurements need) and nothing asks for a Google account.
       avd=nexus-phone; port=5554
       image="${NEXUS_PHONE_IMAGE:-system-images/android-37.0/google_apis/x86_64}"
+      ram="${NEXUS_PHONE_RAM:-2048}"
+      ;;
+    phone36)
+      # Android 16 (its second quarterly release, API 36.1: what One UI 8.5 is built on),
+      # the version the first phone the app goes onto runs. Not downloaded until first used.
+      avd=nexus-phone36; port=5560
+      image="system-images/android-36.1/google_apis/x86_64"
       ram="${NEXUS_PHONE_RAM:-2048}"
       ;;
     phone28)
@@ -71,7 +79,7 @@ device_setup() {
       image="${NEXUS_CAR_IMAGE:-system-images/android-35-ext15/android-automotive/x86_64}"
       ram="${NEXUS_CAR_RAM:-2560}"
       ;;
-    *) die "unknown device '$device' (use phone, phone28 or car)" ;;
+    *) die "unknown device '$device' (use phone, phone36, phone28 or car)" ;;
   esac
   container="nexus-emu-$device"
   serial="emulator-$port"

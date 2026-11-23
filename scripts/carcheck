@@ -84,6 +84,7 @@ device_setup ""
 [ $# -ge 1 ] || usage
 # The commands only the app's own screens may send (AppActions in the app), each with what
 # it would do if it were let through: for --mode outsider.
+nexus_buttons="org.medianexus.music.LIKE;org.medianexus.music.SHUFFLE;org.medianexus.music.REPEAT"
 nexus_forge="org.medianexus.music.app.CLEAR|queued=false;org.medianexus.music.app.REMOVE|offset=0;org.medianexus.music.app.REMOVE|uid=1;org.medianexus.music.app.MOVE|from=0|to=1|queued=true;org.medianexus.music.app.JUMP|offset=1"
 target=""; extra=(); json=""; selftest=0; trusted=1; known=0
 while [ $# -gt 0 ]; do
@@ -91,7 +92,7 @@ while [ $# -gt 0 ]; do
     --standin) target=org.medianexus.standin ;;
     --selftest) selftest=1; target=org.medianexus.standin ;;
     # Three tabs until there are downloads (M2), when Downloads makes four.
-    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library" -e expect_buttons "like,shuffle,repeat" -e expect_shuffle "Shuffle" -e forge "$nexus_forge" -e covers "COVERS_OF_TARGET") ;;
+    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library" -e expect_buttons "like,shuffle,repeat" -e expect_shuffle "Shuffle" -e forge "$nexus_forge" -e forge_buttons "$nexus_buttons" -e covers "COVERS_OF_TARGET") ;;
     --query) extra+=(-e query "${2:?}"); shift ;;
     --voice) extra+=(-e voice "${2:?}"); shift ;;
     --tabs) extra+=(-e expect_tabs "${2:?}"); shift ;;
