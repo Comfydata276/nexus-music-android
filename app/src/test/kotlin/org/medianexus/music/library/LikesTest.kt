@@ -132,6 +132,8 @@ class LikesTest {
         val (likes, pages) = setUp { _, _, _ -> }
         likes.load()
         likes.waitFor(setOf("a", "b"))
+        // (The first fetch is over: what follows is a request of its own, not one joined.)
+        pages.fresh(likedSpec)
         // Liked songs is refreshed, slowly: its answer still has "b".
         val slow = PageSpec("liked", Found.serializer()) { asked.complete(Unit); gate.await(); Found(songs = listOf(a, b)) }
         now += 1_000

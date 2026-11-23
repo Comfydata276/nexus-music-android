@@ -9,9 +9,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.CoroutineStart.UNDISPATCHED
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.channelFlow
@@ -62,11 +63,20 @@ class PageSpec<T>(val key: String, val serializer: KSerializer<T>, val fetch: su
  * once share one trip to the server.
  *
  * **Each page has one order of events.** Every change to a page (a fetch kept, a change made
- * here such as a like) takes the next number in that page's own count. Whatever was begun
- * before a change and finishes after it (a slow refresh, a read from disk) is dropped rather
- * than put over it: the change is newer. Writes of one page to disk happen one at a time, in
- * that order, each through a temporary file of its own, and one that a newer write has
- * already overtaken is not made at all.
+ * here such as a like) takes the next number in that page's own count, and becomes the page's
+ * one current value under the same lock: that value (a `StateFlow` per page) is what screens
+ * follow, and [changes] and [heard] are told of each change under that lock too, in that
+ * order, and never drop one. So nothing can be published out of order, or lost. Whatever was
+ * begun before a change and finishes after it (a slow refresh, a read from disk) is dropped
+ * rather than put over it: the change is newer. A failed refresh says so beside the page as it
+ * now is, never beside the copy it began with.
+ *
+ * Writes of one page to disk happen one at a time, in that order, each through a temporary
+ * file of its own, and one that a newer write has already overtaken is not made at all. A
+ * page is held in memory until its newest change is safely on disk, so the file is never
+ * older than what was let go of, and a read from disk can't bring back a value older than the
+ * one in use. What writes cut short by the app being killed left behind is swept away when the
+ * account's pages are first opened.
  */
 class PageCache(
     private val dir: File,
@@ -76,70 +86,96 @@ class PageCache(
     /** What the pages held in memory may weigh in all (see [weigh]). */
     private val budget: Long = MEMORY_BUDGET,
 ) {
-    private class Entry(val value: Any?, val at: Long, val fresh: Boolean, val weight: Long)
+    /** One page as it stands: its number in the page's order of events, and, if the page is
+     *  held in memory, its value (`fresh`: kept in this run, rather than read from disk). */
+    private class Current(val version: Long, val held: Boolean, val value: Any?, val fresh: Boolean, val at: Long)
 
-    /** One page's place in the order of events, and the lock its writes take turns on. */
+    /** One page's place in the order of events, its current value, and the lock its writes
+     *  take turns on. Everything but the locks is guarded by `state`. */
     private class Slot {
         /** Changes made to it so far. */
         var version = 0L
-        /** The newest of them written to disk. */
+        /** The newest of them safely on disk. */
         var written = 0L
+        /** What its value weighs, while held. */
+        var weight = 0L
+        val current = MutableStateFlow(Current(0, held = false, value = null, fresh = false, at = 0))
         val disk = Mutex()
         /** Read-then-change edits ([update]) take turns, so none is lost. */
         val edits = Mutex()
     }
 
-    /** Guards `memory`, `held` and every slot's `version`. */
+    /** Guards `memory`, `held` and every slot. */
     private val state = Any()
     private val slots = HashMap<String, Slot>()
 
-    /** The pages in memory, least lately used first, and what they weigh together. */
-    private val memory = LinkedHashMap<String, Entry>(32, 0.75f, true)
+    /** The pages held in memory, least lately used first, and what they weigh together. */
+    private val memory = LinkedHashMap<String, Slot>(32, 0.75f, true)
     private var held = 0L
 
     private val inFlight = ConcurrentHashMap<String, Deferred<Any?>>()
 
     /** Every page as it is kept afresh (a fetch, or a change made here such as a like), with
-     *  its key. For whatever shows or plays a list to follow it. */
-    private val keptNow = MutableSharedFlow<Pair<String, Any?>>(extraBufferCapacity = 32)
+     *  its key, in the order kept, none dropped. For whatever shows or plays a list to follow
+     *  it. */
+    private val keptNow = MutableSharedFlow<Pair<String, Any?>>(extraBufferCapacity = Int.MAX_VALUE)
     val changes: SharedFlow<Pair<String, Any?>> = keptNow.asSharedFlow()
 
-    /** Every answer from the server that was kept, with when it was asked for (by `clock`):
-     *  for whatever follows what the server says about things that are on many pages
-     *  (likes), and must know whether an answer is older than a change it made since. */
-    private val heardNow = MutableSharedFlow<Heard>(extraBufferCapacity = 32)
+    /** Every answer from the server that was kept, with when it was asked for (by `clock`),
+     *  in the order kept: for whatever follows what the server says about things that are on
+     *  many pages (likes), and must know whether an answer is older than a change it made
+     *  since. */
+    private val heardNow = MutableSharedFlow<Heard>(extraBufferCapacity = Int.MAX_VALUE)
     val heard: SharedFlow<Heard> = heardNow.asSharedFlow()
+
+    init {
+        // Left by writes the app was killed in the middle of. Only an earlier run's: this
+        // run's own may be under way.
+        scope.launch(io) { sweepTemporaries(dir) }
+    }
 
     private fun slotFor(key: String): Slot = synchronized(state) { slots.getOrPut(key) { Slot() } }
 
     private fun versionOf(key: String): Long = synchronized(state) { slots[key]?.version ?: 0L }
 
+    /** The page's value, if it is held in memory (and marks it used lately). Under `state`. */
+    private fun heldValue(key: String, slot: Slot): Current? {
+        val now = slot.current.value
+        if (!now.held) return null
+        memory[key]
+        return now
+    }
+
     /** The kept copy of a page, from memory or disk; null if there isn't one (or it can no
      *  longer be read, as when the app has changed how pages are written). */
     suspend fun <T> kept(spec: PageSpec<T>): T? {
+        val slot = slotFor(spec.key)
         repeat(3) {
             val before = synchronized(state) {
-                memory[spec.key]?.let {
+                heldValue(spec.key, slot)?.let {
                     @Suppress("UNCHECKED_CAST")
                     return it.value as T
                 }
-                versionOf(spec.key)
+                // The file is the page as it stands only once its newest change is written
+                // (a page isn't let go of before then, so this is a moment at most).
+                if (slot.written == slot.version) slot.version else -1L
             }
-            val read = withContext(io) { readFile(spec) }
-            synchronized(state) {
-                memory[spec.key]?.let {
-                    @Suppress("UNCHECKED_CAST")
-                    return it.value as T
-                }
-                // Nothing changed it while the file was read: this is the page as it stands.
-                if (versionOf(spec.key) == before) {
-                    if (read != null) remember(spec.key, read, fresh = false)
-                    return read
+            if (before >= 0) {
+                val read = withContext(io) { readFile(spec) }
+                synchronized(state) {
+                    heldValue(spec.key, slot)?.let {
+                        @Suppress("UNCHECKED_CAST")
+                        return it.value as T
+                    }
+                    // Nothing changed it while the file was read: this is the page as it stands.
+                    if (slot.version == before && slot.written == before) {
+                        if (read != null) hold(spec.key, slot, read, fresh = false)
+                        return read
+                    }
                 }
             }
-            // It was changed while being read, and has since left memory: read it again,
-            // after the newer write.
-            slotFor(spec.key).disk.withLock { }
+            // Changed meanwhile, and not held: read it again after the newer write.
+            slot.disk.withLock { }
         }
         return withContext(io) { readFile(spec) }
     }
@@ -157,12 +193,7 @@ class PageCache(
                     val since = versionOf(spec.key)
                     val askedAt = clock()
                     val value = spec.fetch()
-                    if (store(spec, value, since)) {
-                        heardNow.emit(Heard(spec.key, value, askedAt))
-                        value
-                    } else {
-                        kept(spec) ?: value
-                    }
+                    if (store(spec, value, since, askedAt)) value else kept(spec) ?: value
                 } finally {
                     inFlight.remove(spec.key)
                 }
@@ -174,15 +205,15 @@ class PageCache(
     }
 
     /** The page as the server sent it within the last `withinMillis`, without asking again. */
-    private fun recent(key: String, withinMillis: Long): Entry? {
-        val entry = synchronized(state) { memory[key] } ?: return null
-        return if (entry.fresh && clock() - entry.at <= withinMillis) entry else null
+    private fun recent(key: String, withinMillis: Long): Current? {
+        val now = synchronized(state) { slots[key]?.let { heldValue(key, it) } } ?: return null
+        return if (now.fresh && clock() - now.at <= withinMillis) now else null
     }
 
     /**
      * The kept copy straight away (or nothing yet), then the server's. A failure while there
-     * is a kept copy leaves that copy on show, with the error alongside: never a blank page.
-     * A page that was fetched moments ago isn't fetched again.
+     * is a kept copy leaves the page as it now stands on show, with the error alongside:
+     * never a blank page. A page that was fetched moments ago isn't fetched again.
      */
     fun <T> page(spec: PageSpec<T>, freshFor: Long = FRESH_FOR_MILLIS): Flow<Page<T>> = flow {
         recent(spec.key, freshFor)?.let {
@@ -195,23 +226,65 @@ class PageCache(
         try {
             emit(Page(fresh(spec), fresh = true))
         } catch (e: ApiError) {
-            emit(Page(kept, error = e))
+            emit(Page(kept(spec) ?: kept, error = e))
         }
     }
 
+    /** How a screen's check with the server stands, and where the page's order of events had
+     *  got to when it did. */
+    private sealed interface Check {
+        data object Reading : Check
+        data class Asking(val at: Long) : Check
+        data class Done(val at: Long) : Check
+        data class Failed(val error: ApiError, val at: Long) : Check
+    }
+
     /**
-     * As [page], and then every later change to the kept copy (a like here, a fetch made for
-     * someone else) as it happens, for as long as it's collected: what a screen shows.
+     * As [page], and then every later change to the page (a like here, a fetch made for
+     * someone else) as it happens, for as long as it's collected: what a screen shows. It is
+     * the page's one current value that is followed, so what is shown never goes back to an
+     * older one; the check with the server only says how it went beside it. A change made
+     * after the check failed is newer than the failure, and shows without it.
      */
     fun <T> live(spec: PageSpec<T>, freshFor: Long = FRESH_FOR_MILLIS): Flow<Page<T>> = channelFlow {
-        // Listening before anything is fetched, so a change made meanwhile isn't missed.
-        launch(start = UNDISPATCHED) {
-            changes.collect { (key, value) ->
-                @Suppress("UNCHECKED_CAST")
-                if (key == spec.key) send(Page(value as T, fresh = true))
+        val slot = slotFor(spec.key)
+        val check = MutableStateFlow<Check>(Check.Reading)
+        launch {
+            if (recent(spec.key, freshFor) != null) {
+                check.value = Check.Done(versionOf(spec.key))
+                return@launch
+            }
+            kept(spec)
+            check.value = Check.Asking(versionOf(spec.key))
+            check.value = try {
+                fresh(spec)
+                Check.Done(versionOf(spec.key))
+            } catch (e: ApiError) {
+                Check.Failed(e, versionOf(spec.key))
             }
         }
-        page(spec, freshFor).collect { send(it) }
+        var lastVersion = -1L
+        var lastValue: T? = null
+        var lastCheck: Check = Check.Reading
+        combine(slot.current, check) { now, how -> now to how }.collect { (now, how) ->
+            // Nothing to say until the kept copy has been looked for.
+            if (how == Check.Reading) return@collect
+            // Let go of from memory: still the same page, as last seen.
+            if (!now.held && now.version == lastVersion && how == lastCheck) return@collect
+            @Suppress("UNCHECKED_CAST")
+            val value = if (now.held) now.value as T else if (now.version == lastVersion) lastValue else null
+            lastVersion = now.version
+            lastValue = value
+            lastCheck = how
+            send(
+                when (how) {
+                    is Check.Done -> Page(value, fresh = true)
+                    is Check.Failed -> if (now.version > how.at) Page(value, fresh = true) else Page(value, error = how.error)
+                    is Check.Asking -> if (now.version > how.at && now.fresh) Page(value, fresh = true) else Page(value)
+                    Check.Reading -> return@collect
+                },
+            )
+        }
     }
 
     /**
@@ -264,28 +337,37 @@ class PageCache(
     /** Replaces the kept copy, as when a change made here (a like, say) is known to have
      *  reached the server. */
     suspend fun <T> put(spec: PageSpec<T>, value: T) {
-        store(spec, value, since = null)
+        store(spec, value, since = null, askedAt = null)
     }
 
     /**
      * Keeps `value` as the page, as the newest change to it, and writes it to disk. With
      * `since`, only if the page hasn't changed since it stood at that number (what was begun
      * then is older than what has happened since): false if it has, and nothing is kept.
+     * `askedAt`, for an answer from the server: when it was asked for (see [heard]).
      */
-    private suspend fun <T> store(spec: PageSpec<T>, value: T, since: Long?): Boolean {
+    private suspend fun <T> store(spec: PageSpec<T>, value: T, since: Long?, askedAt: Long?): Boolean {
         val slot = slotFor(spec.key)
         val mine = synchronized(state) {
             if (since != null && slot.version != since) return false
             slot.version++
-            remember(spec.key, value, fresh = true)
+            hold(spec.key, slot, value, fresh = true)
+            // Told under the same lock that numbers the change: in its order, and (the buffer
+            // has no end) never dropped.
+            keptNow.tryEmit(spec.key to value)
+            if (askedAt != null) heardNow.tryEmit(Heard(spec.key, value, askedAt))
             slot.version
         }
-        keptNow.tryEmit(spec.key to value)
         slot.disk.withLock {
             // A newer write that got here first has made this one pointless.
             if (slot.written < mine) {
-                withContext(io) { writeFile(spec, value) }
-                slot.written = mine
+                val safe = withContext(io) { writeFile(spec, value) || fileFor(spec.key).let { !it.exists() || it.delete() } }
+                synchronized(state) {
+                    // Written, or at least no older copy left on disk to be read back: it may
+                    // be let go of now. Otherwise it stays held until a write succeeds.
+                    if (safe && slot.written < mine) slot.written = mine
+                    trim(keep = null)
+                }
             }
         }
         return true
@@ -299,7 +381,7 @@ class PageCache(
                 val since = versionOf(spec.key)
                 val kept = kept(spec) ?: return
                 val changed = change(kept)
-                if (changed == kept || store(spec, changed, since)) return
+                if (changed == kept || store(spec, changed, since, askedAt = null)) return
             }
         }
     }
@@ -307,25 +389,43 @@ class PageCache(
     /** Forgets a kept page, so the next request for it goes to the server. */
     suspend fun forget(key: String) {
         val slot = slotFor(key)
-        synchronized(state) {
+        val mine = synchronized(state) {
             slot.version++
-            memory.remove(key)?.let { held -= it.weight }
+            if (memory.remove(key) != null) held -= slot.weight
+            slot.weight = 0
+            slot.current.value = Current(slot.version, held = false, value = null, fresh = false, at = 0)
+            slot.version
         }
-        slot.disk.withLock { withContext(io) { fileFor(key).delete() } }
+        slot.disk.withLock {
+            val gone = withContext(io) { fileFor(key).let { !it.exists() || it.delete() } }
+            synchronized(state) { if (gone && slot.written < mine) slot.written = mine }
+        }
     }
 
-    private fun remember(key: String, value: Any?, fresh: Boolean) {
+    /** Makes `value` the page's current value, held in memory. Under `state`. */
+    private fun hold(key: String, slot: Slot, value: Any?, fresh: Boolean) {
         val weight = weigh(value)
-        memory.put(key, Entry(value, clock(), fresh, weight))?.let { held -= it.weight }
+        if (memory.put(key, slot) != null) held -= slot.weight
+        slot.weight = weight
         held += weight
-        // The least lately used go until it all fits, but the newest stays whatever its size:
-        // it is the page someone is looking at.
+        slot.current.value = Current(slot.version, held = true, value = value, fresh = fresh, at = clock())
+        trim(keep = key)
+    }
+
+    /**
+     * The least lately used go until it all fits, but never the page just kept (it is the
+     * one someone is looking at), and never one whose newest change isn't on disk yet: let go
+     * of, it would be read back from the older file. Under `state`.
+     */
+    private fun trim(keep: String?) {
         val each = memory.entries.iterator()
         while (held > budget && memory.size > 1 && each.hasNext()) {
-            val eldest = each.next()
-            if (eldest.key == key) continue
-            held -= eldest.value.weight
+            val (key, slot) = each.next()
+            if (key == keep || slot.written < slot.version) continue
+            held -= slot.weight
+            slot.weight = 0
             each.remove()
+            slot.current.value = Current(slot.version, held = false, value = null, fresh = false, at = 0)
         }
     }
 
@@ -352,15 +452,17 @@ class PageCache(
         }
     }
 
+    /** Writes the page; false if it couldn't be (the caller makes sure no older copy is left
+     *  to be read back in its place). */
     @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
-    private fun <T> writeFile(spec: PageSpec<T>, value: T) {
-        try {
-            writeAtomically(fileFor(spec.key)) { out -> json.encodeToStream(spec.serializer, value, out) }
-        } catch (_: IOException) {
-            // A page that can't be written is fetched again next time; nothing is lost.
-        } catch (_: SerializationException) {
-            // The same.
-        }
+    private fun <T> writeFile(spec: PageSpec<T>, value: T): Boolean = try {
+        writeAtomically(fileFor(spec.key)) { out -> json.encodeToStream(spec.serializer, value, out) }
+        true
+    } catch (_: IOException) {
+        // A page that can't be written is fetched again next time; nothing is lost.
+        false
+    } catch (_: SerializationException) {
+        false
     }
 
     companion object {

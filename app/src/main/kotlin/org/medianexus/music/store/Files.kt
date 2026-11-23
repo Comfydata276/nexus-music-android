@@ -51,13 +51,18 @@ fun writeAtomically(file: File, write: (java.io.OutputStream) -> Unit) {
  * interrupted write left ([sweepTemporaries]).
  */
 internal fun temporaryFor(file: File): File =
-    File(file.parentFile, ".${file.name}.${java.lang.Long.toHexString(serial.incrementAndGet())}-${java.lang.Long.toHexString(System.nanoTime())}.tmp")
+    File(file.parentFile, ".${file.name}.$RUN-${java.lang.Long.toHexString(serial.incrementAndGet())}.tmp")
 
 private val serial = java.util.concurrent.atomic.AtomicLong()
 
-/** Deletes what writes cut short (the app killed part-way) left in `dir`. */
+/** This run of the app, in its temporary files' names: what a sweep leaves alone. */
+private val RUN = java.lang.Long.toHexString(java.security.SecureRandom().nextLong() and Long.MAX_VALUE)
+
+/** Deletes what writes cut short (the app killed part-way) left in `dir`: an earlier run's
+ *  temporary files, never this run's, which may be being written. */
 fun sweepTemporaries(dir: File) {
-    dir.listFiles()?.forEach { if (it.isFile && it.name.startsWith('.') && it.name.endsWith(".tmp")) it.delete() }
+    val ours = ".$RUN-"
+    dir.listFiles()?.forEach { if (it.isFile && it.name.startsWith('.') && it.name.endsWith(".tmp") && ours !in it.name) it.delete() }
 }
 
 /** `settings.json` with its extension changed, as Rust's `with_extension` does it:

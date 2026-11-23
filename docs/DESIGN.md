@@ -443,9 +443,15 @@ How it is built (M1a):
   is the same, hashed for the file name), under the account's cache folder; the ones used
   lately also held in memory, by weight (about a song's worth each, 12,000 in all), not by
   number. A page fetched within 15 seconds isn't fetched again. Each page has one order of
-  events: a refresh or a read from disk begun before a change made here (an unlike) is
-  dropped when it finishes, writes of one page take turns, and every atomic write in the app
-  goes through a temporary file of its own.
+  events: every change takes the next number and becomes the page's one current value under
+  the same lock (a `StateFlow` per page, which screens follow), and the streams of changes
+  and of the server's answers are told under that lock too, with no limit, so nothing is
+  published out of order or dropped. A refresh or a read from disk begun before a change made
+  here (an unlike) is dropped when it finishes; a failed refresh is said beside the page as
+  it now stands. Writes of one page take turns, and a page stays in memory until its newest
+  change is on disk, so a read from disk never brings back an older value. Every atomic
+  write in the app goes through a temporary file of its own, named for the run that made
+  it; an earlier run's are swept away when an account's pages are opened.
 - **Answers from the server** are decoded from the stream straight into the models, never
   as a JSON tree first (a 12 MB playlist as a tree cost 80 to 100 MB), keeping what Windows
   makes of an answer: an absent section is empty, one sent as null is malformed.

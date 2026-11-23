@@ -209,4 +209,108 @@ class PageCacheTest {
         // The others are still on disk.
         assertEquals(900, cache.kept(spec("big") { emptyList() })!!.size)
     }
+    // ---- One order of events per page, as observers see it ----------------------------------
+
+    @Test
+    fun aFailedRefreshDoesNotPutBackTheCopyFromBeforeAChangeMadeHere() = runBlocking {
+        val cache = cache()
+        cache.put(spec { emptyList() }, listOf("kept"))
+        now += 60_000
+        val asked = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val failing = spec { asked.complete(Unit); gate.await(); throw ApiError.Network("(down)") }
+        val seen = java.util.Collections.synchronizedList(mutableListOf<Page<List<String>>>())
+        val watching = scope.launch { cache.live(failing).collect { seen += it } }
+        withTimeout(5_000) { asked.await() }
+        // A change made here while the server is being asked (an unlike, say).
+        cache.update(failing) { it + "changed" }
+        withTimeout(5_000) { while (seen.none { it.value == listOf("kept", "changed") }) kotlinx.coroutines.delay(5) }
+        // The refresh fails: the error is said, beside the page as it now is.
+        gate.complete(Unit)
+        withTimeout(5_000) { while (seen.none { it.error != null }) kotlinx.coroutines.delay(5) }
+        watching.cancel()
+        assertEquals(listOf("kept", "changed"), seen.last().value)
+        assertTrue(seen.dropWhile { it.value != listOf("kept", "changed") }.all { it.value == listOf("kept", "changed") })
+    }
+
+    @Test
+    fun noChangeIsDroppedHoweverSlowlyItIsRead() = runBlocking {
+        val cache = cache()
+        val gate = CompletableDeferred<Unit>()
+        val got = java.util.Collections.synchronizedList(mutableListOf<List<String>>())
+        val listening = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            cache.changes.collect { (_, value) ->
+                // The first change is held until every write has been made.
+                gate.await()
+                @Suppress("UNCHECKED_CAST")
+                got += value as List<String>
+            }
+        }
+        for (n in 1..100) cache.put(spec { emptyList() }, listOf("v$n"))
+        gate.complete(Unit)
+        withTimeout(5_000) { while (got.size < 100 && got.lastOrNull() != listOf("v100")) kotlinx.coroutines.delay(5) }
+        listening.cancel()
+        // Every change, in the order made.
+        assertEquals((1..100).map { listOf("v$it") }, got.toList())
+    }
+
+    /** A dispatcher whose work waits until the test runs it, in the order the test chooses. */
+    private class ByHand : kotlinx.coroutines.CoroutineDispatcher() {
+        val waiting = java.util.concurrent.LinkedBlockingDeque<Runnable>()
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            waiting.add(block)
+        }
+
+        fun await(count: Int) {
+            val until = System.currentTimeMillis() + 5_000
+            while (waiting.size < count) {
+                check(System.currentTimeMillis() < until) { "only ${waiting.size} of $count" }
+                Thread.sleep(1)
+            }
+        }
+
+        fun runAll() {
+            while (true) (waiting.pollFirst() ?: return).run()
+        }
+    }
+
+    @Test
+    fun aPageLetGoOfBeforeItsFileIsWrittenIsNotReadBackOld() = runBlocking {
+        cache().put(spec("a") { emptyList() }, listOf("old"))
+        val io = ByHand()
+        val cache = PageCache(folder.root, scope, io, clock = { now }, budget = 100)
+        // Anything the cache does on starting (a sweep) is left waiting too.
+        val base = io.waiting.size
+        // A newer copy is kept; its file waits to be written.
+        val write = scope.launch { cache.put(spec("a") { emptyList() }, listOf("new")) }
+        io.await(base + 1)
+        // Another page, big enough that memory lets the first go.
+        val other = scope.launch { cache.put(spec("b") { emptyList() }, List(150) { "s" }) }
+        io.await(base + 2)
+        // Asked for meanwhile: the old file must not come back as the page.
+        val read = scope.async { cache.kept(spec("a") { emptyList() }) }
+        // Whatever reading it needs is done before either write.
+        val until = System.currentTimeMillis() + 2_000
+        while (!read.isCompleted && System.currentTimeMillis() < until) {
+            if (io.waiting.size > base + 2) io.waiting.pollLast()!!.run() else Thread.sleep(1)
+        }
+        io.runAll()
+        val got = withTimeout(5_000) { read.await() }
+        io.runAll()
+        write.join()
+        other.join()
+        assertEquals(listOf("new"), got)
+        // And on disk, for the next start. (Read by a cache of its own: this one's reads wait
+        // for the test's hand.)
+        assertEquals(listOf("new"), cache().kept(spec("a") { emptyList() }))
+    }
+
+    @Test
+    fun whatAnInterruptedWriteLeftIsSweptAway() = runBlocking {
+        val stray = java.io.File(folder.root, ".abc.json.1-2.tmp").apply { writeText("half") }
+        val cache = cache()
+        cache.put(spec { emptyList() }, listOf("a"))
+        withTimeout(5_000) { while (stray.exists()) kotlinx.coroutines.delay(5) }
+        assertTrue(!stray.exists())
+    }
 }
