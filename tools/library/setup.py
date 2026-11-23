@@ -52,6 +52,7 @@ def form(url, encoded):
 
 
 LONG_PREFIX = "Long list ("
+LONG_BATCH = 2000
 
 
 def long_list(api, count):
@@ -64,8 +65,12 @@ def long_list(api, count):
     ordered = sorted(found, key=lambda s: (s["album"], s.get("discNumber", 1), s.get("track", 0)))
     ids = [ordered[(n + n // len(ordered)) % len(ordered)]["id"] for n in range(count)]
     name = "%s%s songs)" % (LONG_PREFIX, format(count, ","))
-    made = api.call("createPlaylist", name=name, songId=ids)["playlist"]
-    print("made \"%s\": %d songs (id %s)" % (name, made.get("songCount", 0), made["id"]))
+    # A few thousand at a time: the server refuses a request with too many parameters.
+    made = api.call("createPlaylist", name=name, songId=ids[:LONG_BATCH])["playlist"]
+    for start in range(LONG_BATCH, count, LONG_BATCH):
+        api.call("updatePlaylist", playlistId=made["id"], songIdToAdd=ids[start:start + LONG_BATCH])
+    total = api.call("getPlaylist", id=made["id"])["playlist"].get("songCount", 0) if count > LONG_BATCH else made.get("songCount", 0)
+    print("made \"%s\": %d songs (id %s)" % (name, total, made["id"]))
 
 
 def remove_long(api):

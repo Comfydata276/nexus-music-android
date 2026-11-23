@@ -276,4 +276,60 @@ class CarFoldersTest {
         assertEquals(before, asked.count { it.startsWith("alphabeticalByName") })
         assertNotNull(letters.firstOrNull { it.title == "S" })
     }
+
+    @Test
+    fun whatHeadsAFolderCountsTowardsWhatFits() = runBlocking {
+        val tree = tree()
+        // Exactly as many songs as a folder holds, and "Shuffle" at their head: one more
+        // than a folder holds. It used to be handed over like that, 201 entries.
+        val top = tree.children(CarNode.Playlist("pl200"))!!
+        assertTrue("${top.size} entries in one folder", top.size <= CarFolders.MOST)
+        assertTrue(CarFolders.fits(top))
+        assertEquals("Shuffle", top.first().title)
+        // Still every song, once, in its place.
+        val songs = top.drop(1).flatMap { range -> tree.children(CarIds.parse(range.id)!!)!!.also { assertTrue(CarFolders.fits(it)) } }
+        assertEquals((0 until 200).toList(), songs.map { (CarIds.parse(it.id) as CarNode.Track).index })
+        // One fewer, and it is the songs themselves again.
+        val under = tree.children(CarNode.Playlist("pl199"))!!
+        assertEquals(200, under.size)
+        assertTrue(under.drop(1).all { CarIds.parse(it.id) is CarNode.Track })
+        assertTrue(CarFolders.fits(under))
+    }
+
+    @Test
+    fun aFolderOfRangesIsWeighedTooAndGatheredUntilItFits() {
+        // A range's entry is small in practice, but it is made of two titles from the list,
+        // and nothing used to check that a hundred of them, with "Shuffle", fit.
+        val ranges = List(100) { CarFolders.Range(it * 200, it * 200 + 200) }
+        val head = listOf(song(-1, "Shuffle"))
+        fun entry(range: CarFolders.Range) = CarEntry("part/${range.from}/${range.to}/playlist/p", "${range.from + 1}–${range.to}", subtitle = "x".repeat(5_000), browsable = true)
+        assertFalse(CarFolders.fits(head + ranges.map(::entry)))
+        val gathered = CarFolders.gathered(ranges, head, ::entry)
+        assertTrue(CarFolders.fits(head + gathered.map(::entry)))
+        // The same songs, in the same order, in fewer and wider ranges.
+        assertEquals(0, gathered.first().from)
+        assertEquals(20_000, gathered.last().to)
+        assertTrue(gathered.zipWithNext().all { (a, b) -> a.to == b.from })
+        // Ranges that fit as they are are left as they are.
+        fun small(range: CarFolders.Range) = CarEntry("part/${range.from}/${range.to}/playlist/p", "${range.from + 1}–${range.to}", browsable = true)
+        assertEquals(ranges, CarFolders.gathered(ranges, head, ::small))
+    }
+
+    @Test
+    fun whenAListChangesEveryFolderOfItTheCarHoldsIsStale() = runBlocking {
+        val tree = tree()
+        val list = CarNode.Playlist("pl3000")
+        val top = tree.children(list)!!
+        val second = top[2].id
+        assertTrue(CarIds.parse(second) is CarNode.Part)
+        // What the car has asked for lately: the list, two of its ranges, and other things.
+        val asked = listOf("home", CarIds.format(list), top[1].id, second, CarIds.format(CarNode.Album("al1")), CarIds.format(CarNode.Playlist("pl200")), "playlists")
+        // The list changes (a song was added at its top: every range now means other songs).
+        // The list and both ranges are to be told; nothing else is. It used to be only the
+        // folder that happened to be asked for at that moment.
+        assertEquals(listOf(CarIds.format(list), top[1].id, second), tree.stale(asked, "playlist:pl3000"))
+        assertEquals(listOf(CarIds.format(CarNode.Album("al1"))), tree.stale(asked, "album:al1"))
+        assertEquals(listOf("playlists"), tree.stale(asked, "playlists"))
+        assertEquals(emptyList<String>(), tree.stale(asked, "playlist:another"))
+    }
 }

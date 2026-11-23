@@ -92,9 +92,24 @@ object CarFolders {
         return parts
     }
 
-    /** Ranges listed in one folder at most. A range's own entry is small, so this many are
-     *  far inside the budget. */
+    /** Ranges listed in one folder at most. (That a folder of ranges fits is not taken on
+     *  trust either: see [gathered].) */
     const val MOST_RANGES = 100
+
+    /**
+     * Ranges gathered into fewer, wider ones until their own entries, with whatever heads
+     * the folder (`head`: "Shuffle"), fit in one folder. `entry` makes the entry a range is
+     * shown as. A range's entry is small, but it is made of two titles from the list, and a
+     * folder is only known to fit when it has been weighed.
+     */
+    fun gathered(ranges: List<Range>, head: List<CarEntry>, entry: (Range) -> CarEntry): List<Range> {
+        var parts = ranges
+        while (parts.size > 1 && !fits(head + parts.map(entry))) {
+            parts = parts.chunked(2) { Range(it.first().from, it.last().to) }
+        }
+        return parts
+    }
+
 
     /**
      * The bytes an entry comes to when Media3 hands it to a MediaBrowserService client:

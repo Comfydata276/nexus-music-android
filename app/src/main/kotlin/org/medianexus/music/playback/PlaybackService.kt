@@ -70,7 +70,6 @@ import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.Http
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.KeptSongs
-import org.medianexus.music.store.ListPrefs
 
 /**
  * The playback service: one ExoPlayer in a Media3 `MediaLibraryService`. The app's screens,
@@ -496,10 +495,13 @@ class PlaybackService : MediaLibraryService() {
         // The like button follows the likes, wherever they're changed.
         next.scope.launch { now.likes.liked.collect { updateButtons() } }
         // The list the queue came from changed (a fresh copy from the server, a song unliked
-        // from Liked songs): the queue follows it.
+        // from Liked songs): the queue follows it. And a list the car has open, perhaps as
+        // numbered ranges: every one of those folders is told to load again (see
+        // CarTree.stale).
         next.scope.launch {
             now.pages.changes.collect { (key, value) ->
                 if (key == player.queue.source) songsIn(value)?.let { player.follow(key, it) }
+                for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
             }
         }
         next.scope.launch { restore(next) }
@@ -638,17 +640,10 @@ class PlaybackService : MediaLibraryService() {
     private fun queueChanged() {
         val queue = player.queue
         // Shuffle and repeat are settings, and the list being played remembers its shuffle.
-        val settings = graph.settings.value
-        if (settings.shuffle != queue.shuffle || settings.repeat != queue.repeat) {
-            val source = queue.source
-            graph.settings.update { s ->
-                val lists = if (source.isNotEmpty() && s.shuffle != queue.shuffle) {
-                    s.lists + (source to (s.lists[source] ?: ListPrefs()).copy(shuffle = queue.shuffle, at = System.currentTimeMillis() / 1000))
-                } else {
-                    s.lists
-                }
-                s.copy(shuffle = queue.shuffle, repeat = queue.repeat, lists = lists)
-            }
+        val now = System.currentTimeMillis() / 1000
+        if (Remembered.differs(graph.settings.value, queue.shuffle, queue.repeat, queue.source)) {
+            val (shuffle, repeat, source) = Triple(queue.shuffle, queue.repeat, queue.source)
+            graph.settings.update { Remembered.with(it, shuffle, repeat, source, now) }
         }
         publishExtras()
         player.refresh()
@@ -1055,7 +1050,7 @@ class PlaybackService : MediaLibraryService() {
                 }
                 is CarRetry.Search -> return answer({ LibraryResult.ofError(signedOut()) }) { era ->
                     try {
-                        val found = inTime { era.tree.search(again.query) }
+                        val found = fromTree(era) { it.search(again.query) }
                         era.searches.put(again.query, found)
                         era.searchedBy[again.query]?.let { session.notifySearchResultChanged(it, again.query, found.size, null) }
                         LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
@@ -1077,9 +1072,12 @@ class PlaybackService : MediaLibraryService() {
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 val node = CarIds.parse(parentId) ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 try {
-                    val entries = inTime { era.tree.children(node) { if (era === this@PlaybackService.era) session.notifyChildrenChanged(parentId, Int.MAX_VALUE, params) } }
-                        ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
-                    LibraryResult.ofItemList(ImmutableList.copyOf(slice(entries, page, pageSize).map(CarMedia::item)), params)
+                    // Made into what the car is sent off the main thread too: two hundred
+                    // entries are two hundred bundles.
+                    val items = fromTree(era) { tree ->
+                        tree.children(node) { toldToLookAgain(era, parentId, params) }?.let { ImmutableList.copyOf(slice(it, page, pageSize).map(CarMedia::item)) }
+                    } ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+                    LibraryResult.ofItemList(items, params)
                 } catch (e: ApiError) {
                     // A folder never fetched, and the server out of reach: one entry that says
                     // so and offers to try again, not the car's own "Something went wrong".
@@ -1097,7 +1095,7 @@ class PlaybackService : MediaLibraryService() {
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 val node = CarIds.parse(mediaId) ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 try {
-                    inTime { era.tree.item(node) }?.let { LibraryResult.ofItem(CarMedia.item(it), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+                    fromTree(era) { it.item(node) }?.let { LibraryResult.ofItem(CarMedia.item(it), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 } catch (e: ApiError) {
                     LibraryResult.ofError(trouble(browser, e))
                 }
@@ -1114,7 +1112,7 @@ class PlaybackService : MediaLibraryService() {
             }) { era ->
                 era.searchedBy[query] = browser
                 try {
-                    val found = inTime { era.tree.search(query) }
+                    val found = fromTree(era) { it.search(query) }
                     era.searches.put(query, found)
                     session.notifySearchResultChanged(browser, query, found.size, params)
                     LibraryResult.ofVoid()
@@ -1137,7 +1135,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 try {
-                    val found = era.searches.get(query) ?: inTime { era.tree.search(query) }.also { era.searches.put(query, it) }
+                    val found = era.searches.get(query) ?: fromTree(era) { it.search(query) }.also { era.searches.put(query, it) }
                     LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
                 } catch (e: ApiError) {
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
@@ -1179,9 +1177,9 @@ class PlaybackService : MediaLibraryService() {
                 try {
                     if (words != null) return@answer inTime { voice(mine, era, controller, words, asked.requestMetadata.extras) }
                     val list = when (val chosen = CarIds.parse(asked.mediaId)) {
-                        is CarNode.Track -> inTime { tree.play(chosen) }
+                        is CarNode.Track -> fromTree(era) { it.play(chosen) }
                         // "Shuffle", at the top of a list: the whole list, shuffled.
-                        is CarNode.Shuffle -> inTime { tree.shuffled(chosen.list) }
+                        is CarNode.Shuffle -> fromTree(era) { it.shuffled(chosen.list) }
                         else -> throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
                     } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play, asked.mediaMetadata.title ?: "")))
                     staged(mine, era, list)
@@ -1368,6 +1366,26 @@ class PlaybackService : MediaLibraryService() {
         throw ApiError.Network("(It didn't answer in time.)")
     }
 
+    /**
+     * Something worked out from the library for the car: a folder's entries, a search, the
+     * list a chosen song plays. Off the main thread: laying out, sorting and weighing a
+     * 20,000-song playlist or three thousand albums is work for every one of them, and done
+     * on the main thread it held up the player, and could not be given up on either (a time
+     * limit only takes effect where the work pauses, and this work doesn't). Given up after a
+     * few seconds, as [inTime], whatever the work is doing; it is then left to stop by itself.
+     */
+    private suspend fun <T> fromTree(era: Era, work: suspend (CarTree) -> T): T = try {
+        OffMain.within(era.scope, CAR_WAIT_MILLIS) { work(era.tree) }
+    } catch (_: TimeoutCancellationException) {
+        throw ApiError.Network("(It didn't answer in time.)")
+    }
+
+    /** A folder's kept copy turned out to differ from the server's: the car is told to ask
+     *  for it again. (Called from wherever the folder was being worked out.) */
+    private fun toldToLookAgain(era: Era, parentId: String, params: LibraryParams?) {
+        scope.launch { if (era === this@PlaybackService.era) session.notifyChildrenChanged(parentId, Int.MAX_VALUE, params) }
+    }
+
     /** "Tap to try again" entries made so far: each has an id of its own. */
     private val retriesMade = java.util.concurrent.atomic.AtomicLong()
 
@@ -1449,7 +1467,7 @@ class PlaybackService : MediaLibraryService() {
         if (!player.stands(mine)) throw UnsupportedOperationException("Overtaken by a newer choice")
         player.stageCurrent()?.let { (items, start) -> return MediaItemsWithStartPosition(items, start, exo.currentPosition) }
         val liked = try {
-            inTime { tree.shuffledLiked() }
+            fromTree(era) { it.shuffledLiked() }
         } catch (e: ApiError) {
             throw refuse(controller, trouble(controller, e))
         }
@@ -1471,7 +1489,7 @@ class PlaybackService : MediaLibraryService() {
             genre = said(EXTRA_MEDIA_GENRE),
         )
         if (request.unnamed) return resume(mine, era, controller)
-        val list = tree.forVoice(request)
+        val list = withContext(Dispatchers.Default) { tree.forVoice(request) }
             ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find, request.searchWords())))
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "voice: $request -> ${list.context} (${list.songs.size} songs)")
         return staged(mine, era, list)

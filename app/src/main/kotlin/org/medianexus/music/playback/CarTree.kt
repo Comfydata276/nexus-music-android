@@ -106,14 +106,17 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             // One range of a long list. The list was looked at with the server when it was
             // opened; its ranges are read from the phone's copy, not fetched again each.
             val whole = listing(node.parent, changed, part = true) ?: return null
-            return cut(whole, node.parent, node.from, node.to)
+            return cut(whole, node.parent, node.from, node.to, head = emptyList())
         }
         val whole = listing(node, changed, part = false) ?: return null
-        return whole.head + cut(whole, node, 0, whole.body.size)
+        // What heads the folder ("Shuffle") travels with it, and counts towards what fits.
+        return whole.head + cut(whole, node, 0, whole.body.size, whole.head)
     }
 
     /** The last list of songs laid out, and the kept list it was made from: opening the
-     *  ranges of a long list one after another lays it out once, not once for each. */
+     *  ranges of a long list one after another lays it out once, not once for each. (Read
+     *  and written from whichever thread is answering the car; the latest wins.) */
+    @Volatile
     private var laidOut: Triple<ListRef, List<Song>, Listing>? = null
 
     /**
@@ -129,22 +132,60 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
      * The entries of a folder's list from `from` up to `to`, as one folder shows them: the
      * entries themselves if they fit, otherwise the ranges they fall into, each a folder.
      */
-    private fun cut(whole: Listing, node: CarNode, from: Int, to: Int): List<CarEntry> {
+    private fun cut(whole: Listing, node: CarNode, from: Int, to: Int, head: List<CarEntry>): List<CarEntry> {
         val body = whole.body
         val start = from.coerceIn(0, body.size)
         val end = to.coerceIn(start, body.size)
-        val ranges = CarFolders.ranges(body, start, end) ?: return body.subList(start, end)
-        return ranges.map { range ->
-            CarEntry(
-                id = CarIds.format(CarNode.Part(node, range.from, range.to)),
-                title = "${range.from + 1}–${range.to}",
-                subtitle = "${brief(body[range.from].title)} – ${brief(body[range.to - 1].title)}",
-                browsable = true,
-                style = CarStyle.CATEGORY_LIST,
-                inside = whole.inside,
-            )
-        }
+        // As they are, if they fit in one folder with what heads it: a list of exactly 200
+        // songs under "Shuffle" was 201 entries, and its bytes were never counted with
+        // Shuffle's.
+        val all = body.subList(start, end)
+        if (CarFolders.fits(head + all)) return all
+        // Otherwise as ranges, each a folder of its own (with nothing at its head). A list
+        // that would have fitted but for its head is halved.
+        val ranges = CarFolders.ranges(body, start, end)
+            ?: ((start + end + 1) / 2).let { middle -> listOf(CarFolders.Range(start, middle), CarFolders.Range(middle, end)) }
+        fun entry(range: CarFolders.Range) = CarEntry(
+            id = CarIds.format(CarNode.Part(node, range.from, range.to)),
+            title = "${range.from + 1}–${range.to}",
+            subtitle = "${brief(body[range.from].title)} – ${brief(body[range.to - 1].title)}",
+            browsable = true,
+            style = CarStyle.CATEGORY_LIST,
+            inside = whole.inside,
+        )
+        // And the folder of ranges is itself weighed, head and all.
+        return CarFolders.gathered(ranges, head, ::entry).map(::entry)
     }
+
+    /**
+     * The key of the kept page a folder's list is read from ("playlist:<id>", "liked"), for
+     * the folders that are one list (and so can be shown as ranges of it); null for the
+     * rest. When that page changes, the folder and every range of it the car holds mean
+     * something else: see [stale].
+     */
+    fun pageOf(node: CarNode): String? = when (node) {
+        is CarNode.Part -> pageOf(node.parent)
+        CarNode.Playlists -> library.playlists().key
+        CarNode.Artists, is CarNode.ArtistLetter -> library.artists().key
+        CarNode.Genres -> library.genres().key
+        CarNode.Albums, is CarNode.AlbumLetter -> library.allAlbums(AlbumList.AlphabeticalByName).key
+        CarNode.Liked -> library.liked().key
+        is CarNode.Album -> library.album(node.id).key
+        is CarNode.Playlist -> library.playlist(node.id).key
+        is CarNode.Artist -> library.artist(node.id).key
+        is CarNode.Genre -> library.genre(node.name).key
+        else -> null
+    }
+
+    /**
+     * Of the folders the car has asked for lately (`asked`, their ids), those whose list is
+     * the kept page `key`, which has just changed: the folder itself and every range of it.
+     * A range is named by places in the list ("songs 201 to 400"); once the list has changed,
+     * a range the car still has open shows songs that are no longer at those places, and a
+     * tap plays another. Each is to be told its children have changed, so the car asks again.
+     */
+    fun stale(asked: Collection<String>, key: String): List<String> =
+        asked.filter { id -> CarIds.parse(id)?.let(::pageOf) == key }
 
     private fun brief(title: String): String = if (title.length <= 24) title else title.take(23).trimEnd() + "…"
 
