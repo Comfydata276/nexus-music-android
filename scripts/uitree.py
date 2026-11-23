@@ -3,7 +3,10 @@
 
     uitree.py            one line per thing on screen that says or does something
     uitree.py --find W   the centre "x y" of the first thing whose text or description
-                         is W (exact match first, then one that contains it); exit 1 if none
+                         is W (exact match first, then one that contains it); exit 1 if none.
+                         W may also be id:NAME for a resource id, with #2 for the second
+                         one on screen: id:media_item_click_target#2
+    uitree.py --texts id:NAME   the text of everything with that resource id, one per line
 
 Used by scripts/emu (`ui`, `tap "<words>"`, `waitfor`). Runs inside the rig container.
 """
@@ -34,6 +37,22 @@ def walk(node, depth):
 
 def main():
     text = sys.stdin.read()
+    if len(sys.argv) >= 3 and sys.argv[1] == "--texts":
+        rid = sys.argv[2].split(":", 1)[-1]
+        for _, node, _ in nodes(text):
+            if node.get("resource-id", "").split("/", 1)[-1] == rid and node.get("text"):
+                print(node.get("text"))
+        return
+    if len(sys.argv) >= 3 and sys.argv[1] == "--find" and sys.argv[2].startswith("id:"):
+        rid, _, nth = sys.argv[2][3:].partition("#")
+        hits = [box for _, node, box in nodes(text)
+                if node.get("resource-id", "").split("/", 1)[-1] == rid and box[2] > box[0] and box[3] > box[1]]
+        index = int(nth or 1) - 1
+        if index >= len(hits):
+            sys.exit(1)
+        x1, y1, x2, y2 = hits[index]
+        print((x1 + x2) // 2, (y1 + y2) // 2)
+        return
     if len(sys.argv) >= 3 and sys.argv[1] == "--find":
         want = sys.argv[2]
         found = None

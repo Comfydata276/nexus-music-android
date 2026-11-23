@@ -90,6 +90,13 @@ adb_sh() {
   docker exec -i "$container" adb -s "$serial" shell "$@"
 }
 
+# The person at the wheel. A phone has one user, 0. A car's system runs its screens as a
+# second user (10 on the emulator) and keeps user 0 for the system with no screen at all,
+# so anything started without saying which user would start where nobody can see it.
+current_user() {
+  adb_sh am get-current-user | tr -d '\r\n'
+}
+
 # --- the rig's own tools (the car probe and the stand-in fixture) ----------------------
 probe_apk="$root/tools/carprobe/build/outputs/apk/debug/carprobe-debug.apk"
 standin_apk="$root/tools/standin/build/outputs/apk/debug/standin-debug.apk"

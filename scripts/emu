@@ -29,6 +29,7 @@ Apps
 Driving it
   tap <x> <y>               tap a point, in pixels
   tap "<words>"             tap the first thing on screen with that text or description
+  tap id:<name>[#n]         tap the first (or nth) thing with that resource id
   hold "<words>" | <x> <y>  long press
   text "<words>"            type into the focused field
   key <name>                back, home, enter, tab, del, search, menu, play, pause, next,
@@ -277,23 +278,23 @@ case "$cmd" in
   launch)
     need_emulator; target="${1:?launch: which package?}"
     if [[ "$target" == */* ]]; then
-      out=$(adb_sh am start -W -n "$target" 2>&1) || true
+      out=$(adb_sh am start --user "$(current_user)" -W -n "$target" 2>&1) || true
     else
       adb_sh pm path "$target" >/dev/null 2>&1 || die "launch: $target is not installed (scripts/emu$flag install <apk>)"
       act=$(adb_sh cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$target" | tr -d '\r' | tail -n 1)
       [[ "$act" == */* ]] || die "launch: $target has no screen that can be opened from the launcher"
-      out=$(adb_sh am start -W -n "$act" 2>&1) || true
+      out=$(adb_sh am start --user "$(current_user)" -W -n "$act" 2>&1) || true
     fi
     echo "$out" | grep -q -E "^Status: ok|Warning: Activity not started" \
       || die "launch failed: $(echo "$out" | tr -d '\r' | tail -n 4)"
     echo "$out" | tr -d '\r' | grep -E "^(Activity|LaunchState|TotalTime|WaitTime)" || true
     ;;
   kill) need_emulator; adb_sh am force-stop "${1:?kill: which package?}" ;;
-  clear) need_emulator; adb_sh pm clear "${1:?clear: which package?}" ;;
+  clear) need_emulator; adb_sh pm clear --user "$(current_user)" "${1:?clear: which package?}" ;;
   grant)
     need_emulator; p="${2:?grant: <package> <permission>}"
     [[ "$p" == *.* ]] || p="android.permission.$p"
-    adb_sh pm grant "$1" "$p"
+    adb_sh pm grant --user "$(current_user)" "$1" "$p"
     ;;
   tap|hold)
     need_emulator
@@ -331,7 +332,9 @@ case "$cmd" in
     need_emulator
     out="${1:-$cache/shots/$device-$(date +%Y%m%d-%H%M%S).png}"
     mkdir -p "$(dirname "$out")"
-    adb_ exec-out screencap -p > "$out"
+    # A car has more than one screen (the second is the instrument cluster); name the main one.
+    display=$(adb_sh dumpsys SurfaceFlinger --display-id | tr -d '\r' | sed -n '1s/^Display \([0-9]*\).*/\1/p')
+    adb_ exec-out screencap ${display:+-d "$display"} -p > "$out"
     [ "$(head -c 4 "$out" | tail -c 3)" = "PNG" ] || die "shot: the device did not return a picture"
     echo "$out"
     ;;

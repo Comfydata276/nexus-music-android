@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# The visual Android Auto check that needs nothing but this machine: opens an installed
+# app in the media screens of a car's own system (Android Automotive OS, on the car
+# emulator), walks through them and saves a picture of each. See docs/TESTING.md for what
+# these pictures do and do not tell you about Android Auto.
+#
+#   scripts/cartour <package> [--query "<words>"] [--out <folder>]
+#   scripts/cartour --standin            the stand-in fixture
+#
+# Needs the car emulator (scripts/emu -d car start) with the app installed on it
+# (scripts/emu -d car install <apk>). Prints the pictures' paths.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+device_setup car
+
+target=""; query=""; out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --standin) target=org.medianexus.standin ;;
+    --query) query="${2:?}"; shift ;;
+    --out) out="${2:?}"; shift ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    *) target="$1" ;;
+  esac
+  shift
+done
+[ -n "$target" ] || { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+need_emulator
+if [ "$target" = org.medianexus.standin ]; then
+  build_tools
+  ensure_installed "$standin_apk" org.medianexus.standin
+  adb_sh "am broadcast --user $(current_user) -n org.medianexus.standin/.Faults --es set ''" >/dev/null
+fi
+adb_sh pm path "$target" >/dev/null 2>&1 || die "$target is not installed on the car emulator (scripts/emu -d car install <apk>)"
+user="$(current_user)"
+service="$(adb_sh pm query-services --brief --components --user "$user" -a android.media.browse.MediaBrowserService | tr -d '\r' | grep "^$target/" | head -n 1)"
+[ -n "$service" ] || die "$target has no media browser service, so a car's media screens cannot show it"
+out="${out:-$cache/shots/cartour-$target-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$out"
+emu() { "$root/scripts/emu" -d car "$@"; }
+n=0
+shot() { n=$((n + 1)); emu shot "$out/$(printf '%02d' "$n")-$1.png"; }
+ui_texts() { adb_ exec-out uiautomator dump /dev/tty 2>/dev/null | docker exec -i "$container" python3 /work/scripts/uitree.py --texts "$1" 2>/dev/null || true; }
+
+# Start from nothing: the car's media app and the app under test both closed, as when the
+# car is switched on.
+adb_sh "am force-stop com.android.car.media; am force-stop $target"
+adb_sh "am start --user $user -a android.car.intent.action.MEDIA_TEMPLATE -e android.car.intent.extra.MEDIA_COMPONENT $service" >/dev/null
+sleep 6
+shot opened
+
+# Every tab.
+mapfile -t tabs < <(ui_texts id:car_ui_toolbar_tab_item_text)
+[ "${#tabs[@]}" -gt 0 ] || say "note: the car shows no tabs for $target (see $out/01-opened.png)"
+for tab in "${tabs[@]}"; do
+  emu tap "$tab" 2>/dev/null || continue
+  sleep 3
+  shot "tab-$(echo "$tab" | tr -c 'A-Za-z0-9' '-' | sed 's/-*$//')"
+done
+
+# Into the first folder of the first tab, then play the first song in it.
+[ "${#tabs[@]}" -gt 0 ] && { emu tap "${tabs[0]}" 2>/dev/null || true; sleep 2; }
+if emu tap id:media_item_click_target 2>/dev/null; then
+  sleep 3
+  shot folder
+  # A folder of songs shows as rows with a title; a folder of folders shows more tiles.
+  if emu tap id:title 2>/dev/null || emu tap id:media_item_click_target 2>/dev/null; then
+    sleep 5
+    shot now-playing
+    # The screen redraws constantly while a song plays, and the screen reader behind
+    # `ui` and `tap "<words>"` waits for stillness; pause before reading it.
+    emu key pause; sleep 2
+    if emu tap id:car_ui_toolbar_menu_item_icon_container 2>/dev/null; then sleep 3; shot queue; emu key back; sleep 1; fi
+    emu key play; sleep 3
+    shot now-playing-again
+    emu key pause; sleep 1
+    emu key back; sleep 2
+  else
+    say "note: found nothing to play in the first folder (see $out)"
+  fi
+else
+  say "note: the first tab shows nothing to open (see $out)"
+fi
+
+# Search.
+if emu tap "Search" 2>/dev/null; then
+  sleep 2
+  if [ -z "$query" ]; then query="a"; fi
+  emu text "$query"; sleep 4
+  shot "search"
+  emu key back; sleep 1; emu key back; sleep 1
+fi
+
+# The car's home screen, where what is playing has a card of its own.
+emu key play; sleep 2
+emu key home; sleep 4
+shot car-home
+emu key pause
+say "pictures in $out"

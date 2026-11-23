@@ -39,7 +39,7 @@ run_probe() { # <package> <report file> <extra am arguments...>; prints the prob
   local package="$1" report="$2"; shift 2
   local out; out="$(mktemp)"
   # One quoted string for the device's shell, so words with spaces survive the trip.
-  local cmd="am instrument -w -e target '$package'" a
+  local cmd="am instrument --user $(current_user) -w -e target '$package'" a
   for a in "$@"; do cmd+=" '${a//\'/\'\\\'\'}'"; done
   cmd+=" org.medianexus.carprobe/.Probe"
   adb_sh "$cmd" 2>&1 | tr -d '\r' | tee "$out" | grep -v -E '^PROBE_JSON:|^INSTRUMENTATION_CODE|^$' || true
@@ -92,8 +92,8 @@ ensure_installed "$probe_apk" org.medianexus.carprobe
 # things), and Media3 gives full control only to callers it trusts. Give the probe the same
 # standing, or take it away to see what an unknown app is allowed.
 listener=org.medianexus.carprobe/org.medianexus.carprobe.Listener
-if [ "$trusted" = 1 ]; then adb_sh cmd notification allow_listener "$listener" >/dev/null
-else adb_sh cmd notification disallow_listener "$listener" >/dev/null; fi
+if [ "$trusted" = 1 ]; then adb_sh cmd notification allow_listener "$listener" "$(current_user)" >/dev/null
+else adb_sh cmd notification disallow_listener "$listener" "$(current_user)" >/dev/null; fi
 if [ "$target" = org.medianexus.standin ]; then
   ensure_installed "$standin_apk" org.medianexus.standin
   adb_sh "am broadcast -n org.medianexus.standin/.Faults --es set ''" >/dev/null
