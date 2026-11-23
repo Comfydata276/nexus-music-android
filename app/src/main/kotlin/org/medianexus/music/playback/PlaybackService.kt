@@ -38,9 +38,11 @@ import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.cancel
@@ -80,10 +82,26 @@ class PlaybackService : MediaLibraryService() {
     private val scope = MainScope()
     private val main = Handler(Looper.getMainLooper())
 
-    private var account: AccountGraph? = null
-    private var tree: CarTree? = null
-    private var kept: KeptSongs? = null
-    private var accountJobs: Job? = null
+    /**
+     * One account's turn at the player: everything that is theirs and must not outlive them.
+     * Each sign-in is a new generation (`number`). The car's requests, voice lookups and
+     * anything else begun for this account run in `scope` and are dropped when it goes;
+     * search results are kept here, so they go too; and the player's reads carry the number
+     * and are refused once it is no longer current (see [Leases]).
+     */
+    private inner class Era(val number: Long, val account: AccountGraph) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val tree = CarTree(account.library, words)
+        val kept = KeptSongs(account.keptSongsDir, database) { graph.settings.value.cacheLimitMb * 1024L * 1024L }
+        val searches = SearchResults()
+    }
+
+    /** The account signed in, on the main thread. */
+    private var era: Era? = null
+    /** The same, for the player's loading threads. */
+    @Volatile private var current: Era? = null
+    private var eras = 0L
+    private val account: AccountGraph? get() = era?.account
     private val database by lazy { StandaloneDatabaseProvider(this) }
 
     /** Every song in the queue, by id, for the data source (which runs on the player's
@@ -101,9 +119,6 @@ class PlaybackService : MediaLibraryService() {
     /** The player is being emptied because the account is going: nothing to save. */
     private var leaving = false
     private var lastSaveAt = 0L
-
-    /** What the car's search found, by query, until it asks for the results. */
-    private val searches = ConcurrentHashMap<String, List<CarEntry>>()
 
     private lateinit var words: CarWords
 
@@ -128,9 +143,7 @@ class PlaybackService : MediaLibraryService() {
 
         // One HTTP client for everything, so audio shares the warm connections.
         val http = OkHttpDataSource.Factory(graph.http)
-        val sources = SongDataSource.Factory(SongResolver(::resolve), http) {
-            if (graph.settings.value.cacheLimitMb > 0) kept?.cache() else null
-        }
+        val sources = SongDataSource.Factory(Leases(), http)
         // Conversions are MP3 at a constant bit rate with no index: allow seeking in them by
         // bit rate, even before their length is known (see SongDataSource).
         val extractors = DefaultExtractorsFactory()
@@ -185,7 +198,7 @@ class PlaybackService : MediaLibraryService() {
         session.release()
         player.release()
         exo.release()
-        kept?.close()
+        leave()
         super.onDestroy()
     }
 
@@ -208,42 +221,72 @@ class PlaybackService : MediaLibraryService() {
 
     private fun signedIn(state: SessionState, now: AccountGraph?) {
         if (state == SessionState.Restoring) return
-        if (now === account) return
+        if (now === era?.account) return
         if (now == null && state is SessionState.SignedIn) return // its objects are on their way
         // Someone else, or nobody: what was playing was theirs.
-        accountJobs?.cancel()
-        if (account != null) {
+        if (era != null) {
             saveNow()
+            leave()
             // Emptying the player isn't a change to the queue that was theirs: it stays saved
             // for when they sign in again.
             leaving = true
             player.clear()
             leaving = false
             plays.reset()
-            kept?.let { old -> scope.launch(Dispatchers.IO) { old.close() } }
-            kept = null
         }
-        account = now
-        tree = now?.let { CarTree(it.library, words) }
         if (now == null) {
             session.setPlaybackException(signInNeeded())
             return
         }
         session.setPlaybackException(null)
-        kept = KeptSongs(now.keptSongsDir, database) { graph.settings.value.cacheLimitMb * 1024L * 1024L }
-        accountJobs = scope.launch {
-            // The like button follows the likes, wherever they're changed.
-            launch { now.likes.liked.collect { updateButtons() } }
-            // The list the queue came from changed (a fresh copy from the server, a song
-            // unliked from Liked songs): the queue follows it.
-            launch {
-                now.pages.changes.collect { (key, value) ->
-                    if (key == player.queue.source) songsIn(value)?.let { player.follow(key, it) }
+        val next = Era(++eras, now)
+        era = next
+        current = next
+        // The like button follows the likes, wherever they're changed.
+        next.scope.launch { now.likes.liked.collect { updateButtons() } }
+        // The list the queue came from changed (a fresh copy from the server, a song unliked
+        // from Liked songs): the queue follows it.
+        next.scope.launch {
+            now.pages.changes.collect { (key, value) ->
+                if (key == player.queue.source) songsIn(value)?.let { player.follow(key, it) }
+            }
+        }
+        // Back to where things were, paused, ready for "play" from anywhere.
+        next.scope.launch {
+            val saved = withContext(Dispatchers.IO) { now.queueFiles.load() }
+            if (saved != null && player.queue.isEmpty) player.restore(saved)
+        }
+    }
+
+    /**
+     * The account's turn is over: its generation is no longer current (so a read that opens
+     * from now on is refused), whatever was running for it is dropped, and its kept songs
+     * close as soon as the reads still using them have.
+     */
+    private fun leave() {
+        val old = era ?: return
+        current = null
+        era = null
+        old.scope.cancel()
+        // Off the main thread: closing writes the cache's index.
+        graph.scope.launch(Dispatchers.IO) { old.kept.close() }
+    }
+
+    /** Gives the player's reads what they need from the account they were made for. */
+    private inner class Leases : SongLeases {
+        override fun generation(): Long = current?.number ?: 0
+
+        override fun lease(generation: Long): SongLease {
+            val era = current
+            if (era == null || era.number != generation) throw IOException("The account this song was for has signed out")
+            val cache = if (graph.settings.value.cacheLimitMb > 0) era.kept.acquire() else null
+            return object : SongLease {
+                override val cache = cache
+                override fun resolve(songId: String): SongWhere = resolve(era, songId)
+                override fun release() {
+                    if (cache != null) era.kept.release()
                 }
             }
-            // Back to where things were, paused, ready for "play" from anywhere.
-            val saved = withContext(Dispatchers.IO) { now.queueFiles.load() }
-            if (saved != null && account === now && player.queue.isEmpty) player.restore(saved)
         }
     }
 
@@ -277,9 +320,9 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- Where songs come from ------------------------------------------------------------------
 
-    /** Called on the player's loading threads. */
-    private fun resolve(songId: String): SongWhere {
-        val api = graph.accounts.state.value?.api ?: throw IOException("Nobody is signed in")
+    /** Called on the player's loading threads, for a read that belongs to `era`. */
+    private fun resolve(era: Era, songId: String): SongWhere {
+        val api = era.account.api
         val song = songsById[songId]
         val suffix = song?.suffix?.lowercase().orEmpty()
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in needsConverting
@@ -574,12 +617,11 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
-            scope.future {
-                val tree = treeOrNull() ?: return@future LibraryResult.ofError(signedOut())
-                val node = CarIds.parse(parentId) ?: return@future LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+            answer({ LibraryResult.ofError(signedOut()) }) { era ->
+                val node = CarIds.parse(parentId) ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 try {
-                    val entries = inTime { tree.children(node) { session.notifyChildrenChanged(parentId, Int.MAX_VALUE, params) } }
-                        ?: return@future LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+                    val entries = inTime { era.tree.children(node) { if (era === this@PlaybackService.era) session.notifyChildrenChanged(parentId, Int.MAX_VALUE, params) } }
+                        ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                     LibraryResult.ofItemList(ImmutableList.copyOf(slice(entries, page, pageSize).map(CarMedia::item)), params)
                 } catch (e: ApiError) {
                     LibraryResult.ofError(trouble(browser, e))
@@ -587,38 +629,35 @@ class PlaybackService : MediaLibraryService() {
             }
 
         override fun onGetItem(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, mediaId: String): ListenableFuture<LibraryResult<MediaItem>> =
-            scope.future {
-                val tree = treeOrNull() ?: return@future LibraryResult.ofError(signedOut())
-                val node = CarIds.parse(mediaId) ?: return@future LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+            answer({ LibraryResult.ofError(signedOut()) }) { era ->
+                val node = CarIds.parse(mediaId) ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 try {
-                    inTime { tree.item(node) }?.let { LibraryResult.ofItem(CarMedia.item(it), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+                    inTime { era.tree.item(node) }?.let { LibraryResult.ofItem(CarMedia.item(it), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 } catch (e: ApiError) {
                     LibraryResult.ofError(trouble(browser, e))
                 }
             }
 
         override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> =
-            scope.future {
-                val tree = treeOrNull() ?: return@future LibraryResult.ofError(signedOut())
+            answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 try {
-                    val found = inTime { tree.search(query) }
-                    searches[query] = found
+                    val found = inTime { era.tree.search(query) }
+                    era.searches.put(query, found)
                     session.notifySearchResultChanged(browser, query, found.size, params)
                     LibraryResult.ofVoid()
                 } catch (e: ApiError) {
                     // A car asking the old way gets its answer only through this: say there's
                     // nothing, rather than leave it waiting, and say why.
-                    searches[query] = emptyList()
+                    era.searches.put(query, emptyList())
                     session.notifySearchResultChanged(browser, query, 0, params)
                     LibraryResult.ofError(trouble(browser, e))
                 }
             }
 
         override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
-            scope.future {
-                val tree = treeOrNull() ?: return@future LibraryResult.ofError(signedOut())
+            answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 try {
-                    val found = searches[query] ?: inTime { tree.search(query) }.also { searches[query] = it }
+                    val found = era.searches.get(query) ?: inTime { era.tree.search(query) }.also { era.searches.put(query, it) }
                     LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
                 } catch (e: ApiError) {
                     LibraryResult.ofError(trouble(browser, e))
@@ -630,16 +669,16 @@ class PlaybackService : MediaLibraryService() {
          * whole list is queued: the song's album or playlist from it, or what was asked for.
          */
         override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> =
-            scope.future {
+            answer({ throw refuse(controller, signedOut()) }) { era ->
                 if (mediaItems.isNotEmpty() && mediaItems.all { it.localConfiguration?.tag is QueuePlayer.SongTag }) {
                     // Our own items, handed back: play them as they are.
-                    return@future MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs)
+                    return@answer MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs)
                 }
-                val tree = treeOrNull() ?: throw refuse(controller, signedOut())
+                val tree = era.tree
                 val asked = mediaItems.singleOrNull() ?: throw refuse(controller, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.nothing_to_play)))
                 val words = asked.requestMetadata.searchQuery
                 try {
-                    if (words != null) return@future inTime { voice(tree, controller, words, asked.requestMetadata.extras) }
+                    if (words != null) return@answer inTime { voice(era, controller, words, asked.requestMetadata.extras) }
                     val track = CarIds.parse(asked.mediaId) as? CarNode.Track
                         ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
                     val list = inTime { tree.play(track) } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play, asked.mediaMetadata.title ?: "")))
@@ -650,13 +689,13 @@ class PlaybackService : MediaLibraryService() {
             }
 
         override fun onAddMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>): ListenableFuture<List<MediaItem>> =
-            scope.future {
-                val tree = treeOrNull() ?: throw refuse(controller, signedOut())
+            answer<List<MediaItem>>({ throw refuse(controller, signedOut()) }) { era ->
+                val tree = era.tree
                 mediaItems.mapNotNull { item ->
                     if (item.localConfiguration?.tag is QueuePlayer.SongTag) return@mapNotNull item
                     val track = CarIds.parse(item.mediaId) as? CarNode.Track
                     val song = try {
-                        track?.let { tree.play(it) }?.let { it.songs[it.start] } ?: account?.library?.song(item.mediaId)
+                        track?.let { tree.play(it) }?.let { it.songs[it.start] } ?: era.account.library.song(item.mediaId)
                     } catch (_: ApiError) {
                         null
                     } ?: return@mapNotNull null
@@ -667,10 +706,7 @@ class PlaybackService : MediaLibraryService() {
         /** "Play", with nothing in the player: the queue as it was left; failing that, Liked
          *  songs shuffled. */
         override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, isForPlayback: Boolean): ListenableFuture<MediaItemsWithStartPosition> =
-            scope.future {
-                val tree = treeOrNull() ?: throw refuse(controller, signedOut())
-                resume(tree, controller)
-            }
+            answer({ throw refuse(controller, signedOut()) }) { era -> resume(era, controller) }
 
         override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
             val done = when (customCommand.customAction) {
@@ -695,12 +731,31 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    /** The car's tree for the account signed in, once the saved sign-in has been read. */
-    private suspend fun treeOrNull(): CarTree? {
+    /** The account signed in, once the saved sign-in has been read; null if nobody is. */
+    private suspend fun eraOrNull(): Era? {
         val now = graph.accounts.restored() ?: return null
-        // The collector that sets `tree` may not have run yet.
-        if (account !== now) signedIn(graph.session.state.value, now)
-        return tree
+        // The collector that takes the account on may not have run yet.
+        if (era?.account !== now) signedIn(graph.session.state.value, now)
+        return era?.takeIf { it.account === now }
+    }
+
+    /**
+     * Answers something asked of the session, for the account signed in. The work belongs
+     * to that account's generation: if the account goes while it is being done, the work is
+     * dropped and the answer is `signedOut`, never something of theirs handed on afterwards.
+     * `signedOut` is also the answer when nobody is signed in.
+     */
+    private fun <T> answer(signedOut: () -> T, work: suspend (Era) -> T): ListenableFuture<T> = scope.future {
+        val era = eraOrNull() ?: return@future signedOut()
+        val doing = era.scope.async { work(era) }
+        val done = try {
+            doing.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // The account went (its scope was cancelled), not this request.
+            if (era !== this@PlaybackService.era) return@future signedOut()
+            throw e
+        }
+        if (era !== this@PlaybackService.era) signedOut() else done
     }
 
     /**
@@ -750,9 +805,10 @@ class PlaybackService : MediaLibraryService() {
         return MediaItemsWithStartPosition(items, start, 0)
     }
 
-    private suspend fun resume(tree: CarTree, controller: MediaSession.ControllerInfo): MediaItemsWithStartPosition {
+    private suspend fun resume(era: Era, controller: MediaSession.ControllerInfo): MediaItemsWithStartPosition {
+        val tree = era.tree
         player.stageCurrent()?.let { (items, start) -> return MediaItemsWithStartPosition(items, start, exo.currentPosition) }
-        val saved = account?.let { a -> withContext(Dispatchers.IO) { a.queueFiles.load() } }
+        val saved = withContext(Dispatchers.IO) { era.account.queueFiles.load() }
         if (saved != null) {
             val (items, start) = player.stageSaved(saved)
             return MediaItemsWithStartPosition(items, start, (saved.position * 1000).toLong())
@@ -766,7 +822,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** A spoken request: "play X on Nexus Music". */
-    private suspend fun voice(tree: CarTree, controller: MediaSession.ControllerInfo, words: String, extras: Bundle?): MediaItemsWithStartPosition {
+    private suspend fun voice(era: Era, controller: MediaSession.ControllerInfo, words: String, extras: Bundle?): MediaItemsWithStartPosition {
+        val tree = era.tree
         val request = VoiceRequest(
             query = words,
             focus = VoiceRequest.focusOf(extras?.getString(MediaStore.EXTRA_MEDIA_FOCUS)),
@@ -776,7 +833,7 @@ class PlaybackService : MediaLibraryService() {
             playlist = extras?.getString(EXTRA_MEDIA_PLAYLIST).orEmpty(),
             genre = extras?.getString(EXTRA_MEDIA_GENRE).orEmpty(),
         )
-        if (request.unnamed) return resume(tree, controller)
+        if (request.unnamed) return resume(era, controller)
         val list = tree.forVoice(request)
             ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find, request.searchWords())))
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "voice: $request -> ${list.context} (${list.songs.size} songs)")

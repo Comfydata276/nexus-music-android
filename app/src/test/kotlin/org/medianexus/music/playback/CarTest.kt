@@ -136,6 +136,21 @@ class CarTest {
         assertEquals("Slow Rivers", VoiceRequest("play the album Slow Rivers on Nexus Music").searchWords())
     }
 
+    @Test
+    fun onlyTheLastFewSearchesAreKept() {
+        // They used to be kept for as long as the service ran, every query ever typed.
+        val results = SearchResults(most = 3)
+        for (query in listOf("a", "b", "c", "d")) results.put(query, listOf(CarEntry(query, query)))
+        assertEquals(3, results.size())
+        assertNull(results.get("a"))
+        assertEquals("d", results.get("d")!!.single().id)
+        // One just asked for again is the last to go.
+        results.get("b")
+        results.put("e", emptyList())
+        assertNull(results.get("c"))
+        assertEquals("b", results.get("b")!!.single().id)
+    }
+
     // ---- How songs are streamed -----------------------------------------------------------
 
     @Test

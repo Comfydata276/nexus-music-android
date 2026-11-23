@@ -58,10 +58,33 @@ class SongWhere(
     val stream: (offsetSecs: Int) -> String,
 )
 
-/** Decides, when a song is opened, where its bytes come from. */
-fun interface SongResolver {
-    /** Throws IOException if the song can't be had (nobody signed in). */
+/**
+ * What one read of a song is given by the account it is for: where the song's bytes come
+ * from, and that account's kept songs. Held from the moment the read opens until it closes,
+ * so the kept songs aren't closed under it.
+ */
+interface SongLease {
+    /** Decides, as the song is opened, where its bytes come from. */
     fun resolve(songId: String): SongWhere
+
+    /** The account's kept songs, or null to go straight to the server. */
+    val cache: Cache?
+
+    /** The read has closed. */
+    fun release()
+}
+
+/**
+ * Every sign-in is a new generation of the player's account. A read belongs to the
+ * generation that was current when its data source was made, and is refused if it opens
+ * after that account has gone: it must never meet another account's server or cache.
+ */
+interface SongLeases {
+    /** The generation of the account signed in now; 0 when nobody is. */
+    fun generation(): Long
+
+    /** Throws IOException if `generation` is no longer the account signed in. */
+    fun lease(generation: Long): SongLease
 }
 
 /**
@@ -85,13 +108,15 @@ fun interface SongResolver {
  */
 @OptIn(UnstableApi::class)
 class SongDataSource(
-    private val resolver: SongResolver,
-    /** The server, through the kept songs (or straight to the server if none are kept). */
-    private val kept: DataSource,
-    /** The server, kept out of the kept songs. */
-    private val direct: DataSource,
-    private val cache: Cache?,
+    private val leases: SongLeases,
+    /** The account generation this data source was made for. */
+    private val generation: Long,
+    private val upstream: DataSource.Factory,
 ) : DataSource {
+    /** The server, kept out of the kept songs. */
+    private val direct: DataSource = upstream.createDataSource()
+    private val listeners = mutableListOf<TransferListener>()
+    private var lease: SongLease? = null
     private var current: DataSource? = null
     /** Bytes still to throw away before the place asked for, after the tag at the start. */
     private var toSkip = 0L
@@ -100,8 +125,21 @@ class SongDataSource(
     private var allowed = -1L
 
     override fun addTransferListener(transferListener: TransferListener) {
-        kept.addTransferListener(transferListener)
+        listeners += transferListener
         direct.addTransferListener(transferListener)
+    }
+
+    /** The server through the account's kept songs, or straight to it if none are kept. */
+    private fun through(cache: Cache?): DataSource {
+        if (cache == null) return direct
+        val kept = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstream)
+            // A kept file the system has cleared away is read from the server instead.
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            .createDataSource()
+        listeners.forEach(kept::addTransferListener)
+        return kept
     }
 
     override fun open(dataSpec: DataSpec): Long {
@@ -110,8 +148,12 @@ class SongDataSource(
             current = direct
             return direct.open(dataSpec)
         }
-        val where = resolver.resolve(id)
+        // Refused here if the account this was made for has gone.
+        val lease = leases.lease(generation).also { this.lease = it }
+        val where = lease.resolve(id)
         val position = dataSpec.position
+        val cache = lease.cache
+        val kept = through(cache)
         val held = cache?.isCached(where.key, position, 1) == true
         val promised = if (where.form.converted) conversionLength(where.seconds, where.form.bitrate) else C.LENGTH_UNSET.toLong()
         if (!where.form.converted || position == 0L || held) {
@@ -184,29 +226,15 @@ class SongDataSource(
             toSkip = 0
             tagChecked = true
             allowed = -1
+            // Only now may the account's kept songs be closed, if it has gone meanwhile.
+            lease?.release()
+            lease = null
         }
     }
 
-    /** Makes one for each read the player starts. */
-    class Factory(
-        private val resolver: SongResolver,
-        private val upstream: DataSource.Factory,
-        private val cache: () -> Cache?,
-    ) : DataSource.Factory {
-        override fun createDataSource(): DataSource {
-            val cache = cache()
-            val kept = if (cache != null) {
-                CacheDataSource.Factory()
-                    .setCache(cache)
-                    .setUpstreamDataSourceFactory(upstream)
-                    // A kept file the system has cleared away is read from the server instead.
-                    .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-                    .createDataSource()
-            } else {
-                upstream.createDataSource()
-            }
-            return SongDataSource(resolver, kept, upstream.createDataSource(), cache)
-        }
+    /** Makes one for each read the player starts, for the account signed in at that moment. */
+    class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory) : DataSource.Factory {
+        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream)
     }
 
     companion object {

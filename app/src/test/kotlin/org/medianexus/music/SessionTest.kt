@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.Dispatcher
@@ -192,6 +193,42 @@ class SessionTest {
         assertEquals(SessionState.SignedOut, session.state.value)
         assertNull(session.api.value)
         assertFalse(File(dir, "password.sealed").exists())
+    }
+
+    @Test
+    fun aSignOutWhileTheSignInIsBeingSavedWins() = runBlocking {
+        val dir = folder.newFolder()
+        // Saving the password waits until told to go on: the sign-in is past its first look
+        // at whether it has been overtaken, and has not yet said "signed in".
+        val saving = CountDownLatch(1)
+        val goOn = CountDownLatch(1)
+        val slowBox = object : SecretBox {
+            override fun seal(plain: ByteArray): ByteArray {
+                saving.countDown()
+                goOn.await()
+                return plain
+            }
+            override fun open(sealed: ByteArray) = sealed
+        }
+        val (session, _, notices) = session(dir, vault = PasswordVault(File(dir, "password.sealed"), slowBox))
+        withTimeout(5_000) { session.restored() }
+        // Everything `state` says from here on, as it says it.
+        val said = java.util.concurrent.CopyOnWriteArrayList<SessionState>()
+        val watching = scope.launch(Dispatchers.Unconfined) { session.state.collect { said += it } }
+        session.signIn("http://127.0.0.1:${server.port}", "ada", "sesame")
+        assertTrue(saving.await(10, TimeUnit.SECONDS))
+        val out = session.signOut()
+        goOn.countDown()
+        withTimeout(5_000) { out.join() }
+        watching.cancel()
+        // Nobody was signed in, even for a moment: nothing built an account's objects, and
+        // nothing was told the sign-in had gone through.
+        assertTrue(said.toString(), said.none { it is SessionState.SignedIn })
+        assertEquals(SessionState.SignedOut, session.state.value)
+        assertNull(session.api.value)
+        assertFalse(File(dir, "password.sealed").exists())
+        assertTrue(notices.state.value.isEmpty())
+        assertFalse(session.signIn.value.busy)
     }
 
     @Test

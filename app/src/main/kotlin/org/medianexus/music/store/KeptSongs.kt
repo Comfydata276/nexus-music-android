@@ -14,25 +14,29 @@ import java.util.TreeSet
 /**
  * Songs kept as they're played, so a replay or a dropped connection costs nothing: Media3's
  * cache, in the account's own folder, limited to the space chosen in Settings. Opened on
- * first use and closed when the account is.
+ * first use. Closed when the account goes, but only once every read still using it has
+ * finished: the player's reads run on their own threads and outlive a sign-out by a moment.
  *
  * Entries are keyed by song id and the form it was fetched in (see `cacheKey`), never by
  * address, which carries a sign-in token that changes.
  */
 @OptIn(UnstableApi::class)
 class KeptSongs(private val dir: File, private val database: DatabaseProvider, private val limitBytes: () -> Long) {
-    private var opened: SimpleCache? = null
+    private val shared = SharedResource<SimpleCache>(
+        // Only one may be open on a folder at a time. If the one before is still closing
+        // (the same account signed out and straight back in), this read goes without.
+        open = { if (SimpleCache.isCacheFolderLocked(dir)) null else SimpleCache(dir, LimitEvictor(limitBytes), database) },
+        close = { it.release() },
+    )
 
-    /** The cache, opened if need be. Only one may be open on a folder at a time, so there is
-     *  one of these per account. */
-    @Synchronized
-    fun cache(): Cache = opened ?: SimpleCache(dir, LimitEvictor(limitBytes), database).also { opened = it }
+    /** The cache, for one read, which must call [release] when it closes. Null if the
+     *  account has gone, or the folder isn't free yet: then the read does without. */
+    fun acquire(): Cache? = shared.acquire()
 
-    @Synchronized
-    fun close() {
-        opened?.release()
-        opened = null
-    }
+    fun release() = shared.release()
+
+    /** No more reads; the cache is released when the ones under way have closed. */
+    fun close() = shared.close()
 }
 
 /**

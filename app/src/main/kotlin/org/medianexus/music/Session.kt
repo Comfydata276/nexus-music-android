@@ -91,6 +91,11 @@ class Session(
      *  been overtaken and must not sign anyone in. */
     private val generation = AtomicLong(0)
 
+    /** Held while a sign-out moves `generation` on, and while a sign-in or restore looks at
+     *  it and says "signed in": so the look and the saying are one step, and a sign-out is
+     *  either before both (nobody is signed in) or after both (its own step signs them out). */
+    private val gate = Any()
+
     /** Work that belongs to the signed-in session (warming up connections), stopped when it
      *  ends. Only touched by steps. */
     private var sessionWork: Job? = null
@@ -107,12 +112,16 @@ class Session(
             } else {
                 null
             }
-            current.value = if (password != null && generation.get() == asked) {
-                signedIn(Subsonic(saved.server, saved.username, password, http, offline))
-            } else {
-                SessionState.SignedOut
-            }
+            val restored = password?.let { signedIn(Subsonic(saved.server, saved.username, it, http, offline)) }
+            if (restored == null || !publish(asked, restored)) current.value = SessionState.SignedOut
         }
+    }
+
+    /** Says "signed in", unless a sign-out has been asked for since `asked` was read. */
+    private fun publish(asked: Long, state: SessionState.SignedIn): Boolean = synchronized(gate) {
+        if (generation.get() != asked) return false
+        current.value = state
+        true
     }
 
     /** Waits until the saved sign-in has been read. */
@@ -186,13 +195,17 @@ class Session(
                 // next start simply asks for it.
                 settings.update { it.copy(server = client.server, username = name) }
                 if (!settings.flush()) {
-                    signingIn.value = SignInState(settingsNotSaved = true)
+                    if (generation.get() == asked) signingIn.value = SignInState(settingsNotSaved = true)
                     return@inOrder
                 }
+                // Writing the settings took a moment, and saving the password takes another:
+                // a sign-out asked for during either still wins. Its own step, queued behind
+                // this one, removes whatever password was saved here.
+                if (generation.get() != asked) return@inOrder
                 val kept = withContext(io) { vault.save(client.server, name, password) }
+                if (!publish(asked, signedIn(client))) return@inOrder
                 if (!kept) notices.post(Notice.PasswordNotSaved)
                 if (unencryptedBeyondHome(client.server)) notices.post(Notice.SignedInWithoutEncryption)
-                current.value = signedIn(client)
                 signingIn.value = SignInState()
                 // Have connections open before the first taps need them.
                 sessionWork?.cancel()
@@ -208,7 +221,7 @@ class Session(
      * says so. The job returned finishes when the sign-out has.
      */
     fun signOut(): Job {
-        generation.incrementAndGet()
+        synchronized(gate) { generation.incrementAndGet() }
         signInJob?.cancel()
         signingIn.value = SignInState()
         return inOrder {
