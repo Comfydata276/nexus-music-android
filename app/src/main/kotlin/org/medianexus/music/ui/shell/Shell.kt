@@ -24,6 +24,9 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
@@ -105,6 +108,7 @@ fun Shell(graph: Graph) {
     ui.account = account
     val colors = Theme.colors
     val keyboard = WindowInsets.isImeVisible
+    val sideways = sidewaysPhone()
     val song by graph.player.song.collectAsStateWithLifecycle()
     val reported by graph.player.reported.collectAsStateWithLifecycle()
     LaunchedEffect(song == null, reported) { if (song == null && reported) ui.nowPlaying = false }
@@ -113,15 +117,33 @@ fun Shell(graph: Graph) {
         Box(Modifier.fillMaxSize().background(colors.base)) {
             // On its side, a cut-out or the navigation bar can be at either edge: nothing is
             // drawn under them. (The page still reaches the screen's top and foot.)
-            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.union(WindowInsets.navigationBars).only(WindowInsetsSides.Horizontal))) {
-                Box(Modifier.weight(1f).fillMaxWidth().then(if (keyboard) Modifier.imePadding() else Modifier)) {
-                    Pages(graph, navigator)
+            val edges = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.union(WindowInsets.navigationBars).only(WindowInsetsSides.Horizontal))
+            if (sideways) {
+                // A phone on its side has little height to spare: the three places go in a
+                // rail down the leading edge, and the mini player sits along the foot of the
+                // page only.
+                Row(edges) {
+                    SideRail(navigator.tab, navigator::select)
+                    Column(Modifier.weight(1f).fillMaxHeight()) {
+                        Box(Modifier.weight(1f).fillMaxWidth().then(if (keyboard) Modifier.imePadding() else Modifier)) {
+                            Pages(graph, navigator)
+                        }
+                        LocalNetworkBar(graph)
+                        NoticeList(graph)
+                        if (!keyboard) MiniPlayer(Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)))
+                    }
                 }
-                LocalNetworkBar(graph)
-                NoticeList(graph)
-                if (!keyboard) {
-                    MiniPlayer()
-                    BottomBar(navigator.tab, navigator::select)
+            } else {
+                Column(edges) {
+                    Box(Modifier.weight(1f).fillMaxWidth().then(if (keyboard) Modifier.imePadding() else Modifier)) {
+                        Pages(graph, navigator)
+                    }
+                    LocalNetworkBar(graph)
+                    NoticeList(graph)
+                    if (!keyboard) {
+                        MiniPlayer()
+                        BottomBar(navigator.tab, navigator::select)
+                    }
                 }
             }
             AnimatedVisibility(
@@ -138,7 +160,13 @@ fun Shell(graph: Graph) {
                     // Above the keyboard too, when it's up (searching).
                     .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                     // Above the bottom bar and the mini player, unless Now Playing covers them.
-                    .padding(bottom = if (ui.nowPlaying || keyboard) 16.dp else 64.dp + Theme.dimens.miniPlayer + 8.dp),
+                    .padding(
+                        bottom = when {
+                            ui.nowPlaying || keyboard -> 16.dp
+                            sideways -> Theme.dimens.miniPlayer + 8.dp
+                            else -> 64.dp + Theme.dimens.miniPlayer + 8.dp
+                        },
+                    ),
             )
         }
         if (ui.queueOpen) QueueSheet(onClose = { ui.queueOpen = false })
@@ -245,6 +273,58 @@ fun LocalNetworkBar(graph: Graph, modifier: Modifier = Modifier) {
             style = Theme.type.rowDetail.copy(color = colors.text),
         )
         TextButton(stringResource(R.string.allow), { ask(null) })
+    }
+}
+
+/**
+ * A phone held on its side: wider than tall, and short (under 480dp). There the bottom bar
+ * becomes a rail down the leading edge, and pages put their header and play button side by
+ * side. A tablet on its side has the height for the bar, and keeps it.
+ */
+@Composable
+fun sidewaysPhone(): Boolean {
+    val window = androidx.compose.ui.platform.LocalWindowInfo.current.containerSize
+    val tall = with(androidx.compose.ui.platform.LocalDensity.current) { window.height.toDp() }
+    return window.width > window.height && tall < 480.dp
+}
+
+/** The bottom bar's three places, down the leading edge: for a phone on its side. */
+@Composable
+private fun SideRail(current: Tab, onSelect: (Tab) -> Unit) {
+    val colors = Theme.colors
+    Column(
+        Modifier
+            .fillMaxHeight()
+            .width(80.dp)
+            .background(colors.panel)
+            .drawBehind {
+                // Its line on the side the pages are, whichever way the language runs.
+                val x = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) size.width else 0f
+                drawLine(colors.line, Offset(x, 0f), Offset(x, size.height), 1.dp.toPx())
+            }
+            .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical))
+            .selectableGroup(),
+        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        for (tab in Tab.entries) {
+            val on = tab == current
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .height(64.dp)
+                    .selectable(selected = on, role = Role.Tab, onClick = { onSelect(tab) }),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+            ) {
+                Icon(tab.icon, size = 24.dp, tint = if (on) colors.text else colors.faint)
+                BasicText(
+                    stringResource(tab.label),
+                    style = Theme.type.caption.copy(color = if (on) colors.text else colors.muted, fontWeight = FontWeight.SemiBold),
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 

@@ -100,26 +100,31 @@ fun SongListPage(
             }
             val width = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() }
             val columns = org.medianexus.music.ui.lists.gridColumns(width)
+            // A phone on its side has the height for the header and a song or two: the play
+            // button goes beside the header's words.
+            val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
+            val actions = @Composable { inline: Boolean ->
+                ActionBar(
+                    title = hero.title,
+                    canPlay = !songs.isNullOrEmpty() || playOverride != null,
+                    playing = playingHere,
+                    onPlay = {
+                        when {
+                            from.isList(key) -> player.playPause()
+                            playOverride != null -> playOverride()
+                            !songs.isNullOrEmpty() -> ui.play(songs, 0, context, key, anyStart = true)
+                        }
+                    },
+                    shuffle = shuffle,
+                    onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
+                    liked = liked,
+                    onLike = onLike,
+                    inline = inline,
+                )
+            }
             LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
-                item(key = "hero", contentType = "hero") { Hero(hero, onSubtitle = onSubtitle) }
-                item(key = "actions", contentType = "actions") {
-                    ActionBar(
-                        title = hero.title,
-                        canPlay = !songs.isNullOrEmpty() || playOverride != null,
-                        playing = playingHere,
-                        onPlay = {
-                            when {
-                                from.isList(key) -> player.playPause()
-                                playOverride != null -> playOverride()
-                                !songs.isNullOrEmpty() -> ui.play(songs, 0, context, key, anyStart = true)
-                            }
-                        },
-                        shuffle = shuffle,
-                        onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
-                        liked = liked,
-                        onLike = onLike,
-                    )
-                }
+                item(key = "hero", contentType = "hero") { Hero(hero, onSubtitle = onSubtitle, actions = if (sideways) ({ actions(true) }) else null) }
+                if (!sideways) item(key = "actions", contentType = "actions") { actions(false) }
                 if (error != null && songs != null) {
                     item(key = "failed", contentType = "failed") { FailedStrip(error.message.orEmpty(), feed::refresh) }
                 }

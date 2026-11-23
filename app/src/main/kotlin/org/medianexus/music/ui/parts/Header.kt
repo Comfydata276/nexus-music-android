@@ -60,11 +60,12 @@ data class HeroData(
  * it is, its name in the display face, and a line of facts. On Windows the cover sits beside
  * the words; so it does here wherever there's room for both (on its side, or 600dp and
  * wider). On a phone held upright it goes above them, as large as it can be and still leave
- * the songs in sight.
+ * the songs in sight. `actions` (a phone on its side) puts the action bar at the end of the
+ * same row.
  */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)? = null) {
+fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)? = null, actions: (@Composable () -> Unit)? = null) {
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val window = androidx.compose.ui.platform.LocalWindowInfo.current.containerSize
         val tall = with(androidx.compose.ui.platform.LocalDensity.current) { window.height.toDp() }
@@ -80,6 +81,9 @@ fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)
             ) {
                 HeroCover(hero, side)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) { HeroWords(hero, onSubtitle) }
+                // A phone on its side: the play button beside the words, not in a row of its
+                // own under them, so the first songs are in sight.
+                actions?.invoke()
             }
         } else {
             // Large, but not so large that a list's first songs can't be seen under it.
@@ -179,10 +183,12 @@ fun ActionBar(
     modifier: Modifier = Modifier,
     liked: Boolean? = null,
     onLike: () -> Unit = {},
+    /** Beside a header's words, rather than a row of its own. */
+    inline: Boolean = false,
 ) {
     val colors = Theme.colors
     Row(
-        modifier.fillMaxWidth().height(80.dp).padding(horizontal = Theme.dimens.pagePad),
+        if (inline) modifier.height(64.dp) else modifier.fillMaxWidth().height(80.dp).padding(horizontal = Theme.dimens.pagePad),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {

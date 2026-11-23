@@ -91,7 +91,9 @@ fun QueueSheet(onClose: () -> Unit) {
     val statusBar = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
     // The sheet keeps the navigation bar's height clear below what it holds.
     val navigation = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
-    val height = (window - statusBar - NOW_PLAYING_BAR - SHEET_HANDLE - navigation).coerceAtLeast(240.dp)
+    // (In a short window on its side this is little: what it holds scrolls, and the heading
+    // stays in sight rather than being pushed up under the status bar.)
+    val height = (window - statusBar - NOW_PLAYING_BAR - SHEET_HANDLE - navigation).coerceAtLeast(160.dp)
     ModalBottomSheet(
         onDismissRequest = onClose,
         sheetState = state,

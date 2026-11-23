@@ -511,7 +511,7 @@ The Windows interface in `../nexus-music/ui/` is the reference. Read `theme.slin
 
 | Windows | Phone |
 |---|---|
-| Sidebar | Bottom bar: Home, Search, Library. Playlists live in Library. |
+| Sidebar | Bottom bar: Home, Search, Library. Playlists live in Library. A phone on its side (wider than tall, under 480dp tall): a rail down the leading edge with the same three, the mini player along the foot of the page only. |
 | Top bar with search | A page title bar with Back; Search is its own tab. |
 | Player bar | A mini player docked above the bottom bar: cover, title, artist, like, play/pause, a thin progress line. Tap or swipe up for Now Playing. |
 | Now Playing page | Full screen: large cover with a soft shadow, title in the display face, artist, format line, seek bar, shuffle / previous / play / next / repeat, then devices, lyrics, queue and like. Swipe down to close. |
@@ -547,7 +547,9 @@ How it is built (M1b):
   opened from a card draws its header at once from what the card said.
 - **The header** (Windows' `Hero`) stands the cover above the words on a phone held
   upright: a cover beside the title would leave the title too little room. On its side, or
-  600 dp and wider, the cover sits beside the title as on Windows, sized by the height. Then the kind ("Album"), the
+  600 dp and wider, the cover sits beside the title as on Windows, sized by the height (a
+  phone on its side also puts the action bar at the end of that row, so the first view shows
+  the header, the play button and the first song). Then the kind ("Album"), the
   name in the display face, and the artist or owner beside the facts ("2017, 14 songs,
   7 min"), wrapping under it when narrow. The action bar is Windows': play, the list's own
   shuffle (a dot under it when on), a heart for an album. A list with nothing in it offers
@@ -598,7 +600,8 @@ How it is built (M1b):
   player's next word. No timer puts anything back. A cancelled drag sends nothing. A
   sideways swipe or "Remove from queue" takes one out; screen readers get Move up and Move down where they do something,
   and Remove. Below 400dp the songs' lengths are left out so their names have room. The
-  sheet comes up to the foot of Now Playing's top bar, no further.
+  sheet comes up to the foot of Now Playing's top bar, no further; in a short window on its
+  side what it holds scrolls, its heading in sight, clear of a side navigation bar.
 - **A song's menu** has what works so far: Play next, Add to queue, like, Go to album, Go to
   artist (each credited artist when there are several), and Remove from queue from the
   queue. Nothing that does nothing yet is shown.
