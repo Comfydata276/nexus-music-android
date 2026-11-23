@@ -157,4 +157,19 @@ class AccessTest {
         assertEquals(VoiceAsk.MOST, asked.fields["android.intent.extra.title"]!!.length)
         assertEquals(setOf("android.intent.extra.artist", "android.intent.extra.title"), asked.fields.keys)
     }
+
+    @Test
+    fun waitingForTheServerEndsBeforeTheForegroundDoes() {
+        val every = 15_000L
+        // Trying every fifteen seconds, for as long as the service keeps its standing with
+        // nothing playing (ten minutes): it used to try for ever, long after Android had
+        // stopped treating it as a player.
+        assertFalse(Recovery.givesUp(waitedMs = 0, nextWaitMs = every))
+        assertFalse(Recovery.givesUp(waitedMs = 9 * 60_000L, nextWaitMs = every))
+        assertFalse(Recovery.givesUp(waitedMs = 10 * 60_000L - every, nextWaitMs = every))
+        // The try after that would fall past the ten minutes.
+        assertTrue(Recovery.givesUp(waitedMs = 10 * 60_000L - every + 1, nextWaitMs = every))
+        assertTrue(Recovery.givesUp(waitedMs = 3 * 60 * 60_000L, nextWaitMs = every))
+        assertEquals(androidx.media3.session.MediaSessionService.DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS, Recovery.GIVE_UP_MILLIS)
+    }
 }

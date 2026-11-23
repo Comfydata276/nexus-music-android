@@ -133,6 +133,14 @@ class PlaybackService : MediaLibraryService() {
     private var waitingFor: Recovery.Retry? = null
     private var retry: Job? = null
 
+    /** When the player first stopped for want of the server, this time round (0: it hasn't);
+     *  and whether it has since given up waiting (see [giveUp]). */
+    private var waitingSince = 0L
+    private var gaveUp = false
+
+    /** When Play was last asked for, on [clock]. */
+    private var askedToPlayAt = 0L
+
     /** The player is being emptied because the account is going: nothing to save. */
     private var leaving = false
     private var lastSaveAt = 0L
@@ -200,6 +208,11 @@ class PlaybackService : MediaLibraryService() {
             .setLibraryErrorReplicationMode(MediaLibrarySession.LIBRARY_ERROR_REPLICATION_MODE_FATAL)
             .build()
         setMediaNotificationProvider(DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.ic_bars) })
+        // Media3's hook for a foreground start Android refuses (Android 12 and later): it
+        // catches the exception and tells this, wherever in its own code the start was made.
+        setListener(object : Listener {
+            override fun onForegroundServiceStartNotAllowedException() = foregroundRefused()
+        })
 
         // Who is signed in decides everything else.
         scope.launch {
@@ -248,6 +261,11 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onUpdateNotificationAsync(session: MediaSession, startInForegroundRequired: Boolean): ListenableFuture<Void?> {
+        // While the foreground is held for a button's start (see holdForeground), Media3 is
+        // not asked to update a notification it would take away: with nothing playing yet it
+        // removes the notification and leaves the foreground, which is the one thing that
+        // must not happen before the player has asked for the sound.
+        if (holding && !startInForegroundRequired) return com.google.common.util.concurrent.Futures.immediateVoidFuture()
         val updated = super.onUpdateNotificationAsync(session, startInForegroundRequired)
         if (startInForegroundRequired) {
             updated.addListener({
@@ -256,9 +274,13 @@ class PlaybackService : MediaLibraryService() {
                     // (Media3 has caught it; if it is Android refusing the foreground, its
                     // listener is told too: see onCreate.)
                     graph.diagnostics.note("foreground: Android refused it (${failure.javaClass.simpleName})", now = true)
-                } else if (!foregroundNoted) {
-                    foregroundNoted = true
-                    graph.diagnostics.note("foreground: entered ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made")
+                } else {
+                    // Media3's notification holds the foreground from here.
+                    if (holding) heldLongEnough()
+                    if (!foregroundNoted) {
+                        foregroundNoted = true
+                        graph.diagnostics.note("foreground: playing in it ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made")
+                    }
                 }
             }, androidx.core.content.ContextCompat.getMainExecutor(this))
         }
@@ -279,14 +301,16 @@ class PlaybackService : MediaLibraryService() {
     // ---- Started by a button, with the app not running --------------------------------------
 
     /**
-     * Set when the service was started "in the foreground" for a media button and has not
-     * yet shown the notification that keeps that promise. Media3 shows it when playback
-     * starts. If there turns out to be nothing to play, the promise is kept deliberately and
-     * the service stopped (see [standDown]); left alone, the system kills the whole app with
-     * ForegroundServiceDidNotStartInTimeException.
+     * The service was started "in the foreground" for a media button (Media3's receiver uses
+     * `startForegroundService`, which is a promise to the system) and is holding the
+     * foreground with a notification of its own until playback begins and Media3's takes its
+     * place. See [holdForeground].
      */
-    private var promised = false
-    private val promiseCheck = Runnable { if (promised) standDown() }
+    private var holding = false
+
+    /** Whether the one deadline for a button's start has been set. */
+    private var deadlineSet = false
+    private val deadline = Runnable { if (holding) standDown() }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         noteStartedBy(
@@ -296,14 +320,68 @@ class PlaybackService : MediaLibraryService() {
                 else -> "a start request (${intent.action?.substringAfterLast('.')?.take(40)})"
             },
         )
-        if (intent?.action == Intent.ACTION_MEDIA_BUTTON && !isPlaybackOngoing) {
-            promised = true
-            // Whatever happens to the request (a reply that never comes, a command Media3
-            // drops), the promise is looked at again well inside the system's time limit.
-            main.removeCallbacks(promiseCheck)
-            main.postDelayed(promiseCheck, PROMISE_MILLIS)
-        }
+        if (intent?.action == Intent.ACTION_MEDIA_BUTTON && !isPlaybackOngoing) holdForeground()
         return super.onStartCommand(intent, flags, startId)
+    }
+
+    /**
+     * Enters the foreground now, before anything is read or looked up: the first thing done
+     * for a Play button that started the service. The promise to the system is kept at once,
+     * however long the saved sign-in and the saved queue take to read; and by the time the
+     * player asks for the sound (audio focus), the service is in the foreground, which
+     * Android 15 requires of an app in the background before it gives focus, and Android 17
+     * before it lets it be heard at all. The order used to be the other way round: up to six
+     * seconds of reading first, and the foreground only once the player was buffering.
+     *
+     * The notification is Media3's own in all but content (the same number and channel), so
+     * that when playback begins Media3's replaces it in place. On Android 12 and later the
+     * system holds a foreground notification back for ten seconds, so it is never seen.
+     *
+     * How long the foreground is held with nothing playing is bounded once, from the first
+     * button: later buttons don't push the limit back.
+     */
+    private fun holdForeground() {
+        if (!holding) {
+            try {
+                val manager = getSystemService(NotificationManager::class.java)
+                val channel = DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID
+                if (manager.getNotificationChannel(channel) == null) {
+                    manager.createNotificationChannel(
+                        NotificationChannel(channel, getString(DefaultMediaNotificationProvider.DEFAULT_CHANNEL_NAME_RESOURCE_ID), NotificationManager.IMPORTANCE_LOW),
+                    )
+                }
+                val notification = NotificationCompat.Builder(this, channel)
+                    .setSmallIcon(R.drawable.ic_bars)
+                    .setContentTitle(getString(R.string.app_name))
+                    .setContentIntent(openApp())
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setOnlyAlertOnce(true)
+                    .setOngoing(true)
+                    .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
+                    .build()
+                // Before Android 10 a foreground service has no type.
+                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
+                ServiceCompat.startForeground(this, DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID, notification, type)
+                holding = true
+                graph.diagnostics.note("foreground: entered at once for a media button, ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made", now = true)
+            } catch (e: RuntimeException) {
+                // Android would not have it (not allowed from the background, on Android 12
+                // and later; or a rule this was not written for). Nothing more is promised
+                // than was: Media3 tries again when playback begins, and its failure is
+                // handled too (see foregroundRefused).
+                graph.diagnostics.note("foreground: Android refused it at the start (${e.javaClass.simpleName})", now = true)
+            }
+        }
+        if (!deadlineSet) {
+            deadlineSet = true
+            main.postDelayed(deadline, HOLD_MILLIS)
+        }
+    }
+
+    /** Playback has begun and Media3's notification holds the foreground now. */
+    private fun heldLongEnough() {
+        holding = false
+        main.removeCallbacks(deadline)
     }
 
     /** The button a media button intent carries, by its key's name. */
@@ -313,40 +391,32 @@ class PlaybackService : MediaLibraryService() {
     }.getOrNull()
 
     /**
-     * Ends a start that has nothing to play, the way Media3's own service does when it has
-     * no session to give (`stopSelfSafely`): enter the foreground with a notification that
-     * is never shown (the system holds a new foreground notification back for ten seconds),
-     * leave it at once, and stop. Does nothing if playback did start.
+     * Ends a start that has nothing to play: leaves the foreground it was holding, takes its
+     * notification away (on Android 12 and later it was never shown), and stops. Does
+     * nothing if playback did start.
      */
     private fun standDown() {
-        promised = false
-        main.removeCallbacks(promiseCheck)
+        val was = holding
+        heldLongEnough()
         if (isPlaybackOngoing) return
-        try {
-            val manager = getSystemService(NotificationManager::class.java)
-            val channel = DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID
-            if (manager.getNotificationChannel(channel) == null) {
-                manager.createNotificationChannel(
-                    NotificationChannel(channel, getString(DefaultMediaNotificationProvider.DEFAULT_CHANNEL_NAME_RESOURCE_ID), NotificationManager.IMPORTANCE_LOW),
-                )
-            }
-            val notification = NotificationCompat.Builder(this, channel)
-                .setSmallIcon(R.drawable.ic_bars)
-                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-                .setOnlyAlertOnce(true)
-                .setOngoing(false)
-                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
-                .build()
-            // Before Android 10 a foreground service has no type.
-            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
-            ServiceCompat.startForeground(this, STAND_DOWN_NOTIFICATION, notification, type)
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        } catch (_: IllegalStateException) {
-            // Not allowed into the foreground at all: then nothing was promised either.
-        }
-        graph.diagnostics.note("started by a button with nothing to play: stopped cleanly", now = true)
+        runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
+        if (was) graph.diagnostics.note("started by a button with nothing to play: stopped cleanly", now = true)
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "started by a button with nothing to play: stopped cleanly")
         pauseAllPlayersAndStopSelf()
+    }
+
+    /**
+     * Android refused to let the service into the foreground when playback began (Media3
+     * tells its listener: see onCreate). It is handled, never thrown: the player is paused,
+     * so that nothing claims to be playing from a service Android may silence or stop at any
+     * moment, and the next Play (from the car's screen, the notification or the app, each of
+     * which Android lets start a foreground service) begins cleanly.
+     */
+    private fun foregroundRefused() {
+        graph.diagnostics.note("foreground: Android would not allow it when playback began; paused", now = true)
+        if (BuildConfig.DEBUG) android.util.Log.w(TAG, "Android refused the foreground: paused")
+        exo.pause()
+        if (holding) standDown()
     }
 
     override fun onDestroy() {
@@ -698,6 +768,8 @@ class PlaybackService : MediaLibraryService() {
             if (isPlaying) {
                 failures = 0
                 stopWaiting()
+                waitingSince = 0
+                gaveUp = false
                 countPlaying()
             } else {
                 // A last sample: what was heard up to the pause counts.
@@ -709,6 +781,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             // Another song: a try at the server put off for the last one is no longer wanted.
             if (waitingFor?.uid != player.queue.currentUid()) stopWaiting()
+            gaveUp = false
             // Rolled into the next song while playing (the song before it has had its last
             // sample, in onPositionDiscontinuity, which comes first).
             if (exo.isPlaying) countPlaying()
@@ -737,7 +810,26 @@ class PlaybackService : MediaLibraryService() {
             // would start by itself.
             if (playWhenReady && player.queue.isEmpty) {
                 exo.pause()
-                if (promised) standDown()
+                if (holding) standDown()
+            }
+            if (playWhenReady) {
+                askedToPlayAt = clock()
+                // Play, pressed by someone: a new try at a server that was given up on.
+                if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) {
+                    waitingSince = 0
+                    gaveUp = false
+                }
+            } else if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) {
+                // Noted for Diagnostics: straight after Play, this is Android declining to let
+                // the app be heard (its rules for an app in the background: Android 15 gives
+                // audio focus only to the app in front or one with a foreground service, and
+                // Android 17 asks more of that service). Later, another app has taken over.
+                val after = clock() - askedToPlayAt
+                graph.diagnostics.note(
+                    if (after < FOCUS_REFUSED_MILLIS) "audio focus: refused or taken away at once after Play (Android's rules for an app in the background?)"
+                    else "audio focus: lost to another app",
+                    now = after < FOCUS_REFUSED_MILLIS,
+                )
             }
         }
 
@@ -756,8 +848,11 @@ class PlaybackService : MediaLibraryService() {
                 network(error) -> {
                     // Not the song's fault: the player has already tried a few times. Wait
                     // where it is for the server to come back, trying now and then (with no
-                    // permission to reach the home network, until it is given).
-                    retryLater(SERVER_WAIT_MILLIS)
+                    // permission to reach the home network, until it is given). But not for
+                    // ever: see giveUp.
+                    val now = clock()
+                    if (waitingSince == 0L) waitingSince = now
+                    if (Recovery.givesUp(now - waitingSince, SERVER_WAIT_MILLIS)) giveUp() else retryLater(SERVER_WAIT_MILLIS)
                 }
                 else -> passOver()
             }
@@ -787,6 +882,27 @@ class PlaybackService : MediaLibraryService() {
         retry?.cancel()
         retry = null
         waitingFor = null
+    }
+
+    /**
+     * The server has been out of reach for ten minutes: stop trying, and pause, saying so.
+     *
+     * Ten minutes is how long Media3 keeps the service in the foreground once nothing is
+     * playing (and how long Google asks a player to hold it through a failure). Past that the
+     * service is an ordinary background one: Android may not let it back into the foreground
+     * when the server returns, and Android 17 would not let it be heard. So rather than drift
+     * into "playing" with no standing to play, it ends where a person would expect: paused,
+     * with the reason on the screen, and the next Play (which Android does let start it)
+     * tries again from where the song stopped.
+     */
+    private fun giveUp() {
+        stopWaiting()
+        gaveUp = true
+        graph.diagnostics.note("the server was out of reach for ten minutes: paused")
+        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "the server was out of reach for ten minutes: paused")
+        exo.pause()
+        // The words change: no longer "Reconnecting…".
+        player.refresh()
     }
 
     /**
@@ -835,6 +951,8 @@ class PlaybackService : MediaLibraryService() {
         // Short, as Windows says it ("Reconnecting"): a car's player has a line for it under
         // the title. The phone's own Now Playing has room for the whole sentence, and is told
         // by the extra that this is the lost connection.
+        // Given up on after ten minutes: it will not carry on by itself any more.
+        network(error) && gaveUp -> PlaybackException(getString(R.string.car_unreachable), null, error.errorCode)
         network(error) -> PlaybackException(getString(R.string.lost_connection_short), null, error.errorCode, Bundle().apply { putBoolean(EXTRA_LOST, true) })
         song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play, song.title), null, error.errorCode)
         // (A file the phone can't decode is about to be asked for again, converted.)
@@ -1129,7 +1247,7 @@ class PlaybackService : MediaLibraryService() {
                     // Said in words to whoever asked, unless what's wrong is that nobody is
                     // signed in, which the car is already being told.
                     if (era != null) session.sendError(controller, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.nothing_to_play)))
-                    main.post { if (promised) standDown() }
+                    main.post { if (holding) standDown() }
                     throw UnsupportedOperationException("Nothing to resume")
                 }
                 MediaItemsWithStartPosition(items, start, exo.currentPosition)
@@ -1433,11 +1551,14 @@ class PlaybackService : MediaLibraryService() {
          *  saved queue, to be read from the phone. */
         private const val RESUME_WAIT_MILLIS = 3_000L
 
-        /** How long after a button started the service the promise to enter the foreground
-         *  is looked at again. The system allows 30 seconds on Android 17 and 10 on older
-         *  versions; this is well inside both. */
-        private const val PROMISE_MILLIS = 7_000L
-        private const val STAND_DOWN_NOTIFICATION = 20_001
+        /** How long the foreground is held for a button's start with nothing playing yet
+         *  (the saved sign-in and queue being read, the player getting ready) before the
+         *  start is given up as having nothing to play. From the first button, once. */
+        private const val HOLD_MILLIS = 7_000L
+
+        /** A pause for want of audio focus this soon after Play was the sound being refused,
+         *  not another app starting up. */
+        private const val FOCUS_REFUSED_MILLIS = 2_000L
 
         /** A service made this soon after its process began was what the process began for. */
         private const val COLD_START_MILLIS = 3_000L

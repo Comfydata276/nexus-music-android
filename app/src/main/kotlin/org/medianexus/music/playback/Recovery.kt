@@ -16,6 +16,17 @@ object Recovery {
         playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING || waitingForServer)
 
     /**
+     * Whether to stop waiting for the server: it has been out of reach for `waitedMs`, and
+     * the next try would be `nextWaitMs` from now. Waiting ends with the last try that still
+     * falls inside [GIVE_UP_MILLIS], which is how long the service keeps its foreground
+     * standing with nothing playing (Media3's `DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS`): a try
+     * after that could bring the music back in a service Android no longer lets be heard.
+     */
+    fun givesUp(waitedMs: Long, nextWaitMs: Long): Boolean = waitedMs + nextWaitMs > GIVE_UP_MILLIS
+
+    const val GIVE_UP_MILLIS = 10 * 60 * 1000L
+
+    /**
      * A try at the server that was put off until later: which account's turn at the player
      * it was for, and which entry of the queue. When its time comes it only goes ahead if
      * that is all still so: the same account, the same song still the one that's stuck. A

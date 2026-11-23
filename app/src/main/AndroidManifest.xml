@@ -104,6 +104,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- The name the button receiver went by in the first builds (Media3's own class).
+             The system remembers, by name, which receiver to send a Play button to while
+             the app isn't running, and goes on using the name it was last given until the
+             app has next been opened: so the old name still has to lead somewhere after an
+             update. It has no filter of its own (the session must find exactly one receiver
+             for media buttons, the one above) and is not open to other apps; the system can
+             still send to it by name. It starts the player, which resumes, or stops cleanly
+             if there is nothing to resume. -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="false" />
+
         <!-- Cover art for the car and the system's media controls, which can't fetch it from
              the server. Read-only, it serves nothing but covers, and only to this app and
              the callers the player itself lets connect (see store/CoverProvider.kt). -->

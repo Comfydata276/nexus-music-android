@@ -34,6 +34,13 @@ class PlayButtonReceiver : MediaButtonReceiver() {
         if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "play button with the app not running: ${if (worth) "starting the player" else "nothing to resume, not started"}")
         return worth
     }
+
+    /** Android would not let the player be started from here (Android 12 and later). Media3
+     *  catches it; it is noted, for Settings' Diagnostics, and nothing is started. */
+    @androidx.annotation.RequiresApi(31)
+    override fun onForegroundServiceStartNotAllowedException(context: Context, intent: Intent, e: android.app.ForegroundServiceStartNotAllowedException) {
+        runCatching { context.graph.diagnostics.note("a media button with the player not running: Android would not let it be started from the background", now = true) }
+    }
 }
 
 /** Whether "play" with nothing loaded has anything to pick up, from what is on disk alone. */
