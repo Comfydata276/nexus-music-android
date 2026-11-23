@@ -234,6 +234,8 @@ class QueuePlayer(
                 jumpAhead(mediaItemIndex - here - 1, positionMs)
                 return Futures.immediateVoidFuture()
             }
+            // Every other seek is the player's own to do.
+            else -> Unit
         }
         return super.handleSeek(mediaItemIndex, positionMs, seekCommand)
     }

@@ -77,6 +77,7 @@ fun leastBytes(seconds: Int, askedKbps: Int, fileKbps: Int): Long {
  * from, and that account's kept songs. Held from the moment the read opens until it closes,
  * so the kept songs aren't closed under it.
  */
+@OptIn(UnstableApi::class)
 interface SongLease {
     /** Decides, as the song is opened, where its bytes come from. */
     fun resolve(songId: String): SongWhere

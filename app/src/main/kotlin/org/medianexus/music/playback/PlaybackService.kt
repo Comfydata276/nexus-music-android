@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -267,7 +268,9 @@ class PlaybackService : MediaLibraryService() {
                 .setOngoing(false)
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
                 .build()
-            ServiceCompat.startForeground(this, STAND_DOWN_NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            // Before Android 10 a foreground service has no type.
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
+            ServiceCompat.startForeground(this, STAND_DOWN_NOTIFICATION, notification, type)
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         } catch (_: IllegalStateException) {
             // Not allowed into the foreground at all: then nothing was promised either.
