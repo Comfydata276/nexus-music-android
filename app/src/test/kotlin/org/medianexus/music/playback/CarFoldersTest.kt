@@ -147,6 +147,12 @@ class CarFoldersTest {
                     .body("""{"subsonic-response":{"status":"ok","version":"1.16.1",$fields}}""").build()
                 return when (what) {
                     "getPlaylist" -> {
+                        // Two lists with a song whose title is longer than a whole folder may be.
+                        val huge = """{"id":"huge","title":"${"An endless title ".repeat(9_000)}","album":"Album","artist":"Artist","duration":200}"""
+                        when (url.queryParameter("id")) {
+                            "onebig" -> return ok(""""playlist":{"id":"onebig","name":"One song","songCount":1,"entry":[$huge]}""")
+                            "big" -> return ok(""""playlist":{"id":"big","name":"Three songs","songCount":3,"entry":[${songsJson(1)},$huge,{"id":"last","title":"Last","duration":200}]}""")
+                        }
                         val count = url.queryParameter("id")!!.removePrefix("pl").toInt()
                         ok(""""playlist":{"id":"pl$count","name":"List of $count","songCount":$count,"entry":[${songsJson(count)}]}""")
                     }
@@ -326,11 +332,90 @@ class CarFoldersTest {
         // What the car has asked for lately: the list, two of its ranges, and other things.
         val asked = listOf("home", CarIds.format(list), top[1].id, second, CarIds.format(CarNode.Album("al1")), CarIds.format(CarNode.Playlist("pl200")), "playlists")
         // The list changes (a song was added at its top: every range now means other songs).
-        // The list and both ranges are to be told; nothing else is. It used to be only the
-        // folder that happened to be asked for at that moment.
-        assertEquals(listOf(CarIds.format(list), top[1].id, second), tree.stale(asked, "playlist:pl3000"))
+        // The list and every range it was shown as are to be told, those the car has not
+        // opened too (it holds them all the same, in the list's own folder); nothing else
+        // is. It used to be only the folder that happened to be asked for at that moment.
+        assertEquals((listOf(CarIds.format(list)) + top.drop(1).map { it.id }).toSet(), tree.stale(asked, "playlist:pl3000").toSet())
         assertEquals(listOf(CarIds.format(CarNode.Album("al1"))), tree.stale(asked, "album:al1"))
         assertEquals(listOf("playlists"), tree.stale(asked, "playlists"))
         assertEquals(emptyList<String>(), tree.stale(asked, "playlist:another"))
+    }
+
+    // ---- An entry bigger than a folder ---------------------------------------------------------
+
+    /** Every folder under `node`, opened in turn: none may fail to open, be too big, hold an
+     *  id that isn't a place in the tree, or lead back to a folder already on the way to it. */
+    private suspend fun walk(tree: CarTree, node: CarNode, above: List<String> = emptyList()): List<CarEntry> {
+        val id = CarIds.format(node)
+        assertFalse("$id leads back to itself: $above", id in above)
+        assertTrue("deeper than any list goes", above.size < 6)
+        val inside = tree.children(node) ?: throw AssertionError("$id could not be opened")
+        assertTrue("$id does not fit a folder", CarFolders.fits(inside))
+        val songs = mutableListOf<CarEntry>()
+        for (entry in inside) {
+            val place = CarIds.parse(entry.id) ?: throw AssertionError("${entry.id}, in $id, is not a place in the tree")
+            if (entry.browsable) songs += walk(tree, place, above + id) else if (place is CarNode.Track) songs += entry
+        }
+        return songs
+    }
+
+    @Test
+    fun aSongTooBigForAnyFolderIsShownAloneWithItsTextShortened() = runBlocking {
+        val tree = tree()
+        // A list of one song whose title alone is past what a folder may hold. It used to
+        // end in an exception (the list was "halved" into the song and an empty range).
+        val one = walk(tree, CarNode.Playlist("onebig"))
+        assertEquals(listOf("huge"), one.map { (CarIds.parse(it.id) as CarNode.Track).songId })
+        assertTrue(one.single().title.startsWith("An endless title An endless title"))
+        assertTrue(one.single().title.endsWith("…"))
+        assertTrue(one.single().playable)
+        // Among others: it is a range of its own, which used to open onto itself and an id
+        // that names no range. Every song is still there once, in order, and plays its list
+        // from its place.
+        val three = walk(tree, CarNode.Playlist("big"))
+        assertEquals(listOf("s0" to 0, "huge" to 1, "last" to 2), three.map { (CarIds.parse(it.id) as CarNode.Track).let { t -> t.songId to t.index } })
+        assertEquals(1, tree.play(CarNode.Track("huge", ListRef.Playlist("big"), 1))!!.start)
+    }
+
+    @Test
+    fun shorteningKeepsWhatAnEntryIsAndCutsOnlyItsWords() {
+        val huge = song(3, "A title. ".repeat(40_000)).copy(subtitle = "An artist. ".repeat(20_000), group = "A heading ".repeat(30_000))
+        assertFalse(CarFolders.fits(listOf(huge)))
+        val cut = CarFolders.shortened(huge, CarFolders.BUDGET)
+        assertTrue(CarFolders.bytes(cut) <= CarFolders.BUDGET)
+        assertEquals(huge.id, cut.id)
+        assertEquals(huge.cover, cut.cover)
+        assertTrue(cut.playable)
+        assertTrue(cut.title.startsWith("A title. A title.") && cut.title.endsWith("…"))
+        // To whatever room there is, however little: beside something that heads the folder.
+        val small = CarFolders.shortened(huge, 2_000)
+        assertTrue("${CarFolders.bytes(small)} bytes", CarFolders.bytes(small) <= 2_000)
+        assertTrue(small.title.isNotEmpty())
+        // What fits is left alone.
+        assertEquals(song(1), CarFolders.shortened(song(1), CarFolders.BUDGET))
+    }
+
+    @Test
+    fun whenALongListChangesEveryRangeOfItEverHandedOutIsToldNotOnlyTheLastFewAskedFor() = runBlocking {
+        val tree = tree()
+        val list = CarNode.Playlist("pl9000")
+        val top = tree.children(list)!!
+        val ranges = top.drop(1).map { it.id }
+        assertEquals(45, ranges.size)
+        // The car opens the list and then each range in turn, and may keep any of them.
+        val askedFor = mutableListOf(CarIds.format(list))
+        for (range in ranges) {
+            tree.children(CarIds.parse(range)!!)
+            askedFor += range
+        }
+        // The service remembers the last 32 folders asked for, and the list's reload notices
+        // went to those of them that were this list's: the first fourteen ranges, and the
+        // list itself, were never told, and went on showing the songs that used to be at
+        // those places.
+        val remembered = askedFor.takeLast(32)
+        val told = tree.stale(remembered, "playlist:pl9000")
+        assertEquals((ranges + CarIds.format(list)).toSet(), told.toSet())
+        // Another list's change is not theirs.
+        assertEquals(emptyList<String>(), tree.stale(remembered.filter { it.startsWith("album") }, "playlist:pl3000"))
     }
 }

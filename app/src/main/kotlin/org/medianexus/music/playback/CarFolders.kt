@@ -47,7 +47,8 @@ object CarFolders {
         return true
     }
 
-    /** The longest run from the start of these that fits in one folder. */
+    /** The longest run from the start of these that fits in one folder. (If the first is
+     *  too big for a folder by itself, it alone, cut down: see [shortened].) */
     fun first(entries: List<CarEntry>, budget: Int = BUDGET): List<CarEntry> {
         var total = 0
         var count = 0
@@ -56,6 +57,7 @@ object CarFolders {
             if (count == MOST || total > budget) break
             count++
         }
+        if (count == 0 && entries.isNotEmpty()) return listOf(shortened(entries[0], budget))
         return if (count == entries.size) entries else entries.subList(0, count)
     }
 
@@ -93,6 +95,33 @@ object CarFolders {
         }
         return parts
     }
+
+    /**
+     * An entry with its words cut down until it comes to no more than `budget` bytes: for the
+     * one entry that is too big for any folder on its own (a title of a hundred thousand
+     * characters; nothing real, but a server's to send). What it is stays as it was (its id,
+     * its cover, whether it plays); the title keeps the most, and ends in "…". One that
+     * fits is returned as it is.
+     */
+    fun shortened(entry: CarEntry, budget: Int = BUDGET): CarEntry {
+        if (bytes(entry) <= budget) return entry
+        var cut = entry
+        for (most in SHORTER) {
+            cut = entry.copy(
+                title = clip(entry.title, most),
+                subtitle = clip(entry.subtitle, most / 2),
+                group = clip(entry.group, most / 4),
+                song = entry.song?.let { it.copy(title = clip(it.title, most), artist = clip(it.artist, most / 2), displayArtist = clip(it.displayArtist, most / 2), album = clip(it.album, most / 2)) },
+            )
+            if (bytes(cut) <= budget) return cut
+        }
+        return cut
+    }
+
+    /** Lengths, in characters, tried in turn for the title of an entry that is too big. */
+    private val SHORTER = listOf(8_000, 2_000, 500, 120, 40, 12, 1)
+
+    private fun clip(text: String, most: Int): String = if (text.length <= most) text else text.take((most - 1).coerceAtLeast(0)).trimEnd() + "…"
 
     /** Ranges listed in one folder at most. (That a folder of ranges fits is not taken on
      *  trust either: see [gathered].) */

@@ -141,6 +141,15 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         // Shuffle's.
         val all = body.subList(start, end)
         if (CarFolders.fits(head + all)) return all
+        // One entry, and it is too big for a folder by itself (with whatever heads this
+        // one): there is nothing to split. It is shown alone, its words cut down to fit.
+        // This used to be "halved" like any list that didn't fit, into itself and an empty
+        // range: an exception at the top of a list, and below that a folder that held
+        // itself and an id that names nothing.
+        if (all.size == 1) {
+            val room = CarFolders.BUDGET - head.sumOf { CarFolders.bytes(it) }
+            return listOf(CarFolders.shortened(all[0], room))
+        }
         // Otherwise as ranges, each a folder of its own (with nothing at its head). A list
         // that would have fitted but for its head is halved.
         val ranges = CarFolders.ranges(body, start, end)
@@ -154,7 +163,30 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             inside = whole.inside,
         )
         // And the folder of ranges is itself weighed, head and all.
-        return CarFolders.gathered(ranges, head, ::entry).map(::entry)
+        val shown = CarFolders.gathered(ranges, head, ::entry).map(::entry)
+        handedOut(node, shown)
+        return shown
+    }
+
+    /**
+     * The folders shown as ranges, and the ranges handed out for them, by the kept page their
+     * list is read from: everything the car may be holding that is named by places in that
+     * list. When the list changes, every one of them is told ([stale]). It used to be only
+     * those among the last few dozen folders the car had asked for, and a long list has more
+     * ranges than that. The lists used lately only, and a bounded number of folders of each.
+     */
+    private val split = object : LinkedHashMap<String, MutableSet<String>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableSet<String>>?) = size > MOST_SPLIT_LISTS
+    }
+
+    private fun handedOut(node: CarNode, ranges: List<CarEntry>) {
+        val key = pageOf(node) ?: return
+        synchronized(split) {
+            val folders = split.getOrPut(key) { LinkedHashSet() }
+            if (folders.size + ranges.size + 1 > MOST_SPLIT_FOLDERS) folders.clear()
+            folders += CarIds.format(node)
+            ranges.mapTo(folders) { it.id }
+        }
     }
 
     /**
@@ -178,14 +210,17 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     }
 
     /**
-     * Of the folders the car has asked for lately (`asked`, their ids), those whose list is
-     * the kept page `key`, which has just changed: the folder itself and every range of it.
+     * The folders whose list is the kept page `key`, which has just changed: those among the
+     * folders the car has asked for lately (`asked`, their ids), and every folder of that
+     * list that was shown as ranges, with every range handed out for it, however long ago.
      * A range is named by places in the list ("songs 201 to 400"); once the list has changed,
      * a range the car still has open shows songs that are no longer at those places, and a
      * tap plays another. Each is to be told its children have changed, so the car asks again.
      */
-    fun stale(asked: Collection<String>, key: String): List<String> =
-        asked.filter { id -> CarIds.parse(id)?.let(::pageOf) == key }
+    fun stale(asked: Collection<String>, key: String): List<String> {
+        val ranges = synchronized(split) { split.remove(key).orEmpty().toList() }
+        return (asked.filter { id -> CarIds.parse(id)?.let(::pageOf) == key } + ranges).distinct()
+    }
 
     private fun brief(title: String): String = if (title.length <= 24) title else title.take(23).trimEnd() + "…"
 
@@ -493,6 +528,11 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
          *  again: it is many requests on a large library, and changes rarely. */
         const val LISTING_FRESH_MILLIS = 10 * 60 * 1000L
         const val GENRE_SONGS = 100
+
+        /** Lists shown as ranges that are remembered, and folders (the list's own, and its
+         *  ranges) remembered for each: a 20,000-song playlist is a hundred or so. */
+        const val MOST_SPLIT_LISTS = 32
+        const val MOST_SPLIT_FOLDERS = 2_000
 
         /** The letter a name is filed under: A to Z, or "#" for anything else. */
         fun letterOf(name: String): String {
