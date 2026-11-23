@@ -3,6 +3,7 @@ package org.medianexus.music.ui.search
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -148,5 +149,90 @@ class SearchModelTest {
         advanceUntilIdle()
         assertEquals(Results("new", found("new")), model.state.value.results)
         assertEquals("new", model.state.value.query)
+    }
+    @Test
+    fun goingBackToWordsThatFailedAsksAgain() = runTest {
+        var fail = true
+        val asked = mutableListOf<String>()
+        val model = SearchModel(backgroundScope, search = { asked += it; if (fail) throw ApiError.Network("Gone.") else found(it) })
+        runCurrent()
+        model.type("lantern")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertTrue(model.state.value.error != null)
+        fail = false
+        // Other words, and back, before the pause is over.
+        model.type("lanterns")
+        advanceTimeBy(100)
+        model.type("lantern")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(listOf("lantern", "lantern"), asked)
+        assertEquals(Results("lantern", found("lantern")), model.state.value.results)
+        assertFalse(model.state.value.searching)
+    }
+
+    @Test
+    fun anOldFailureIsNotShownUnderNewWords() = runTest {
+        val old = CompletableDeferred<Found>()
+        val model = SearchModel(backgroundScope, search = { if (it == "old") old.await() else found(it) })
+        runCurrent()
+        model.type("old")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        // New words, still within the pause, when the old search fails.
+        model.type("new")
+        advanceTimeBy(100)
+        old.completeExceptionally(ApiError.Network("Gone."))
+        runCurrent()
+        assertNull(model.state.value.error)
+        assertTrue(model.state.value.searching)
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(SearchState("new", Results("new", found("new"))), model.state.value)
+    }
+
+    @Test
+    fun rowsBelongOnlyToTheWordsInTheBox() = runTest {
+        val model = SearchModel(backgroundScope, search = { found(it) })
+        runCurrent()
+        model.type("lantern")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(Results("lantern", found("lantern")), model.state.value.resultsFor("lantern"))
+        // A key pressed, drawn before the model has heard of it: the rows of "lantern" are
+        // not the box's, and are neither shown nor tapped.
+        assertNull(model.state.value.resultsFor("lanterns"))
+        // (Spaces round the words don't make them other words.)
+        assertEquals("lantern", model.state.value.resultsFor(" lantern ")?.query)
+    }
+
+    @Test
+    fun searchingStopsWithTheAppAndAsksAgainWhenItComesBack() = runTest {
+        val asked = mutableListOf<String>()
+        val gate = CompletableDeferred<Unit>()
+        val model = SearchModel(null, search = { asked += it; gate.await(); found(it) })
+        val running = backgroundScope.launch { model.run() }
+        runCurrent()
+        model.type("lantern")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        // The app goes to the background mid-search: it stops.
+        running.cancel()
+        runCurrent()
+        assertTrue(model.state.value.searching)
+        // Back in front: the words in the box are asked for again, and answered.
+        gate.complete(Unit)
+        val again = backgroundScope.launch { model.run() }
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(listOf("lantern", "lantern"), asked)
+        assertEquals(Results("lantern", found("lantern")), model.state.value.results)
+        // Answered once, it isn't asked again on coming back.
+        again.cancel()
+        backgroundScope.launch { model.run() }
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(2, asked.size)
     }
 }

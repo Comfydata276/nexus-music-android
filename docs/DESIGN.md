@@ -624,7 +624,10 @@ How it is built (M1b):
   albums and playlists, with the artists first when one matches the words better than any
   song does, judged by a port of Windows' scoring (`SearchRank`), and the playlists whose
   name has every typed word as the start of a word; chips narrow to one kind. Results, and
-  what tapping one plays, belong to the words that found them. With nothing typed, "Browse by genre". Windows keeps
+  what tapping one plays, belong to the words that found them, and so does a failure; rows
+  are shown, and tappable, only once those words are the words in the box. Every change of
+  words and every "Try again" is a request of its own (going back to words that failed asks
+  again). It searches only while the app is in front. With nothing typed, "Browse by genre". Windows keeps
   no recent searches, so neither does the phone. A song chosen from the results plays the
   results from it (Windows starts radio from it, which comes with M3).
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things

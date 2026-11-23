@@ -18,11 +18,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -66,13 +66,15 @@ import org.medianexus.music.ui.theme.Theme
 fun SearchPage() {
     val ui = LocalUi.current
     val res = LocalResources.current
-    val scope = rememberCoroutineScope()
     val account = ui.account
     val model = remember(account) {
-        SearchModel(scope, search = { query ->
+        SearchModel(null, search = { query ->
             account?.library?.search?.find(query, LIMITS) ?: Found()
         })
     }
+    // It searches only while the app is in front, as the pages' feeds fetch.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { model.run() } }
     val box = rememberTextFieldState()
     LaunchedEffect(model) { snapshotFlow { box.text.toString() }.collect { model.type(it) } }
     val state by model.state.collectAsStateWithLifecycle()
@@ -98,13 +100,16 @@ fun SearchPage() {
             return@Column
         }
         ChipRow(kinds, selected = kind, onChoose = { kind = it })
-        // Only ever for the words that found it: what is shown, and what a tap plays.
-        val results = state.results?.takeIf { it.query == state.query }
+        // Only ever for the words that found it, and only once they are the words in the box
+        // (the model hears of a keystroke a moment after it is drawn): what is shown, and what
+        // a tap plays.
+        val typed = box.text.toString()
+        val results = state.resultsFor(typed)
         val view = remember(results, playlists, kind) {
             results?.let { SearchView.of(it.query, it.found, playlists, SearchKind.entries[kind]) }
         }
         val liked = likedSongs()
-        val error = state.error
+        val error = state.error?.takeIf { state.query == typed.trim() }
         when {
             view == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = model::retry)
             view == null -> SkeletonRows()
@@ -137,7 +142,7 @@ fun SearchPage() {
                             remember(song) { TrackRowData(song.id, song.title, song.artistLabel + if (song.album.isNotEmpty()) " • ${song.album}" else "", song.coverArt, duration = clock(song.duration)) }
                                 .copy(liked = song.id in liked),
                             // What "All" shows is the first few of what was found, so the place is the same.
-                            onClick = { results?.let { ui.play(it.found.songs, index, "“${it.query}”") } },
+                            onClick = { results?.takeIf { it.query == box.text.toString().trim() }?.let { ui.play(it.found.songs, index, "“${it.query}”") } },
                             onMore = { ui.menu = SongMenu(song) },
                         )
                     }
