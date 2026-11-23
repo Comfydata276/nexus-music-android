@@ -34,10 +34,19 @@ import org.medianexus.music.store.SettingsStore
 /**
  * What's in the queue, as the screens show it: the songs to come, the first `queuedAhead` of
  * which are "Next in queue". `songs` is the next few hundred (as Windows shows 400 rows),
- * not a queue of thousands; `total` is how many are to come in all.
+ * not a queue of thousands; `total` is how many are to come in all. `uids` is each song's
+ * entry in the queue, by its own number: what a command about that row names it by, so a
+ * song ending between the tap and the command can't shift it onto another (and the same
+ * song twice is two entries).
  */
 @Immutable
-data class UpNext(val songs: List<Song> = emptyList(), val queuedAhead: Int = 0, val context: String = "", val total: Int = songs.size)
+data class UpNext(
+    val songs: List<Song> = emptyList(),
+    val queuedAhead: Int = 0,
+    val context: String = "",
+    val total: Int = songs.size,
+    val uids: List<Long> = List(songs.size) { AppCommands.NONE },
+)
 
 /**
  * Where what's playing came from: the list's route key ("album:<id>"), and the place in that
@@ -47,7 +56,10 @@ data class UpNext(val songs: List<Song> = emptyList(), val queuedAhead: Int = 0,
  */
 @Immutable
 data class PlayingFrom(val source: String = "", val origin: Int = -1, val songId: String = "", val paused: Boolean = false) {
-    fun isRow(key: String, index: Int): Boolean = source.isNotEmpty() && source == key && origin == index
+    /** That row of that list is what's playing: its place, and the song in it too. (A list
+     *  refreshed with a song added above can shift the places before the player has heard;
+     *  the song keeps the mark from falling on its neighbour meanwhile.) */
+    fun isRow(key: String, index: Int, id: String): Boolean = source.isNotEmpty() && source == key && origin == index && songId == id
 
     /** This list is what's playing (its play button pauses and resumes). */
     fun isList(key: String): Boolean = songId.isNotEmpty() && source.isNotEmpty() && source == key
@@ -73,6 +85,8 @@ class PlayerConnection(
     scope: CoroutineScope,
     /** The words for a radio station's format line. */
     private val liveStream: String = "Live stream",
+    /** The words for a lost connection: the player says it shortly, for a car's screen. */
+    private val lostConnection: String = "Lost the connection to the server.",
 ) {
     private var future: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -90,9 +104,7 @@ class PlayerConnection(
     private val fromNow = MutableStateFlow(PlayingFrom())
     private val convertedNow = MutableStateFlow(false)
 
-    /** The queue's own number for each song in `queue`, and for the song playing: what a
-     *  command names its song by. Read together with `queue`, so the two always match. */
-    private var aheadUids: List<Long> = emptyList()
+    private val reportedNow = MutableStateFlow(false)
 
     /** The song playing (or paused on); null with an empty queue. */
     val song: StateFlow<Song?> = currentSong.asStateFlow()
@@ -112,6 +124,11 @@ class PlayerConnection(
     val error: StateFlow<String?> = errorNow.asStateFlow()
     /** The list what's playing came from, and its place in it. */
     val from: StateFlow<PlayingFrom> = fromNow.asStateFlow()
+
+    /** The player has said what it's doing since the screens connected. Until then "nothing
+     *  playing" means only "not heard yet" (as when the app has just come back after Android
+     *  stopped it, and the service hasn't answered). */
+    val reported: StateFlow<Boolean> = reportedNow.asStateFlow()
 
     /** Whether the song playing is liked. */
     val liked: StateFlow<Boolean> = accounts.state
@@ -135,10 +152,12 @@ class PlayerConnection(
 
         override fun onDisconnected(controller: MediaController) {
             // The service went (the system stopped it): the next command connects again.
+            // Everything it said goes with it: a song, a queue or an error left on show
+            // would be about a player that isn't there.
             main.removeCallbacks(ticker)
             this@PlayerConnection.controller = null
             future = null
-            playingNow.value = false
+            forget()
         }
     }
 
@@ -178,6 +197,23 @@ class PlayerConnection(
         controller = null
         future?.let { MediaController.releaseFuture(it) }
         future = null
+        // Kept on show (it is what the player was doing a moment ago, and will be read again
+        // on connecting), but no longer the player's word.
+        reportedNow.value = false
+    }
+
+    /** Clears everything the player reported. */
+    private fun forget() {
+        currentSong.value = null
+        playingNow.value = false
+        bufferingNow.value = false
+        positionNow.value = 0
+        durationNow.value = 0
+        queueNow.value = UpNext()
+        errorNow.value = null
+        fromNow.value = PlayingFrom()
+        convertedNow.value = false
+        reportedNow.value = false
     }
 
     private fun read(queueToo: Boolean) {
@@ -195,15 +231,15 @@ class PlayerConnection(
             val ahead = extras.getInt(PlaybackService.EXTRA_QUEUED_AHEAD)
             val items = (index + 1 until c.mediaItemCount).map { c.getMediaItemAt(it) }
             val songs = items.map(::songOf)
-            aheadUids = items.map { (it.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid ?: AppCommands.NONE }
             queueNow.value = UpNext(
                 songs, ahead.coerceAtMost(songs.size), c.playlistMetadata.title?.toString().orEmpty(),
                 total = extras.getInt(PlaybackService.EXTRA_AHEAD, songs.size).coerceAtLeast(songs.size),
+                uids = items.map { (it.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid ?: AppCommands.NONE },
             )
         }
         shuffleNow.value = c.shuffleModeEnabled
         repeatNow.value = QueuePlayer.ourRepeat(c.repeatMode)
-        errorNow.value = c.playerError?.message
+        errorNow.value = c.playerError?.let { error -> if (error.extras.getBoolean(PlaybackService.EXTRA_LOST)) lostConnection else error.message }
         fromNow.value = PlayingFrom(
             source = extras.getString(PlaybackService.EXTRA_SOURCE).orEmpty(),
             origin = extras.getInt(PlaybackService.EXTRA_ORIGIN, -1),
@@ -211,6 +247,11 @@ class PlayerConnection(
             paused = !playing,
         )
         convertedNow.value = extras.getBoolean(PlaybackService.EXTRA_CONVERTED)
+        // Only once the service has put back the saved queue: before that, after Android has
+        // stopped the app and it is starting again, it says "nothing" for a moment.
+        // And only when the player's word on the song and the extras' agree: the two travel
+        // separately, and "settled" can arrive a moment before the song it was settled on.
+        reportedNow.value = extras.getBoolean(PlaybackService.EXTRA_SETTLED) && extras.getString(PlaybackService.EXTRA_SONG).orEmpty() == song?.id.orEmpty()
         main.removeCallbacks(ticker)
         if (c.isPlaying) main.postDelayed(ticker, TICK_MILLIS)
     }
@@ -255,34 +296,29 @@ class PlayerConnection(
     private fun enqueue(songs: List<Song>, playNext: Boolean) =
         send(AppCommands.ENQUEUE, Bundle().apply { putString("songs", AppCommands.songsArg(songs)); putBoolean("playNext", playNext) })
 
-    // The places below are places in `queue` as it was last published, which is what the
-    // screen that calls them is showing. They are turned here into the queue's own number
-    // for that entry, and the command carries the number: if a song ends while the command
-    // is on its way, it still means the song that was tapped.
+    // Each of these names the queue entry it means by the entry's own number (`UpNext.uids`),
+    // as the screen that calls them had it when the person tapped: if a song ends while the
+    // command is on its way, it still means the song that was tapped.
 
-    /** Moves the song `from` places after the current one to `to` places after it, into
-     *  "Next in queue" (`queued`) or out of it. */
-    fun move(from: Int, to: Int, queued: Boolean) {
-        val uids = aheadUids
-        val uid = uids.getOrNull(from) ?: return
-        // The song it should follow, once it has been lifted out: none for the top.
-        val rest = uids.filterIndexed { place, _ -> place != from }
-        val after = if (to <= 0) AppCommands.NONE else rest.getOrNull(to - 1) ?: rest.lastOrNull() ?: AppCommands.NONE
-        send(AppCommands.MOVE, Bundle().apply { putLong("uid", uid); putLong("after", after); putBoolean("queued", queued) })
+    /** Moves the entry `uid` to straight after the entry `after` (null: straight after the
+     *  song playing), into "Next in queue" (`queued`) or out of it. */
+    fun move(uid: Long, after: Long?, queued: Boolean) {
+        if (uid == AppCommands.NONE) return
+        send(AppCommands.MOVE, Bundle().apply { putLong("uid", uid); putLong("after", after ?: AppCommands.NONE); putBoolean("queued", queued) })
     }
 
-    /** Takes out the song `offset` places after the current one. */
-    fun remove(offset: Int) {
-        val uid = aheadUids.getOrNull(offset) ?: return
+    /** Takes the entry `uid` out of the queue. */
+    fun remove(uid: Long) {
+        if (uid == AppCommands.NONE) return
         send(AppCommands.REMOVE, Bundle().apply { putLong("uid", uid) })
     }
 
     /** Empties "Next in queue" (`queued`), or the rest of the list after it. */
     fun clear(queued: Boolean) = send(AppCommands.CLEAR, Bundle().apply { putBoolean("queued", queued) })
 
-    /** Plays the song `offset` places after the current one now. */
-    fun jump(offset: Int) {
-        val uid = aheadUids.getOrNull(offset) ?: return
+    /** Plays the entry `uid` now. */
+    fun jump(uid: Long) {
+        if (uid == AppCommands.NONE) return
         send(AppCommands.JUMP, Bundle().apply { putLong("uid", uid) })
     }
 

@@ -115,9 +115,9 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
                     choose { ui.open(Route.Artist(song.artistId, song.artist)) }
                 }
             }
-            menu.upcoming?.let { offset ->
+            menu.upcoming?.let { uid ->
                 Rule()
-                Entry(R.drawable.ic_x, stringResource(R.string.remove_from_queue)) { choose { ui.player.remove(offset) } }
+                Entry(R.drawable.ic_x, stringResource(R.string.remove_from_queue)) { choose { ui.player.remove(uid) } }
             }
         }
     }

@@ -59,4 +59,81 @@ class QueueRowsTest {
         assertNull(QueueRows.move(1, 1, gap = 2, queued = 2))
         assertNull(QueueRows.move(-1, 0, gap = 2, queued = 2))
     }
+
+    // ---- Named by entry, not by place ------------------------------------------------------
+
+    /** A queue as the player publishes it: songs with their entries' numbers. */
+    private fun upNext(ids: List<String>, uids: List<Long>, queued: Int = 0) =
+        org.medianexus.music.playback.UpNext(ids.map { Song(id = it) }, queued, uids = uids)
+
+    @Test
+    fun theSameSongTwiceIsTwoRowsWithKeysOfTheirOwn() {
+        val queue = upNext(listOf("x", "y", "x"), listOf(11, 12, 13))
+        val rows = QueueRows.of(queue.songs, 0, queue.uids)
+        assertEquals(listOf("u11", "u12", "u13"), rows.map { it.key })
+        // The second "x" dragged to the top: that entry moves, not the first "x".
+        assertEquals(EntryMove(13, null, false), QueueRows.entryMove(queue, 2, 0))
+        // The first "x" dragged below "y": it follows "y".
+        assertEquals(EntryMove(11, 12, false), QueueRows.entryMove(queue, 0, 1))
+    }
+
+    @Test
+    fun aDragMeansWhatWasOnScreenEvenIfTheSongChangedMeanwhile() {
+        val drag = QueueDrag()
+        val before = upNext(listOf("a", "b", "c", "d"), listOf(1, 2, 3, 4))
+        drag.show(before)
+        drag.start("u4")
+        // The song playing ends while the finger is down: the player's queue moves on.
+        drag.show(upNext(listOf("b", "c", "d"), listOf(2, 3, 4)))
+        // The rows on screen are untouched by it, and the drag goes on over them.
+        assertEquals(listOf("u1", "u2", "u3", "u4"), drag.rows.map { it.key })
+        drag.over("u2")
+        drag.over("u1")
+        // "d" was dropped at the top of what the person saw: it goes straight after the song
+        // playing, named by its own number.
+        assertEquals(EntryMove(4, null, false), drag.drop())
+        // Shown as left until the player answers; then the player's order.
+        assertEquals(listOf("u4", "u1", "u2", "u3"), drag.rows.map { it.key })
+        drag.show(upNext(listOf("d", "b", "c"), listOf(4, 2, 3)))
+        assertEquals(listOf("u4", "u2", "u3"), drag.rows.map { it.key })
+    }
+
+    @Test
+    fun aCancelledDragPutsTheRowBackAndSendsNothing() {
+        val drag = QueueDrag()
+        drag.show(upNext(listOf("a", "b", "c"), listOf(1, 2, 3)))
+        drag.start("u3")
+        drag.over("u2")
+        assertEquals(listOf("u1", "u3", "u2"), drag.rows.map { it.key })
+        drag.cancel()
+        assertEquals(listOf("u1", "u2", "u3"), drag.rows.map { it.key })
+        assertNull(drag.awaiting)
+        // Dropped where it started: nothing to send either.
+        drag.start("u2")
+        assertNull(drag.drop())
+        assertEquals(listOf("u1", "u2", "u3"), drag.rows.map { it.key })
+    }
+
+    @Test
+    fun aMoveThatChangesNothingShowsThePlayersOrderAgain() {
+        val drag = QueueDrag()
+        val queue = upNext(listOf("a", "b", "c"), listOf(1, 2, 3))
+        drag.show(queue)
+        drag.start("u1")
+        drag.over("u2")
+        assertEquals(EntryMove(1, 2, false), drag.drop())
+        assertEquals(listOf("u2", "u1", "u3"), drag.rows.map { it.key })
+        // The player refused it: no new queue comes, and the sheet settles back.
+        drag.settle()
+        assertEquals(listOf("u1", "u2", "u3"), drag.rows.map { it.key })
+    }
+
+    @Test
+    fun aMoveAcrossTheHeadingNamesTheEntryItFollows() {
+        // [q1 q2 | r1 r2]: r2 to just under q1 joins "Next in queue" after q1.
+        val queue = upNext(listOf("q1", "q2", "r1", "r2"), listOf(5, 6, 7, 8), queued = 2)
+        assertEquals(EntryMove(8, 5, true), QueueRows.entryMove(queue, 4, 1))
+        // q1 below r1: leaves it, after r1.
+        assertEquals(EntryMove(5, 7, false), QueueRows.entryMove(queue, 0, 3))
+    }
 }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -173,6 +174,7 @@ fun LinkText(
     Box(
         modifier
             .heightIn(min = Theme.dimens.touch)
+            .widthIn(min = Theme.dimens.touch)
             .clip(CircleShape)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 8.dp),

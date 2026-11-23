@@ -16,6 +16,10 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,8 +34,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,7 +59,6 @@ import kotlin.math.abs
 import kotlinx.coroutines.launch
 import org.medianexus.music.R
 import org.medianexus.music.net.Song
-import org.medianexus.music.playback.UpNext
 import org.medianexus.music.ui.parts.Cover
 import org.medianexus.music.ui.parts.CoverShape
 import org.medianexus.music.ui.parts.Icon
@@ -81,6 +82,14 @@ import org.medianexus.music.ui.theme.Theme
 fun QueueSheet(onClose: () -> Unit) {
     val colors = Theme.colors
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // The sheet comes up to the foot of Now Playing's top bar and no further, so what's
+    // behind it ("Playing from …") is either all there or not there at all.
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val window = with(density) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.height.toDp() }
+    val statusBar = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
+    // The sheet keeps the navigation bar's height clear below what it holds.
+    val navigation = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
+    val height = (window - statusBar - NOW_PLAYING_BAR - SHEET_HANDLE - navigation).coerceAtLeast(240.dp)
     ModalBottomSheet(
         onDismissRequest = onClose,
         sheetState = state,
@@ -88,9 +97,13 @@ fun QueueSheet(onClose: () -> Unit) {
         contentColor = colors.text,
         dragHandle = { BottomSheetDefaults.DragHandle(color = colors.faint) },
     ) {
-        Box(Modifier.fillMaxHeight(0.92f)) { QueueList() }
+        Box(Modifier.height(height)) { QueueList() }
     }
 }
+
+/** Now Playing's top bar, and the sheet's own handle above its content. */
+private val NOW_PLAYING_BAR = 56.dp
+private val SHEET_HANDLE = 48.dp
 
 private val ROW = 64.dp
 
@@ -106,56 +119,33 @@ private fun QueueList() {
     val scope = rememberCoroutineScope()
     val edge = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
 
-    // The rows as shown: the queue's, except while a song is being dragged, when they are
-    // rearranged here as the finger goes and the queue is told once it lets go.
-    val rows = remember { mutableStateListOf<QueueRow>() }
-    var dragging by remember { mutableStateOf<String?>(null) }
-    var dragFrom by remember { mutableIntStateOf(-1) }
+    // The rows as shown: the queue's, except while a song is being dragged (see QueueDrag).
+    val drag = remember { QueueDrag() }
     var dragOffset by remember { mutableFloatStateOf(0f) }
-    var draggedFrom by remember { mutableStateOf<UpNext?>(null) }
-    LaunchedEffect(upNext) {
-        if (dragging == null) {
-            rows.clear()
-            rows.addAll(QueueRows.of(upNext.songs, upNext.queuedAhead))
-        }
+    LaunchedEffect(upNext) { drag.show(upNext) }
+    // A move that brings no new queue within a moment was refused or changed nothing: the
+    // player's order is shown again.
+    val awaiting = drag.awaiting
+    LaunchedEffect(awaiting) {
+        if (awaiting == null) return@LaunchedEffect
+        kotlinx.coroutines.delay(SETTLE_MILLIS)
+        drag.settle()
     }
+    val rows = drag.rows
 
-    fun send(row: Int, target: Int, before: UpNext) {
-        // The queue moved on while the finger was down: what was dragged may no longer be
-        // where it was, so nothing is changed.
-        if (before !== upNext) return
-        val move = QueueRows.move(row, target, QueueRows.gap(before.songs.size, before.queuedAhead), before.queuedAhead) ?: return
-        player.move(move.from, move.to, move.queued)
-    }
-
-    fun drop() {
-        val key = dragging ?: return
-        val target = rows.indexOfFirst { it.key == key }
-        val before = draggedFrom
-        dragging = null
-        dragOffset = 0f
-        if (before != null && target >= 0) send(dragFrom, target, before)
-        // Back to the queue as it is (the move, when it arrives, changes it again).
-        rows.clear()
-        rows.addAll(QueueRows.of(upNext.songs, upNext.queuedAhead).let { if (before != null && target >= 0 && before === upNext) arranged(it, dragFrom, target) else it })
+    fun send(move: org.medianexus.music.ui.player.EntryMove?) {
+        if (move != null) player.move(move.uid, move.after, move.queued)
     }
 
     fun dragBy(amount: Float) {
-        val key = dragging ?: return
+        val key = drag.dragging ?: return
         dragOffset += amount
         val items = list.layoutInfo.visibleItemsInfo
         val info = items.firstOrNull { it.key == key } ?: return
         val middle = info.offset + dragOffset + info.size / 2f
-        val keys = rows.map { it.key }.toSet()
-        val over = items.firstOrNull { it.key != key && it.key in keys && middle >= it.offset && middle <= it.offset + it.size }
-        if (over != null) {
-            val from = rows.indexOfFirst { it.key == key }
-            val to = rows.indexOfFirst { it.key == over.key }
-            if (from >= 0 && to >= 0) {
-                rows.add(to, rows.removeAt(from))
-                dragOffset += info.offset - over.offset
-            }
-        }
+        // Only the queue's own rows (keys "u…" and the heading between them) change places.
+        val over = items.firstOrNull { it.key != key && isRowKey(it.key) && middle >= it.offset && middle <= it.offset + it.size }
+        if (over != null && drag.over(over.key as String)) dragOffset += info.offset - over.offset
         // Near an end of the list, it scrolls to bring more into reach.
         val viewport = list.layoutInfo.viewportEndOffset
         val step = when {
@@ -168,6 +158,9 @@ private fun QueueList() {
 
     val nextInQueue = stringResource(R.string.next_in_queue)
     val nextFrom = if (upNext.context.isEmpty()) stringResource(R.string.next_up) else stringResource(R.string.next_from, upNext.context)
+    val moveUp = stringResource(R.string.move_up)
+    val moveDown = stringResource(R.string.move_down)
+    val removeWord = stringResource(R.string.remove_from_queue)
     LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
         item(key = "title", contentType = "title") {
             BasicText(
@@ -195,7 +188,7 @@ private fun QueueList() {
             }
         }
         itemsIndexed(rows, key = { _, row -> row.key }, contentType = { _, row -> if (row is QueueRow.Gap) "gap" else "song" }) { index, row ->
-            val lifted = row.key == dragging
+            val lifted = row.key == drag.dragging
             val place = Modifier
                 .then(if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = dragOffset } else Modifier.animateItem())
             when (row) {
@@ -203,40 +196,50 @@ private fun QueueList() {
                     Heading(nextFrom, stringResource(R.string.clear)) { player.clear(queued = false) }
                 }
                 is QueueRow.Entry -> {
-                    val moveTo = { target: Int ->
-                        if (target in rows.indices) send(index, target, upNext)
+                    // For screen readers: a step up or down, against the rows as shown. Only
+                    // offered where it does something.
+                    val stepTo = { target: Int ->
+                        val snapshot = upNext
+                        val rowsNow = QueueRows.of(snapshot.songs, snapshot.queuedAhead, snapshot.uids)
+                        val at = rowsNow.indexOfFirst { it.key == row.key }
+                        if (at >= 0 && target in rowsNow.indices) send(QueueRows.entryMove(snapshot, at, target))
+                    }
+                    val actions = buildList {
+                        if (index > 0) add(CustomAccessibilityAction(moveUp) { stepTo(index - 1); true })
+                        if (index < rows.lastIndex) add(CustomAccessibilityAction(moveDown) { stepTo(index + 1); true })
+                        add(CustomAccessibilityAction(removeWord) { player.remove(row.uid); true })
                     }
                     SwipeAway(row.key, onGone = {
-                        rows.remove(row)
-                        player.remove(row.offset)
+                        drag.removeNow(row.key)
+                        player.remove(row.uid)
                     }, modifier = place) {
                         SongLine(
                             row.song,
                             current = false,
                             playing = false,
                             lifted = lifted,
-                            onClick = { player.jump(row.offset) },
-                            onMenu = { ui.menu = SongMenu(row.song, upcoming = row.offset) },
+                            onClick = { player.jump(row.uid) },
+                            onMenu = { ui.menu = SongMenu(row.song, upcoming = row.uid) },
                             handle = Modifier.pointerInput(row.key) {
                                 detectDragGestures(
                                     onDragStart = {
-                                        dragging = row.key
-                                        dragFrom = rows.indexOfFirst { it.key == row.key }
-                                        draggedFrom = upNext
+                                        drag.start(row.key)
                                         dragOffset = 0f
                                     },
-                                    onDragEnd = { drop() },
-                                    onDragCancel = { drop() },
+                                    onDragEnd = {
+                                        dragOffset = 0f
+                                        send(drag.drop())
+                                    },
+                                    onDragCancel = {
+                                        dragOffset = 0f
+                                        drag.cancel()
+                                    },
                                 ) { change, amount ->
                                     change.consume()
                                     dragBy(amount.y)
                                 }
                             },
-                            actions = listOf(
-                                CustomAccessibilityAction(stringResource(R.string.move_up)) { moveTo(index - 1); true },
-                                CustomAccessibilityAction(stringResource(R.string.move_down)) { moveTo(index + 1); true },
-                                CustomAccessibilityAction(stringResource(R.string.remove_from_queue)) { player.remove(row.offset); true },
-                            ),
+                            actions = actions,
                             queued = row.queued,
                         )
                     }
@@ -246,17 +249,17 @@ private fun QueueList() {
     }
 }
 
-/** The rows as they will be once a move has been carried out: shown meanwhile, so the song
- *  doesn't jump back for a moment. */
-private fun arranged(rows: List<QueueRow>, from: Int, to: Int): List<QueueRow> {
-    if (from !in rows.indices || to !in rows.indices) return rows
-    return rows.toMutableList().apply { add(to, removeAt(from)) }
-}
+/** Whether a list key is one of the queue's own rows. */
+private fun isRowKey(key: Any): Boolean = key is String && (key == "gap" || (key.length > 1 && key[0] == 'u'))
+
+/** How long a move sent may take to come back as a new queue before the sheet takes it that
+ *  nothing changed. */
+private const val SETTLE_MILLIS = 1_000L
 
 @Composable
 private fun Heading(text: String, action: String? = null, onAction: () -> Unit = {}) {
     Row(
-        Modifier.fillMaxWidth().height(40.dp).padding(start = Theme.dimens.pagePad, end = 8.dp),
+        Modifier.fillMaxWidth().heightIn(min = Theme.dimens.touch).padding(start = Theme.dimens.pagePad, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         BasicText(
@@ -316,7 +319,7 @@ private fun SongLine(
         if (handle != null) {
             val label = stringResource(R.string.drag_to_move, song.title)
             Box(handle.size(Theme.dimens.touch).semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
-                Icon(R.drawable.ic_grip_vertical, size = 20.dp, tint = colors.faint)
+                Icon(R.drawable.ic_grip_vertical, size = 20.dp, tint = colors.muted)
             }
         }
     }
