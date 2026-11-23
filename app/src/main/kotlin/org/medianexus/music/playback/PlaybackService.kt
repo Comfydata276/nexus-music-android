@@ -102,6 +102,11 @@ class PlaybackService : MediaLibraryService() {
         val tree = CarTree(account.library, words)
         val kept = KeptSongs(account.keptSongsDir, database) { graph.settings.value.cacheLimitMb * 1024L * 1024L }
         val searches = SearchResults()
+        /** What this account's conversions have been found to be, and the songs of its the
+         *  phone turned out not to play as they are. By song id, which is only this server's
+         *  to give: another account's server can use the same ids for other songs. */
+        val conversions = Conversions()
+        val needsConverting = NeedsConverting()
         /** Who made each search lately: told when one is to be made again. */
         val searchedBy = java.util.concurrent.ConcurrentHashMap<String, MediaSession.ControllerInfo>()
         /** The account's saved queue, for this service's turn at it: nothing is written to
@@ -118,8 +123,6 @@ class PlaybackService : MediaLibraryService() {
     private var eras = 0L
     private val account: AccountGraph? get() = era?.account
     private val database by lazy { StandaloneDatabaseProvider(this) }
-
-    private val needsConverting = NeedsConverting()
 
     /** What the server is told about listening: "now playing", and each play that counts. */
     private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::scrobble)
@@ -578,6 +581,7 @@ class PlaybackService : MediaLibraryService() {
                 // The same switch the API client obeys: offline mode stops the player
                 // fetching too, not only the pages.
                 override val offline = graph.offline.on
+                override val conversions = era.conversions
                 override fun resolve(songId: String): SongWhere = resolve(era, songId)
                 override fun release() {
                     if (cache != null) era.kept.release()
@@ -621,7 +625,7 @@ class PlaybackService : MediaLibraryService() {
         val api = era.account.api
         val song = player.songFor(songId)
         val suffix = song?.suffix?.lowercase().orEmpty()
-        val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in needsConverting
+        val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting
         val form = streamForm(native, graph.settings.value.bitrate, suffix, song?.bitRate ?: 0)
         // Here, in later versions, a downloaded copy is chosen first, then one kept from
         // fetching ahead; only then the server.
@@ -666,7 +670,7 @@ class PlaybackService : MediaLibraryService() {
             putInt(EXTRA_AHEAD, player.ahead)
             putString(EXTRA_SOURCE, queue.source)
             putInt(EXTRA_ORIGIN, queue.currentOrigin() ?: -1)
-            putBoolean(EXTRA_CONVERTED, queue.current()?.id?.let { it in needsConverting } == true)
+            putBoolean(EXTRA_CONVERTED, queue.current()?.id?.let { id -> era?.needsConverting?.let { id in it } } == true)
             putBoolean(EXTRA_SETTLED, era?.restoring?.isCompleted == true)
             // The song these extras are about: the player's own word on what's playing can
             // reach a controller before or after them.
@@ -815,7 +819,7 @@ class PlaybackService : MediaLibraryService() {
             graph.diagnostics.note("playback error: ${error.errorCodeName}" + (status?.let { " (the server answered $it)" } ?: ""))
             val song = player.queue.current() ?: return
             when {
-                undecodable(error) && needsConverting.mark(song.id) -> {
+                undecodable(error) && era?.needsConverting?.mark(song.id) == true -> {
                     // The phone can't play this file as it is: have the server convert it.
                     publishExtras()
                     exo.prepare()
@@ -1341,20 +1345,16 @@ class PlaybackService : MediaLibraryService() {
     /**
      * Answers something asked of the session, for the account signed in. The work belongs
      * to that account's generation: if the account goes while it is being done, the work is
-     * dropped and the answer is `signedOut`, never something of theirs handed on afterwards.
-     * `signedOut` is also the answer when nobody is signed in.
+     * dropped, and nothing of theirs is handed on afterwards. `signedOut` is the answer when
+     * nobody is signed in; if someone else has signed in meanwhile, the question is answered
+     * again for them (see [ForAccount]).
      */
     private fun <T> answer(signedOut: () -> T, work: suspend (Era) -> T): ListenableFuture<T> = scope.future {
-        val era = eraOrNull() ?: return@future signedOut()
-        val doing = era.scope.async { work(era) }
-        val done = try {
-            doing.await()
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            // The account went (its scope was cancelled), not this request.
-            if (era !== this@PlaybackService.era) return@future signedOut()
-            throw e
-        }
-        if (era !== this@PlaybackService.era) signedOut() else done
+        ForAccount.answer(
+            now = ::eraOrNull,
+            isNow = { it === this@PlaybackService.era },
+            signedOut = signedOut,
+        ) { era -> era.scope.async { work(era) }.await() }
     }
 
     /**

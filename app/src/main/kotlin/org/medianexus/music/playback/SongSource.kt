@@ -95,8 +95,24 @@ interface SongLease {
     /** Offline mode is on: nothing may be asked of the server. */
     val offline: Boolean
 
+    /**
+     * What this account's conversions have said about themselves, and which of them are
+     * being kept right now. The account's own, like its kept songs: two servers can give two
+     * different songs the same id, and what one server's conversion of "song 12 at 128" was
+     * found to be (where its audio starts, its rate, whether it takes byte ranges) is no
+     * guide to the other's.
+     */
+    val conversions: Conversions
+
     /** The read has closed. */
     fun release()
+}
+
+/** One account's conversions: see [SongLease.conversions]. Made with the account's turn at
+ *  the player, and gone with it. */
+class Conversions {
+    val heads = ConversionHeads()
+    val writers = ConversionWriters()
 }
 
 /**
@@ -133,8 +149,6 @@ class SongDataSource(
     /** The account generation this data source was made for. */
     private val generation: Long,
     private val upstream: DataSource.Factory,
-    private val heads: ConversionHeads,
-    private val writers: ConversionWriters,
     /** Waits before a conversion that failed is asked for again (see [SongReader]). */
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
 ) : DataSource {
@@ -161,7 +175,7 @@ class SongDataSource(
         // Refused here if the account this was made for has gone.
         val lease = leases.lease(generation).also { this.lease = it }
         val where = lease.resolve(id)
-        val reader = SongReader(Streams(lease.cache, dataSpec), heads, writers, pause).also { this.reader = it }
+        val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
         return guarded { reader.open(where, dataSpec.position, lease.offline) }
     }
 
@@ -301,10 +315,7 @@ class SongDataSource(
 
     /** Makes one for each read the player starts, for the account signed in at that moment. */
     class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory, private val pause: (Long) -> Unit = { Thread.sleep(it) }) : DataSource.Factory {
-        private val heads = ConversionHeads()
-        private val writers = ConversionWriters()
-
-        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream, heads, writers, pause)
+        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream, pause)
     }
 }
 

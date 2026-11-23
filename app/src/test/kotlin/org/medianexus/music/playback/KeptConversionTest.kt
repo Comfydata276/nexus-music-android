@@ -92,6 +92,7 @@ class KeptConversionTest {
     }
 
     private val form = StreamForm(128, "mp3")
+    private val conversions = Conversions()
 
     private inner class Leases : SongLeases {
         override fun generation() = 1L
@@ -101,6 +102,7 @@ class KeptConversionTest {
             return object : SongLease {
                 override val cache = cache
                 override val offline = this@KeptConversionTest.offline
+                override val conversions = this@KeptConversionTest.conversions
                 override fun resolve(songId: String) = SongWhere(form, cacheKey(songId, form), least) { "http://server.invalid/stream?id=$songId&timeOffset=$it" }
                 override fun release() {
                     if (cache != null) kept.release()

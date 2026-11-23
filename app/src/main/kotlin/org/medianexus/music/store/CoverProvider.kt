@@ -40,11 +40,11 @@ class CoverProvider : ContentProvider() {
         if (CoverStore.fileName(id) == null) throw FileNotFoundException("Not a cover")
         // A cover already on the phone, for an account already known: no waiting at all.
         val known = try {
-            context.graph.accounts.state.value?.covers
+            context.graph.accounts.state.value
         } catch (_: UninitializedPropertyAccessException) {
             null
         }
-        known?.kept(id)?.let { return ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY) }
+        known?.covers?.kept(id)?.let { return ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY) }
         // Anything else waits: for the app to start, for the saved sign-in, for the server.
         // This is one of the handful of threads the system gives the app for every call from
         // outside it, the car's browsing and the player's controls among them, so only a few
@@ -54,8 +54,14 @@ class CoverProvider : ContentProvider() {
         val file = try {
             runBlocking {
                 withTimeoutOrNull(WAIT_MILLIS) {
-                    val covers = graphOf(context).accounts.restored()?.covers ?: return@withTimeoutOrNull null
-                    covers.kept(id) ?: covers.forOutside(id, MISS_WAIT_MILLIS)
+                    val graph = graphOf(context)
+                    // The cover is the account's that was signed in when it was asked for, and
+                    // is handed over only if that account is still the one signed in: a wait
+                    // of seconds is long enough for someone else to have signed in, and their
+                    // car must not be shown the last person's album.
+                    forWhoeverIsSignedIn(graph.accounts::restored, { graph.accounts.state.value }) { account ->
+                        account.covers.kept(id) ?: account.covers.forOutside(id, MISS_WAIT_MILLIS)
+                    }
                 }
             }
         } finally {
@@ -125,6 +131,17 @@ class CoverProvider : ContentProvider() {
          *  threads for calls from outside: this leaves most of them for everything else. */
         private const val MOST_WAITING = 6
         private val waiting = java.util.concurrent.Semaphore(MOST_WAITING)
+
+        /**
+         * Something of the account that is signed in (`account`), fetched with `fetch`, and
+         * given only if that account is still the one signed in (`current`) when the fetch
+         * has finished: the same last check a song's bytes get before they are played.
+         */
+        internal suspend fun <A : Any, T : Any> forWhoeverIsSignedIn(account: suspend () -> A?, current: () -> A?, fetch: suspend (A) -> T?): T? {
+            val theirs = account() ?: return null
+            val found = fetch(theirs) ?: return null
+            return if (current() === theirs) found else null
+        }
 
         /** The address of a cover, for a media item; null for no cover. */
         fun uriFor(coverId: String): Uri? =

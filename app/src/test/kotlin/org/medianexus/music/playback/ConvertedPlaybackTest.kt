@@ -191,6 +191,7 @@ class ConvertedPlaybackTest {
         override fun lease(generation: Long) = object : SongLease {
             override val cache = null
             override val offline = false
+            override val conversions = this@ConvertedPlaybackTest.conversions
             override fun resolve(songId: String): SongWhere {
                 val form = StreamForm(askedKbps, "mp3")
                 return SongWhere(form, cacheKey(songId, form), leastBytes(catalogueSeconds, askedKbps, 0)) { offset ->
@@ -201,6 +202,7 @@ class ConvertedPlaybackTest {
         }
     }
 
+    private val conversions = Conversions()
     private var player: ExoPlayer? = null
 
     /** The player as the service builds its own: the app's data source, the app's way of
