@@ -195,6 +195,9 @@ class Queue {
      * was: straight after the current track, in the order it was queued.
      */
     internal fun rearrangeKeepingQueued(rearrange: Queue.() -> Unit) {
+        // Nothing queued, nothing to arrange: an empty queue has no "after the current
+        // track" to take a slice of.
+        if (order.isEmpty()) return
         val ahead = order.subList(cursor + 1, cursor + 1 + queuedAhead()).toList()
         rearrange()
         val current = order.getOrNull(cursor) ?: return
@@ -235,7 +238,7 @@ class Queue {
         if (removed < origins.size) origins.removeAt(removed)
         for (i in order.indices) if (order[i] > removed) order[i] -= 1
         if (at < cursor) cursor -= 1
-        if (cursor >= order.size && order.isNotEmpty()) cursor = order.size - 1
+        if (cursor >= order.size) cursor = (order.size - 1).coerceAtLeast(0)
     }
 
     /**
