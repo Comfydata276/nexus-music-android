@@ -85,6 +85,28 @@ class HttpTest {
     }
 
     @Test
+    fun aPlainRedirectToAnotherHostIsNotFollowed() {
+        // Over plain HTTP anyone on the way can answer "go there instead", and the sign-in
+        // token in the address would go with the request.
+        val elsewhere = plain.url("/rest/ping?t=token&s=salt").newBuilder().host("127.0.0.1").build()
+        plain.enqueue(MockResponse.Builder().code(302).setHeader("Location", elsewhere.toString()).build())
+        try {
+            http.newCall(Request.Builder().url(plain.named("/rest/ping?t=token&s=salt")).build()).execute().close()
+            fail("the redirect was followed")
+        } catch (e: InsecureRedirect) {
+            assertFalse(e.message!!, "127.0.0.1" in e.message!! || "localhost" in e.message!!)
+        }
+        // Only the first request was made.
+        assertEquals(1, plain.requestCount)
+        // The same host, another path: followed.
+        plain.enqueue(MockResponse.Builder().code(302).setHeader("Location", "/rest/elsewhere").build())
+        plain.enqueue(MockResponse.Builder().body("same host").build())
+        http.newCall(Request.Builder().url(plain.named("/rest/ping")).build()).execute().use {
+            assertEquals("same host", it.body.string())
+        }
+    }
+
+    @Test
     fun theClientSaysWhyItStopped() = runBlocking {
         val leak = plain.named("/rest/ping")
         secure.enqueue(MockResponse.Builder().code(307).setHeader("Location", leak.toString()).build())

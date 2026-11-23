@@ -43,20 +43,30 @@ object Http {
         .build()
 
     /**
-     * Refuses a redirect from HTTPS to plain HTTP. Every request carries a sign-in token in
-     * its address, and a redirect would send it on unencrypted. (Redirects the other way, or
-     * staying on one scheme, are followed as usual.) A network interceptor sees each step of
-     * a redirect before OkHttp follows it.
+     * Refuses the redirects that would give the sign-in away. Every request carries a
+     * sign-in token in its address, which a redirect carries on with it:
+     *
+     * - from HTTPS to plain HTTP, it would go on unencrypted;
+     * - from plain HTTP to a different host, it would go to whoever the answer named, and
+     *   over plain HTTP anyone on the way can write that answer.
+     *
+     * Other redirects are followed as usual: staying on HTTPS, an upgrade to HTTPS on the
+     * same host, another path or port of the same host. A network interceptor sees each step
+     * of a redirect before OkHttp follows it.
      */
     internal object NoDowngrade : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val request = chain.request()
             val response = chain.proceed(request)
-            if (request.isHttps && response.isRedirect) {
+            if (response.isRedirect) {
                 val target = response.header("Location")?.let { request.url.resolve(it) }
-                if (target != null && !target.isHttps) {
+                if (target != null && request.isHttps && !target.isHttps) {
                     response.close()
-                    throw InsecureRedirect()
+                    throw InsecureRedirect("The server tried to send the request on without encryption, so it wasn't followed.")
+                }
+                if (target != null && !request.isHttps && !target.host.equals(request.url.host, ignoreCase = true)) {
+                    response.close()
+                    throw InsecureRedirect("The server tried to send the request on to another address, so it wasn't followed.")
                 }
             }
             return response
@@ -64,8 +74,9 @@ object Http {
     }
 }
 
-/** The server tried to send a request on from HTTPS to plain HTTP (see `Http.NoDowngrade`). */
-class InsecureRedirect : IOException("The server tried to send the request on without encryption, so it wasn't followed.")
+/** The server tried to send a request on somewhere the sign-in token shouldn't go (see
+ *  `Http.NoDowngrade`). The message never names an address. */
+class InsecureRedirect(message: String) : IOException(message)
 
 /**
  * Sends the call and hands its response to `read`, which runs on `io` and may block reading
