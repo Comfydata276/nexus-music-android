@@ -2,7 +2,12 @@ package org.medianexus.music.net
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -62,8 +67,39 @@ object Http {
 /** The server tried to send a request on from HTTPS to plain HTTP (see `Http.NoDowngrade`). */
 class InsecureRedirect : IOException("The server tried to send the request on without encryption, so it wasn't followed.")
 
+/**
+ * Sends the call and hands its response to `read`, which runs on `io` and may block reading
+ * the body. The call and its response are held throughout: however the caller is cancelled
+ * (waiting for the answer, or part-way through reading it), the call is cancelled, which
+ * stops a read that is blocked, and the response is closed, which gives back its connection.
+ */
+internal suspend fun <T> Call.fetch(io: CoroutineDispatcher, read: (Response) -> T): T {
+    val response = await()
+    // Nothing may suspend between the answer arriving and `use` taking it, or a cancellation
+    // there would leave it open.
+    return response.use {
+        coroutineScope {
+            val reading = async(io) {
+                try {
+                    read(it)
+                } catch (e: Exception) {
+                    // Cut off by the cancellation below: say so, not what the cut-off read saw.
+                    ensureActive()
+                    throw e
+                }
+            }
+            try {
+                reading.await()
+            } catch (e: CancellationException) {
+                cancel()
+                throw e
+            }
+        }
+    }
+}
+
 /** Runs the call without holding a thread while it waits, and cancels it if the caller is
- *  cancelled. The response's body still has to be read off the main thread. */
+ *  cancelled. The response's body still has to be read off the main thread: see `fetch`. */
 internal suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {

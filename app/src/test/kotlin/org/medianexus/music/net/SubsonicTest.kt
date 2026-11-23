@@ -1,9 +1,16 @@
 package org.medianexus.music.net
 
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -267,6 +274,43 @@ class SubsonicTest {
         assertTrue(api.streamUrl("s1", 0).endsWith("&id=s1&format=raw"))
         assertTrue(api.streamUrl("s1", 160, 30).endsWith("&id=s1&format=mp3&maxBitRate=160&timeOffset=30"))
         assertTrue(api.streamUrl("s1", 160).endsWith("&id=s1&format=mp3&maxBitRate=160"))
+    }
+
+    /** A long answer that arrives a little at a time: reading it all would take a minute. */
+    private fun slowAnswer(start: String = "") = server.enqueue(
+        MockResponse.Builder()
+            .setHeader("Content-Type", "application/json")
+            .body(Buffer().writeUtf8(start).writeUtf8("x".repeat(1_000_000)))
+            .throttleBody(1024, 60, TimeUnit.MILLISECONDS)
+            .build(),
+    )
+
+    /** Starts `request`, cancels it part-way through reading the answer, and checks that it
+     *  stopped at once and gave its connection back. */
+    private fun cancelsMidBody(http: OkHttpClient, request: suspend () -> Unit) = runBlocking {
+        val job = launch(Dispatchers.Default) { request() }
+        server.takeRequest()
+        // Well into the body by now.
+        delay(400)
+        assertFalse(job.isCompleted)
+        val started = System.nanoTime()
+        withTimeout(5_000) { job.cancelAndJoin() }
+        val took = (System.nanoTime() - started) / 1_000_000
+        assertTrue("took $took ms", took < 3_000)
+        assertTrue(job.isCancelled)
+        // No call still running, and no connection kept: it was closed, not left half-read.
+        assertEquals(0, http.dispatcher.runningCallsCount())
+        withTimeout(5_000) { while (http.connectionPool.connectionCount() > 0) delay(20) }
+    }
+
+    @Test(timeout = 30_000)
+    fun aRequestCancelledMidAnswerLetsGoOfItsConnection() {
+        val http = OkHttpClient()
+        val api = Subsonic(server.url("/").toString(), "ada", "sesame", http)
+        slowAnswer("{\"subsonic-response\":{\"status\":\"ok\",\"padding\":\"")
+        cancelsMidBody(http) { api.ping() }
+        slowAnswer()
+        cancelsMidBody(http) { api.fetchBytes(api.coverUrl("c1", 300), 10_000_000) }
     }
 
     @Test

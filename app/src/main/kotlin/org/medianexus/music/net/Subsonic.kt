@@ -172,19 +172,10 @@ class Subsonic private constructor(
         checkOnline()
         val call = http.newCall(request)
         if (limitMillis != null) call.timeout().timeout(limitMillis, TimeUnit.MILLISECONDS)
-        val response = try {
-            call.await()
+        return try {
+            call.fetch(io) { it.code to it.body.string() }
         } catch (e: IOException) {
             throw ApiError.Network(networkHint(e))
-        }
-        return withContext(io) {
-            response.use {
-                try {
-                    it.code to it.body.string()
-                } catch (e: IOException) {
-                    throw ApiError.Network(networkHint(e))
-                }
-            }
         }
     }
 
@@ -414,22 +405,15 @@ class Subsonic private constructor(
         checkOnline()
         val call = http.newCall(buildRequest(url) { get() })
         call.timeout().timeout(Http.API_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        val response = try {
-            call.await()
+        return try {
+            call.fetch(io) {
+                if (!it.isSuccessful) throw ApiError.Network("HTTP status ${it.code}.")
+                val source = it.body.source()
+                if (source.request(limit + 1)) throw ApiError.Network("(The answer was larger than $limit bytes.)")
+                source.buffer.readByteArray()
+            }
         } catch (e: IOException) {
             throw ApiError.Network(networkHint(e))
-        }
-        return withContext(io) {
-            response.use {
-                if (!it.isSuccessful) throw ApiError.Network("HTTP status ${it.code}.")
-                try {
-                    val source = it.body.source()
-                    if (source.request(limit + 1)) throw ApiError.Network("(The answer was larger than $limit bytes.)")
-                    source.buffer.readByteArray()
-                } catch (e: IOException) {
-                    throw ApiError.Network(networkHint(e))
-                }
-            }
         }
     }
 
