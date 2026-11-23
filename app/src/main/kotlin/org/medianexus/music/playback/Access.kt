@@ -19,10 +19,12 @@ enum class Caller {
     TRUSTED,
 
     /** Media3's own controller inside this app, which draws the notification and stands for
-     *  the system's media controls and for headset and car buttons. Anything that arrives
-     *  under this name may have come from outside (a start intent to the exported service
-     *  looks the same as a tap on the notification), so it may only do what the notification
-     *  can: transport, and the like, shuffle and repeat buttons. */
+     *  the system's media controls and for headset buttons. A player command that arrives
+     *  under this name may have come from outside (a media-button intent sent to the
+     *  exported service looks the same as a tap on the notification), so those are transport
+     *  only. Like, shuffle and repeat under this name are the system's own media controls
+     *  pressing them: the notification's own buttons for the three, and anything forged to
+     *  look like them, are dealt with before they become anyone's command (`OwnButtons`). */
     NOTIFICATION,
 
     /** This app's own screens. */
@@ -55,6 +57,10 @@ object Access {
     /** Whether this caller may send this custom command. */
     fun mayCustom(caller: Caller, action: String): Boolean = when {
         caller == Caller.REFUSED -> false
+        // (Under the notification controller's name too: that is how Media3 reports the
+        // system's own media controls, on the lock screen and in Quick Settings, which show
+        // these buttons. A start intent shaped like one of them never gets this far: see
+        // OwnButtons.)
         action in BUTTONS -> true
         action in APP_ONLY -> caller == Caller.OWN_INTERFACE
         else -> false
@@ -74,10 +80,11 @@ object Access {
     val APP_ONLY: Set<String> = AppActions.all.toSet()
 
     /**
-     * What a notification, a lock screen or a headset button can do: play, pause, stop, the
-     * next and previous song, and moving about in the one that's playing; shuffle and repeat,
-     * which the system's controls can show as buttons. Not choosing what is played, changing
-     * the queue or jumping to a place in it.
+     * What a start intent to the service, a headset button or the notification's transport
+     * buttons can do: play, pause, stop, the next and previous song, and moving about in the
+     * one that's playing. Not choosing what is played, changing the queue or jumping to a
+     * place in it; and not shuffle or repeat, which change how someone's queue plays (and,
+     * with it, what the app remembers for that list).
      */
     val TRANSPORT = setOf(
         Player.COMMAND_PLAY_PAUSE,
@@ -91,8 +98,6 @@ object Access {
         Player.COMMAND_SEEK_TO_NEXT,
         Player.COMMAND_SEEK_BACK,
         Player.COMMAND_SEEK_FORWARD,
-        Player.COMMAND_SET_SHUFFLE_MODE,
-        Player.COMMAND_SET_REPEAT_MODE,
     )
 }
 

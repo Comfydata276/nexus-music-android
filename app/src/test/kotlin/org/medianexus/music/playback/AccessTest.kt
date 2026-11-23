@@ -40,7 +40,14 @@ class AccessTest {
         // name: it was given every one of the app's own commands.
         assertEquals(Caller.NOTIFICATION, notification)
         for (action in queueEdits) assertFalse(action, Access.mayCustom(notification, action))
+        // Like, shuffle and repeat under this name are the system's own media controls
+        // (Media3 reports System UI as the notification controller). A start intent shaped
+        // like one of those buttons no longer becomes a command at all: `ForgedStartTest`.
         for (action in Access.BUTTONS) assertTrue(action, Access.mayCustom(notification, action))
+        // As player commands, which a media-button intent from any app is carried out as,
+        // shuffle and repeat are not transport.
+        for (command in listOf(Player.COMMAND_SET_SHUFFLE_MODE, Player.COMMAND_SET_REPEAT_MODE)) assertFalse("command $command", Access.mayPlayer(notification, command))
+        assertTrue(Access.mayPlayer(car, Player.COMMAND_SET_SHUFFLE_MODE))
         // Media3 also turns "custom actions" of its own into player commands, a media item to
         // play among them. Transport only.
         for (command in listOf(

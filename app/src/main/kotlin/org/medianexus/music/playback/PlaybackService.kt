@@ -149,6 +149,10 @@ class PlaybackService : MediaLibraryService() {
     private var lastSaveAt = 0L
 
     private lateinit var words: CarWords
+
+    /** What the notification's own buttons carry, and nothing sent from outside can (see
+     *  [OwnMark]). Made with the service; never written down. */
+    private val mark = OwnMark()
     private val callback = Callback()
     private val watcher = Watcher()
 
@@ -217,7 +221,15 @@ class PlaybackService : MediaLibraryService() {
             // right, rather than flashing up and going.
             .setLibraryErrorReplicationMode(MediaLibrarySession.LIBRARY_ERROR_REPLICATION_MODE_FATAL)
             .build()
-        setMediaNotificationProvider(DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.ic_bars) })
+        // Media3's notification, its like, shuffle and repeat buttons carrying this app's
+        // mark: an intent shaped like one of them, without it, is not carried out (see
+        // OwnButtons).
+        setMediaNotificationProvider(
+            OwnButtons(
+                DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.ic_bars) },
+                mark, press = { press(it) }, note = { graph.diagnostics.note(it) },
+            ),
+        )
         // Media3's hook for a foreground start Android refuses (Android 12 and later): it
         // catches the exception and tells this, wherever in its own code the start was made.
         setListener(object : Listener {
@@ -378,11 +390,14 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // In a fixed set of words: the action is whatever the sender wrote, and the service
+        // is open to every app.
         noteStartedBy(
-            when {
-                intent?.action == Intent.ACTION_MEDIA_BUTTON -> "a media button" + (keyOf(intent)?.let { " ($it)" } ?: "")
-                intent?.action == null -> "a start request"
-                else -> "a start request (${intent.action?.substringAfterLast('.')?.take(40)})"
+            when (intent?.action) {
+                Intent.ACTION_MEDIA_BUTTON -> "a media button" + (keyOf(intent)?.let { " ($it)" } ?: "")
+                null -> "a start request"
+                MEDIA3_BUTTON_ACTION -> "a start request (a notification button)"
+                else -> "a start request (other)"
             },
         )
         if (intent?.action == Intent.ACTION_MEDIA_BUTTON) holdForeground(why = "for a media button")
@@ -565,10 +580,11 @@ class PlaybackService : MediaLibraryService() {
         main.removeCallbacks(deadlineAgain)
     }
 
-    /** The button a media button intent carries, by its key's name. */
+    /** The button a media button intent carries: one of the keys a player answers to, by
+     *  name, or "another key". */
     private fun keyOf(intent: Intent): String? = runCatching {
         @Suppress("DEPRECATION")
-        (intent.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT))?.keyCode?.let { android.view.KeyEvent.keyCodeToString(it).removePrefix("KEYCODE_") }
+        (intent.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT))?.keyCode?.let { MEDIA_KEYS[it] ?: "another key" }
     }.getOrNull()
 
     /**
@@ -1271,7 +1287,10 @@ class PlaybackService : MediaLibraryService() {
          * notification controller's name may be a tap on the notification or a headset
          * button, or may be an intent any app sent to the exported service, which Media3
          * can't tell apart: so under that name only transport is carried out, whatever the
-         * intent asked for (Media3 will turn one into "play this item" if allowed).
+         * intent asked for (Media3 will turn one into "play this item" if allowed). Not
+         * shuffle or repeat either: the notification's own buttons for those, and for like,
+         * are told from a forgery by the mark they carry, and are carried out without ever
+         * becoming that controller's commands (see OwnButtons).
          */
         @Deprecated("Media3 offers nothing else that is asked per command and per controller")
         override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
@@ -1536,19 +1555,7 @@ class PlaybackService : MediaLibraryService() {
                 return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
             }
             val done = when (customCommand.customAction) {
-                LIKE.customAction -> {
-                    player.queue.current()?.let { song -> account?.likes?.toggle(song) }
-                    updateButtons()
-                    true
-                }
-                SHUFFLE.customAction -> {
-                    player.setShuffle(!player.queue.shuffle)
-                    true
-                }
-                REPEAT.customAction -> {
-                    player.cycleRepeat()
-                    true
-                }
+                in Access.BUTTONS -> press(customCommand.customAction)
                 AppActions.PLAY -> {
                     // A choice made on the phone: anything still being looked up for the car
                     // has been overtaken. In the foreground first, as for any request that
@@ -1562,6 +1569,21 @@ class PlaybackService : MediaLibraryService() {
                 SessionResult(if (done) SessionResult.RESULT_SUCCESS else SessionError.ERROR_NOT_SUPPORTED),
             )
         }
+    }
+
+    /** Carries out one of the buttons on the car's player and the notification: like,
+     *  shuffle, repeat. False if it isn't one. */
+    private fun press(action: String): Boolean {
+        when (action) {
+            LIKE.customAction -> {
+                player.queue.current()?.let { song -> account?.likes?.toggle(song) }
+                updateButtons()
+            }
+            SHUFFLE.customAction -> player.setShuffle(!player.queue.shuffle)
+            REPEAT.customAction -> player.cycleRepeat()
+            else -> return false
+        }
+        return true
     }
 
     /**
@@ -1846,6 +1868,25 @@ class PlaybackService : MediaLibraryService() {
         const val EXTRA_SONG = "org.medianexus.music.SONG"
         /** On a playback error: it is the lost connection to the server. */
         const val EXTRA_LOST = "org.medianexus.music.LOST"
+
+        /** The action of the start intents Media3 makes for a notification's custom buttons
+         *  (`CustomCommandPendingIntentBuilder.ACTION_CUSTOM`, which isn't public). */
+        private const val MEDIA3_BUTTON_ACTION = "androidx.media3.session.CUSTOM_NOTIFICATION_ACTION"
+
+        /** The keys a media button intent can carry that a player answers to. */
+        private val MEDIA_KEYS = mapOf(
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY to "MEDIA_PLAY",
+            android.view.KeyEvent.KEYCODE_MEDIA_PAUSE to "MEDIA_PAUSE",
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE to "MEDIA_PLAY_PAUSE",
+            android.view.KeyEvent.KEYCODE_HEADSETHOOK to "HEADSETHOOK",
+            android.view.KeyEvent.KEYCODE_MEDIA_NEXT to "MEDIA_NEXT",
+            android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS to "MEDIA_PREVIOUS",
+            android.view.KeyEvent.KEYCODE_MEDIA_STOP to "MEDIA_STOP",
+            android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD to "MEDIA_FAST_FORWARD",
+            android.view.KeyEvent.KEYCODE_MEDIA_REWIND to "MEDIA_REWIND",
+            android.view.KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD to "MEDIA_SKIP_FORWARD",
+            android.view.KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD to "MEDIA_SKIP_BACKWARD",
+        )
 
         /** The extras the Assistant names a playlist and a genre with (MediaStore has no
          *  constants for these two). */
