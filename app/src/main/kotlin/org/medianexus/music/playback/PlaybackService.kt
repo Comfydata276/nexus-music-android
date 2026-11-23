@@ -958,9 +958,6 @@ class PlaybackService : MediaLibraryService() {
 
     private inner class Watcher : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            // Going well up to this moment, whichever way it has just turned: anything that
-            // goes wrong for this song from here is counted from here.
-            goingWell()
             if (isPlaying) {
                 failures = 0
                 stopWaiting()
@@ -968,6 +965,10 @@ class PlaybackService : MediaLibraryService() {
                 countPlaying()
                 listenFor()
             } else {
+                // If it had been playing steadily it was going well up to this moment, and
+                // anything that goes wrong for this song from here is counted from here. (Not
+                // after a moment's sound between two stalls: see Recovery.Outage.played.)
+                outage.played(era?.number ?: 0, player.queue.currentUid() ?: 0, playingSince, clock())
                 // A last sample: what was heard up to the pause counts.
                 plays.paused(exo.currentPosition / 1000.0, clock())
                 save()

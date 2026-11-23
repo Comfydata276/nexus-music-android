@@ -41,6 +41,23 @@ class RecoveryTest {
     }
 
     @Test
+    fun aMomentOfSoundBetweenStallsDoesNotStartTheCountAgain() {
+        val outage = Recovery.Outage()
+        // Three minutes of music, and then the link goes bad.
+        outage.played(1, 7, since = 0, now = 180_000)
+        assertEquals(40_000, outage.waited(1, 7, now = 220_000))
+        // Every so often two seconds of it get through and play. Each of those used to be
+        // "going well", so the ten minutes never ran out and the song was tried for ever.
+        outage.played(1, 7, since = 250_000, now = 252_000)
+        outage.played(1, 7, since = 300_000, now = 301_500)
+        assertEquals(125_000, outage.waited(1, 7, now = 305_000))
+        assertTrue(Recovery.givesUp(outage.waited(1, 7, now = 180_000 + 10 * 60_000L), every))
+        // Half a minute without a break is the music back.
+        outage.played(1, 7, since = 400_000, now = 400_000 + Recovery.STEADY_MILLIS)
+        assertEquals(5_000, outage.waited(1, 7, now = 435_000))
+    }
+
+    @Test
     fun pressingPlayIsANewTry() {
         val outage = Recovery.Outage()
         outage.well(1, 7, now = 0)

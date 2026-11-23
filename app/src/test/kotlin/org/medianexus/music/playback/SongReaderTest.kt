@@ -131,23 +131,27 @@ class SongReaderTest {
         val kept = HashMap<String, Kept>()
         /** A kept copy that fails after this many bytes are read from it (-1: never). */
         var keptFailsAfter = -1L
+        /** Bytes read from an answer that began at the song's start when a byte further in
+         *  was asked for: read only to be thrown away. */
+        var discarded = 0L
 
         override fun server(url: String, position: Long): Opened {
             val request = Request.Builder().url(url)
             if (position > 0) request.header("Range", "bytes=$position-")
             val response = http.newCall(request.build()).execute()
-            if (position > 0 && response.code != 206) {
-                response.close()
-                fail("a range was asked of a server that ignores them: the whole stream up to byte $position would be read and thrown away")
-            }
+            // A server that ignores the range answers from the song's start. Nothing is read
+            // here to make up for that (the real data source is kept from doing so too: see
+            // RangedAnswerTest); whatever the reader then reads of it was read for nothing.
+            val honoured = position == 0L || response.code == 206
             val stream = response.body.byteStream()
             return Opened(
                 object : ByteSource {
-                    override fun read(buffer: ByteArray, offset: Int, length: Int) = stream.read(buffer, offset, length)
+                    override fun read(buffer: ByteArray, offset: Int, length: Int) = stream.read(buffer, offset, length).also { if (!honoured && it > 0) discarded += it }
                     override fun close() = response.close()
                 },
                 response.header("Content-Length")?.toLongOrNull() ?: -1,
                 response.header("Accept-Ranges") == "bytes",
+                honoured,
             )
         }
 
@@ -486,9 +490,7 @@ class SongReaderTest {
             // The player doesn't begin a round of its own after this one.
         }
         reader.close()
-        // Each time it gets a little further before the line goes, so it is making progress:
-        // the waits start again from the shortest. With none at all, they run out.
-        assertTrue("$waits", waits.isNotEmpty() && waits.all { it in listOf(1_000L, 2_000L, 4_000L, 8_000L) })
+        assertEquals(listOf(1_000L, 2_000L, 4_000L, 8_000L), waits)
     }
 
     @Test
@@ -756,5 +758,82 @@ class SongReaderTest {
         assertEquals(StreamForm(0, "mp3"), streamForm(native = true, cap = 0, suffix = "mp3", fileKbps = 320))
         assertEquals(StreamForm(320, "mp3"), streamForm(native = false, cap = 0, suffix = "ape", fileKbps = 900))
         assertEquals(StreamForm(128, "mp3"), streamForm(native = false, cap = 128, suffix = "mp3", fileKbps = 96))
+    }
+
+    // ---- Round three --------------------------------------------------------------------------
+
+    @Test
+    fun aConversionTheServerNoLongerHasWholeIsNotAskedForByByteOnTheStrengthOfLastTime() {
+        // The server had the whole conversion in its own cache: its start said so, with a
+        // length and "takes byte ranges".
+        warm = true
+        val streams = Streams()
+        val reader = SongReader(streams, heads, pause = { waits += it })
+        val where = converted()
+        reader.open(where, 0)
+        reader.take(4_000)
+        reader.close()
+        assertTrue(heads[where.key]!!.ranged)
+        // Since then it has dropped that copy (Navidrome's cache of conversions is a cache):
+        // it converts afresh, from the start, whatever byte is asked for.
+        warm = false
+        asked.clear()
+        val place = byteFor(45_000, 128)
+        reader.open(where, place)
+        val got = reader.take(2_000)
+        reader.close()
+        // What it remembered was asked for by byte; the answer was not a range; and the
+        // answer is what decides. Nothing of that answer is read (it is the whole song from
+        // its start: reading it up to the place is what must never happen), and the place
+        // is asked for by time instead.
+        assertEquals(45_000, firstFrameMs(got))
+        assertEquals("read and thrown away from an answer that ignored the range", 0L, streams.discarded)
+        assertEquals(2, asked.size)
+        assertTrue(asked[0], "bytes=$place-" in asked[0])
+        assertTrue(asked[1], "timeOffset=" in asked[1] && "bytes=" !in asked[1])
+        // And it is not taken on trust again.
+        assertFalse(heads[where.key]!!.ranged)
+    }
+
+    @Test
+    fun aLinkThatDeliversALittleAndStallsIsGivenUpNotTriedForEver() {
+        // Every time the song is asked for, a little arrives and the line goes dead. Each
+        // little counted as progress and started the waits again from the shortest, so the
+        // reader went round for as long as the song had bytes left, and the player was never
+        // told anything was wrong.
+        seconds = 3_600
+        alwaysDrops = true
+        var now = 0L
+        val reader = SongReader(Streams(), heads, pause = { waits += it; now += it }, clock = { now })
+        reader.open(converted(), 0)
+        try {
+            reader.take()
+            fail("read to an end through a connection that never stays up")
+        } catch (_: GaveUp) {
+        }
+        reader.close()
+        // Four more tries, further apart each time, and then it is the player's to wait for
+        // the server.
+        assertEquals(listOf(1_000L, 2_000L, 4_000L, 8_000L), waits)
+        assertEquals(5, asked.size)
+    }
+
+    @Test
+    fun offlineModeTurnedOnWhileWaitingToAskAgainAsksNothingMore() {
+        drops = true
+        var offline = false
+        val streams = Streams()
+        // The line drops; and during the wait before the song is asked for again, offline
+        // mode is switched on.
+        val reader = SongReader(streams, heads, pause = { offline = true })
+        reader.open(converted(), 0) { offline }
+        try {
+            reader.take()
+            fail("went on in offline mode")
+        } catch (_: NotKeptOffline) {
+        }
+        reader.close()
+        // It used to ask the server once more first, and only then notice.
+        assertEquals("asked of the server in offline mode: $asked", 1, asked.size)
     }
 }

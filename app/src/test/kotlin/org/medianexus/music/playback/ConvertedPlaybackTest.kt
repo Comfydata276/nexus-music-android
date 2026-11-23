@@ -93,15 +93,18 @@ class ConvertedPlaybackTest {
             val offset = dataSpec.uri.getQueryParameter("timeOffset")?.toInt() ?: 0
             val rate = givenKbps.takeIf { it > 0 } ?: dataSpec.uri.getQueryParameter("maxBitRate")!!.toInt()
             val first = asked.isEmpty()
-            asked += "timeOffset=$offset" + if (dataSpec.position > 0) " bytes=${dataSpec.position}-" else ""
+            // A byte further in is asked for as a server is asked: by a Range header.
+            val from = dataSpec.httpRequestHeaders["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toLongOrNull() ?: dataSpec.position
+            asked += "timeOffset=$offset" + if (from > 0) " bytes=$from-" else ""
             if (sendsTheFile) {
                 bytes = conversion(rate, 0)
-                at = dataSpec.position.toInt()
-                headers = mapOf("Accept-Ranges" to listOf("bytes"), "Content-Type" to listOf("audio/mpeg"))
+                at = from.toInt()
+                headers = mapOf("Accept-Ranges" to listOf("bytes"), "Content-Type" to listOf("audio/mpeg")) +
+                    if (from > 0) mapOf("Content-Range" to listOf("bytes $from-${bytes.size - 1}/${bytes.size}")) else emptyMap()
                 return (bytes.size - at).toLong()
             }
             // Fresh: from its own start whatever byte was asked for, with no length.
-            check(dataSpec.position == 0L) { "a byte range was asked of a server that ignores them: everything before byte ${dataSpec.position} would be read and thrown away" }
+            check(from == 0L) { "a byte range was asked of a server that ignores them: everything before byte $from would be read and thrown away" }
             bytes = conversion(rate, offset)
             at = 0
             failAt = if (first) dropsAfter else -1

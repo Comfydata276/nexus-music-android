@@ -76,11 +76,25 @@ object Recovery {
             return (now - since).coerceAtLeast(0)
         }
 
+        /**
+         * The song stopped playing at `now`, having played since `since`. If it had been
+         * playing steadily, it was going well until this moment, and what follows is counted
+         * from here. A moment of sound between two stalls is not that: a link that delivers
+         * a little now and then would otherwise never be out of reach for long, and would
+         * be tried for ever.
+         */
+        fun played(generation: Long, uid: Long, since: Long, now: Long) {
+            if (now - since >= STEADY_MILLIS || this.since < 0 || generation != this.generation || uid != this.uid) well(generation, uid, now)
+        }
+
         /** Nothing is being counted any more (the account has gone). */
         fun clear() {
             since = -1
         }
     }
+
+    /** How long a song has to have played without a break to count as going well. */
+    const val STEADY_MILLIS = 30_000L
 
     /** What to do when the time allowed for a start runs out (see [whenHoldRunsOut]). */
     enum class Held {

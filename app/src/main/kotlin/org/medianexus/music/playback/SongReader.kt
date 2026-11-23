@@ -16,9 +16,16 @@ interface ByteSource {
  *  it is switched off. */
 class NotKeptOffline : IOException("Offline mode is on, and this song isn't kept on the phone")
 
-/** Something opened: its bytes, how many there are from here on (-1 if not known), and
- *  whether the server said it can be asked for from any byte (`Accept-Ranges: bytes`). */
-class Opened(val source: ByteSource, val length: Long, val ranged: Boolean = false)
+/**
+ * Something opened: its bytes, how many there are from here on (-1 if not known), and
+ * whether the server said it can be asked for from any byte (`Accept-Ranges: bytes`).
+ *
+ * `honoured` is about this answer: a byte further in than the first was asked for, and the
+ * bytes do begin there. False when the server took no notice of the byte asked for and has
+ * sent the stream from its start: then the bytes are the wrong ones, and nothing has been
+ * read of them yet.
+ */
+class Opened(val source: ByteSource, val length: Long, val ranged: Boolean = false, val honoured: Boolean = true)
 
 /** The read was given up after being asked for again several times: asking yet again, at
  *  once, is no use. (The player waits for the server to come back before it does.) */
@@ -29,8 +36,9 @@ class GaveUp(cause: IOException) : IOException("The stream kept failing", cause)
  * sources; in tests, a stand-in server and a map.
  */
 interface SongStreams {
-    /** Straight from the server at `url`, from byte `position` (asked for as a range, which
-     *  the server honours for a file as it is). */
+    /** Straight from the server at `url`, from byte `position`, asked for as a range. Whether
+     *  the server honoured the range is in the answer ([Opened.honoured]): if it didn't, the
+     *  stream is at its start, and not a byte of it has been read to get to the place. */
     @Throws(IOException::class)
     fun server(url: String, position: Long): Opened
 
@@ -83,6 +91,43 @@ class ConversionWriters {
 
     fun release(key: String) {
         writing.remove(key)
+    }
+}
+
+/**
+ * How often a stream has had to be asked for again lately, and so how long to wait before
+ * the next time, or whether to give up.
+ *
+ * Counted over time, not in a row. In a row meant "since anything last arrived", and a link
+ * that delivers a little and then stalls, every time, was always on its first try: it went
+ * round for as long as the song had bytes left. Now each time a stream fails, the failures
+ * of the last few minutes are what count: the first is asked again after a second, the next
+ * after two, then four, then eight, and one more than that is the end (the player then waits
+ * for the server, and says so). A stream that fails now and then, minutes apart, is always
+ * on its first.
+ */
+class Stalls(private val clock: () -> Long, private val window: Long = WINDOW_MILLIS, private val waits: List<Long> = WAITS) {
+    private val at = ArrayDeque<Long>()
+
+    /** The stream has failed: how long to wait before asking for it again, or null to give
+     *  it up. */
+    fun next(): Long? {
+        val now = clock()
+        while (at.isNotEmpty() && now - at.first() >= window) at.removeFirst()
+        val wait = waits.getOrNull(at.size) ?: return null
+        at.addLast(now)
+        return wait
+    }
+
+    companion object {
+        /** Waits before asking again for a stream that failed part-way, as Windows waits
+         *  (and as the player's own policy waits for a file as it is). */
+        val WAITS = listOf(1_000L, 2_000L, 4_000L, 8_000L)
+
+        /** How far back failures count. Longer than a whole round of them takes when
+         *  nothing arrives at all (the waits, and ten seconds for each read to be given up
+         *  on): a round must not outlast its own count. */
+        const val WINDOW_MILLIS = 3 * 60_000L
     }
 }
 
@@ -261,6 +306,8 @@ class SongReader(
     private val writers: ConversionWriters = ConversionWriters(),
     /** Waits this many milliseconds before asking for a stream again. */
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
+    /** A clock that only has to run steadily, in milliseconds. */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private var where: SongWhere? = null
     private var source: ByteSource? = null
@@ -286,8 +333,8 @@ class SongReader(
     private var sniffer: HeadSniffer? = null
     /** Whether the stream being sniffed came with a length and takes byte ranges. */
     private var sniffingRanged = false
-    /** How many times in a row a conversion has been asked for again after failing. */
-    private var resumes = 0
+    /** The times this read's conversion has had to be asked for again (see [Stalls]). */
+    private var stalls = Stalls(clock)
 
     /**
      * Opens the song at byte `at`. Returns how many bytes there are from there, or -1 if
@@ -318,7 +365,7 @@ class SongReader(
         tagToSkip = false
         sniffer = null
         sniffingRanged = false
-        resumes = 0
+        stalls = Stalls(clock)
         endsAt = -1
         this.offline = offline
         if (offline) {
@@ -332,6 +379,14 @@ class SongReader(
         if (!where.form.converted) {
             val opened = streams.kept(where.stream(0), where.key, at) ?: streams.server(where.stream(0), at)
             source = opened.source
+            if (!opened.honoured) {
+                // A file as it is, from a server that took no notice of the byte asked for:
+                // there is no other way to ask for a place in a file, so the bytes before it
+                // are passed over here. (Navidrome honours ranges for a file; this is for a
+                // server, or something in front of one, that doesn't.)
+                toSkip = at
+                return if (opened.length >= 0) (opened.length - at).coerceAtLeast(0) else -1
+            }
             return opened.length
         }
         val whole = streams.wholeLength(where.key)
@@ -394,15 +449,25 @@ class SongReader(
             return opened.length
         }
         keeping = false
-        val known = heads[where.key]
+        var known = heads[where.key]
         if (known?.ranged == true) {
             // Not a fresh conversion (see ConversionHead.ranged): a time to start from would
             // be ignored, and the song would begin again from its start at this place. It is
-            // asked for from the byte, which this server honours for it.
+            // asked for from the byte, which this server honoured for it last time.
             val opened = streams.server(where.stream(0), at)
-            source = opened.source
-            if (opened.length >= 0) endsAt = at + opened.length
-            return opened.length
+            if (opened.honoured) {
+                source = opened.source
+                if (opened.length >= 0) endsAt = at + opened.length
+                return opened.length
+            }
+            // Not this time. What the server held whole it holds no longer (its own cache of
+            // conversions is a cache), and it has answered with a fresh one from its start.
+            // That answer decides, not what was remembered: it is let go unread (to read it
+            // up to the place would be to fetch the song up to there and throw it away),
+            // and the place is asked for by time, like any fresh conversion's.
+            runCatching { opened.source.close() }
+            known = known.copy(ranged = false)
+            heads[where.key] = known
         }
         val head = known ?: ConversionHead(0, where.form.bitrate * 125)
         val start = head.startFor(at)
@@ -444,7 +509,6 @@ class SongReader(
                 continue
             }
             if (got < 0) return finish(where)
-            resumes = 0
             sniffer?.let { sniffing ->
                 sniffing.feed(buffer, offset, got)
                 sniffing.head?.let { heads[where.key] = it.copy(ranged = sniffingRanged); sniffer = null }
@@ -510,8 +574,9 @@ class SongReader(
      * this reader knows that a conversion can be picked up at a time.
      *
      * What was being kept of it is forgotten: what follows the drop is another conversion's
-     * bytes, and the two together are not a copy of anything. After the last wait the
-     * failure is passed on as final ([GaveUp]), so the player doesn't begin its own round.
+     * bytes, and the two together are not a copy of anything. How long to wait, and when to
+     * stop, goes by how often it has failed lately ([Stalls]); given up, the failure is
+     * passed on as final ([GaveUp]), so the player doesn't begin its own round.
      */
     private fun again(where: SongWhere, error: IOException) {
         runCatching { source?.close() }
@@ -523,13 +588,19 @@ class SongReader(
         var failure = error
         while (true) {
             if (!streams.mayPass(failure)) throw failure
-            val wait = RESUME_WAITS.getOrNull(resumes++) ?: throw GaveUp(failure)
+            // Offline mode, switched on by now: nothing more is asked of the server, this
+            // song included. (Looked at before the wait and again after it: the wait is
+            // seconds long, and the switch can be turned in it. It used to be noticed only
+            // once the song had been asked for again.)
+            if (offlineNow()) return wentOffline(where)
+            val wait = stalls.next() ?: throw GaveUp(failure)
             try {
                 pause(wait)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 throw java.io.InterruptedIOException()
             }
+            if (offlineNow()) return wentOffline(where)
             try {
                 // From the start if nothing had been given yet, kept as it goes by as before.
                 fresh(where, position)
@@ -580,12 +651,6 @@ class SongReader(
             tagToSkip = false
             sniffer = null
         }
-    }
-
-    private companion object {
-        /** Waits before asking again for a conversion that failed part-way, as Windows waits
-         *  (and as the player's own policy waits for a file as it is). */
-        val RESUME_WAITS = listOf(1_000L, 2_000L, 4_000L, 8_000L)
     }
 
     /** Reads the first ten bytes of a stream. If they head an ID3v2 tag, returns how much of

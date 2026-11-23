@@ -225,7 +225,28 @@ class SongDataSource(
                 val second = url.substringAfter("timeOffset=", "").substringBefore('&')
                 if (second.isNotEmpty()) android.util.Log.d("NexusPlayback", "a conversion opened part-way, at byte ${spec.position}: asked of the server from second $second")
             }
-            return open(http(), server(url, null, position))
+            if (position == 0L) return open(http(), server(url, null, 0))
+            // From a byte further in: asked for with a Range header of our own, and from
+            // "byte 0" as far as Media3's HTTP data source is told. Told the place, it makes
+            // up for a server that ignores the range by reading the answer from its start
+            // and throwing the bytes away up to the place, inside `open`
+            // (`OkHttpDataSource.open`, "manually skip to the requested position"): for a
+            // conversion the server no longer holds whole, that is the song fetched up to
+            // there, for nothing. Whether the range was honoured is read from the answer.
+            val ranged = server(url, null, 0).buildUpon().setHttpRequestHeaders(spec.httpRequestHeaders + ("Range" to "bytes=$position-")).build()
+            return try {
+                open(http(), ranged, from = position)
+            } catch (e: HttpDataSource.InvalidResponseCodeException) {
+                // "No such range": the place is at or past the end of what there is.
+                if (e.responseCode != 416) throw e
+                Opened(
+                    object : ByteSource {
+                        override fun read(buffer: ByteArray, offset: Int, length: Int) = -1
+                        override fun close() {}
+                    },
+                    0, ranged = true,
+                )
+            }
         }
 
         override fun kept(url: String, key: String, position: Long): Opened? {
@@ -268,7 +289,8 @@ class SongDataSource(
         private fun server(url: String, key: String?, position: Long): DataSpec =
             DataSpec.Builder().setUri(url).setKey(key).setPosition(position).setHttpRequestHeaders(spec.httpRequestHeaders).setFlags(spec.flags).build()
 
-        private fun open(source: DataSource, spec: DataSpec): Opened {
+        /** `from`: the byte asked for by a Range header of our own (0: none was). */
+        private fun open(source: DataSource, spec: DataSpec, from: Long = 0): Opened {
             val length = try {
                 source.open(spec)
             } catch (e: IOException) {
@@ -279,6 +301,10 @@ class SongDataSource(
             val answered = source.responseHeaders
             headers = answered.filterKeys { it.equals("Content-Type", ignoreCase = true) }
             val ranged = answered.entries.any { (name, values) -> name.equals("Accept-Ranges", ignoreCase = true) && values.any { it.trim().equals("bytes", ignoreCase = true) } }
+            // An answer to a range says which bytes it is ("Content-Range: bytes 720572-…").
+            val honoured = from == 0L || answered.entries.any { (name, values) ->
+                name.equals("Content-Range", ignoreCase = true) && values.any { it.trim().lowercase().removePrefix("bytes").trim().startsWith("$from-") }
+            }
             return Opened(
                 object : ByteSource {
                     override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
@@ -288,6 +314,7 @@ class SongDataSource(
                 },
                 length,
                 ranged,
+                honoured,
             )
         }
 
