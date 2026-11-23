@@ -10,6 +10,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import org.medianexus.music.AccountGraph
 import org.medianexus.music.Graph
 import org.medianexus.music.net.Song
@@ -17,9 +18,10 @@ import org.medianexus.music.store.Page
 import org.medianexus.music.store.PageCache
 import org.medianexus.music.store.PageSpec
 
-/** A song whose menu is open, and where it was opened from: `upcoming` is its place after
- *  the song playing when it was opened from the queue (it can then be taken out). */
-data class SongMenu(val song: Song, val upcoming: Int? = null)
+/** A song whose menu is open, and where it was opened from: `upcoming` is its queue entry's
+ *  own number when it was opened from the queue (it can then be taken out, and that entry,
+ *  not whatever is in its place by the time the menu is used, is what goes). */
+data class SongMenu(val song: Song, val upcoming: Long? = null)
 
 /**
  * What every screen shares while someone is signed in: the app's objects, the account's,
@@ -36,9 +38,6 @@ class Ui(val graph: Graph, val navigator: Navigator) {
     var queueOpen by mutableStateOf(false)
     var menu: SongMenu? by mutableStateOf(null)
 
-    /** Set by the shell: asks for what playing needs (notifications, the first time). */
-    internal var beforePlay: () -> Unit = {}
-
     val player get() = graph.player
 
     /** Opens a page, closing Now Playing if it's over it (its artist, say). */
@@ -53,7 +52,6 @@ class Ui(val graph: Graph, val navigator: Navigator) {
     /** Plays a list from one of its songs (see `PlayerConnection.play`). */
     fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false) {
         if (songs.isEmpty()) return
-        beforePlay()
         player.play(songs, start, context, source, shuffle, anyStart)
     }
 
@@ -100,19 +98,35 @@ class PageFeed<T> {
     }
 }
 
-/** The feed for one page of the signed-in account; `spec` is made once per `key`. */
+/**
+ * The feed for one page of the signed-in account; `spec` is made once per `key`. It is
+ * collected only while the page is on screen and the app is in front: a page under another,
+ * or the app in the background, asks nothing and follows nothing. Coming back shows what it
+ * had and checks again (unless it was checked moments ago).
+ *
+ * A page whose check failed tries again by itself when the connection comes back (see
+ * `Graph.reconnects`).
+ */
 @Composable
 fun <T> rememberPageFeed(key: String, spec: (org.medianexus.music.library.Library) -> PageSpec<T>): PageFeed<T> {
-    val account = LocalUi.current.account
+    val ui = LocalUi.current
+    val account = ui.account
     val feed = remember(key, account) { PageFeed<T>() }
-    LaunchedEffect(feed, feed.asked) {
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(feed, feed.asked, lifecycle) {
         val library = account?.library ?: return@LaunchedEffect
         val asked = feed.asked
-        library.live(spec(library), if (asked > 0) 0 else PageCache.FRESH_FOR_MILLIS).collect { page ->
-            // A copy that's nothing yet (none kept) doesn't take away what's shown.
-            feed.page = if (page.value == null && feed.page.value != null) page.copy(value = feed.page.value) else page
-            if (!page.checking) feed.refreshing = false
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            library.live(spec(library), if (asked > 0) 0 else PageCache.FRESH_FOR_MILLIS).collect { page ->
+                // A copy that's nothing yet (none kept) doesn't take away what's shown.
+                feed.page = if (page.value == null && feed.page.value != null) page.copy(value = feed.page.value) else page
+                if (!page.checking) feed.refreshing = false
+            }
         }
+    }
+    val reconnects by ui.graph.reconnects.collectAsStateWithLifecycle()
+    LaunchedEffect(feed, reconnects) {
+        if (reconnects > 0 && feed.page.error != null && !feed.refreshing) feed.refresh()
     }
     return feed
 }
@@ -124,6 +138,15 @@ private val NOTHING_LIKED = kotlinx.coroutines.flow.MutableStateFlow(emptySet<St
 fun likedSongs(): Set<String> {
     val flow = LocalUi.current.account?.likes?.liked ?: NOTHING_LIKED
     return flow.collectAsStateWithLifecycle().value
+}
+
+private val NOTHING = kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.library.Liked())
+
+/** The ids of the albums liked, as they change. */
+@Composable
+fun likedAlbums(): Set<String> {
+    val flow = LocalUi.current.account?.likes?.state ?: NOTHING
+    return flow.collectAsStateWithLifecycle().value.albums
 }
 
 /** Opens what a card stands for. */

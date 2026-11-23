@@ -41,14 +41,11 @@ import org.medianexus.music.ui.theme.Theme
 /** How a list's songs are drawn. */
 @Immutable
 data class ListLook(
-    /** An album: its own track numbers, no covers, a heading for each disc. */
+    /** An album: its own track numbers, no covers, a heading for each disc. Anything else
+     *  (a playlist, Liked songs) shows each song's album beside its artist, as Windows does,
+     *  so two versions of a song can be told apart. */
     val album: Boolean = false,
 )
-
-/** One song row as the list draws it, before what changes while it's shown (liked,
- *  playing) is added. `heading` is a disc's heading to go above it. */
-@Immutable
-private data class Row(val song: Song, val base: TrackRowData, val heading: String?)
 
 /**
  * A page that is a list of songs under a header: an album, a playlist, Liked songs. The
@@ -70,7 +67,8 @@ fun SongListPage(
     onLike: () -> Unit = {},
     /** What the play button starts, when it isn't the songs listed (an artist's albums). */
     playOverride: (() -> Unit)? = null,
-    below: LazyListScope.() -> Unit = {},
+    /** What follows the songs, told how many cards to a line suit the page's width. */
+    below: LazyListScope.(columns: Int) -> Unit = {},
 ) {
     val ui = LocalUi.current
     val player = ui.player
@@ -79,7 +77,10 @@ fun SongListPage(
     val settings by ui.graph.settings.state.collectAsStateWithLifecycle()
     val likedSet = likedSongs()
     val discWord = androidx.compose.ui.res.stringResource(org.medianexus.music.R.string.disc)
-    val rows = remember(songs, look) { songs?.let { rowsOf(it, look, discWord) }.orEmpty() }
+    // Whether to head each disc: one look along the list, nothing kept per song. What a row
+    // shows is made when the row is drawn (a list of thousands is drawn a screenful at a
+    // time), not for every song when the page opens.
+    val discs = remember(songs, look) { look.album && songs != null && songs.any { it.discNumber != songs[0].discNumber } }
     val list = rememberLazyListState()
     val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
     // As the queue has it if this is the list playing, else as the list remembers it.
@@ -97,6 +98,8 @@ fun SongListPage(
                 PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
                 return@Refreshable
             }
+            val width = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() }
+            val columns = org.medianexus.music.ui.lists.gridColumns(width)
             LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
                 item(key = "hero", contentType = "hero") { Hero(hero, onSubtitle = onSubtitle) }
                 item(key = "actions", contentType = "actions") {
@@ -125,14 +128,16 @@ fun SongListPage(
                     songs.isEmpty() -> if (empty.isNotEmpty()) item(key = "empty", contentType = "empty") {
                         Box(Modifier.fillMaxWidth().heightIn(min = 240.dp)) { PageStatus(PageState.Empty(empty)) }
                     }
-                    else -> itemsIndexed(rows, key = { index, row -> "$index/${row.song.id}" }, contentType = { _, _ -> "song" }) { index, row ->
+                    else -> itemsIndexed(songs, key = { index, song -> "$index/${song.id}" }, contentType = { _, _ -> "song" }) { index, song ->
+                        val heading = if (discs && (index == 0 || songs[index - 1].discNumber != song.discNumber)) "$discWord ${song.discNumber.coerceAtLeast(1)}" else null
+                        val base = remember(song, index, look) { rowOf(song, index, look) }
                         Column {
-                            row.heading?.let { ListHeading(it) }
-                            val current = from.isRow(key, index)
+                            heading?.let { ListHeading(it) }
+                            val current = from.isRow(key, index, song.id)
                             TrackRow(
-                                row.base.copy(liked = row.song.id in likedSet, current = current, paused = current && from.paused),
+                                base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
                                 onClick = { ui.play(songs, index, context, key) },
-                                onMore = { ui.menu = SongMenu(row.song) },
+                                onMore = { ui.menu = SongMenu(song) },
                                 showCover = !look.album,
                                 showNumber = look.album,
                                 showDuration = true,
@@ -140,25 +145,17 @@ fun SongListPage(
                         }
                     }
                 }
-                below()
+                below(columns)
             }
         }
     }
 }
 
-private fun rowsOf(songs: List<Song>, look: ListLook, disc: String): List<Row> {
-    val discs = look.album && songs.map { it.discNumber }.distinct().size > 1
-    var last = Int.MIN_VALUE
-    return songs.mapIndexed { index, song ->
-        val heading = if (discs && song.discNumber != last) {
-            last = song.discNumber
-            "$disc ${song.discNumber.coerceAtLeast(1)}"
-        } else {
-            null
-        }
-        val number = if (look.album && song.track > 0) song.track.toString() else (index + 1).toString()
-        Row(song, TrackRowData(song.id, song.title, song.artistLabel, song.coverArt, number, clock(song.duration)), heading)
-    }
+/** What one row shows, before what changes while it's shown (liked, playing). */
+private fun rowOf(song: Song, index: Int, look: ListLook): TrackRowData {
+    val number = if (look.album && song.track > 0) song.track.toString() else (index + 1).toString()
+    val detail = if (!look.album && song.album.isNotEmpty()) "${song.artistLabel} • ${song.album}" else song.artistLabel
+    return TrackRowData(song.id, song.title, detail, song.coverArt, number, clock(song.duration))
 }
 
 /** For screens: the padding a page's own list leaves at its sides. */

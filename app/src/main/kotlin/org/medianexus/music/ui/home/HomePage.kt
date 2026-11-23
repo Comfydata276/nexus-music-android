@@ -18,7 +18,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -127,21 +131,48 @@ private fun QuickTile(album: Album, modifier: Modifier, onClick: () -> Unit) {
         Box(Modifier.size(56.dp)) {
             Cover(album.coverArt, Modifier.fillMaxSize(), placeholder = R.drawable.ic_disc_3, shape = org.medianexus.music.ui.parts.CoverShape.SQUARE)
         }
-        BasicText(
-            album.name,
-            Modifier.weight(1f).padding(horizontal = 10.dp),
-            // Narrow tiles and large type: a long word is broken where a dictionary would
-            // break it, not wherever the line ends.
-            style = Theme.type.label.copy(
-                color = Theme.colors.text,
-                hyphens = androidx.compose.ui.text.style.Hyphens.Auto,
-                lineBreak = androidx.compose.ui.text.style.LineBreak.Paragraph,
-            ),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        TileName(album.name, Modifier.weight(1f).padding(horizontal = 10.dp))
     }
 }
+
+/**
+ * A tile's name: up to two lines, then an ellipsis, broken only between words, never with a
+ * hyphen. A word too long for the tile's width even on a line of its own ("Continuous" in a
+ * narrow tile at large type) would otherwise be cut through the middle; the type steps down a
+ * little until it fits, or reaches the smallest size that is still readable, as Windows'
+ * tiles shrink a long name.
+ */
+@Composable
+private fun TileName(name: String, modifier: Modifier) {
+    val style = Theme.type.label
+    var size by remember(name, style) { mutableStateOf(style.fontSize) }
+    BasicText(
+        name,
+        modifier,
+        style = style.copy(
+            color = Theme.colors.text,
+            fontSize = size,
+            hyphens = androidx.compose.ui.text.style.Hyphens.None,
+            lineBreak = androidx.compose.ui.text.style.LineBreak.Heading,
+        ),
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        onTextLayout = { layout ->
+            if (size.value > MIN_TILE_SP && splitsAWord(name, layout)) size = (size.value - 1f).sp
+        },
+    )
+}
+
+/** Whether a line ends part-way through a word (not counting where the ellipsis goes). */
+internal fun splitsAWord(text: String, layout: androidx.compose.ui.text.TextLayoutResult): Boolean {
+    for (line in 0 until layout.lineCount - 1) {
+        val end = layout.getLineEnd(line)
+        if (end in 1 until text.length && text[end - 1].isLetterOrDigit() && text[end].isLetterOrDigit()) return true
+    }
+    return false
+}
+
+private const val MIN_TILE_SP = 11f
 
 /** The tile's wash, as on Windows: white at a twelfth. */
 private val TILE = Color(0x14FFFFFF)

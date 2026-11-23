@@ -51,6 +51,8 @@ import org.medianexus.music.ui.parts.releaseKind
 import org.medianexus.music.ui.parts.songCount
 import org.medianexus.music.ui.shell.LocalUi
 import org.medianexus.music.ui.shell.Route
+import org.medianexus.music.ui.shell.likedAlbums
+import org.medianexus.music.ui.shell.likedSongs
 import org.medianexus.music.ui.shell.rememberPageFeed
 import org.medianexus.music.ui.shell.open
 
@@ -65,10 +67,10 @@ fun AlbumPage(route: Route.Album) {
     } else {
         HeroData(stringResource(releaseKind(album)), album.name, album.artistLabel, albumFacts(res, album), album.coverArt)
     }
-    // Liking an album shows at once and is put back if the server says no, as songs are.
-    var starred by remember(album?.id) { mutableStateOf<Boolean?>(null) }
-    val liked = starred ?: (album?.starred != null)
-    val scope = rememberCoroutineScope()
+    // What's liked comes from the one owner of likes, as songs' hearts do: shown at once,
+    // put back (and said so) if the server says no.
+    val likedAlbums = likedAlbums()
+    val liked = album != null && album.id in likedAlbums
     // Other releases by the same artist, as Windows adds below an album ("More by …").
     val artistId = album?.artistId.orEmpty()
     val others = if (artistId.isEmpty()) null else rememberPageFeed("artist:$artistId") { it.artist(artistId) }
@@ -83,20 +85,9 @@ fun AlbumPage(route: Route.Album) {
         onSubtitle = album?.takeIf { it.artistId.isNotEmpty() }?.let { { ui.open(Route.Artist(it.artistId, it.artistLabel)) } },
         liked = if (album == null) null else liked,
         onLike = {
-            val api = ui.account?.api ?: return@SongListPage
-            val id = album?.id ?: return@SongListPage
-            val want = !liked
-            starred = want
-            ui.toast(res.getString(if (want) R.string.added_to_liked_albums else R.string.removed_from_liked_albums))
-            scope.launch {
-                try {
-                    api.setStarred(StarTarget.ALBUM, id, want)
-                    ui.account?.pages?.forget("liked")
-                } catch (e: ApiError) {
-                    starred = !want
-                    ui.toast(res.getString(R.string.didnt_save, e.message.orEmpty()).trim())
-                }
-            }
+            val shown = album ?: return@SongListPage
+            ui.account?.likes?.setAlbum(shown, !liked)
+            ui.toast(res.getString(if (!liked) R.string.added_to_liked_albums else R.string.removed_from_liked_albums))
         },
         below = {
             val more = others?.value?.albums?.filter { it.id != route.id }.orEmpty()
@@ -138,7 +129,11 @@ fun PlaylistPage(route: Route.Playlist) {
 fun LikedPage() {
     val res = LocalResources.current
     val feed = rememberPageFeed(Route.Liked.key) { it.liked() }
-    val songs = feed.value?.songs
+    // The server's list with what has just been liked or unliked here on top: the same
+    // owner as every heart, so the two never disagree.
+    val likes = LocalUi.current.account?.likes
+    val shown = likedSongs()
+    val songs = remember(feed.value, shown, likes) { likes?.songsOf(feed.value) ?: feed.value?.songs }
     val title = stringResource(R.string.liked_songs)
     SongListPage(
         key = Route.Liked.key,
@@ -172,23 +167,31 @@ fun ArtistPage(route: Route.Artist) {
         hero = hero,
         artist = artist,
         feed = feed,
-        groups = groups.map { (titleRes, albums) -> stringResource(titleRes) to albums },
+        groups = remember(groups, res) { groups.map { (titleRes, albums) -> res.getString(titleRes) to albums.map { it.card(albumByYear(res, it)) } } },
         onPlay = { shuffle ->
             val library = ui.account?.library ?: return@ArtistLayout
-            val albums = artist?.albums.orEmpty()
+            val name = artist?.name.orEmpty()
+            // In the order the page shows them, as Windows builds it: newest first, then by
+            // name (Windows' `PlaySource::Albums`), the first forty.
+            val albums = artist?.albums.orEmpty().sortedWith(compareByDescending<Album> { it.year }.thenBy { it.name }).take(40)
+            ui.toast(res.getString(R.string.getting_songs))
             scope.launch {
-                // Every song on their albums, as Windows plays an artist (the first forty).
-                val songs = albums.take(40).flatMap { album ->
+                var missing = 0
+                val songs = albums.flatMap { album ->
                     try {
                         library.quick(library.album(album.id)).songs
                     } catch (_: ApiError) {
+                        missing++
                         emptyList()
                     }
                 }
-                if (songs.isEmpty()) {
-                    ui.toast(res.getString(R.string.page_failed))
-                } else {
-                    ui.play(songs, 0, artist?.name.orEmpty(), route.key, shuffle = shuffle, anyStart = true)
+                when {
+                    songs.isEmpty() -> ui.toast(res.getString(R.string.page_failed))
+                    else -> {
+                        ui.play(songs, 0, name, route.key, shuffle = shuffle, anyStart = true)
+                        // Not quietly fewer: said so.
+                        if (missing > 0) ui.toast(res.getQuantityString(R.plurals.some_albums_missing, missing, missing))
+                    }
                 }
             }
         },
@@ -212,7 +215,7 @@ private fun ArtistLayout(
     hero: HeroData,
     artist: Artist?,
     feed: org.medianexus.music.ui.shell.PageFeed<Artist>,
-    groups: List<Pair<String, List<Album>>>,
+    groups: List<Pair<String, List<CardData>>>,
     onPlay: (shuffle: Boolean?) -> Unit,
     res: android.content.res.Resources,
 ) {
@@ -226,56 +229,106 @@ private fun ArtistLayout(
         feed = feed,
         empty = if (artist != null && artist.albums.isEmpty()) stringResource(R.string.artist_empty) else "",
         playOverride = if (artist?.albums.isNullOrEmpty()) null else ({ onPlay(null) }),
-        below = {
-            for ((title, albums) in groups) {
-                gridSection(title, albums.map { it.card(albumByYear(res, it)) }) { ui.open(it) }
-            }
+        below = { columns ->
+            for ((title, cards) in groups) gridSection(title, cards, { ui.open(it) }, columns)
         },
     )
 }
 
-/** A heading, then cards two or three to a line, inside a page's list. */
-fun LazyListScope.gridSection(title: String, cards: List<CardData>, onOpen: (CardData) -> Unit) {
+/**
+ * A heading, then cards two or three to a line, inside a page's list: each line is an item
+ * of its own, so only the lines on screen are drawn and their covers asked for (a grid as one
+ * item started every cover in it at once).
+ */
+fun LazyListScope.gridSection(title: String, cards: List<CardData>, onOpen: (CardData) -> Unit, columns: Int) {
     item(key = "title/$title", contentType = "title") { SectionTitle(title) }
-    item(key = "grid/$title", contentType = "grid") {
-        BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-            val columns = if (maxWidth >= 520.dp) 4 else if (maxWidth >= 380.dp) 3 else 2
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                for (line in cards.chunked(columns)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        for (card in line) MediaCard(card, onClick = { onOpen(card) }, modifier = Modifier.weight(1f))
-                        repeat(columns - line.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                }
+    val lines = (cards.size + columns - 1) / columns
+    items(lines, key = { "grid/$title/$it" }, contentType = { "cards" }) { line ->
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            for (at in line * columns until minOf(cards.size, line * columns + columns)) {
+                val card = cards[at]
+                MediaCard(card, onClick = { onOpen(card) }, modifier = Modifier.weight(1f))
             }
+            repeat(columns - (minOf(cards.size, line * columns + columns) - line * columns)) { Spacer(Modifier.weight(1f)) }
         }
     }
 }
 
-/** A genre: its albums, in a grid (the Windows app's `GridPage`). */
+/** How many cards to a line in a page's grid section, for a page this wide. */
+fun gridColumns(width: androidx.compose.ui.unit.Dp): Int {
+    val inside = width - 32.dp
+    return if (inside >= 520.dp) 4 else if (inside >= 380.dp) 3 else 2
+}
+
+/**
+ * A genre: its albums, in a grid (the Windows app's `GridPage`). The first sixty show as soon
+ * as they arrive (kept like any page); the rest are fetched straight after, a page at a time,
+ * as Windows does, rather than all before anything is shown.
+ */
 @Composable
 fun GenrePage(route: Route.Genre) {
     val ui = LocalUi.current
-    val feed = rememberPageFeed(route.key) { it.genre(route.name) }
-    val albums = feed.value
+    val list = org.medianexus.music.net.AlbumList.ByGenre(route.name)
+    val feed = rememberPageFeed("genre-first:${route.name}") { it.albums(list, 0, org.medianexus.music.library.Library.GRID_PAGE) }
+    val library = ui.account?.library
+    val pages = remember(route.name, library) {
+        org.medianexus.music.ui.library.AlbumPages(org.medianexus.music.library.Library.GRID_PAGE) { offset ->
+            library?.quick(library.albums(list, offset, org.medianexus.music.library.Library.GRID_PAGE)) ?: emptyList()
+        }
+    }
+    LaunchedEffect(pages, feed.page) {
+        feed.value?.let(pages::first)
+        // The rest, one page after another, while the first is already on screen.
+        while (!pages.ended && pages.failed == null) {
+            val before = pages.albums.size
+            pages.more()
+            if (pages.albums.size == before && !pages.asking) break
+        }
+    }
+    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         TitleBar(route.name, onBack = ui.navigator::back)
-        Refreshable(feed.refreshing, feed::refresh) {
+        Refreshable(feed.refreshing, {
+            pages.refresh()
+            feed.refresh()
+        }) {
             val error = feed.page.error
+            val albums = pages.albums
             when {
-                albums == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
-                albums == null -> SkeletonRows()
+                albums.isEmpty() && feed.value == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
+                albums.isEmpty() && feed.value == null -> SkeletonRows()
                 albums.isEmpty() -> PageStatus(PageState.Empty(stringResource(R.string.genre_empty)))
-                else -> CardGrid(albums.map { it.card() }, onOpen = { ui.open(it) }, failed = error?.message, onRetry = feed::refresh)
+                else -> CardGrid(
+                    albums,
+                    card = { it.card() },
+                    key = { it.id },
+                    onOpen = { ui.open(it) },
+                    failed = error?.message,
+                    onRetry = {
+                        pages.refresh()
+                        feed.refresh()
+                    },
+                    footer = when {
+                        pages.failed != null -> ({ org.medianexus.music.ui.parts.FailedStrip(pages.failed?.message.orEmpty(), { scope.launch { pages.retry() } }) })
+                        pages.asking -> ({ SkeletonRows(rows = 1) })
+                        else -> null
+                    },
+                )
             }
         }
     }
 }
 
-/** Cards in a grid that fills the page: albums, artists. */
+/**
+ * Cards in a grid that fills the page: albums, artists, genres. Each card is made from its
+ * item as it is drawn (`card`), so a long list, or one that grows a page at a time, isn't
+ * turned into cards all at once, or again each time it grows. `key` tells items apart.
+ */
 @Composable
-fun CardGrid(
-    cards: List<CardData>,
+fun <T> CardGrid(
+    items: List<T>,
+    card: (T) -> CardData,
+    key: (T) -> String,
     onOpen: (CardData) -> Unit,
     modifier: Modifier = Modifier,
     failed: String? = null,
@@ -283,11 +336,13 @@ fun CardGrid(
     minWidth: androidx.compose.ui.unit.Dp = 150.dp,
     onNearEnd: (() -> Unit)? = null,
     header: (@Composable () -> Unit)? = null,
+    /** At the foot of the grid: a page on its way, or one that failed. */
+    footer: (@Composable () -> Unit)? = null,
+    state: androidx.compose.foundation.lazy.grid.LazyGridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState(),
 ) {
-    val state = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     if (onNearEnd != null) {
-        val near by remember { androidx.compose.runtime.derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 12 } }
-        LaunchedEffect(near, cards.size) { if (near) onNearEnd() }
+        val near by remember(state) { androidx.compose.runtime.derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 12 } }
+        LaunchedEffect(near, items.size) { if (near) onNearEnd() }
     }
     LazyVerticalGrid(
         GridCells.Adaptive(minWidth),
@@ -305,8 +360,12 @@ fun CardGrid(
                 org.medianexus.music.ui.parts.FailedStrip(failed, onRetry)
             }
         }
-        items(cards, key = { "${it.kind}/${it.id}" }, contentType = { it.kind }) { card ->
-            MediaCard(card, onClick = { onOpen(card) })
+        items(items, key = { "card/${key(it)}" }, contentType = { "card" }) { item ->
+            val data = remember(item) { card(item) }
+            MediaCard(data, onClick = { onOpen(data) })
+        }
+        if (footer != null) {
+            item(key = "footer", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "footer") { footer() }
         }
         item(key = "end", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(8.dp)) }
     }

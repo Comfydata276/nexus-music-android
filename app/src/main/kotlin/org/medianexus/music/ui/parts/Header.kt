@@ -58,70 +58,91 @@ data class HeroData(
 /**
  * The top of an album, playlist or artist page: a large cover with a soft shadow, then what
  * it is, its name in the display face, and a line of facts. On Windows the cover sits beside
- * the words; on a phone's width it goes above them, as large as it can be and still leave the
- * songs in sight.
+ * the words; so it does here wherever there's room for both (on its side, or 600dp and
+ * wider). On a phone held upright it goes above them, as large as it can be and still leave
+ * the songs in sight.
  */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)? = null) {
-    val colors = Theme.colors
     BoxWithConstraints(modifier.fillMaxWidth()) {
-        // Large, but not so large that a list's first songs can't be seen under it.
-        // (Turned on its side, the screen's height limits it too.)
-        val tall = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.height.toDp() }
-        val side = (maxWidth * 0.56f).coerceAtMost(tall * 0.42f).coerceIn(120.dp, 260.dp)
-        Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Spacer(Modifier.height(8.dp))
-            val shape = if (hero.round) CircleShape else RoundedCornerShape(Theme.dimens.radius)
-            Box(
-                Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .size(side)
-                    .shadow(24.dp, shape, ambientColor = Color.Black, spotColor = Color.Black),
+        val window = androidx.compose.ui.platform.LocalWindowInfo.current.containerSize
+        val tall = with(androidx.compose.ui.platform.LocalDensity.current) { window.height.toDp() }
+        val wide = maxWidth >= 600.dp || window.width > window.height
+        if (wide) {
+            // Beside: as tall as a third of the screen's height allows, within limits.
+            val side = (tall * 0.42f).coerceIn(120.dp, 220.dp)
+            Row(
+                Modifier.fillMaxWidth().padding(start = Theme.dimens.pagePad, end = Theme.dimens.pagePad, top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                verticalAlignment = Alignment.Bottom,
             ) {
-                if (hero.liked) {
-                    LikedTile(Modifier.fillMaxSize())
-                } else {
-                    Cover(
-                        hero.cover,
-                        Modifier.fillMaxSize(),
-                        if (hero.round) CoverShape.ROUND else CoverShape.CARD,
-                        when {
-                            hero.round -> R.drawable.ic_user_round
-                            hero.playlist -> R.drawable.ic_list_music
-                            else -> R.drawable.ic_disc_3
-                        },
-                    )
-                }
+                HeroCover(hero, side)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) { HeroWords(hero, onSubtitle) }
             }
-            Spacer(Modifier.height(14.dp))
-            if (hero.label.isNotEmpty()) {
-                BasicText(hero.label, style = Theme.type.label.copy(color = colors.text))
+        } else {
+            // Large, but not so large that a list's first songs can't be seen under it.
+            val side = (maxWidth * 0.56f).coerceAtMost(tall * 0.42f).coerceIn(120.dp, 260.dp)
+            Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.align(Alignment.CenterHorizontally)) { HeroCover(hero, side) }
+                Spacer(Modifier.height(14.dp))
+                HeroWords(hero, onSubtitle)
             }
-            BasicText(
-                hero.title,
-                Modifier.semantics { heading() },
-                style = Theme.type.title.copy(color = colors.text, fontWeight = FontWeight.ExtraBold, fontSize = if (hero.title.length > 34) 24.sp else 28.sp),
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
+        }
+    }
+}
+
+@Composable
+private fun HeroCover(hero: HeroData, side: androidx.compose.ui.unit.Dp) {
+    val shape = if (hero.round) CircleShape else RoundedCornerShape(Theme.dimens.radius)
+    Box(Modifier.size(side).shadow(24.dp, shape, ambientColor = Color.Black, spotColor = Color.Black)) {
+        if (hero.liked) {
+            LikedTile(Modifier.fillMaxSize())
+        } else {
+            Cover(
+                hero.cover,
+                Modifier.fillMaxSize(),
+                if (hero.round) CoverShape.ROUND else CoverShape.CARD,
+                when {
+                    hero.round -> R.drawable.ic_user_round
+                    hero.playlist -> R.drawable.ic_list_music
+                    else -> R.drawable.ic_disc_3
+                },
             )
-            // The artist or owner, then the facts; on a narrow screen the facts go under.
-            // As on Windows, the two sit side by side with a gap and nothing between them.
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), itemVerticalAlignment = Alignment.CenterVertically) {
-                if (hero.subtitle.isNotEmpty()) {
-                    val link = if (onSubtitle != null) {
-                        Modifier.heightIn(min = Theme.dimens.touch).clickable(role = Role.Button, onClick = onSubtitle)
-                    } else {
-                        Modifier
-                    }
-                    Box(link, contentAlignment = Alignment.CenterStart) {
-                        BasicText(hero.subtitle, style = Theme.type.label.copy(color = colors.text, fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                if (hero.meta.isNotEmpty()) {
-                    BasicText(hero.meta, Modifier.heightIn(min = 24.dp).wrapContentHeight(), style = Theme.type.body.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun HeroWords(hero: HeroData, onSubtitle: (() -> Unit)?) {
+    val colors = Theme.colors
+    if (hero.label.isNotEmpty()) {
+        BasicText(hero.label, style = Theme.type.label.copy(color = colors.text))
+    }
+    BasicText(
+        hero.title,
+        Modifier.semantics { heading() },
+        style = Theme.type.title.copy(color = colors.text, fontWeight = FontWeight.ExtraBold, fontSize = if (hero.title.length > 34) 24.sp else 28.sp),
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+    )
+    // The artist or owner, then the facts; on a narrow screen the facts go under.
+    // As on Windows, the two sit side by side with a gap and nothing between them.
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+        if (hero.subtitle.isNotEmpty()) {
+            val link = if (onSubtitle != null) {
+                Modifier.heightIn(min = Theme.dimens.touch).clickable(role = Role.Button, onClick = onSubtitle)
+            } else {
+                Modifier
             }
+            Box(link, contentAlignment = Alignment.CenterStart) {
+                BasicText(hero.subtitle, style = Theme.type.label.copy(color = colors.text, fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (hero.meta.isNotEmpty()) {
+            BasicText(hero.meta, Modifier.heightIn(min = 24.dp).wrapContentHeight(), style = Theme.type.body.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
