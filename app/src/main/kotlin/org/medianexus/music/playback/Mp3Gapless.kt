@@ -120,7 +120,11 @@ class Mp3HeaderReader(private val mp3: androidx.media3.extractor.Extractor) : an
     )
 
     override fun read(input: androidx.media3.extractor.ExtractorInput, seekPosition: androidx.media3.extractor.PositionHolder): Int {
-        if (!looked && input.position == 0L) {
+        // At the first read, wherever the input then is: Media3 tries each kind of file on a
+        // new stream first (`sniff`), and its MP3 extractor leaves the input past the ID3 tag
+        // when it has recognised one, at the first frame. (A period is always read from its
+        // start first, so the first read is at one or the other.)
+        if (!looked) {
             looked = true
             header = lameHeader(input)
         }
@@ -138,10 +142,11 @@ class Mp3HeaderReader(private val mp3: androidx.media3.extractor.Extractor) : an
         private const val MOST_TAG_BYTES = 32L * 1024 * 1024
 
         /**
-         * Reads the LAME header from the start of an MP3, without taking anything from the
-         * input: past any ID3v2 tags, the first frame, and in it the "Xing" or "Info" frame
-         * with LAME's extension (as Media3's `XingFrame.parse` reads it). Null if there is
-         * none, or the file isn't long enough to hold one.
+         * Reads the LAME header from the start of an MP3 (from byte 0, or from its first
+         * frame), without taking anything from the input: past any ID3v2 tags, the first
+         * frame, and in it the "Xing" or "Info" frame with LAME's extension (as Media3's
+         * `XingFrame.parse` reads it). Null if there is none, or the file isn't long enough
+         * to hold one.
          */
         fun lameHeader(input: androidx.media3.extractor.ExtractorInput): LameHeader? = try {
             input.resetPeekPosition()

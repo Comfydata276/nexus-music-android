@@ -66,10 +66,25 @@ class Mp3TrimTest {
         return out.toByteArray()
     }
 
-    /** The format the player is given for this file, read by the app's extractors. */
+    /**
+     * The format the player is given for this file, read by the app's extractors the way
+     * Media3 reads a new stream: each kind of file is tried on it in turn (`sniff`), and the
+     * one that knows it then reads it. (The MP3 extractor's sniff leaves the input past the
+     * ID3 tag, at the first frame: a reader that expected to start at byte 0 found nothing in
+     * any file with a tag, which is every file in a real library.)
+     */
     private fun read(file: ByteArray): Format {
-        val extractor = songExtractors().createExtractors().first { it.underlyingImplementation is androidx.media3.extractor.mp3.Mp3Extractor }
         val input = FakeExtractorInput.Builder().setData(file).build()
+        val extractor = songExtractors().createExtractors(android.net.Uri.parse("nexus://song/one"), mapOf("Content-Type" to listOf("audio/mpeg"))).first { candidate ->
+            try {
+                candidate.sniff(input)
+            } catch (_: java.io.EOFException) {
+                false
+            } finally {
+                input.resetPeekPosition()
+            }
+        }
+        assertEquals(androidx.media3.extractor.mp3.Mp3Extractor::class.java, extractor.underlyingImplementation.javaClass)
         val output = FakeExtractorOutput()
         extractor.init(output)
         val holder = PositionHolder()
