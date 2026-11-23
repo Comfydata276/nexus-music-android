@@ -420,6 +420,9 @@ class PlaybackService : MediaLibraryService() {
             val cache = if (graph.settings.value.cacheLimitMb > 0) era.kept.acquire() else null
             return object : SongLease {
                 override val cache = cache
+                // The same switch the API client obeys: offline mode stops the player
+                // fetching too, not only the pages.
+                override val offline = graph.offline.on
                 override fun resolve(songId: String): SongWhere = resolve(era, songId)
                 override fun release() {
                     if (cache != null) era.kept.release()
@@ -480,7 +483,7 @@ class PlaybackService : MediaLibraryService() {
     private class RideOut : DefaultLoadErrorHandlingPolicy() {
         override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
             val error = loadErrorInfo.exception
-            if (error is StreamFailure && error.refused) return C.TIME_UNSET
+            if (error is StreamFailure && (error.refused || error.offline)) return C.TIME_UNSET
             if (error !is IOException) return super.getRetryDelayMsFor(loadErrorInfo)
             return RETRY_WAITS.getOrElse(loadErrorInfo.errorCount - 1) { RETRY_WAITS.last() }
         }
@@ -664,6 +667,7 @@ class PlaybackService : MediaLibraryService() {
                     publishExtras()
                     exo.prepare()
                 }
+                offline(error) -> passOver()
                 network(error) -> {
                     // Not the song's fault: the player has already tried a few times. Wait
                     // where it is for the server to come back, trying now and then (with no
@@ -732,12 +736,16 @@ class PlaybackService : MediaLibraryService() {
         PlaybackException.ERROR_CODE_TIMEOUT,
     ) || (error.cause as? StreamFailure)?.let { it.status >= 500 } == true
 
+    /** Offline mode is on, and the song isn't kept on the phone. */
+    private fun offline(error: PlaybackException) = (error.cause as? StreamFailure)?.offline == true
+
     /** The words the car, the notification and the app show for a playback error. */
     private fun explain(error: PlaybackException, song: Song?): PlaybackException? = when {
         // Android 17, a server on the home network, and no permission to reach it: waiting
         // for it to come back would be waiting for ever. Say what will put it right.
         // The player's own error is not passed on as the cause: a playback error goes to
         // every app with a controller, cause and all.
+        offline(error) -> PlaybackException(getString(R.string.cant_play_offline), null, error.errorCode)
         network(error) && graph.localAccess.blocked.value -> PlaybackException(getString(R.string.car_local_network), null, error.errorCode, openAppButton())
         network(error) -> PlaybackException(getString(R.string.lost_connection), null, error.errorCode)
         song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play, song.title), null, error.errorCode)

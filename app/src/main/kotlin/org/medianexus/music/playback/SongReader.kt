@@ -12,6 +12,10 @@ interface ByteSource {
     fun close()
 }
 
+/** Offline mode is on, and the song isn't kept whole on the phone: it can't be played until
+ *  it is switched off. */
+class NotKeptOffline : IOException("Offline mode is on, and this song isn't kept on the phone")
+
 /** Something opened: its bytes, and how many there are from here on (-1 if not known). */
 class Opened(val source: ByteSource, val length: Long)
 
@@ -212,14 +216,20 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
     private var keeping = false
     private var fromKept = false
     private var ended = false
+    private var offline = false
     /** The place the stream ends at, when the server said how long it is; -1 when it didn't. */
     private var endsAt = -1L
     private var sniffer: HeadSniffer? = null
 
-    /** Opens the song at byte `at`. Returns how many bytes there are from there, or -1 if
-     *  that isn't known (a conversion: it ends when the server says so). */
+    /**
+     * Opens the song at byte `at`. Returns how many bytes there are from there, or -1 if
+     * that isn't known (a conversion: it ends when the server says so).
+     *
+     * `offline` is offline mode: nothing is asked of the server. A song kept whole on the
+     * phone plays from there; any other is refused ([NotKeptOffline]).
+     */
     @Throws(IOException::class)
-    fun open(where: SongWhere, at: Long): Long {
+    fun open(where: SongWhere, at: Long, offline: Boolean = false): Long {
         this.where = where
         position = at
         ended = false
@@ -229,6 +239,14 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         tagToSkip = false
         sniffer = null
         endsAt = -1
+        this.offline = offline
+        if (offline) {
+            val whole = streams.wholeLength(where.key)
+            if (whole < 0) throw NotKeptOffline()
+            source = streams.keptOnly(where.key, at).source
+            fromKept = true
+            return (whole - at).coerceAtLeast(0)
+        }
         if (!where.form.converted) {
             val opened = streams.kept(where.stream(0), where.key, at) ?: streams.server(where.stream(0), at)
             source = opened.source
@@ -301,7 +319,7 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         val got = try {
             (source ?: throw IOException("Not open")).read(buffer, offset, length)
         } catch (e: IOException) {
-            if (!fromKept) throw e
+            if (!fromKept || offline || !where.form.converted) throw e
             // The kept copy gave out part-way (the phone cleared some of it): forget it, and
             // carry on from the server at the place reached.
             runCatching { source?.close() }

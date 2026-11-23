@@ -92,6 +92,7 @@
     <string name="lost_connection">Lost the connection to the server. The music will carry on when it\'s back.</string>
     <string name="couldnt_play">Couldn\'t play “%1$s”.</string>
     <string name="couldnt_find">Couldn\'t find “%1$s” in your library</string>
+    <string name="cant_play_offline">That isn\'t downloaded, so it can\'t play while you\'re offline</string>
     <string name="nothing_to_play">Nothing to play yet. Like some songs, or play something on your phone.</string>
     <!-- The screens (M1b) -->
     <string name="good_morning">Good morning</string>

@@ -84,6 +84,9 @@ interface SongLease {
     /** The account's kept songs, or null to go straight to the server. */
     val cache: Cache?
 
+    /** Offline mode is on: nothing may be asked of the server. */
+    val offline: Boolean
+
     /** The read has closed. */
     fun release()
 }
@@ -148,7 +151,7 @@ class SongDataSource(
         val lease = leases.lease(generation).also { this.lease = it }
         val where = lease.resolve(id)
         val reader = SongReader(Streams(lease.cache, dataSpec), heads).also { this.reader = it }
-        return guarded { reader.open(where, dataSpec.position) }
+        return guarded { reader.open(where, dataSpec.position, lease.offline) }
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int = guarded {
@@ -292,13 +295,20 @@ class StreamFailure private constructor(message: String, reason: Int, val status
     /** The server answered, and said no: asking again won't help. */
     val refused: Boolean get() = status in 400..499
 
+    /** Offline mode is on and the song isn't kept: asking again won't help either. */
+    val offline: Boolean get() = status == OFFLINE
+
     companion object {
+        /** Stands in the status for "offline mode, and not kept": no server sends it. */
+        private const val OFFLINE = -1
+
         fun of(error: IOException): StreamFailure {
             if (error is StreamFailure) return error
             // Every cause, as the HTTP data source wraps the real one.
             val chain = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
             val status = chain.firstNotNullOfOrNull { (it as? HttpDataSource.InvalidResponseCodeException)?.responseCode } ?: 0
             return when {
+                chain.any { it is NotKeptOffline } -> StreamFailure("Offline mode is on, and the song isn't kept on the phone", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, OFFLINE)
                 status != 0 -> StreamFailure("The server answered with status $status", PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, status)
                 chain.any { it is java.net.SocketTimeoutException } ->
                     StreamFailure("The server took too long to answer", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT, 0)

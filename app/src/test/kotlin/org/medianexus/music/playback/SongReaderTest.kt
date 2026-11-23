@@ -508,6 +508,48 @@ class SongReaderTest {
         assertEquals(-1L, streams.wholeLength(converted().key))
     }
 
+    // ---- Offline mode -----------------------------------------------------------------------------
+
+    @Test
+    fun inOfflineModeNothingIsAskedOfTheServer() {
+        // Offline mode stopped the pages being fetched and left the player fetching songs.
+        val streams = Streams()
+        val reader = SongReader(streams, heads)
+        for (where in listOf(converted(), asItIs())) {
+            asked.clear()
+            try {
+                reader.open(where, 0, offline = true)
+                fail("a song that isn't kept was opened in offline mode")
+            } catch (_: NotKeptOffline) {
+            }
+            reader.close()
+            assertEquals("the server was asked for ${where.key}", 0, asked.size)
+            // Played through once while online, it is kept whole...
+            reader.open(where, 0)
+            val all = reader.take()
+            reader.close()
+            asked.clear()
+            // ...and then plays offline, from the start or anywhere in it, from the phone.
+            assertEquals(all.size.toLong(), reader.open(where, 0, offline = true))
+            assertArrayEquals(all, reader.take())
+            reader.close()
+            assertEquals(all.size - 50_000L, reader.open(where, 50_000, offline = true))
+            assertArrayEquals(all.copyOfRange(50_000, all.size), reader.take())
+            reader.close()
+            assertEquals(0, asked.size)
+        }
+        // Part of a song is not the song.
+        val part = converted(kbps = 96)
+        reader.open(part, 0)
+        reader.take(30_000)
+        reader.close()
+        try {
+            reader.open(part, 0, offline = true)
+            fail("part of a song was played as the song")
+        } catch (_: NotKeptOffline) {
+        }
+    }
+
     // ---- A file as it is ---------------------------------------------------------------------------
 
     @Test
