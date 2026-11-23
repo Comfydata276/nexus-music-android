@@ -33,7 +33,8 @@ object Audible {
         parts += "In the foreground: ${if (inForeground) "yes" else "no"}"
         parts += try {
             val media = audio.activePlaybackConfigurations.filter { it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA }
-            val going = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) media.mapNotNull { it.audioDeviceInfo?.type }.distinct().map(::kind) else emptyList()
+            // (Where each is going is told from Android 12.)
+            val going = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) media.mapNotNull { it.audioDeviceInfo?.type }.distinct().map(::kind) else emptyList()
             "Android lists ${listed(media.size)} sounding" + if (going.isEmpty()) "" else ", going to ${going.joinToString(" and ")}"
         } catch (_: RuntimeException) {
             "what Android lists as sounding could not be read"

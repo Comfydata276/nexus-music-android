@@ -5,6 +5,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import java.util.concurrent.CountDownLatch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -74,8 +75,9 @@ class CarWorkTest {
         begun.await()
         assertNotEquals(asking, worked)
         gate.countDown()
-        // And an answer in time is the answer.
-        assertEquals("the songs", OffMain.within(scope, limitMs = 5_000) { "the songs" })
+        // And an answer in time is the answer. (Worked out on the test's own clock too:
+        // on a real thread it would be racing a limit that takes no real time to pass.)
+        assertEquals("the songs", OffMain.within(scope, limitMs = 5_000, on = StandardTestDispatcher(testScheduler)) { "the songs" })
         scope.cancel()
     }
 }
