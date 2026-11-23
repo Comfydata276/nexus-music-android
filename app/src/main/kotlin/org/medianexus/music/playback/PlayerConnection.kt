@@ -148,8 +148,19 @@ class PlayerConnection(
         .stateIn(scope, SharingStarted.Eagerly, false)
 
     /** What's being played, as the line under the song says it. */
-    val format: StateFlow<FormatLine> = combine(currentSong, convertedNow, settings.state.map { it.bitrate }.distinctUntilChanged()) { song, converted, cap ->
-        if (song == null) FormatLine("", false) else formatLine(song, cap, converted, liveStream)
+    val format: StateFlow<FormatLine> = combine(
+        currentSong, convertedNow, settings.state.map { it.bitrate }.distinctUntilChanged(),
+        // A song played from its download plays as it was saved, whatever the streaming
+        // quality is (unless this session set the download aside: then it streams).
+        accounts.state.flatMapLatest { account -> account?.catalogue?.state ?: flowOf(null) },
+    ) { song, converted, cap, downloads ->
+        if (song == null) return@combine FormatLine("", false)
+        val saved = downloads?.songs?.get(song.id)?.takeIf { accounts.state.value?.availability?.isSetAside(song.id) != true }
+        when {
+            saved == null -> formatLine(song, cap, converted, liveStream)
+            saved.bitrate > 0 -> FormatLine("MP3 · ${saved.bitrate} kbps", false)
+            else -> formatLine(song, 0, false, liveStream)
+        }
     }.stateIn(scope, SharingStarted.Eagerly, FormatLine("", false))
 
     private val listener = object : Player.Listener, MediaController.Listener {

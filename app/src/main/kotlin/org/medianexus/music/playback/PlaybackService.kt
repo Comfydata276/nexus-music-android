@@ -98,8 +98,22 @@ class PlaybackService : MediaLibraryService() {
      */
     private inner class Era(val number: Long, val account: AccountGraph) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        val tree = CarTree(account.library, words)
-        val kept = KeptSongs(account.keptSongsDir, database) { graph.settings.value.cacheLimitMb * 1024L * 1024L }
+        val tree = CarTree(
+            account.library, words,
+            CarOffline(
+                now = { graph.watch.offline },
+                availability = account.availability,
+                downloads = { account.downloads?.state?.value ?: org.medianexus.music.downloads.DownloadsState() },
+            ),
+        )
+        val kept = KeptSongs(
+            account.keptSongsDir, graph.database,
+            limitBytes = { graph.settings.value.cacheLimitMb * 1024L * 1024L },
+            // What is kept whole, told to the account's index as the cache opens and as songs
+            // are cleared away for the limit (see KeptIndex).
+            opened = { cache -> account.keptIndex.reconcile(org.medianexus.music.store.WholeMark.wholeKeys(cache)) { key -> Song(id = songIdOfKey(key)) } },
+            removed = { key -> account.keptIndex.gone(key) },
+        )
         val searches = SearchResults()
         /** What this account's conversions have been found to be, and the songs of its the
          *  phone turned out not to play as they are. By song id, which is only this server's
@@ -124,7 +138,8 @@ class PlaybackService : MediaLibraryService() {
     @Volatile private var current: Era? = null
     private var eras = 0L
     private val account: AccountGraph? get() = era?.account
-    private val database by lazy { StandaloneDatabaseProvider(this) }
+    /** The next few songs of the queue, fetched ahead into the kept songs (see [aheadNow]). */
+    private lateinit var ahead: FetchAhead
 
     /** What the server is told about listening: "now playing", and each play that counts. */
     private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::scrobble)
@@ -177,6 +192,7 @@ class PlaybackService : MediaLibraryService() {
             shuffle = getString(R.string.shuffle),
             mostPlayed = getString(R.string.most_played),
             aToZ = getString(R.string.sort_a_to_z),
+            downloads = getString(R.string.downloads),
             songCount = { resources.getQuantityString(R.plurals.song_count, it, it) },
             albumCount = { resources.getQuantityString(R.plurals.album_count, it, it) },
         )
@@ -185,6 +201,7 @@ class PlaybackService : MediaLibraryService() {
         // with a shorter limit on a read that has stalled.
         val http = OkHttpDataSource.Factory(Http.forStreams(graph.http))
         val sources = SongDataSource.Factory(Leases(), http)
+        ahead = FetchAhead(sources)
         val extractors = songExtractors()
         val mediaSources = DefaultMediaSourceFactory(sources, extractors).setLoadErrorHandlingPolicy(RideOut())
         exo = ExoPlayer.Builder(this, renderers(), mediaSources)
@@ -258,6 +275,12 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         main.postDelayed(ticker, TICK_MILLIS)
+        // Fetching ahead stops the moment offline mode goes on, or the server is gone.
+        scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().collect { aheadNow() } }
+        scope.launch { graph.settings.state.map { it.cacheAhead to it.cacheLimitMb }.distinctUntilChanged().collect { aheadNow() } }
+        // Offline, or back: the car's tabs show something else now (only what plays).
+        scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().drop(1).collect { if (era != null) reload() } }
+        listenForCalls()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
@@ -628,6 +651,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
+        if (::ahead.isInitialized) ahead.release()
         // Handed to the app's writer, which finishes it whatever becomes of this service.
         save()
         scope.cancel()
@@ -719,6 +743,18 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         next.scope.launch { restore(next) }
+        // What is downloaded changed: the car's Downloads tab, and anything of it open, is
+        // told to look again.
+        now.downloads?.let { downloads ->
+            next.scope.launch {
+                downloads.state.map { it.downloaded.keys to it.collections }.distinctUntilChanged().drop(1).collect {
+                    val ids = listOf(CarIds.format(CarNode.Downloads)) + asked.filter { id ->
+                        when (CarIds.parse(id)) { CarNode.Downloads, CarNode.DownloadedSongs, is CarNode.DownloadedAlbum, is CarNode.DownloadedList -> true; else -> false }
+                    }
+                    for (id in ids.distinct()) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
+                }
+            }
+        }
         // The limit on kept songs may have been lowered, or turned off, while this account
         // was signed out (or the app not running): what is over it goes now. With a limit of
         // nothing the kept songs are never opened to play from, so nothing else would ever
@@ -792,6 +828,7 @@ class PlaybackService : MediaLibraryService() {
         outage.clear()
         current = null
         era = null
+        ahead.want(emptyList())
         old.scope.cancel()
         // Off the main thread: closing writes the cache's index.
         graph.scope.launch(Dispatchers.IO) { old.kept.close() }
@@ -813,6 +850,14 @@ class PlaybackService : MediaLibraryService() {
                 override val offline: Boolean get() = graph.offline.on
                 override val conversions = era.conversions
                 override fun resolve(songId: String): SongWhere = resolve(era, songId)
+                override fun closed(key: String) {
+                    // Whether that song is kept whole now, for the account's index of them.
+                    val cache = cache ?: return
+                    val whole = if (org.medianexus.music.store.WholeMark.isConversion(key)) org.medianexus.music.store.WholeMark.length(cache, key) >= 0 else org.medianexus.music.store.WholeMark.cached(cache, key) >= 0
+                    val id = songIdOfKey(key)
+                    if (whole) era.account.keptIndex.kept(key, player.songFor(id) ?: Song(id = id)) else era.account.keptIndex.gone(key)
+                }
+                override fun dropped(key: String) = era.account.keptIndex.gone(key)
                 override fun release() {
                     if (cache != null) era.kept.release()
                 }
@@ -854,13 +899,14 @@ class PlaybackService : MediaLibraryService() {
     private fun resolve(era: Era, songId: String): SongWhere {
         val api = era.account.api
         val song = player.songFor(songId)
+        // A downloaded copy first (unless this session found it won't play: then it is set
+        // aside and streamed), then the kept copy, then the server.
+        val downloaded = if (era.account.availability.isDownloaded(songId)) era.account.catalogue.fileOf(songId)?.takeIf { it.isFile } else null
         val suffix = song?.suffix?.lowercase().orEmpty()
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting
         val form = streamForm(native, graph.settings.value.bitrate, suffix, song?.bitRate ?: 0)
-        // Here, in later versions, a downloaded copy is chosen first, then one kept from
-        // fetching ahead; only then the server.
         val least = if (form.converted && song != null) leastBytes(song.duration, form.bitrate, song.bitRate) else 0
-        return SongWhere(form, cacheKey(songId, form), least) { offset -> api.streamUrl(songId, form.bitrate, offset) }
+        return SongWhere(form, cacheKey(songId, form), least, downloaded) { offset -> api.streamUrl(songId, form.bitrate, offset) }
     }
 
     // ---- The queue changing -----------------------------------------------------------------
@@ -877,6 +923,7 @@ class PlaybackService : MediaLibraryService() {
         player.refresh()
         updateButtons()
         save()
+        aheadNow()
     }
 
     /**
@@ -972,8 +1019,12 @@ class PlaybackService : MediaLibraryService() {
                 failures = 0
                 stopWaiting()
                 gaveUp = false
+                waitingForCall = false
+                // What the server said in refusing something earlier is old news now.
+                graph.refusals.clear()
                 countPlaying()
                 listenFor()
+                aheadNow()
             } else {
                 // If it had been playing steadily it was going well up to this moment, and
                 // anything that goes wrong for this song from here is counted from here. (Not
@@ -994,6 +1045,7 @@ class PlaybackService : MediaLibraryService() {
             // Rolled into the next song while playing (the song before it has had its last
             // sample, in onPositionDiscontinuity, which comes first).
             if (exo.isPlaying) countPlaying()
+            aheadNow()
         }
 
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
@@ -1021,6 +1073,8 @@ class PlaybackService : MediaLibraryService() {
                 exo.pause()
                 if (holding) standDown()
             }
+            // Paused by someone: a Play waiting for a call to end is no longer wanted.
+            if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) waitingForCall = false
             if (playWhenReady) {
                 askedToPlayAt = clock()
                 // Play, pressed by someone: a new try at a server that was given up on.
@@ -1034,15 +1088,23 @@ class PlaybackService : MediaLibraryService() {
                 // audio focus only to the app in front or one with a foreground service, and
                 // Android 17 asks more of that service). Later, another app has taken over.
                 val after = clock() - askedToPlayAt
+                val call = inCall()
                 graph.diagnostics.note(
-                    if (after < FOCUS_REFUSED_MILLIS) "audio focus: refused or taken away at once after Play (Android's rules for an app in the background?)"
-                    else "audio focus: lost to another app",
+                    when {
+                        after < FOCUS_REFUSED_MILLIS && call -> "audio focus: refused at once after Play, a call being in progress: playing when it ends"
+                        after < FOCUS_REFUSED_MILLIS -> "audio focus: refused or taken away at once after Play (Android's rules for an app in the background?)"
+                        else -> "audio focus: lost to another app"
+                    },
                     now = after < FOCUS_REFUSED_MILLIS,
                 )
                 // Refused the sound as it asked: the player has not played (ExoPlayer turns
                 // Play down itself), and the car is told what will put it right rather than
-                // shown a paused song with nothing said.
-                if (after < FOCUS_REFUSED_MILLIS) cannotStart("Android would not give it the sound")
+                // shown a paused song with nothing said. Not so for a call: opening the app
+                // would be the wrong advice. Nothing is said, and Play happens by itself when
+                // the call ends, as it was asked for.
+                if (after < FOCUS_REFUSED_MILLIS) {
+                    if (call) waitForCall() else cannotStart("Android would not give it the sound")
+                }
             }
         }
 
@@ -1052,6 +1114,15 @@ class PlaybackService : MediaLibraryService() {
             graph.diagnostics.note("playback error: ${error.errorCodeName}" + (status?.let { " (the server answered $it)" } ?: ""))
             val song = player.queue.current() ?: return
             when {
+                // A downloaded copy that won't play is left where it is (one failure may be
+                // nothing to do with the file), set aside for this session, and the song is
+                // streamed for now, as Windows does (`bad_downloads`).
+                undecodable(error) && era?.account?.availability?.setAside(song.id) == true -> {
+                    graph.diagnostics.note("a downloaded copy wouldn't play (${error.errorCodeName}): streamed instead")
+                    graph.toasts.show(getString(R.string.bad_download, song.title))
+                    publishExtras()
+                    exo.prepare()
+                }
                 undecodable(error) && era?.needsConverting?.mark(song.id) == true -> {
                     // The phone can't play this file as it is: have the server convert it.
                     publishExtras()
@@ -1241,16 +1312,19 @@ class PlaybackService : MediaLibraryService() {
 
     private fun reportNowPlaying(song: Song) {
         val graph = account ?: return
-        if (!this.graph.settings.value.scrobble) return
+        // ("Now playing" is of the moment: offline, there is nobody to tell, and nothing kept.)
+        if (!this.graph.settings.value.scrobble || this.graph.watch.offline) return
         graph.scope.launch { runCatching { graph.api.scrobble(song.id, submission = false) } }
     }
 
-    /** A play counts: tell the server, if the person wants plays reported. */
+    /** A play counts: tell the server, if the person wants plays reported. Sent now, or
+     *  held with the time it counted and sent when the server can next be reached (see
+     *  AccountGraph.submit): a play made in a tunnel is not lost. */
     private fun scrobble(songId: String) {
         val graph = account ?: return
         if (!this.graph.settings.value.scrobble || songId.isEmpty()) return
-        // Sent now; holding plays made offline until the server is back comes with offline mode.
-        graph.scope.launch { runCatching { graph.api.scrobbleAt(songId, System.currentTimeMillis()) } }
+        val at = System.currentTimeMillis()
+        graph.scope.launch { runCatching { graph.submit(org.medianexus.music.store.Pending.Played(songId, at)) } }
     }
 
     // ---- The session's callback: the car, the notification, the app's screens ----------------
@@ -1577,7 +1651,11 @@ class PlaybackService : MediaLibraryService() {
                     // has been overtaken. In the foreground first, as for any request that
                     // is to end in playing (the app is in front, so Android allows it).
                     holdForeground(why = "for a list chosen in the app")
-                    if (AppCommands.byPage(args)) playPage(player.beginStart(), args) else AppCommands.handle(player, customCommand, args, ::shuffleFor)
+                    if (AppCommands.byPage(args)) {
+                        playPage(player.beginStart(), args)
+                    } else {
+                        AppCommands.handle(player, customCommand, args, ::shuffleFor, playsOffline()).also { if (!it) graph.toasts.show(getString(R.string.cant_play_offline)) }
+                    }
                 }
                 else -> AppCommands.handle(player, customCommand, args, ::shuffleFor)
             }
@@ -1613,12 +1691,18 @@ class PlaybackService : MediaLibraryService() {
         era.scope.launch {
             val shuffle = AppCommands.shuffleOf(args, ::shuffleFor)
             // Read, and made into a queue, off the main thread: it is thousands of songs.
+            val plays = playsOffline()
+            var none = false
             val next = withContext(Dispatchers.Default) {
-                era.account.library.keptSongs(source)?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle) }
+                era.account.library.keptSongs(source)?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle, plays) ?: run { none = true; null } }
             }
             // Something else has been chosen while this was being read (or the account has
             // gone, which overtakes every start): that stands.
             if (!player.stands(mine) || era !== this@PlaybackService.era) return@launch
+            if (none) {
+                graph.toasts.show(getString(R.string.cant_play_offline))
+                return@launch
+            }
             if (next == null) {
                 // The list has nothing in it any more (emptied since the screen drew it, or
                 // the phone has cleared its copy away). Nothing is started, what was playing
@@ -1840,11 +1924,17 @@ class PlaybackService : MediaLibraryService() {
      */
     private suspend fun staged(mine: Long, era: Era, list: PlayList): MediaItemsWithStartPosition {
         val shuffle = list.shuffle ?: shuffleFor(list.source)
+        val plays = playsOffline()
         // Made into a queue off the main thread: a list can be thousands of songs.
         val next = withContext(Dispatchers.Default) {
+            // Offline, only what is on the phone, each at its place in the whole list.
+            val cut = plays?.let { playableOnly(list.songs, list.start, it) }
+            if (plays != null && cut == null) return@withContext null
             // A list with a source is that page's whole list, so each song's place is its origin.
-            val origins = if (list.source.isNotEmpty()) list.songs.indices.toList() else null
-            player.prepare(list.songs, list.start, list.context, list.source, origins, list.songs.map { it.id }, shuffle, list.anyStart)
+            val origins = if (list.source.isNotEmpty()) cut?.origins ?: list.songs.indices.toList() else null
+            player.prepare(cut?.songs ?: list.songs, cut?.start ?: list.start, list.context, list.source, origins, list.songs.map { it.id }, shuffle, list.anyStart)
+        } ?: throw UnsupportedOperationException(getString(R.string.cant_play_offline)).also {
+            session.controllerForCurrentRequest?.let { who -> session.sendError(who, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.cant_play_offline))) }
         }
         val (items, start) = (if (era === this.era) player.stage(next, mine) else null)
             ?: throw UnsupportedOperationException("Overtaken by a newer choice")
@@ -1886,6 +1976,87 @@ class PlaybackService : MediaLibraryService() {
             ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find, request.searchWords())))
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "voice: $request -> ${list.context} (${list.songs.size} songs)")
         return staged(mine, era, list)
+    }
+
+    /** Offline (by hand, or the server out of reach), which songs a list started now may
+     *  hold: only those on the phone. Null when anything may. */
+    private fun playsOffline(): ((Song) -> Boolean)? {
+        if (!graph.watch.offline) return null
+        val availability = era?.account?.availability ?: return null
+        return availability::plays
+    }
+
+    // ---- Fetching ahead -------------------------------------------------------------------
+
+    /**
+     * Has the next few songs of the queue fetched ahead (see [FetchAhead]), or stops: as many
+     * as Settings says on Wi-Fi, the next one only on mobile data, none with Android's Data
+     * Saver on, none offline, none when nothing is kept, none while paused.
+     */
+    private fun aheadNow() {
+        if (!::ahead.isInitialized) return
+        val era = era
+        val settings = graph.settings.value
+        val count = when {
+            era == null || !exo.playWhenReady || settings.cacheLimitMb <= 0 || graph.watch.offline -> 0
+            else -> {
+                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+                val saver = Build.VERSION.SDK_INT >= 24 && connectivity?.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+                when {
+                    saver -> 0
+                    connectivity?.isActiveNetworkMetered == true -> minOf(settings.cacheAhead, FetchAhead.ON_MOBILE_DATA)
+                    else -> settings.cacheAhead
+                }
+            }
+        }
+        val availability = era?.account?.availability
+        ahead.want(if (availability == null) emptyList() else FetchAhead.upcoming(player.queue, count) { availability.isDownloaded(it.id) || availability.isKept(it) })
+    }
+
+    // ---- A call in progress -----------------------------------------------------------------
+
+    /** Play was asked for, and refused the sound because of a call: it plays when the call ends. */
+    private var waitingForCall = false
+
+    /** Whether a phone call (or a call in another app) is ringing or in progress, by the
+     *  system's word: its audio mode. */
+    private fun inCall(): Boolean {
+        val mode = getSystemService(android.media.AudioManager::class.java)?.mode ?: return false
+        return mode == android.media.AudioManager.MODE_IN_CALL || mode == android.media.AudioManager.MODE_IN_COMMUNICATION ||
+            mode == android.media.AudioManager.MODE_RINGTONE || (Build.VERSION.SDK_INT >= 30 && mode == android.media.AudioManager.MODE_CALL_SCREENING) ||
+            (Build.VERSION.SDK_INT >= 33 && mode == android.media.AudioManager.MODE_CALL_REDIRECT) || (Build.VERSION.SDK_INT >= 33 && mode == android.media.AudioManager.MODE_COMMUNICATION_REDIRECT)
+    }
+
+    private fun waitForCall() {
+        waitingForCall = true
+        if (Build.VERSION.SDK_INT < 31) main.postDelayed(callCheck, CALL_CHECK_MILLIS)
+    }
+
+    /** Before Android 12 there is no word when the audio mode changes: looked at every two
+     *  seconds while a Play waits for a call to end. */
+    private val callCheck = object : Runnable {
+        override fun run() {
+            if (!waitingForCall) return
+            if (inCall()) main.postDelayed(this, CALL_CHECK_MILLIS) else callEnded()
+        }
+    }
+
+    private fun listenForCalls() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            runCatching {
+                getSystemService(android.media.AudioManager::class.java)?.addOnModeChangedListener(androidx.core.content.ContextCompat.getMainExecutor(this)) { if (waitingForCall && !inCall()) callEnded() }
+            }
+        }
+    }
+
+    /** The call has ended, and Play was asked for during it: it plays now, if what was asked
+     *  for is still what is in the player (nothing else has been chosen, nobody paused). */
+    private fun callEnded() {
+        if (!waitingForCall) return
+        waitingForCall = false
+        if (player.queue.isEmpty || exo.playWhenReady) return
+        graph.diagnostics.note("audio focus: the call ended; playing as was asked")
+        player.play()
     }
 
     private fun <T> slice(all: List<T>, page: Int, pageSize: Int): List<T> {
@@ -1965,6 +2136,11 @@ class PlaybackService : MediaLibraryService() {
         /** A pause for want of audio focus this soon after Play was the sound being refused,
          *  not another app starting up. */
         private const val FOCUS_REFUSED_MILLIS = 2_000L
+
+        private const val CALL_CHECK_MILLIS = 2_000L
+
+        /** The song id in a kept-song key ("song:<id>:<rate>": see `cacheKey`). */
+        fun songIdOfKey(key: String): String = key.removePrefix("song:").substringBeforeLast(':')
 
         /** A service made this soon after its process began was what the process began for. */
         private const val COLD_START_MILLIS = 3_000L

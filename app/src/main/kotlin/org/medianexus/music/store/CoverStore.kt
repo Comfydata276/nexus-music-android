@@ -40,6 +40,9 @@ class CoverStore(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Covers kept at most, on disk. */
     private val budget: Long = DISK_BUDGET,
+    /** Where the covers of downloaded music are kept, outside the cache the system may clear
+     *  and the budget trims (see [pin]). Null: none are. */
+    private val pinned: File? = null,
 ) {
     /** When each cover that couldn't be fetched last failed, oldest first. Never more than
      *  [MOST_FAILURES]: a car asking for covers that don't exist can't make it grow. */
@@ -59,8 +62,36 @@ class CoverStore(
     private val folder = Mutex()
     private var total = -1L
 
-    /** The kept file for a cover, if it's on the phone already. Doesn't fetch. */
-    fun kept(id: String, size: Int = SIZE): File? = fileFor(id, size)?.takeIf { it.isFile && it.length() > 0 }
+    /** The kept file for a cover, if it's on the phone already: among the covers kept as
+     *  they're shown, or those of downloaded music. Doesn't fetch. */
+    fun kept(id: String, size: Int = SIZE): File? =
+        fileFor(id, size)?.takeIf { it.isFile && it.length() > 0 } ?: pinnedFor(id, size)?.takeIf { it.isFile && it.length() > 0 }
+
+    private fun pinnedFor(id: String, size: Int): File? = pinned?.let { dir -> fileName(id, size)?.let { File(dir, it) } }
+
+    /**
+     * Keeps a cover with the downloads, where the system won't clear it away when space runs
+     * short and the budget doesn't trim it: downloaded music has to be shown with no signal
+     * at all. Fetched first if it isn't kept already. Returns whether it is kept now.
+     */
+    suspend fun pin(id: String): Boolean {
+        val target = pinnedFor(id, SIZE) ?: return false
+        if (withContext(io) { target.isFile && target.length() > 0 }) return true
+        val source = file(id) ?: return false
+        return withContext(io) {
+            try {
+                writeAtomically(target, source.readBytes())
+                true
+            } catch (_: IOException) {
+                false
+            }
+        }
+    }
+
+    /** No downloaded music uses this cover any more. */
+    fun unpin(id: String) {
+        pinnedFor(id, SIZE)?.delete()
+    }
 
     /**
      * The file holding a cover at `size` ([SIZE] or [LARGE]), fetched first if it isn't kept
@@ -70,6 +101,7 @@ class CoverStore(
     suspend fun file(id: String, size: Int = SIZE): File? {
         val file = fileFor(id, size) ?: return null
         if (withContext(io) { file.isFile && file.length() > 0 }) return file
+        pinnedFor(id, size)?.let { kept -> if (withContext(io) { kept.isFile && kept.length() > 0 }) return kept }
         val entry = start(id, size, file) ?: return null
         return try {
             await(file.name, entry)
@@ -91,6 +123,7 @@ class CoverStore(
     suspend fun forOutside(id: String, waitMillis: Long): File? {
         val file = fileFor(id, SIZE) ?: return null
         if (file.isFile && file.length() > 0) return file
+        pinnedFor(id, SIZE)?.let { kept -> if (kept.isFile && kept.length() > 0) return kept }
         if (outside.incrementAndGet() > OUTSIDE_AT_ONCE) {
             outside.decrementAndGet()
             return null

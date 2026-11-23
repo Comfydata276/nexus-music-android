@@ -33,6 +33,14 @@ sealed interface CarNode {
     /** One stretch of a folder too long to show whole: its entries from `from` up to `to`
      *  (see [CarFolders]). */
     data class Part(val parent: CarNode, val from: Int, val to: Int) : CarNode
+
+    /** The Downloads tab, and what is in it: every downloaded song, an album as the
+     *  downloads have it, a playlist (or Liked songs) downloaded whole. All from the
+     *  downloads' own record: none of it asks the server or the kept pages. */
+    data object Downloads : CarNode
+    data object DownloadedSongs : CarNode
+    data class DownloadedAlbum(val id: String) : CarNode
+    data class DownloadedList(val key: String) : CarNode
 }
 
 /** What a "Tap to try again" entry loads again: a folder, by its id, or a search. */
@@ -46,6 +54,10 @@ sealed interface ListRef {
     data class Album(val id: String) : ListRef
     data class Playlist(val id: String) : ListRef
     data object Liked : ListRef
+    /** The Downloads tab's lists (see [CarNode.Downloads]). */
+    data object DownloadedSongs : ListRef
+    data class DownloadedAlbum(val id: String) : ListRef
+    data class DownloadedList(val key: String) : ListRef
 }
 
 object CarIds {
@@ -74,16 +86,26 @@ object CarIds {
         is CarNode.AlbumsBy -> "albums-by/${escape(node.kind)}"
         // The folder it is part of comes last, as it is written on its own.
         is CarNode.Part -> "part/${node.from}/${node.to}/${format(node.parent)}"
+        CarNode.Downloads -> "downloads"
+        CarNode.DownloadedSongs -> "downloads-songs"
+        is CarNode.DownloadedAlbum -> "downloads-album/${escape(node.id)}"
+        is CarNode.DownloadedList -> "downloads-list/${escape(node.key)}"
     }
 
     private fun list(list: ListRef): String = when (list) {
         is ListRef.Album -> "album/${escape(list.id)}"
         is ListRef.Playlist -> "playlist/${escape(list.id)}"
         ListRef.Liked -> "liked"
+        ListRef.DownloadedSongs -> "downloads-songs"
+        is ListRef.DownloadedAlbum -> "downloads-album/${escape(list.id)}"
+        is ListRef.DownloadedList -> "downloads-list/${escape(list.key)}"
     }
 
     private fun listOf(parts: List<String>): ListRef? = when {
         parts.size == 1 && parts[0] == "liked" -> ListRef.Liked
+        parts.size == 1 && parts[0] == "downloads-songs" -> ListRef.DownloadedSongs
+        parts.size == 2 && parts[0] == "downloads-album" -> ListRef.DownloadedAlbum(parts[1])
+        parts.size == 2 && parts[0] == "downloads-list" -> ListRef.DownloadedList(parts[1])
         parts.size == 2 && parts[0] == "album" -> ListRef.Album(parts[1])
         parts.size == 2 && parts[0] == "playlist" -> ListRef.Playlist(parts[1])
         else -> null
@@ -118,6 +140,8 @@ object CarIds {
                 "artists" -> CarNode.Artists
                 "genres" -> CarNode.Genres
                 "liked" -> CarNode.Liked
+                "downloads" -> CarNode.Downloads
+                "downloads-songs" -> CarNode.DownloadedSongs
                 else -> null
             }
             parts.size == 2 -> when (parts[0]) {
@@ -128,6 +152,8 @@ object CarIds {
                 "playlist" -> CarNode.Playlist(parts[1])
                 "genre" -> CarNode.Genre(parts[1])
                 "albums-by" -> CarNode.AlbumsBy(parts[1]).takeIf { parts[1] in ALBUM_ORDERS }
+                "downloads-album" -> CarNode.DownloadedAlbum(parts[1])
+                "downloads-list" -> CarNode.DownloadedList(parts[1])
                 else -> null
             }
             parts[0] == "track" && parts.size >= 4 -> {

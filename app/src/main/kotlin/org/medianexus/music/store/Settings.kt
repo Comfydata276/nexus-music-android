@@ -108,6 +108,10 @@ data class Settings(
     /** Android 17's local-network permission was refused and the system won't ask again:
      *  "Allow" opens the app's page in the phone's settings instead (see `LocalAccess`). */
     val localNetworkRefusedForGood: Boolean = false,
+    /** Android 13 and later: whether the notifications permission has been asked for, at the
+     *  first download (the progress notification needs it; the player's doesn't). Asked once:
+     *  refused, downloads still run and show their progress in the app. */
+    val downloadNotificationsAsked: Boolean = false,
 ) {
     /** The name of the preset matching the equaliser curve: one of the app's, one of the
      *  user's own, or neither. */

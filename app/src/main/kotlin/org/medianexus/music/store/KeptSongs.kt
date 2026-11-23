@@ -23,14 +23,22 @@ import java.util.TreeSet
  * address, which carries a sign-in token that changes.
  */
 @OptIn(UnstableApi::class)
-class KeptSongs(private val dir: File, private val database: DatabaseProvider, private val limitBytes: () -> Long) {
-    private val evictor = LimitEvictor(limitBytes)
+class KeptSongs(
+    private val dir: File,
+    private val database: DatabaseProvider,
+    /** The cache has been opened (and swept): what is kept whole in it can be read. */
+    private val opened: (Cache) -> Unit = {},
+    /** A song's bytes are being cleared away for the limit: it is not kept whole any more. */
+    removed: (String) -> Unit = {},
+    private val limitBytes: () -> Long,
+) {
+    private val evictor = LimitEvictor(removed, limitBytes)
     private val shared = SharedResource<SimpleCache>(
         // Only one may be open on a folder at a time. If the one before is still closing
         // (the same account signed out and straight back in), this read goes without.
         // Opened, it is cleared of conversions that were never marked whole: what a read left
         // behind when the app was stopped part-way through one.
-        open = { if (SimpleCache.isCacheFolderLocked(dir)) null else SimpleCache(dir, evictor, database).also(WholeMark::sweep) },
+        open = { if (SimpleCache.isCacheFolderLocked(dir)) null else SimpleCache(dir, evictor, database).also(WholeMark::sweep).also(opened) },
         close = { it.release() },
     )
 
@@ -171,6 +179,12 @@ object WholeMark {
      *  bit rate asked for, which is 0 for a file as it is). */
     fun isConversion(key: String): Boolean = key.startsWith("song:") && (key.substringAfterLast(':').toIntOrNull() ?: 0) > 0
 
+    /** The keys of every song kept whole: a conversion marked so, or a file as it is with
+     *  every byte the server said it has. */
+    fun wholeKeys(cache: Cache): Set<String> = cache.keys.filterTo(HashSet()) { key ->
+        if (isConversion(key)) length(cache, key) >= 0 else cached(cache, key) >= 0
+    }
+
     /** Clears away every conversion that isn't marked whole. For when the cache is opened:
      *  nothing is reading or writing it yet. */
     fun sweep(cache: Cache) {
@@ -184,7 +198,7 @@ object WholeMark {
  * change in Settings applies at once.
  */
 @OptIn(UnstableApi::class)
-internal class LimitEvictor(private val limitBytes: () -> Long) : CacheEvictor {
+internal class LimitEvictor(private val removed: (String) -> Unit = {}, private val limitBytes: () -> Long) : CacheEvictor {
     private val leastRecentlyUsed = TreeSet<CacheSpan> { a, b ->
         if (a.lastTouchTimestamp == b.lastTouchTimestamp) a.compareTo(b) else a.lastTouchTimestamp.compareTo(b.lastTouchTimestamp)
     }
@@ -226,6 +240,10 @@ internal class LimitEvictor(private val limitBytes: () -> Long) : CacheEvictor {
 
     private fun evict(cache: Cache, required: Long) {
         val limit = limitBytes()
-        while (size + required > limit && leastRecentlyUsed.isNotEmpty()) cache.removeSpan(leastRecentlyUsed.first())
+        while (size + required > limit && leastRecentlyUsed.isNotEmpty()) {
+            val span = leastRecentlyUsed.first()
+            removed(span.key)
+            cache.removeSpan(span)
+        }
     }
 }

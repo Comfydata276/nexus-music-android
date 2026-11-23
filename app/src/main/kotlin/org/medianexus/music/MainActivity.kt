@@ -65,7 +65,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // On screen: downloads waiting may now be carried on the way Android allows only an
+        // app on screen to ask for (see DownloadKeeper).
+        org.medianexus.music.downloads.DownloadKeeper.visible = true
+        graph.accounts.state.value?.downloads?.refresh()
+    }
+
     override fun onStop() {
+        org.medianexus.music.downloads.DownloadKeeper.visible = false
         graph.player.release()
         super.onStop()
     }

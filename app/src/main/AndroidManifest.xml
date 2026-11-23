@@ -13,6 +13,12 @@
     <!-- Android 17: reaching a server on the home network (192.168.x.x and the like). Asked
          for when signing in to one; see LocalAccess. Earlier versions don't have it. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- Downloads (see downloads/Keeper.kt): carried on by Android's job scheduler after the
+         phone restarts; on Android 14 and later as a user-initiated data transfer; before
+         14, in a foreground service of the data-sync kind while the app holds it up. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- The known hosts of media apps (res/xml/allowed_media_browser_callers.xml), so that
          one that connects can be looked up by name and its signing certificate checked,
@@ -115,6 +121,16 @@
         <receiver
             android:name="androidx.media3.session.MediaButtonReceiver"
             android:exported="false" />
+
+        <!-- Downloads carried on with nothing on screen, and after a restart (DownloadKeeper). -->
+        <service
+            android:name=".downloads.DownloadsJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <service
+            android:name=".downloads.DownloadsService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Cover art for the car and the system's media controls, which can't fetch it from
              the server. Read-only, it serves nothing but covers, and only to this app and

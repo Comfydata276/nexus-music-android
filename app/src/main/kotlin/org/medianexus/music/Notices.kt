@@ -25,6 +25,9 @@ sealed interface Notice {
 
     /** The settings couldn't be written; they're tried again at the next change. */
     data object SettingsNotSaved : Notice
+
+    /** The server refused the saved sign-in (its password was changed there): signed out. */
+    data object SignInGone : Notice
 }
 
 /** The notices waiting to be seen, oldest first. */

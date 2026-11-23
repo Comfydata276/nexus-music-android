@@ -91,8 +91,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --standin) target=org.medianexus.standin ;;
     --selftest) selftest=1; target=org.medianexus.standin ;;
-    # Three tabs until there are downloads (M2), when Downloads makes four.
-    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library" -e expect_buttons "like,shuffle,repeat" -e expect_shuffle "Shuffle" -e forge "$nexus_forge" -e forge_buttons "$nexus_buttons" -e covers "COVERS_OF_TARGET") ;;
+    # Four tabs: Downloads is always there (empty until something is downloaded).
+    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library,Downloads" -e expect_buttons "like,shuffle,repeat" -e expect_shuffle "Shuffle" -e forge "$nexus_forge" -e forge_buttons "$nexus_buttons" -e covers "COVERS_OF_TARGET") ;;
     --query) extra+=(-e query "${2:?}"); shift ;;
     --voice) extra+=(-e voice "${2:?}"); shift ;;
     --tabs) extra+=(-e expect_tabs "${2:?}"); shift ;;

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import java.io.File
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 
@@ -43,6 +44,17 @@ import androidx.media3.session.SessionToken
  *
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es host "org.medianexus.carprobe <sha256>"
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es host ""
+ *
+ * Downloads and offline mode (see docs/TESTING.md, "Downloads"): download a list by its route
+ * key, say how the downloads stand, retry the failed ones, cancel or remove them all; leave
+ * this much room spare in the free-space check (megabytes; nothing for the usual half a
+ * gigabyte); and switch offline mode by hand:
+ *
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es download "album:<id>"
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es downloads say
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es downloads retry|cancel|remove
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es spare 999999
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es offline on|off
  */
 class DebugControl : BroadcastReceiver() {
     private companion object {
@@ -53,6 +65,45 @@ class DebugControl : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         intent.getStringExtra("host")?.let { entry ->
             resultData = DebugHosts.set(context.applicationContext, entry)
+            return
+        }
+        intent.getStringExtra("spare")?.let { megabytes ->
+            resultData = org.medianexus.music.downloads.DebugSpare.set(context.applicationContext, megabytes)
+            return
+        }
+        val graph = (context.applicationContext as org.medianexus.music.App).graph
+        intent.getStringExtra("offline")?.let { on ->
+            graph.settings.update { it.copy(offline = on == "on") }
+            resultData = "offline mode ${if (on == "on") "on" else "off"}"
+            return
+        }
+        val download = intent.getStringExtra("download")
+        val downloads = intent.getStringExtra("downloads")
+        if (download != null || downloads != null) {
+            val done = goAsync()
+            graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                try {
+                    val account = graph.accounts.restored()
+                    val engine = account?.downloads
+                    done.resultData = when {
+                        account == null || engine == null -> "nobody signed in"
+                        download != null -> org.medianexus.music.downloads.DownloadPages.listFor(account, download, "Liked songs")
+                            ?.let { (list, songs) -> org.medianexus.music.downloads.DownloadPages.said(context, engine.download(songs, list)) } ?: "no such list"
+                        downloads == "retry" -> engine.retryFailed()?.let { org.medianexus.music.downloads.DownloadPages.said(context, it) } ?: "nothing failed"
+                        downloads == "cancel" -> { engine.cancelAll(); "cancelled" }
+                        downloads == "remove" -> { engine.removeAll(); "removed" }
+                        else -> engine.state.value.let { state ->
+                            "downloaded ${state.downloaded.size} (${state.bytes} bytes), on the way ${state.active.size} " +
+                                "(fetching ${state.active.count { it.state is org.medianexus.music.downloads.SongState.Fetching }}), failed ${state.failed.size}" +
+                                (state.failed.firstOrNull()?.let { " (${it.reason})" } ?: "") + ", held ${state.held}, batch ${state.batchDone}+${state.batchFailed}/${state.batchTotal}, " +
+                                "lists ${state.collections.joinToString(",") { "${it.key}:${it.songs.size}" }}, settled ${state.settled}, reach ${graph.watch.state.value}, " +
+                                "held changes ${account.held.waiting.value}"
+                        }
+                    }
+                } finally {
+                    done.finish()
+                }
+            }
             return
         }
         when (intent.getStringExtra("capture")) {

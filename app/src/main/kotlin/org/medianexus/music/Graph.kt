@@ -65,8 +65,37 @@ class Graph(context: Context) {
      *  so the last snapshot either hands it is still written. */
     val queueSaver = QueueSaver(scope, Dispatchers.IO)
 
-    /** What belongs to whoever is signed in: their library, covers, likes and queue. */
-    val accounts = Accounts(session, scope)
+    /** Media3's database: the kept songs' index and each account's list of downloads. */
+    val database by lazy { androidx.media3.database.StandaloneDatabaseProvider(context.applicationContext) }
+
+    /**
+     * Whether the server can be reached (see [ServerWatch]): noticed from every request the
+     * account's client makes, asked again every 15 seconds while it can't be, and on its
+     * return what was held back is sent and what was waiting carries on.
+     */
+    val watch: ServerWatch = ServerWatch(
+        scope,
+        ping = { accounts.state.value?.api?.ping() },
+        cameOnline = ::cameOnline,
+        signInGone = ::signInGone,
+        // Not a server on the home network while the app isn't allowed to reach it: it can't
+        // answer, so asking is for nothing. Allowed, asking resumes (see localAccess.allowed).
+        mayAsk = { !localAccess.certain.value },
+    )
+
+    /** What belongs to whoever is signed in: their library, covers, likes, downloads and
+     *  queue. */
+    val accounts = Accounts(session, scope) { signedIn ->
+        AccountGraph(
+            signedIn.account, signedIn.api,
+            wiring = AccountWiring(
+                settings = settings.state,
+                reach = watch.state,
+                suspect = { watch.check() },
+                downloads = { account -> downloadsFor(context.applicationContext, account) },
+            ),
+        )
+    }
 
     val toasts = Toasts()
 
@@ -86,27 +115,68 @@ class Graph(context: Context) {
      */
     val reconnects: kotlinx.coroutines.flow.StateFlow<Int> = reconnectCount
 
-    @Volatile private var serverDown = false
-
     private fun reached(ok: Boolean) {
         localAccess.reached(ok)
-        val wasDown = serverDown
-        serverDown = !ok
-        if (ok && wasDown) reconnected()
+        watch.reached(ok)
     }
 
     /**
-     * While the server couldn't be reached last time it was asked, asks it again (a ping),
-     * so that pages showing "Can't reach the server" come back by themselves when it does,
-     * even if nothing else asks meanwhile. Only while the screens are in front: see
-     * MainActivity. Not while the server is on the home network and the app may not reach it.
+     * While the server couldn't be reached last time it was asked, asks it again (a ping).
+     * The watch does so every 15 seconds by itself; this is the screens coming to the front.
      */
-    suspend fun checkIfDown() {
-        // Not a server on the home network while the app isn't allowed to reach it: it can't
-        // answer, so asking is for nothing. Allowed, what failed tries again at once (see
-        // `localAccess.allowed`), and the asking resumes if it is still down.
-        if (!serverDown || localAccess.certain.value) return
-        runCatching { accounts.state.value?.api?.ping() }
+    fun checkIfDown() {
+        if (watch.state.value.unreachable) watch.check()
+    }
+
+    /** The server answers again (see [ServerWatch]): what was held back is sent, downloads
+     *  that failed for want of it are tried again, downloaded playlists are topped up. */
+    private fun cameOnline() {
+        reconnected()
+        val account = accounts.state.value ?: return
+        account.scope.launch {
+            account.flush()
+            account.downloads?.let { downloads ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    downloads.retryFailed(onlyNetwork = true)
+                    downloads.topUp { list -> freshList(account, list) }
+                }
+            }
+        }
+    }
+
+    /** The server refused the saved sign-in (the password was changed there): signed out,
+     *  as Windows does, to be asked for it again. Nothing kept for the account is lost. */
+    private fun signInGone() {
+        notices.post(Notice.SignInGone)
+        session.signOut()
+    }
+
+    private fun downloadsFor(context: Context, account: AccountGraph) = org.medianexus.music.downloads.Downloads(
+        context = context,
+        catalogue = account.catalogue,
+        api = account.api,
+        http = http,
+        database = database,
+        accountKey = account.account.key,
+        settings = settings.state,
+        reach = watch.state,
+        covers = account.covers,
+        keeper = { busy, wifiOnly -> org.medianexus.music.downloads.DownloadKeeper.update(context, busy, wifiOnly) },
+        scope = account.scope,
+        spare = { org.medianexus.music.downloads.DebugSpare.spare(context) ?: org.medianexus.music.downloads.Downloads.SPARE },
+        note = { diagnostics.note(it) },
+    ).also { downloads -> downloads.reachedFailed = { watch.check() } }
+
+    /** A list downloaded whole, as the server has it now, with its songs. */
+    private suspend fun freshList(account: AccountGraph, list: org.medianexus.music.downloads.DownloadedList): Pair<org.medianexus.music.downloads.DownloadedList, List<org.medianexus.music.net.Song>>? {
+        val library = account.library
+        val page: Any = when {
+            list.key == "liked" -> library.fresh(library.liked())
+            list.key.startsWith("album:") -> library.fresh(library.album(list.key.removePrefix("album:")))
+            list.key.startsWith("playlist:") -> library.fresh(library.playlist(list.key.removePrefix("playlist:")))
+            else -> return null
+        }
+        return org.medianexus.music.downloads.DownloadedViews.listOf(list.key, page, list)
     }
 
     private fun reconnected() {
@@ -142,21 +212,31 @@ class Graph(context: Context) {
         // Whether the server answers, from every request the account's client makes.
         scope.launch {
             accounts.state.collect { account ->
-                serverDown = false
+                // What was found out about one account's server is not the next account's.
+                watch.reset()
                 // (What one account's server said is not the next account's to be shown.)
                 refusals.clear()
                 account?.api?.onReached = ::reached
+                // Downloaded lists topped up with what they gained while the app was away.
+                if (account != null) account.scope.launch {
+                    if (!watch.offline) account.downloads?.let { downloads ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { downloads.topUp { list -> freshList(account, list) } }
+                    }
+                }
             }
         }
         // Allowed to reach the home network: what failed tries again.
-        scope.launch { localAccess.allowed.collect { if (it > 0) reconnected() } }
+        scope.launch { localAccess.allowed.collect { if (it > 0) { reconnected(); watch.networkBack() } } }
         // A network again (after none, or another one): the same.
         runCatching {
             val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
             connectivity.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
                 private var had = true
                 override fun onAvailable(network: android.net.Network) {
-                    if (!had) reconnected()
+                    if (!had) {
+                        reconnected()
+                        watch.networkBack()
+                    }
                     had = true
                 }
 
@@ -167,7 +247,10 @@ class Graph(context: Context) {
         }
         // The switch in Settings and the one every request checks are the same.
         scope.launch {
-            settings.state.map { it.offline }.distinctUntilChanged().collect { offline.on = it }
+            settings.state.map { it.offline }.distinctUntilChanged().collect {
+                offline.on = it
+                watch.manual(it)
+            }
         }
     }
 }

@@ -24,6 +24,13 @@ data class StreamForm(val bitrate: Int, val suffix: String) {
     val converted: Boolean get() = bitrate > 0
 }
 
+/** The form a song would be streamed in now, by its kind alone (not knowing whether this
+ *  phone turned out not to play its file): for asking whether it is kept, with no player. */
+fun streamFormOf(song: org.medianexus.music.net.Song, cap: Int): StreamForm {
+    val suffix = song.suffix.lowercase()
+    return streamForm(suffix.isEmpty() || suffix in NATIVE_SUFFIXES, cap, suffix, song.bitRate)
+}
+
 /** File types the phone plays as they are; anything else is converted by the server. */
 val NATIVE_SUFFIXES = setOf("mp3", "flac", "m4a", "mp4", "aac", "ogg", "oga", "opus", "wav", "mka", "webm")
 
@@ -66,6 +73,9 @@ class SongWhere(
      *  whose length the server gives): one that ends short of this was cut off, and isn't
      *  kept. See [leastBytes]. */
     val least: Long = 0,
+    /** The song's downloaded copy, which is read first if there is one: whole, as only a
+     *  whole download is ever entered (see `downloads.Catalogue`). */
+    val downloaded: java.io.File? = null,
     val stream: (offsetSecs: Int) -> String,
 )
 
@@ -104,6 +114,13 @@ interface SongLease {
      * guide to the other's.
      */
     val conversions: Conversions
+
+    /** The read of the song kept under `key` has closed: whether it is kept whole now is
+     *  worth noting (see `store.KeptIndex`). */
+    fun closed(key: String) {}
+
+    /** What is kept under `key` has been forgotten. */
+    fun dropped(key: String) {}
 
     /** The read has closed. */
     fun release()
@@ -158,7 +175,8 @@ class SongDataSource(
     private var asked: Uri? = null
     private var headers: Map<String, List<String>> = emptyMap()
     private var reader: SongReader? = null
-    /** Something that isn't one of our songs, read as it is. */
+    private var where: SongWhere? = null
+    /** Something that isn't one of our songs, read as it is; or a downloaded copy. */
     private var plain: DataSource? = null
 
     override fun addTransferListener(transferListener: TransferListener) {
@@ -176,6 +194,20 @@ class SongDataSource(
         // Refused here if the account this was made for has gone.
         val lease = leases.lease(generation).also { this.lease = it }
         val where = lease.resolve(id)
+        where.downloaded?.let { file ->
+            // Downloaded: read from the phone, whatever the streaming quality, and with the
+            // server gone. (A file that has gone since is streamed instead.)
+            val local = androidx.media3.datasource.FileDataSource().also { made -> listeners.forEach(made::addTransferListener) }
+            try {
+                val length = local.open(dataSpec.buildUpon().setUri(Uri.fromFile(file)).build())
+                plain = local
+                headers = emptyMap()
+                return length
+            } catch (_: IOException) {
+                runCatching { local.close() }
+            }
+        }
+        this.where = where
         val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
         return guarded { reader.open(where, dataSpec.position) { lease.offline } }
     }
@@ -200,6 +232,11 @@ class SongDataSource(
         } catch (e: IOException) {
             throw StreamFailure.of(e)
         } finally {
+            // Whether it is kept whole now: only once the reader has closed, as the cache
+            // writes the last of a song as its writer closes.
+            val key = where?.takeIf { reader != null }?.key
+            if (key != null) runCatching { lease?.closed(key) }
+            where = null
             reader = null
             plain = null
             asked = null
@@ -282,6 +319,7 @@ class SongDataSource(
 
         override fun drop(key: String) {
             cache?.let { WholeMark.drop(it, key) }
+            lease?.dropped(key)
         }
 
         private fun http(): DataSource = upstream.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }

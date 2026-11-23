@@ -4,7 +4,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.medianexus.music.R
+import org.medianexus.music.downloads.DownloadedViews
+import org.medianexus.music.downloads.DownloadsState
+import org.medianexus.music.library.Availability
 import org.medianexus.music.library.Library
+import org.medianexus.music.library.LocalSearch
 import org.medianexus.music.library.SearchLimits
 import org.medianexus.music.net.Album
 import org.medianexus.music.net.AlbumList
@@ -56,6 +60,7 @@ data class CarWords(
     val shuffle: String = "Shuffle",
     val mostPlayed: String = "Most played",
     val aToZ: String = "A to Z",
+    val downloads: String = "Downloads",
     val songCount: (Int) -> String = { if (it == 1) "1 song" else "$it songs" },
     val albumCount: (Int) -> String = { if (it == 1) "1 album" else "$it albums" },
 )
@@ -72,11 +77,26 @@ data class PlayList(
 )
 
 /**
+ * What the car's tree needs to know about playing with no server: whether the app is offline
+ * now (by hand, or the server out of reach), which songs play offline, and what is downloaded.
+ */
+class CarOffline(
+    val now: () -> Boolean,
+    val availability: Availability,
+    val downloads: () -> DownloadsState,
+)
+
+/**
  * The car's browse tree, built from the library's kept pages (so it opens at once, and with
  * no signal shows what was seen last), and what each song in it plays.
  *
  * Tabs: Home (Liked songs, then what was played and added lately), Playlists, Library
- * (Albums, Artists, Genres). Downloads joins them when there are downloads.
+ * (Albums, Artists, Genres), Downloads. Downloads is read from the downloads' own record
+ * alone, so it opens with no signal at all, from a cold start.
+ *
+ * Offline (by hand, or with the server out of reach) the other tabs show only what can be
+ * played: songs that are downloaded or kept whole, and the albums, artists, genres and
+ * playlists that have some; their search, and spoken requests, look in the same songs.
  *
  * Choosing a song plays its whole album or playlist from that song; "Shuffle", at the top
  * of every list of songs, plays the whole list shuffled.
@@ -84,13 +104,76 @@ data class PlayList(
  * No folder is ever longer than reaches the car whole (see [CarFolders]): one that would be
  * is shown as numbered ranges instead.
  */
-class CarTree(private val library: Library, private val words: CarWords = CarWords()) {
+class CarTree(private val library: Library, private val words: CarWords = CarWords(), private val offline: CarOffline? = null) {
     /** The tabs. */
     fun tabs(): List<CarEntry> = listOf(
         CarEntry(CarIds.format(CarNode.Home), words.home, icon = R.drawable.ic_house, browsable = true, inside = CarStyle.GRID),
         CarEntry(CarIds.format(CarNode.Playlists), words.playlists, icon = R.drawable.ic_list_music, browsable = true, inside = CarStyle.GRID),
         CarEntry(CarIds.format(CarNode.Library), words.library, icon = R.drawable.ic_library, browsable = true, inside = CarStyle.CATEGORY_LIST),
+        CarEntry(CarIds.format(CarNode.Downloads), words.downloads, icon = R.drawable.ic_download, browsable = true, inside = CarStyle.GRID),
     )
+
+    // ---- Offline ----------------------------------------------------------------------------
+
+    private val isOffline: Boolean get() = offline?.now?.invoke() == true
+
+    private fun plays(song: Song): Boolean = offline?.availability?.plays(song) ?: true
+
+    /** What plays offline, by album, artist and genre: worked out once per folder. */
+    private class Playable(val songs: List<Song>) {
+        val albums: Set<String> = songs.mapTo(HashSet()) { it.albumId }
+        val artists: Set<String> = songs.flatMapTo(HashSet()) { song -> song.artists.map { it.id } + song.artistId }
+        val genres: Set<String> = songs.mapTo(HashSet()) { it.genre.lowercase() }
+    }
+
+    private fun playable() = Playable(offline?.availability?.playable().orEmpty())
+
+    private fun downloadsNow(): DownloadsState = offline?.downloads?.invoke() ?: DownloadsState()
+
+    /** Albums of the songs that play offline, from those songs (no page is needed). */
+    private fun playableAlbums(p: Playable): List<Album> = p.songs.filter { it.albumId.isNotEmpty() }.groupBy { it.albumId }.map { (id, of) ->
+        val first = of.first()
+        Album(id = id, name = first.album, artist = first.artist, artistId = first.artistId, displayArtist = first.displayArtist, coverArt = first.coverArt, songCount = of.size, year = first.year)
+    }.sortedBy { Voice.plain(it.name) }
+
+    private fun playableArtists(p: Playable): List<Artist> {
+        val seen = LinkedHashMap<String, Artist>()
+        for (song in p.songs) {
+            val credits = song.artists.filter { it.id.isNotEmpty() }.map { it.id to it.name }.ifEmpty { listOf(song.artistId to song.artist) }
+            for ((id, name) in credits) if (id.isNotEmpty()) seen.getOrPut(id) { Artist(id = id, name = name) }
+        }
+        return seen.values.sortedBy { Voice.plain(it.name) }
+    }
+
+    /** An album's songs offline: the kept page's, else what plays of it, in disc order. */
+    private suspend fun albumSongsOffline(id: String): Pair<List<Song>, String> {
+        val kept = runCatching { library.pages.kept(library.album(id)) }.getOrNull()
+        if (kept != null) return kept.songs to kept.name
+        val of = playable().songs.filter { it.albumId == id }.sortedWith(compareBy({ it.discNumber }, { it.track }))
+        return of to (of.firstOrNull()?.album ?: "")
+    }
+
+    // ---- The Downloads tab ------------------------------------------------------------------
+
+    private fun downloadsTab(): List<CarEntry> {
+        val state = downloadsNow()
+        val songs = DownloadedViews.songs(state)
+        if (songs.isEmpty()) return emptyList()
+        return buildList {
+            add(CarEntry(CarIds.format(CarNode.DownloadedSongs), words.songs, subtitle = words.songCount(songs.size), icon = R.drawable.ic_music,
+                browsable = true, style = CarStyle.CATEGORY_LIST, inside = CarStyle.LIST))
+            for (list in DownloadedViews.playlists(state)) {
+                if (list.songs.isEmpty()) continue
+                add(CarEntry(CarIds.format(CarNode.DownloadedList(list.list.key)), if (list.list.key == "liked") words.likedSongs else list.list.name,
+                    subtitle = words.songCount(list.songs.size), cover = list.list.coverArt.ifEmpty { list.songs.firstOrNull { it.coverArt.isNotEmpty() }?.coverArt.orEmpty() },
+                    icon = if (list.list.key == "liked") R.drawable.ic_heart else R.drawable.ic_list_music, browsable = true, group = words.playlists, inside = CarStyle.LIST))
+            }
+            for (album in DownloadedViews.albums(state)) {
+                add(CarEntry(CarIds.format(CarNode.DownloadedAlbum(album.id)), album.name, subtitle = album.artist, cover = album.coverArt,
+                    icon = R.drawable.ic_disc_album, browsable = true, group = words.albums, inside = CarStyle.LIST))
+            }
+        }
+    }
 
     /** A folder's contents before they are cut to size: what always heads it (never split),
      *  then the list itself, and how the list's own entries are laid out. */
@@ -229,13 +312,13 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         return when (node) {
             CarNode.Root -> Listing(tabs())
             CarNode.Home -> Listing(home(again), inside = CarStyle.GRID)
-            CarNode.Playlists -> Listing(page(library.playlists(), part, again).map(::playlistEntry), inside = CarStyle.GRID)
+            CarNode.Playlists -> Listing(playlistsShown(page = { page(library.playlists(), part, again) }), inside = CarStyle.GRID)
             CarNode.Library -> Listing(listOf(
                 CarEntry(CarIds.format(CarNode.Albums), words.albums, icon = R.drawable.ic_disc_album, browsable = true, inside = CarStyle.GRID),
                 CarEntry(CarIds.format(CarNode.Artists), words.artists, icon = R.drawable.ic_user_round, browsable = true, inside = CarStyle.LIST),
                 CarEntry(CarIds.format(CarNode.Genres), words.genres, icon = R.drawable.ic_tags, browsable = true, inside = CarStyle.LIST),
             ))
-            CarNode.Albums -> albums(again)
+            CarNode.Albums -> if (isOffline) Listing(playableAlbums(playable()).map { albumEntry(it, group = words.aToZ) }, inside = CarStyle.GRID) else albums(again)
             is CarNode.AlbumsBy -> {
                 val order = when (node.kind) {
                     "newest" -> AlbumList.Newest
@@ -243,27 +326,69 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
                     "frequent" -> AlbumList.Frequent
                     else -> return null
                 }
-                Listing(library.quick(library.albums(order, 0, Library.GRID_PAGE), again).map { albumEntry(it) }, inside = CarStyle.GRID)
+                Listing(onlyPlayable(library.quick(library.albums(order, 0, Library.GRID_PAGE), again)).map { albumEntry(it) }, inside = CarStyle.GRID)
             }
-            is CarNode.AlbumLetter -> Listing(everyAlbum(again).filter { letterOf(it.name) == node.letter }.map { albumEntry(it) }, inside = CarStyle.GRID)
+            is CarNode.AlbumLetter -> Listing(onlyPlayable(if (isOffline) playableAlbums(playable()) else everyAlbum(again)).filter { letterOf(it.name) == node.letter }.map { albumEntry(it) }, inside = CarStyle.GRID)
             CarNode.Artists -> {
-                val all = page(library.artists(), part, again)
+                val all = if (isOffline) playableArtists(playable()) else page(library.artists(), part, again)
                 Listing(if (all.size <= MOST_IN_A_LIST) all.map(::artistEntry) else letters(all.map { letterOf(it.name) }, CarStyle.LIST) { CarNode.ArtistLetter(it) })
             }
-            is CarNode.ArtistLetter -> Listing(page(library.artists(), part, again).filter { letterOf(it.name) == node.letter }.map(::artistEntry))
-            CarNode.Genres -> Listing(page(library.genres(), part, again).map(::genreEntry))
+            is CarNode.ArtistLetter -> Listing((if (isOffline) playableArtists(playable()) else page(library.artists(), part, again)).filter { letterOf(it.name) == node.letter }.map(::artistEntry))
+            CarNode.Genres -> Listing(if (isOffline) playableGenres() else page(library.genres(), part, again).map(::genreEntry))
             CarNode.Liked -> songs(page(library.liked(), part, again).songs, ListRef.Liked)
-            is CarNode.Album -> songs(page(library.album(node.id), part, again).songs, ListRef.Album(node.id))
+            is CarNode.Album -> songs(if (isOffline) albumSongsOffline(node.id).first else page(library.album(node.id), part, again).songs, ListRef.Album(node.id))
             is CarNode.Playlist -> songs(page(library.playlist(node.id), part, again).songs, ListRef.Playlist(node.id))
-            is CarNode.Artist -> Listing(page(library.artist(node.id), part, again).albums.map { albumEntry(it, byYear = true) }, inside = CarStyle.GRID)
-            is CarNode.Genre -> Listing(page(library.genre(node.name), part, again).map { albumEntry(it) }, inside = CarStyle.GRID)
+            is CarNode.Artist -> Listing(
+                if (isOffline) playable().songs.filter { it.artistId == node.id || it.artists.any { a -> a.id == node.id } }.let { of -> playableAlbums(Playable(of)) }.map { albumEntry(it) }
+                else page(library.artist(node.id), part, again).albums.map { albumEntry(it, byYear = true) },
+                inside = CarStyle.GRID,
+            )
+            is CarNode.Genre -> Listing(
+                if (isOffline) playable().songs.filter { it.genre.equals(node.name, ignoreCase = true) }.let { of -> playableAlbums(Playable(of)) }.map { albumEntry(it) }
+                else page(library.genre(node.name), part, again).map { albumEntry(it) },
+                inside = CarStyle.GRID,
+            )
+            CarNode.Downloads -> Listing(downloadsTab(), inside = CarStyle.GRID)
+            CarNode.DownloadedSongs -> songs(DownloadedViews.songs(downloadsNow()), ListRef.DownloadedSongs, offlineOnly = false)
+            is CarNode.DownloadedAlbum -> songs(DownloadedViews.album(downloadsNow(), node.id)?.songs.orEmpty(), ListRef.DownloadedAlbum(node.id), offlineOnly = false)
+            is CarNode.DownloadedList -> songs(DownloadedViews.playlist(downloadsNow(), node.key)?.songs.orEmpty(), ListRef.DownloadedList(node.key), offlineOnly = false)
             is CarNode.Track, is CarNode.Shuffle, is CarNode.Part -> null
         }
     }
 
+    /** Only the albums with something that plays, when offline; all of them otherwise. */
+    private fun onlyPlayable(albums: List<Album>): List<Album> {
+        if (!isOffline) return albums
+        val have = playable().albums
+        return albums.filter { it.id in have }
+    }
+
+    private fun playableGenres(): List<CarEntry> {
+        val p = playable()
+        return p.songs.filter { it.genre.isNotEmpty() }.groupBy { it.genre }.map { (name, of) ->
+            genreEntry(Genre(name = name, albumCount = of.mapTo(HashSet()) { it.albumId }.size, songCount = of.size))
+        }.sortedBy { it.title.lowercase() }
+    }
+
+    /** The playlists tab: offline, the downloaded ones and the kept ones with something
+     *  that plays; otherwise, all of them. */
+    private suspend fun playlistsShown(page: suspend () -> List<Playlist>): List<CarEntry> {
+        if (!isOffline) return page().map(::playlistEntry)
+        val all = runCatching { page() }.getOrDefault(emptyList())
+        val downloaded = downloadsNow().collections.mapTo(HashSet()) { it.key }
+        return all.filter { playlist ->
+            "playlist:${playlist.id}" in downloaded || runCatching { library.pages.kept(library.playlist(playlist.id)) }.getOrNull()?.songs?.any(::plays) == true
+        }.map(::playlistEntry)
+    }
+
     /** A list of songs as a folder: "Shuffle" first (unless there is nothing to shuffle),
-     *  then the songs, each of which plays the list from itself. */
-    private fun songs(songs: List<Song>, list: ListRef): Listing {
+     *  then the songs, each of which plays the list from itself. Offline, only the songs that
+     *  play (each still named by its place in the whole list). */
+    private fun songs(songs: List<Song>, list: ListRef, offlineOnly: Boolean = true): Listing {
+        if (offlineOnly && isOffline) {
+            val body = songs.withIndex().filter { plays(it.value) }.map { (i, song) -> songEntry(song, list, i) }
+            return Listing(body, head = if (body.isEmpty()) emptyList() else listOf(shuffleEntry(list, body.size)))
+        }
         // The same kept list as last time (the very same one, not one that reads the same):
         // it is laid out already.
         laidOut?.let { (was, from, listing) -> if (was == list && from === songs) return listing }
@@ -327,6 +452,8 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         is CarNode.Genre -> library.quick(library.genres()).firstOrNull { it.name == node.name }?.let(::genreEntry)
             ?: CarEntry(CarIds.format(node), node.name, icon = R.drawable.ic_tags, browsable = true, inside = CarStyle.GRID)
         is CarNode.Track -> play(node)?.let { list -> songEntry(list.songs[list.start], node.list, node.index) }
+        CarNode.Downloads -> tabs().firstOrNull { it.id == CarIds.format(node) }
+        CarNode.DownloadedSongs, is CarNode.DownloadedAlbum, is CarNode.DownloadedList -> downloadsTab().firstOrNull { it.id == CarIds.format(node) }
     }
 
     private suspend fun home(again: (Any?) -> Unit): List<CarEntry> = coroutineScope {
@@ -334,6 +461,17 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         val recent = async { runCatching { library.quick(library.albums(AlbumList.Recent, 0, HOME_ROW), again) }.getOrNull() }
         val newest = async { runCatching { library.quick(library.albums(AlbumList.Newest, 0, HOME_ROW), again) }.getOrNull() }
         val (l, r, n) = Triple(liked.await(), recent.await(), newest.await())
+        if (isOffline) {
+            // Only what plays: Liked songs, if any of it does; the albums of the rows that do.
+            val have = playable().albums
+            val likedPlays = l?.songs?.count(::plays) ?: 0
+            return@coroutineScope buildList {
+                if (likedPlays > 0) add(CarEntry(CarIds.format(CarNode.Liked), words.likedSongs, subtitle = words.songCount(likedPlays),
+                    cover = l?.songs?.firstOrNull { it.coverArt.isNotEmpty() && plays(it) }?.coverArt.orEmpty(), icon = R.drawable.ic_heart, browsable = true, inside = CarStyle.LIST))
+                r.orEmpty().filter { it.id in have }.forEach { add(albumEntry(it, group = words.recentlyPlayed, tag = "recent")) }
+                n.orEmpty().filter { it.id in have }.forEach { add(albumEntry(it, group = words.recentlyAdded, tag = "new")) }
+            }
+        }
         if (l == null && r == null && n == null) {
             // Nothing kept and nothing from the server: say why, rather than show an empty tab.
             library.quick(library.albums(AlbumList.Recent, 0, HOME_ROW))
@@ -425,9 +563,15 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
 
     /** The songs of a list the car can play, what it is called and its route key. */
     private suspend fun songsOf(list: ListRef): Triple<List<Song>, String, String>? = when (list) {
-        is ListRef.Album -> if (list.id.isEmpty()) null else library.quick(library.album(list.id)).let { Triple(it.songs, it.name, "album:${list.id}") }
+        is ListRef.Album -> if (list.id.isEmpty()) null else if (isOffline) albumSongsOffline(list.id).let { (songs, name) -> Triple(songs, name, "album:${list.id}") }
+            else library.quick(library.album(list.id)).let { Triple(it.songs, it.name, "album:${list.id}") }
         is ListRef.Playlist -> library.quick(library.playlist(list.id)).let { Triple(it.songs, it.name, "playlist:${list.id}") }
         ListRef.Liked -> Triple(library.quick(library.liked()).songs, words.likedSongs, "liked")
+        // The Downloads tab's lists, as the downloads have them. Their own names as sources,
+        // so the queue doesn't follow a page of the server's with songs that aren't here.
+        ListRef.DownloadedSongs -> Triple(DownloadedViews.songs(downloadsNow()), words.downloads, "downloads")
+        is ListRef.DownloadedAlbum -> DownloadedViews.album(downloadsNow(), list.id)?.let { Triple(it.songs, it.name, "downloads:album:${list.id}") }
+        is ListRef.DownloadedList -> DownloadedViews.playlist(downloadsNow(), list.key)?.let { Triple(it.songs, if (list.key == "liked") words.likedSongs else it.list.name, "downloads:${list.key}") }
     }
 
     /** What "Shuffle" at the top of a list plays: the whole list, shuffled, starting anywhere.
@@ -454,9 +598,11 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     /** What the car's search shows: artists, albums, playlists and songs, each under a
      *  heading. Songs play their album from them. */
     suspend fun search(query: String): List<CarEntry> {
-        val found = library.search.find(query, SearchLimits(artists = 10, albums = 15, songs = 30))
+        val limits = SearchLimits(artists = 10, albums = 15, songs = 30)
+        val found = if (isOffline) LocalSearch.find(query, playable().songs, limits) else library.search.find(query, limits)
         val playlists = runCatching { library.quick(library.playlists()) }.getOrDefault(emptyList())
             .filter { Voice.score(query, it.name) >= 0.6 }.take(MOST_PLAYLISTS_FOUND)
+            .filter { !isOffline || runCatching { library.pages.kept(library.playlist(it.id)) }.getOrNull()?.songs?.any(::plays) == true }
         val all = buildList {
             found.artists.forEach { add(artistEntry(it).copy(group = words.artists)) }
             found.albums.forEach { add(albumEntry(it, group = words.albums)) }
@@ -470,10 +616,15 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     /** What a spoken request plays, or null if nothing matches. (A request with nothing
      *  named is the caller's: it resumes.) */
     suspend fun forVoice(request: VoiceRequest): PlayList? {
-        val found = library.search.find(request.searchWords(), SearchLimits(artists = 10, albums = 10, songs = 25))
+        val offlineNow = isOffline
+        val here = if (offlineNow) playable() else null
+        // Offline, only what is on the phone is looked in.
+        suspend fun find(words: String, limits: SearchLimits) = if (here != null) LocalSearch.find(words, here.songs, limits) else library.search.find(words, limits)
+        val found = find(request.searchWords(), SearchLimits(artists = 10, albums = 10, songs = 25))
         val playlists = runCatching { library.quick(library.playlists()) }.getOrDefault(emptyList())
         val genres = if (request.focus == VoiceRequest.Focus.GENRE || request.focus == VoiceRequest.Focus.ANY) {
-            runCatching { library.quick(library.genres()) }.getOrDefault(emptyList())
+            if (here != null) here.songs.filter { it.genre.isNotEmpty() }.map { it.genre }.distinct().map { Genre(name = it) }
+            else runCatching { library.quick(library.genres()) }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
@@ -482,19 +633,24 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             // The Assistant guessed the kind wrong ("play Slow Rivers" taken for a song when
             // it's an album): any kind will do.
             val any = request.copy(focus = VoiceRequest.Focus.ANY, query = request.searchWords())
-            val more = library.search.find(any.searchWords(), SearchLimits(artists = 10, albums = 10, songs = 25))
+            val more = find(any.searchWords(), SearchLimits(artists = 10, albums = 10, songs = 25))
             choice = Voice.choose(any, more, playlists, genres)
         }
         return when (choice) {
-            is VoiceChoice.OfAlbum -> library.quick(library.album(choice.album.id)).let { PlayList(it.songs, 0, it.name, "album:${it.id}") }
+            is VoiceChoice.OfAlbum -> if (offlineNow) albumSongsOffline(choice.album.id).let { (songs, name) -> PlayList(songs, 0, name, "album:${choice.album.id}") }
+                else library.quick(library.album(choice.album.id)).let { PlayList(it.songs, 0, it.name, "album:${it.id}") }
             is VoiceChoice.OfPlaylist -> library.quick(library.playlist(choice.playlist.id)).let { PlayList(it.songs, 0, it.name, "playlist:${it.id}") }
             is VoiceChoice.OfSong -> {
                 val song = choice.song
-                val album = if (song.albumId.isEmpty()) null else runCatching { library.quick(library.album(song.albumId)) }.getOrNull()
+                val album = if (song.albumId.isEmpty()) null else if (offlineNow) runCatching { library.pages.kept(library.album(song.albumId)) }.getOrNull()
+                    else runCatching { library.quick(library.album(song.albumId)) }.getOrNull()
                 val at = album?.songs?.indexOfFirst { it.id == song.id } ?: -1
                 if (album != null && at >= 0) PlayList(album.songs, at, album.name, "album:${album.id}") else PlayList(listOf(song), 0, song.title, "")
             }
-            is VoiceChoice.OfArtist -> {
+            is VoiceChoice.OfArtist -> if (here != null) {
+                val songs = here.songs.filter { it.artistId == choice.artist.id || it.artists.any { a -> a.id == choice.artist.id } }
+                if (songs.isEmpty()) null else PlayList(songs, 0, choice.artist.name, "artist:${choice.artist.id}", shuffle = true, anyStart = true)
+            } else {
                 val artist = library.quick(library.artist(choice.artist.id))
                 val songs = coroutineScope {
                     artist.albums.take(MOST_ALBUMS_FOR_ARTIST).map { album ->
@@ -504,7 +660,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
                 if (songs.isEmpty()) null else PlayList(songs, 0, artist.name, "artist:${artist.id}", shuffle = true, anyStart = true)
             }
             is VoiceChoice.OfGenre -> {
-                val songs = library.randomSongs(GENRE_SONGS, choice.genre)
+                val songs = here?.songs?.filter { it.genre.equals(choice.genre, ignoreCase = true) }?.shuffled()?.take(GENRE_SONGS) ?: library.randomSongs(GENRE_SONGS, choice.genre)
                 if (songs.isEmpty()) null else PlayList(songs, 0, choice.genre, "genre:${choice.genre}", shuffle = true, anyStart = true)
             }
             VoiceChoice.Nothing -> null

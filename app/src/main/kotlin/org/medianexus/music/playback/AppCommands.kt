@@ -59,19 +59,21 @@ object AppCommands {
      * phone keeps them. Touches nothing of the player (see [QueuePlayer.prepare]): for a
      * long list, call it off the main thread.
      */
-    fun queueFor(player: QueuePlayer, args: Bundle, songs: List<Song>, shuffle: Boolean): Queue {
+    fun queueFor(player: QueuePlayer, args: Bundle, songs: List<Song>, shuffle: Boolean, plays: ((Song) -> Boolean)? = null): Queue? {
         val source = args.getString("source").orEmpty()
         // Where to start: the place the screen named, unless the kept list has moved on
         // since the screen drew it (see StartPlace.startIn).
         val start = StartPlace.startIn(songs, args.getInt("start"), args.getString("startId"), args.getStringArrayList("startNear").orEmpty()) ?: 0
+        // Offline (`plays` given): only what can play, each still at its place in the list.
+        val cut = if (plays != null) playableOnly(songs, start, plays) ?: return null else null
         return player.prepare(
-            songs,
-            start = start,
+            cut?.songs ?: songs,
+            start = cut?.start ?: start,
             context = args.getString("context").orEmpty(),
             source = source,
             // A list from a page is always the page's whole list, in its order: each song's
             // place in it is its place here (what marks the row playing).
-            origins = if (source.isNotEmpty()) songs.indices.toList() else null,
+            origins = if (source.isNotEmpty()) cut?.origins ?: songs.indices.toList() else null,
             sourceList = songs.map { it.id },
             shuffle = shuffle,
             anyStart = args.getBoolean("anyStart"),
@@ -80,9 +82,9 @@ object AppCommands {
 
     /** Carries out one, on the main thread. Returns false if it isn't one of these. (A PLAY
      *  that names a page is the service's to carry out: it has to read the page.) */
-    fun handle(player: QueuePlayer, command: SessionCommand, args: Bundle, shuffleFor: (source: String) -> Boolean): Boolean {
+    fun handle(player: QueuePlayer, command: SessionCommand, args: Bundle, shuffleFor: (source: String) -> Boolean, plays: ((Song) -> Boolean)? = null): Boolean {
         when (command.customAction) {
-            PLAY.customAction -> player.play(queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor)))
+            PLAY.customAction -> player.play(queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor), plays) ?: return false)
             ENQUEUE.customAction -> player.enqueue(songsOf(args), args.getBoolean("playNext"))
             // Each of these names the entry it means by the entry's own number (see
             // Queue.dropUid), not by where it was on the screen when it was tapped.

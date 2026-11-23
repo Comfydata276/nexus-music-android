@@ -34,6 +34,8 @@ sealed interface Route {
     @Serializable data class Genre(val name: String) : Route
     /** Every album, in one of the Albums sorts (a place in `ALBUM_SORTS`). */
     @Serializable data class Albums(val sort: Int) : Route
+    /** What is downloaded and on its way (reached from Library). */
+    @Serializable data object Downloads : Route
 
     /** The key the Windows app files the page under ("album:<id>"): where its list's
      *  choices are remembered, and what a queue started from it is said to come from. */
@@ -44,6 +46,7 @@ sealed interface Route {
             is Playlist -> "playlist:$id"
             Liked -> "liked"
             is Genre -> "genre:$name"
+            Downloads -> "downloads"
             else -> ""
         }
 }
