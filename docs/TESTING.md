@@ -449,6 +449,12 @@ M1b's own build then gave 588 ms, 74.1 MB, 83.9 MB, 10.6%): APK 5.4 MB, cold sta
 frames; 5,000-song playlist 8.7% slow frames (M1b's build, 8.7%); opening it with nothing
 kept, the app's peak 88.6 MB with the Java heap at 14 MB (M1b's build, 117 to 131 MB with
 the heap grown to 45 to 59 MB, the server's answer read into a JSON tree first).
+Screens round 2, measured alternately with the build before it (765624f) on the same day,
+signed in, kept, on the 100-song playlist: APK 5,782,726 bytes (765624f: 5,766,342); cold
+start 566 to 629 ms (765624f: 595 to 612); idle 73.5 to 80.1 MB (75.2 to 75.4); playing 81.2
+to 89.9 MB (81.1); 100-song playlist 8.4 to 9.4% slow frames (8.5 to 8.9%); opening the
+5,000-song playlist with nothing kept, the app's peak 85.1 to 89.8 MB (86.7 to 90.7), sampled
+from `dumpsys meminfo` four times a second while it opens.
 
 Memory on this emulator is mostly not the app's to cut: `dumpsys gfxinfo` shows about 36
 MB of the window's own buffers imported into the process (on a phone they are graphics
