@@ -11,7 +11,8 @@ import org.medianexus.music.net.Song
 /**
  * What the app's own screens ask of the player beyond what any controller can: playing a
  * list with where it came from, and the "Next in queue" edits. Sent through the same
- * session as everything else (see [PlayerConnection]), and accepted only from this app.
+ * session as everything else (see [PlayerConnection]), and accepted only from this app's
+ * own screens: checked when they connect and again as each is carried out (see [Access]).
  *
  * The app and the service share one process, so a long list of songs, sent as JSON text,
  * is handed over directly rather than copied between processes (where Android limits the
@@ -19,12 +20,12 @@ import org.medianexus.music.net.Song
  */
 @OptIn(UnstableApi::class)
 object AppCommands {
-    val PLAY = SessionCommand("org.medianexus.music.app.PLAY", Bundle.EMPTY)
-    val ENQUEUE = SessionCommand("org.medianexus.music.app.ENQUEUE", Bundle.EMPTY)
-    val MOVE = SessionCommand("org.medianexus.music.app.MOVE", Bundle.EMPTY)
-    val REMOVE = SessionCommand("org.medianexus.music.app.REMOVE", Bundle.EMPTY)
-    val CLEAR = SessionCommand("org.medianexus.music.app.CLEAR", Bundle.EMPTY)
-    val JUMP = SessionCommand("org.medianexus.music.app.JUMP", Bundle.EMPTY)
+    val PLAY = SessionCommand(AppActions.PLAY, Bundle.EMPTY)
+    val ENQUEUE = SessionCommand(AppActions.ENQUEUE, Bundle.EMPTY)
+    val MOVE = SessionCommand(AppActions.MOVE, Bundle.EMPTY)
+    val REMOVE = SessionCommand(AppActions.REMOVE, Bundle.EMPTY)
+    val CLEAR = SessionCommand(AppActions.CLEAR, Bundle.EMPTY)
+    val JUMP = SessionCommand(AppActions.JUMP, Bundle.EMPTY)
 
     val all = listOf(PLAY, ENQUEUE, MOVE, REMOVE, CLEAR, JUMP)
 

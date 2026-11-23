@@ -35,4 +35,7 @@ dependencies {
     // The support library Android Auto itself is built on: the same MediaBrowserCompat and
     // MediaControllerCompat, speaking the same protocol to the app under test.
     implementation("androidx.media:media:1.7.1")
+    // For `--mode outsider` only: a Media3 controller, to see what one that isn't the app's
+    // own is allowed, and Media3's own way of writing a media item into an intent.
+    implementation(libs.media3.session)
 }

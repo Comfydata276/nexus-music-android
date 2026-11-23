@@ -598,15 +598,35 @@ class PlaybackService : MediaLibraryService() {
     private inner class Callback : MediaLibrarySession.Callback {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             // Media3 sorts callers into trusted (this app, the system, and anything allowed to
-            // read notifications, which is what Android Auto is) and the rest: the rest may
-            // look but not touch.
-            val accept = MediaSession.ConnectionResult.AcceptedResultBuilder(session, controller)
-            if (!controller.isTrusted) return accept.build()
+            // read notifications or control media, which is what Android Auto, the Assistant
+            // and a car's own screens are) and the rest. The rest get no connection: a private
+            // library is not for any app on the phone to browse. See [Access].
+            val caller = callerOf(session, controller)
+            if (caller == Caller.REFUSED) return MediaSession.ConnectionResult.reject()
             val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 .add(LIKE).add(SHUFFLE).add(REPEAT)
-            if (controller.packageName == packageName) AppCommands.all.forEach { commands.add(it) }
-            return accept.setAvailableSessionCommands(commands.build()).setMediaButtonPreferences(buttons()).build()
+            // The app's own commands go to the app's own screens and nobody else: not to
+            // Media3's notification controller, though it carries this app's name. (The
+            // platform's session, which is what a car sees, takes its buttons and commands
+            // from the notification controller's, so those it keeps in full.)
+            if (caller == Caller.OWN_INTERFACE) AppCommands.all.forEach { commands.add(it) }
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session, controller)
+                .setAvailableSessionCommands(commands.build())
+                .setAvailablePlayerCommands(MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS)
+                .setMediaButtonPreferences(buttons())
+                .build()
         }
+
+        /**
+         * Asked before every player command is carried out. What arrives under the
+         * notification controller's name may be a tap on the notification or a headset
+         * button, or may be an intent any app sent to the exported service, which Media3
+         * can't tell apart: so under that name only transport is carried out, whatever the
+         * intent asked for (Media3 will turn one into "play this item" if allowed).
+         */
+        @Deprecated("Media3 offers nothing else that is asked per command and per controller")
+        override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int =
+            if (Access.mayPlayer(callerOf(session, controller), playerCommand)) SessionResult.RESULT_SUCCESS else SessionError.ERROR_PERMISSION_DENIED
 
         override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> {
             // Unless a folder says otherwise: folders in a grid, songs in a list.
@@ -711,6 +731,11 @@ class PlaybackService : MediaLibraryService() {
             answer({ throw refuse(controller, signedOut()) }) { era -> resume(era, controller) }
 
         override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
+            // Authorised here, where it is carried out, and not only by what the controller
+            // was granted when it connected.
+            if (!Access.mayCustom(callerOf(session, controller), customCommand.customAction)) {
+                return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
+            }
             val done = when (customCommand.customAction) {
                 LIKE.customAction -> {
                     player.queue.current()?.let { song -> account?.likes?.toggle(song) }
@@ -732,6 +757,15 @@ class PlaybackService : MediaLibraryService() {
             )
         }
     }
+
+    /** Who a controller is (see [Access]). */
+    private fun callerOf(session: MediaSession, controller: MediaSession.ControllerInfo): Caller = Access.caller(
+        trusted = controller.isTrusted,
+        sameUid = controller.uid == android.os.Process.myUid(),
+        ownPackage = controller.isPackageNameVerified && controller.packageName == packageName,
+        legacy = controller.controllerVersion == MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION,
+        notification = session.isMediaNotificationController(controller),
+    )
 
     /** The account signed in, once the saved sign-in has been read; null if nobody is. */
     private suspend fun eraOrNull(): Era? {
@@ -824,14 +858,16 @@ class PlaybackService : MediaLibraryService() {
     /** A spoken request: "play X on Nexus Music". */
     private suspend fun voice(era: Era, controller: MediaSession.ControllerInfo, words: String, extras: Bundle?): MediaItemsWithStartPosition {
         val tree = era.tree
+        // Each is what a person said, however it got here: text, and no longer than a name.
+        fun said(key: String) = runCatching { extras?.getString(key) }.getOrNull()?.let(VoiceAsk::tidy).orEmpty()
         val request = VoiceRequest(
-            query = words,
-            focus = VoiceRequest.focusOf(extras?.getString(MediaStore.EXTRA_MEDIA_FOCUS)),
-            artist = extras?.getString(MediaStore.EXTRA_MEDIA_ARTIST).orEmpty(),
-            album = extras?.getString(MediaStore.EXTRA_MEDIA_ALBUM).orEmpty(),
-            title = extras?.getString(MediaStore.EXTRA_MEDIA_TITLE).orEmpty(),
-            playlist = extras?.getString(EXTRA_MEDIA_PLAYLIST).orEmpty(),
-            genre = extras?.getString(EXTRA_MEDIA_GENRE).orEmpty(),
+            query = VoiceAsk.tidy(words),
+            focus = VoiceRequest.focusOf(said(MediaStore.EXTRA_MEDIA_FOCUS).ifEmpty { null }),
+            artist = said(MediaStore.EXTRA_MEDIA_ARTIST),
+            album = said(MediaStore.EXTRA_MEDIA_ALBUM),
+            title = said(MediaStore.EXTRA_MEDIA_TITLE),
+            playlist = said(EXTRA_MEDIA_PLAYLIST),
+            genre = said(EXTRA_MEDIA_GENRE),
         )
         if (request.unnamed) return resume(era, controller)
         val list = tree.forVoice(request)

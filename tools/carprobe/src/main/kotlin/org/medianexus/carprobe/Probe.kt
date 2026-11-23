@@ -105,6 +105,10 @@ class Probe : Instrumentation() {
             shell("am force-stop $target")
             SystemClock.sleep(500)
         }
+        if (mode == "outsider") {
+            outsider(service, trusted)
+            return
+        }
         if (!connect(service, "connect.cold", "Starts cold and connects, as when a car asks first")) return
         val root = browser!!.root
         val rootExtras = browser!!.extras
@@ -164,7 +168,7 @@ class Probe : Instrumentation() {
         return ComponentName(info.packageName, info.name)
     }
 
-    private fun connect(service: ComponentName, id: String, title: String, recent: Boolean = false): Boolean {
+    private fun connect(service: ComponentName, id: String, title: String, recent: Boolean = false, expectRefusal: Boolean = false): Boolean {
         // The hints Android Auto sends when it asks for the root.
         val hints = Bundle().apply {
             putInt(ROOT_CHILDREN_LIMIT, 4)
@@ -185,7 +189,7 @@ class Probe : Instrumentation() {
         val error = runCatching { connected.get(limitMs, TimeUnit.MILLISECONDS) }.getOrElse { "no answer within ${limitMs / 1000}s" }
         val ms = SystemClock.elapsedRealtime() - t0
         if (error.isNotEmpty()) {
-            record(id, "FAIL", title, error, ms)
+            record(id, if (expectRefusal) "INFO" else "FAIL", title, error, ms)
             return false
         }
         record(id, "PASS", title, "", ms)
@@ -705,6 +709,127 @@ class Probe : Instrumentation() {
         quiet()
     }
 
+    // --- what an app that isn't the car may do ----------------------------------------------
+
+    /**
+     * `--mode outsider`. Run untrusted, it checks that an app with no standing gets no
+     * connection at all, by either protocol. Run trusted (as Android Auto is), it starts
+     * something playing and then tries to change the queue the two ways an app that is not
+     * the app's own screens might: the app's own commands sent through a controller, and
+     * intents sent to the exported service made to look like taps on the notification
+     * (`forge`: the app's own command names; and always Media3's built-in ones, which can
+     * carry a media item to play). The queue must be as it was.
+     */
+    private fun outsider(service: ComponentName, trusted: Boolean) {
+        if (!trusted) {
+            val refused = !connect(service, "outsider.probe", "(connecting the older way, as any app might)", expectRefusal = true)
+            check("outsider.browse", "An app with no standing can't connect to browse the library", refused,
+                "it connected: any app on the phone can list and search this library")
+            val (controller, why) = media3Controller(service)
+            check("outsider.controller", "An app with no standing can't connect a controller either", controller == null,
+                "a Media3 controller connected", why)
+            controller?.let { c -> onMain { c.release() } }
+            return
+        }
+        if (!connect(service, "outsider.connect", "Connects as a trusted caller, as a car does")) return
+        // Something to play that sits among others, found the way a car finds it.
+        var pick: MediaItem? = null
+        val pending = ArrayDeque(listOf(browser!!.root to 0))
+        var opened = 0
+        while (pending.isNotEmpty() && pick == null && opened < 40) {
+            val (id, depth) = pending.removeFirst()
+            val kids = children(id).first.orEmpty()
+            opened++
+            val songs = kids.filter { it.isPlayable && !it.isBrowsable }
+            if (songs.size >= 4) pick = songs[1]
+            if (depth < 4) kids.filter { it.isBrowsable && it.mediaId != null }.forEach { pending += it.mediaId!! to depth + 1 }
+        }
+        if (pick == null) {
+            record("outsider.play", "SKIP", "Starts something playing", "no folder of four or more songs was found")
+            return
+        }
+        onMain { controls.playFromMediaId(pick.mediaId, null) }
+        val ms = waitFor { playing() }
+        waitFor(4000) { (queue?.size ?: 0) > 2 }
+        check("outsider.play", "Starts something playing, with a queue", ms >= 0 && (queue?.size ?: 0) > 2, whyNotPlaying() + ", queue of ${queue?.size}",
+            "${nowPlaying()}, queue of ${queue?.size}", ms)
+        if (ms < 0 || (queue?.size ?: 0) <= 2) return
+        SystemClock.sleep(800)
+
+        fun titles() = queue.orEmpty().map { it.description.title.toString() }
+        fun place() = queue.orEmpty().indexOfFirst { it.queueId == state?.activeQueueItemId }
+        val before = titles()
+        val placeBefore = place()
+
+        // 1. The app's own commands, through a controller that is trusted but isn't the app.
+        val forge = args.getString("forge").orEmpty().split(';').filter { it.isNotBlank() }.map { spec ->
+            val parts = spec.split('|')
+            parts[0] to Bundle().apply {
+                for (pair in parts.drop(1)) {
+                    val (key, value) = pair.split('=', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
+                    when {
+                        value == "true" || value == "false" -> putBoolean(key, value == "true")
+                        value.toIntOrNull() != null -> putInt(key, value.toInt())
+                        else -> putString(key, value)
+                    }
+                }
+            }
+        }
+        val (controller, why) = media3Controller(service)
+        if (controller == null) {
+            record("outsider.commands", "FAIL", "A trusted controller connects", "a Media3 controller could not connect: $why")
+        } else {
+            val taken = forge.filter { (action, extras) ->
+                val result = onMain { controller.sendCustomCommand(androidx.media3.session.SessionCommand(action, Bundle.EMPTY), extras) }
+                runCatching { result.get(3, TimeUnit.SECONDS).resultCode }.getOrDefault(-1) == androidx.media3.session.SessionResult.RESULT_SUCCESS
+            }.map { it.first.substringAfterLast('.') }
+            SystemClock.sleep(600)
+            check("outsider.commands", "The app's own commands are refused from a controller that isn't the app", taken.isEmpty() && titles() == before,
+                (if (taken.isNotEmpty()) "accepted: ${taken.joinToString()}; " else "") + "queue was ${before.size} songs, now ${titles().size}",
+                "${forge.size} commands sent, all refused")
+            onMain { controller.release() }
+        }
+
+        // 2. Intents to the exported service, made to look like the notification's own.
+        val item = androidx.media3.common.MediaItem.Builder().setMediaId(pick.mediaId.orEmpty()).build()
+        fun built(command: Int, parameter: Bundle.() -> Unit) = "$PLAYER_COMMAND_PREFIX$command" to Bundle().apply(parameter)
+        val forged = forge + listOf(
+            built(androidx.media3.common.Player.COMMAND_SET_MEDIA_ITEM) { putBundle(COMMAND_PARAMETER, item.toBundle()) },
+            built(androidx.media3.common.Player.COMMAND_SEEK_TO_MEDIA_ITEM) { putInt(COMMAND_PARAMETER, before.size - 1) },
+            built(androidx.media3.common.Player.COMMAND_CHANGE_MEDIA_ITEMS) { },
+        )
+        var delivered = 0
+        val failures = mutableListOf<String>()
+        for ((action, extras) in forged) {
+            val intent = Intent(ACTION_CUSTOM).setComponent(service).putExtra(EXTRA_CUSTOM_ACTION, action).putExtra(EXTRA_CUSTOM_ACTION_EXTRAS, extras)
+            runCatching { context.startService(intent) }.onSuccess { delivered++ }.onFailure { failures += it.javaClass.simpleName }
+            SystemClock.sleep(120)
+        }
+        SystemClock.sleep(1500)
+        val after = titles()
+        val placeAfter = place()
+        // The song may have run on into the next by itself meanwhile; no further.
+        val moved = placeAfter - placeBefore
+        check("outsider.forged", "Intents made to look like the notification's can't change the queue", after == before && moved in 0..1,
+            "the queue was ${before.size} songs at place $placeBefore (${before.take(4)}…) and is now ${after.size} at place $placeAfter (${after.take(4)}…)",
+            "$delivered of ${forged.size} intents reached the service" + (if (failures.isNotEmpty()) " (the system refused the rest: ${failures.distinct().joinToString()})" else "") +
+                "; queue unchanged at ${after.size} songs")
+        if (delivered == 0) {
+            record("outsider.forged_delivery", "WARN", "The forged intents reached the service", "none did, so the check above proves nothing")
+        }
+        quiet()
+    }
+
+    /** A Media3 controller connected to the service, or null and why not. */
+    private fun media3Controller(service: ComponentName): Pair<androidx.media3.session.MediaController?, String> {
+        val future = runCatching {
+            onMain {
+                androidx.media3.session.MediaController.Builder(context, androidx.media3.session.SessionToken(context, service)).buildAsync()
+            }
+        }.getOrElse { return null to "no session token: $it" }
+        return runCatching { future.get(limitMs, TimeUnit.MILLISECONDS) }.fold({ it to "" }, { null to (it.cause ?: it).toString().take(160) })
+    }
+
     /** When nobody is signed in, the car should be told so in words, not shown a blank. */
     private fun signedOut(root: String) {
         val asked = SystemClock.elapsedRealtime()
@@ -774,5 +899,14 @@ class Probe : Instrumentation() {
         const val TITLE = "android.intent.extra.title"
         const val PLAYLIST = "android.intent.extra.playlist"
         const val GENRE = "android.intent.extra.genre"
+
+        // How Media3 writes a custom notification action into the intent it starts its
+        // service with, and how it names its built-in player commands when sent that way
+        // (CustomCommandPendingIntentBuilder and CommandButton in media3-session).
+        const val ACTION_CUSTOM = "androidx.media3.session.CUSTOM_NOTIFICATION_ACTION"
+        const val EXTRA_CUSTOM_ACTION = "androidx.media3.session.EXTRAS_KEY_CUSTOM_NOTIFICATION_ACTION"
+        const val EXTRA_CUSTOM_ACTION_EXTRAS = "androidx.media3.session.EXTRAS_KEY_CUSTOM_NOTIFICATION_ACTION_EXTRAS"
+        const val PLAYER_COMMAND_PREFIX = "androidx.media3.session.PLAYER_COMMAND_"
+        const val COMMAND_PARAMETER = "androidx.media3.session.CUSTOM_COMMAND_PARAMETER"
     }
 }
