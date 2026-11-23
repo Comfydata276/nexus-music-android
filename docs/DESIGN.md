@@ -68,6 +68,10 @@ Rules that hold everywhere:
   "What keeps it quick" section in its README is the rulebook; read it.
 - **Words:** everything a person reads lives in `res/values/strings.xml`, and uses the
   Windows app's wording wherever the feature is the same. Plain English, sentence case.
+  The one exception is the API client's error messages, which are ported with it in code.
+- **Signed in, or not yet known.** Just after start-up the saved sign-in is still being
+  read (`SessionState.Restoring`). Anything that starts cold, the playback service above
+  all, waits for that to settle before deciding nobody is signed in.
 - **Comments** say why, as the Windows code does. Read a few of its files for the tone.
 
 ## Playback
@@ -86,6 +90,11 @@ Rules that hold everywhere:
 - **The queue behaves as it does on Windows**: the list being played, plus "Next in queue"
   for songs added by hand, which play straight after the current song and ahead of the rest.
   Port the behaviour from `src/playback.rs`; its tests are the specification.
+- **The queue is ours; ExoPlayer plays it.** A plain Kotlin model (the songs, the order
+  they play in, the place in it, which were queued by hand) is the truth and is tested on
+  its own. ExoPlayer's playlist always holds the songs in exactly the order they will
+  play, and its own shuffle stays off: shuffling means we reorder what is to come. That
+  way "next", gapless joins, the car's queue and our queue screen can never disagree.
 - **Gapless** comes with ExoPlayer. **Crossfade** (which leaves an album alone), **volume
   levelling** from ReplayGain tags, the **six-band equaliser** and **mono** are ported from
   `src/audio/` as audio processors in a later milestone. Design the player set-up so they
@@ -179,7 +188,13 @@ The Windows interface in `../nexus-music/ui/` is the reference. Read `theme.slin
 
 Sizes: a song row is 56dp high with a 40dp cover, title 15sp semibold (accent colour when
 it is the one playing), artist 13sp muted. Touch targets are at least 48dp. The play
-button is a filled accent circle with the `onAccent` icon, as on Windows.
+button is a filled circle with the `onAccent` icon. Where this file says "accent" for
+something Windows draws in `accentBright` (the playing song's title, the play button),
+Windows is right: match it.
+
+Each tab of the bottom bar keeps its own history. Back from a tab's first page goes to
+Home; from Home's first page it leaves the app. Tapping the tab you are on returns to its
+first page.
 
 Every screen must hold up on a 360dp-wide phone and at 1.3 font scale, and be usable with
 TalkBack: every control has a name.
@@ -195,9 +210,12 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
 - **M0 Foundation.** Theme, type, icons; the API client with tests; account and settings
   stores; sign-in; the app's shell with the bottom bar. Also the test rig: a local Navidrome
   with a made-up library, a headless emulator, and a way to check Android Auto.
-- **M1 Playing, and the car.** The playback service, queue, mini player and Now Playing;
-  Home, Library, album, artist and playlist pages with the page cache; search; the whole
-  Android Auto surface. This is the proof build that goes on a real phone and into a car.
+- **M1 Playing, and the car.** This is the proof build that goes on a real phone and into
+  a car. In two steps:
+  - **M1a**: the page cache and library, the cover store, the playback service and queue,
+    and the whole Android Auto surface. No new screens.
+  - **M1b**: the mini player, Now Playing and the queue sheet; Home, Library, album,
+    artist and playlist pages; search.
 - **M2 Offline.** Downloads, offline mode, held changes, kept songs and fetching ahead;
   Downloads in the car.
 - **M3 The rest of browsing.** Songs page, genres, sort and filter, playlist editing that is
