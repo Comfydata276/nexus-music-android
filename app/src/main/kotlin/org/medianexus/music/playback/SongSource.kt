@@ -389,9 +389,20 @@ class RideOut : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolic
  * [SongReader]).
  */
 @OptIn(UnstableApi::class)
-fun songExtractors(): androidx.media3.extractor.DefaultExtractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
-    .setConstantBitrateSeekingEnabled(true)
-    .setConstantBitrateSeekingAlwaysEnabled(true)
+fun songExtractors(): androidx.media3.extractor.ExtractorsFactory {
+    val media3 = androidx.media3.extractor.DefaultExtractorsFactory()
+        .setConstantBitrateSeekingEnabled(true)
+        .setConstantBitrateSeekingAlwaysEnabled(true)
+    // Media3's own, with an MP3's LAME header read beside its MP3 extractor (see Mp3Trim).
+    return object : androidx.media3.extractor.ExtractorsFactory {
+        override fun createExtractors() = wrap(media3.createExtractors())
+
+        override fun createExtractors(uri: Uri, responseHeaders: Map<String, List<String>>) = wrap(media3.createExtractors(uri, responseHeaders))
+
+        private fun wrap(extractors: Array<androidx.media3.extractor.Extractor>): Array<androidx.media3.extractor.Extractor> =
+            Array(extractors.size) { i -> extractors[i].let { if (it is androidx.media3.extractor.mp3.Mp3Extractor) Mp3HeaderReader(it) else it } }
+    }
+}
 
 /**
  * Songs the phone turned out not to be able to play as they are (a file type it plays in

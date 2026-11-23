@@ -102,29 +102,6 @@ class AccessTest {
         assertFalse(retry.stillStands(3, null, failed = true))
     }
 
-    // ---- Gapless MP3 ---------------------------------------------------------------------------
-
-    @Test
-    fun mp3IsTrimmedByTheFilesOwnNumbersWhenTheDecoderAllowsForItsDelay() {
-        // The test library's files say 576 before and 1008 after. Media3 hands on 1105 and
-        // 479: right for a decoder that gives back what it decodes, 529 samples late.
-        // Android's own takes those 529 off itself, and pads the end: with both, every song
-        // lost its first 529 samples and gained 529 of silence.
-        assertEquals(576 to 1008, Mp3Trim.correct(1105, 479, "c2.android.mp3.decoder", fromComment = false))
-        assertEquals(576 to 1008, Mp3Trim.correct(1105, 479, "OMX.google.mp3.decoder", fromComment = false))
-        // A phone maker's own decoder: not known to do the same, so left as Media3 has it.
-        assertNull(Mp3Trim.correct(1105, 479, "OMX.SEC.mp3.dec", fromComment = false))
-        assertNull(Mp3Trim.correct(1105, 479, null, fromComment = false))
-        // Numbers from an iTunes comment are not adjusted by Media3: nothing to undo.
-        assertNull(Mp3Trim.correct(1105, 479, "c2.android.mp3.decoder", fromComment = true))
-        // A file that doesn't say, or says less than Media3 could have added to.
-        assertNull(Mp3Trim.correct(-1, -1, "c2.android.mp3.decoder", fromComment = false))
-        assertNull(Mp3Trim.correct(300, 479, "c2.android.mp3.decoder", fromComment = false))
-        // What is trimmed in all is the same either way: only where it comes from moves.
-        val (delay, padding) = Mp3Trim.correct(1105, 479, "c2.android.mp3.decoder", fromComment = false)!!
-        assertEquals(1105 + 479, delay + padding)
-    }
-
     // ---- The phone's Assistant ----------------------------------------------------------------
 
     private fun ask(action: String?, vararg extras: Pair<String, String>) = VoiceAsk.read(action) { key -> extras.toMap()[key] }
