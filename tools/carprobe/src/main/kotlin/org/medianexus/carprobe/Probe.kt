@@ -833,6 +833,19 @@ class Probe : Instrumentation() {
     /** When nobody is signed in, the car should be told so in words, not shown a blank. */
     private fun signedOut(root: String) {
         val asked = SystemClock.elapsedRealtime()
+        // Before anything is asked of it: a car showing only its player (the home screen's
+        // card, say) opens no folder, and must still be told why nothing plays.
+        val unasked = waitFor(4000) { state?.state == PlaybackStateCompat.STATE_ERROR && !state?.errorMessage.isNullOrBlank() }
+        check("signed_out.unasked", "Says sign-in is needed without being asked anything", unasked >= 0,
+            "four seconds after connecting, with no folder opened, the playback state is ${stateName(state?.state)} with no message",
+            "\"${state?.errorMessage}\"", unasked)
+        // A search must be answered, not left for the car to give up on.
+        val t0 = SystemClock.elapsedRealtime()
+        val (found, searchError) = searchFor("anything")
+        val took = SystemClock.elapsedRealtime() - t0
+        check("signed_out.search", "A search while signed out is answered at once", took < 3000,
+            "it took $took ms (${searchError ?: "${found?.size} results"}); the car shows a spinner until its own time limit",
+            searchError ?: "${found?.size} results", took)
         val (kids, error, _) = children(root)
         onMain { controls.play() }
         waitFor(5000) { state?.state == PlaybackStateCompat.STATE_ERROR }

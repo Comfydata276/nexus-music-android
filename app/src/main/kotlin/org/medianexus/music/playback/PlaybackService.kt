@@ -281,8 +281,11 @@ class PlaybackService : MediaLibraryService() {
 
     private fun signedIn(state: SessionState, now: AccountGraph?) {
         if (state == SessionState.Restoring) return
-        if (now === era?.account) return
         if (now == null && state is SessionState.SignedIn) return // its objects are on their way
+        // Nothing has changed, once the session has been told the first time: a cold start
+        // with nobody signed in is "no change" from the start, and must still be said.
+        if (now === era?.account && told) return
+        told = true
         // Someone else, or nobody: what was playing was theirs.
         if (era != null) {
             save()
@@ -295,13 +298,17 @@ class PlaybackService : MediaLibraryService() {
             plays.reset()
         }
         if (now == null) {
+            // A standing error in words, there before anything is asked: a car that only
+            // shows the player, and never opens a folder, still says why nothing plays.
             session.setPlaybackException(signInNeeded())
+            reload()
             return
         }
         session.setPlaybackException(null)
         val next = Era(++eras, now)
         era = next
         current = next
+        reload()
         // The like button follows the likes, wherever they're changed.
         next.scope.launch { now.likes.liked.collect { updateButtons() } }
         // The list the queue came from changed (a fresh copy from the server, a song unliked
@@ -327,6 +334,29 @@ class PlaybackService : MediaLibraryService() {
         // Something started while the saved queue was being read is the queue now.
         if (!player.queue.isEmpty) save()
     }
+
+    /**
+     * Has the car look again at every folder it has asked for lately, and the tabs: after a
+     * sign-in they have something in them, after a sign-out they don't, and a car sitting on
+     * "sign in" (or on someone else's albums) would otherwise sit there until its screen was
+     * closed and opened again.
+     */
+    private fun reload() {
+        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "who is signed in changed: the car is asked to look again at ${asked.size + 1} folders")
+        for (id in asked + CarIds.ROOT) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
+    }
+
+    /** The folders the car has asked for lately, most recent last. */
+    private val asked = LinkedHashSet<String>()
+
+    private fun askedFor(parentId: String) {
+        asked.remove(parentId)
+        asked.add(parentId)
+        if (asked.size > MOST_ASKED) asked.remove(asked.first())
+    }
+
+    /** Whether the session has been told, at least once, who is signed in (or that nobody is). */
+    private var told = false
 
     /**
      * The account's turn is over: its generation is no longer current (so a read that opens
@@ -711,7 +741,12 @@ class PlaybackService : MediaLibraryService() {
             return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(root, LibraryParams.Builder().setExtras(extras).build()))
         }
 
-        override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
+        override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            askedFor(parentId)
+            return children(session, browser, parentId, page, pageSize, params)
+        }
+
+        private fun children(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 val node = CarIds.parse(parentId) ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 try {
@@ -734,7 +769,14 @@ class PlaybackService : MediaLibraryService() {
             }
 
         override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> =
-            answer({ LibraryResult.ofError(signedOut()) }) { era ->
+            answer({
+                // A car asking the old way is only ever answered through this (Media3 sends
+                // its search result when it is told the result has changed, and at no other
+                // time): without it, a search made while signed out is never answered, and
+                // the car waits out its own time limit.
+                session.notifySearchResultChanged(browser, query, 0, params)
+                LibraryResult.ofError(signedOut())
+            }) { era ->
                 try {
                     val found = inTime { era.tree.search(query) }
                     era.searches.put(query, found)
@@ -1007,6 +1049,9 @@ class PlaybackService : MediaLibraryService() {
         private const val SERVER_WAIT_MILLIS = 15_000L
         private const val TICK_MILLIS = 1_000L
         private const val CAR_WAIT_MILLIS = 7_000L
+
+        /** Folders the car asked for that are remembered, to tell it to look again. */
+        private const val MOST_ASKED = 32
 
         /** How long "play" with nothing loaded waits for the saved sign-in, and then for the
          *  saved queue, to be read from the phone. */
