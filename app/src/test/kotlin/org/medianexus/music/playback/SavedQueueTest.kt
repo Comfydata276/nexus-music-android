@@ -64,6 +64,20 @@ class SavedQueueTest {
     }
 
     @Test
+    fun aPlayOrderThatIsNotEverySongOnceIsDamaged() {
+        val queueFile = File(folder.root, "queue.json")
+        fun load() = QueueFiles(queueFile, File(folder.root, "place.json")).load()
+        // The right length and every place in range, but one song twice and one not at all.
+        queueFile.writeText("""{"songs":[{"id":"a"},{"id":"b"},{"id":"c"}],"order":[0,0,2],"cursor":1}""")
+        assertNull(load())
+        queueFile.writeText("""{"songs":[{"id":"a"},{"id":"b"}],"order":[1,-1],"cursor":0}""")
+        assertNull(load())
+        // Any true reordering is fine.
+        queueFile.writeText("""{"songs":[{"id":"a"},{"id":"b"},{"id":"c"}],"order":[2,0,1],"cursor":1}""")
+        assertEquals(listOf(2, 0, 1), load()!!.order)
+    }
+
+    @Test
     fun anEmptyQueueClearsWhatWasSaved() {
         val queueFile = File(folder.root, "queue.json")
         val files = QueueFiles(queueFile, File(folder.root, "queue-place.json"))

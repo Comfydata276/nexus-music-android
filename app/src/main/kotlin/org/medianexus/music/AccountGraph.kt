@@ -11,7 +11,9 @@ import org.medianexus.music.library.Library
 import org.medianexus.music.library.Likes
 import org.medianexus.music.net.StarTarget
 import org.medianexus.music.net.Subsonic
+import org.medianexus.music.playback.KeptQueue
 import org.medianexus.music.playback.QueueFiles
+import org.medianexus.music.playback.QueueSaver
 import org.medianexus.music.store.Account
 import org.medianexus.music.store.CoverStore
 import org.medianexus.music.store.PageCache
@@ -25,6 +27,7 @@ import org.medianexus.music.store.PageCache
 class AccountGraph(
     val account: Account,
     val api: Subsonic,
+    queueSaver: QueueSaver,
     io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /** Work for this account; cancelled when it signs out. */
@@ -41,7 +44,7 @@ class AccountGraph(
     val likes = Likes(pages, library.liked(), send = { id, liked -> api.setStarred(StarTarget.SONG, id, liked) }, scope)
 
     /** The play queue as it was left, kept with the account's own data. */
-    val queueFiles = QueueFiles(File(account.dirs.data, "queue.json"), File(account.dirs.data, "queue-place.json"))
+    val queue = KeptQueue(QueueFiles(File(account.dirs.data, "queue.json"), File(account.dirs.data, "queue-place.json")), queueSaver)
 
     /** Where kept songs go. Opened by the playback service, which owns them. */
     val keptSongsDir = File(account.dirs.cache, "songs")

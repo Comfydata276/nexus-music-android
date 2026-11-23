@@ -38,6 +38,7 @@ import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
@@ -46,7 +47,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.guava.future
@@ -94,6 +94,8 @@ class PlaybackService : MediaLibraryService() {
         val tree = CarTree(account.library, words)
         val kept = KeptSongs(account.keptSongsDir, database) { graph.settings.value.cacheLimitMb * 1024L * 1024L }
         val searches = SearchResults()
+        /** Done once the saved queue has been read and put back (see [restore]). */
+        val restoring = CompletableDeferred<Unit>()
     }
 
     /** The account signed in, on the main thread. */
@@ -114,8 +116,6 @@ class PlaybackService : MediaLibraryService() {
     private var failures = 0
     private var waitingForServer = false
 
-    /** Queues to write, each with the account it belongs to; only the latest is written. */
-    private val saves = Channel<Pair<QueueFiles, SavedQueue>>(Channel.CONFLATED)
     /** The player is being emptied because the account is going: nothing to save. */
     private var leaving = false
     private var lastSaveAt = 0L
@@ -176,10 +176,6 @@ class PlaybackService : MediaLibraryService() {
             .build()
         setMediaNotificationProvider(DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.ic_bars) })
 
-        // The queue is written off the main thread, the latest of a burst only.
-        scope.launch(Dispatchers.IO) {
-            for ((files, saved) in saves) files.save(saved)
-        }
         // Who is signed in decides everything else.
         scope.launch {
             combine(graph.session.state, graph.accounts.state) { state, account -> state to account }
@@ -193,7 +189,8 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
-        saveNow()
+        // Handed to the app's writer, which finishes it whatever becomes of this service.
+        save()
         scope.cancel()
         session.release()
         player.release()
@@ -225,7 +222,7 @@ class PlaybackService : MediaLibraryService() {
         if (now == null && state is SessionState.SignedIn) return // its objects are on their way
         // Someone else, or nobody: what was playing was theirs.
         if (era != null) {
-            saveNow()
+            save()
             leave()
             // Emptying the player isn't a change to the queue that was theirs: it stays saved
             // for when they sign in again.
@@ -251,11 +248,21 @@ class PlaybackService : MediaLibraryService() {
                 if (key == player.queue.source) songsIn(value)?.let { player.follow(key, it) }
             }
         }
-        // Back to where things were, paused, ready for "play" from anywhere.
-        next.scope.launch {
-            val saved = withContext(Dispatchers.IO) { now.queueFiles.load() }
-            if (saved != null && player.queue.isEmpty) player.restore(saved)
-        }
+        next.scope.launch { restore(next) }
+    }
+
+    /**
+     * Back to where things were, paused, ready for "play" from anywhere. Until this has
+     * finished nothing is saved (see [KeptQueue]): the player's queue is empty while the
+     * saved one is being read, and an account that goes in that moment must not have "empty"
+     * written over its queue.
+     */
+    private suspend fun restore(era: Era) {
+        val saved = era.account.queue.restore()
+        if (saved != null && player.queue.isEmpty) player.restore(saved)
+        era.restoring.complete(Unit)
+        // Something started while the saved queue was being read is the queue now.
+        if (!player.queue.isEmpty) save()
     }
 
     /**
@@ -397,18 +404,13 @@ class PlaybackService : MediaLibraryService() {
 
     private var shownExtras: Bundle? = null
 
+    /** Hands the queue as it stands to the app's one writer of saved queues, which writes
+     *  the newest it has been given, off the main thread, in order. */
     private fun save() {
         if (leaving) return
-        val files = account?.queueFiles ?: return
-        val queue = player.queue
-        saves.trySend(files to queue.saved(exo.currentPosition / 1000.0, System.currentTimeMillis() / 1000))
+        val kept = account?.queue ?: return
+        kept.save { player.queue.saved(exo.currentPosition / 1000.0, System.currentTimeMillis() / 1000) }
         lastSaveAt = System.currentTimeMillis()
-    }
-
-    /** Writes the queue now, on this thread: the service is going. */
-    private fun saveNow() {
-        val files = account?.queueFiles ?: return
-        files.save(player.queue.saved(exo.currentPosition / 1000.0, System.currentTimeMillis() / 1000))
     }
 
     // ---- The car's buttons ------------------------------------------------------------------
@@ -807,12 +809,10 @@ class PlaybackService : MediaLibraryService() {
 
     private suspend fun resume(era: Era, controller: MediaSession.ControllerInfo): MediaItemsWithStartPosition {
         val tree = era.tree
+        // The saved queue is put back when the account is taken on; wait for that rather
+        // than read the file a second time.
+        era.restoring.await()
         player.stageCurrent()?.let { (items, start) -> return MediaItemsWithStartPosition(items, start, exo.currentPosition) }
-        val saved = withContext(Dispatchers.IO) { era.account.queueFiles.load() }
-        if (saved != null) {
-            val (items, start) = player.stageSaved(saved)
-            return MediaItemsWithStartPosition(items, start, (saved.position * 1000).toLong())
-        }
         val liked = try {
             inTime { tree.shuffledLiked() }
         } catch (e: ApiError) {

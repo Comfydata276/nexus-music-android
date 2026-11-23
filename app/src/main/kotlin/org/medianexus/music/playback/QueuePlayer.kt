@@ -202,16 +202,6 @@ class QueuePlayer(
         return items to next.cursor
     }
 
-    /** Makes a saved queue ready for the session to start (see [stage]). */
-    fun stageSaved(saved: SavedQueue): Pair<List<MediaItem>, Int> {
-        val next = Queue()
-        next.restore(saved)
-        next.shuffle = queue.shuffle
-        next.repeat = queue.repeat
-        staged = next
-        return next.order.map { itemOf(next.songs[it], next.uids[it]) } to next.cursor
-    }
-
     /** The queue as it stands, for the session to start again where it is. */
     fun stageCurrent(): Pair<List<MediaItem>, Int>? {
         if (queue.isEmpty) return null

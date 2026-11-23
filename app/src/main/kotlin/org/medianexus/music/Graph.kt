@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import org.medianexus.music.net.Http
 import org.medianexus.music.net.OfflineSwitch
 import org.medianexus.music.playback.PlayerConnection
+import org.medianexus.music.playback.QueueSaver
 import org.medianexus.music.store.KeystoreBox
 import org.medianexus.music.store.PasswordVault
 import org.medianexus.music.store.SettingsStore
@@ -47,8 +48,12 @@ class Graph(context: Context) {
         io = Dispatchers.IO,
     )
 
+    /** The one writer of saved queues: it outlives the playback service and any account,
+     *  so the last snapshot either hands it is still written. */
+    val queueSaver = QueueSaver(scope, Dispatchers.IO)
+
     /** What belongs to whoever is signed in: their library, covers, likes and queue. */
-    val accounts = Accounts(session, scope)
+    val accounts = Accounts(session, scope, queueSaver)
 
     val toasts = Toasts()
 
