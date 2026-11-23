@@ -96,10 +96,13 @@ class Graph(context: Context) {
      * While the server couldn't be reached last time it was asked, asks it again (a ping),
      * so that pages showing "Can't reach the server" come back by themselves when it does,
      * even if nothing else asks meanwhile. Only while the screens are in front: see
-     * MainActivity.
+     * MainActivity. Not while the server is on the home network and the app may not reach it.
      */
     suspend fun checkIfDown() {
-        if (!serverDown) return
+        // Not a server on the home network while the app isn't allowed to reach it: it can't
+        // answer, so asking is for nothing. Allowed, what failed tries again at once (see
+        // `localAccess.allowed`), and the asking resumes if it is still down.
+        if (!serverDown || localAccess.certain.value) return
         runCatching { accounts.state.value?.api?.ping() }
     }
 

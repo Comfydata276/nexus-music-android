@@ -106,8 +106,8 @@ class PlaybackService : MediaLibraryService() {
          *  to give: another account's server can use the same ids for other songs. */
         val conversions = Conversions()
         val needsConverting = NeedsConverting()
-        /** Who made each search lately: told when one is to be made again. */
-        val searchedBy = java.util.concurrent.ConcurrentHashMap<String, MediaSession.ControllerInfo>()
+        /** Who made each search lately, by browser: told when one is to be made again. */
+        val searchedBy = Searchers<MediaSession.ControllerInfo>()
         /** The account's saved queue, for this service's turn at it: nothing is written to
          *  it until what was read from it is in the player (see [restore]). */
         val queue = KeptQueue(account.queueFiles, graph.queueSaver)
@@ -1115,7 +1115,8 @@ class PlaybackService : MediaLibraryService() {
                     try {
                         val found = fromTree(era) { it.search(again.query) }
                         era.searches.put(again.query, found)
-                        era.searchedBy[again.query]?.let { session.notifySearchResultChanged(it, again.query, found.size, null) }
+                        // Told: every browser that made this search lately (not only the last).
+                        for (who in era.searchedBy.of(again.query)) session.notifySearchResultChanged(who, again.query, found.size, null)
                         LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
                     } catch (e: ApiError) {
                         if (CarTree.unreachable(e)) {
@@ -1173,7 +1174,7 @@ class PlaybackService : MediaLibraryService() {
                 session.notifySearchResultChanged(browser, query, 0, params)
                 LibraryResult.ofError(signedOut())
             }) { era ->
-                era.searchedBy[query] = browser
+                era.searchedBy.made(browser, query)
                 try {
                     val found = fromTree(era) { it.search(query) }
                     era.searches.put(query, found)
@@ -1468,7 +1469,7 @@ class PlaybackService : MediaLibraryService() {
             is CarRetry.Folder -> session.notifyChildrenChanged(target.parentId, Int.MAX_VALUE, null)
             is CarRetry.Search -> {
                 era.searches.forget(target.query)
-                era.searchedBy[target.query]?.let { session.notifySearchResultChanged(it, target.query, 1, null) }
+                for (who in era.searchedBy.of(target.query)) session.notifySearchResultChanged(who, target.query, 1, null)
             }
         }
     }

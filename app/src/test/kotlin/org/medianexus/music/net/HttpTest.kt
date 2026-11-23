@@ -178,6 +178,35 @@ class HttpTest {
         assertNothingPrivate(error)
     }
 
+    @Test
+    fun aCertificateTurnedDownMeansTheServerAnswered() = runBlocking {
+        val api = Subsonic(secure.named("/").toString(), "ada", "sesame", Http.client("test"), salt = SALT)
+        val heard = mutableListOf<Boolean>()
+        api.onReached = { heard += it }
+        val error = try {
+            api.ping()
+            null
+        } catch (e: ApiError.Network) {
+            e
+        }!!
+        // It is there: not "out of reach", and nothing for the local-network permission to
+        // be blamed for.
+        assertTrue(error.answered)
+        assertEquals(listOf(true), heard)
+        // Nothing listening at all is out of reach.
+        val port = java.net.ServerSocket(0).use { it.localPort }
+        val nobody = Subsonic("http://127.0.0.1:$port", "ada", "sesame", Http.client("test"), salt = SALT)
+        nobody.onReached = { heard += it }
+        val none = try {
+            nobody.ping()
+            null
+        } catch (e: ApiError.Network) {
+            e
+        }!!
+        assertFalse(none.answered)
+        assertEquals(listOf(true, false), heard)
+    }
+
     private companion object {
         val PASSWORD = "testing".toCharArray()
         const val SALT = "abcdefghijklmnop"

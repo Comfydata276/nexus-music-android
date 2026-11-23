@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.lifecycle.flowWithLifecycle
+import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,10 +62,28 @@ fun Cover(
         // Now Playing's large copy, once it has drawn: the usual one was only standing in
         // for it, and leaves, so the two aren't both decoded and held for one place.
         var largeShown by remember(cover) { mutableStateOf(false) }
-        // Asked for again when the server can be reached again, if it failed.
+        // Either copy that failed is asked for again when the server can be reached again
+        // (`CoverRetry`). Listened for only while one has failed, and only while the app is in
+        // front: a screenful of covers that loaded holds no subscription at all.
         var failed by remember(cover) { mutableStateOf(false) }
-        val tries by CoverRetry.tries.collectAsState()
-        val attempt = if (failed) tries else 0
+        var largeFailed by remember(cover) { mutableStateOf(false) }
+        var attempt by remember(cover) { mutableIntStateOf(0) }
+        var largeAttempt by remember(cover) { mutableIntStateOf(0) }
+        if (cover.isNotEmpty() && (failed || largeFailed)) {
+            val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+            LaunchedEffect(cover, failed, largeFailed) {
+                val at = CoverRetry.tries.value
+                val next = CoverRetry.tries.flowWithLifecycle(lifecycle).first { it > at }
+                if (failed) {
+                    attempt = next
+                    failed = false
+                }
+                if (largeFailed) {
+                    largeAttempt = next
+                    largeFailed = false
+                }
+            }
+        }
         if (!shown) Icon(placeholder, Modifier.glyphSize(), tint = Theme.colors.faint)
         if (cover.isNotEmpty()) {
             if (!largeShown) {
@@ -80,7 +101,7 @@ fun Cover(
                 )
             }
             if (large) {
-                val big = remember(cover) { CoverArt(cover, large = true) }
+                val big = remember(cover, largeAttempt) { CoverArt(cover, large = true, attempt = largeAttempt) }
                 AsyncImage(
                     big,
                     contentDescription = null,
@@ -89,7 +110,9 @@ fun Cover(
                     onSuccess = {
                         shown = true
                         largeShown = true
+                        largeFailed = false
                     },
+                    onError = { largeFailed = true },
                 )
             }
         }

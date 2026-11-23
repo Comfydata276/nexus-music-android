@@ -236,9 +236,16 @@ class Subsonic private constructor(
         return try {
             call.fetch(io, read).also { onReached?.invoke(true) }
         } catch (e: IOException) {
-            onReached?.invoke(false)
-            throw ApiError.Network(networkHint(e))
+            throw failed(e)
         }
+    }
+
+    /** A request that failed on its way: said to whoever follows whether the server answers
+     *  (a secure connection it turned down means it did), and made the error to throw. */
+    private fun failed(e: IOException): ApiError.Network {
+        val answered = answeredOverTls(e)
+        onReached?.invoke(answered)
+        return ApiError.Network(networkHint(e), answered)
     }
 
     /** Opens connections ahead of need, so the first taps don't pay for setting them up. */
@@ -476,8 +483,7 @@ class Subsonic private constructor(
                 source.buffer.readByteArray()
             }.also { onReached?.invoke(true) }
         } catch (e: IOException) {
-            onReached?.invoke(false)
-            throw ApiError.Network(networkHint(e))
+            throw failed(e)
         }
     }
 
@@ -521,7 +527,18 @@ class Subsonic private constructor(
  * error (a refused connection inside "Failed to connect"), so the causes and the attempts it
  * gave up on are read too.
  */
-internal fun networkHint(error: IOException): String {
+internal fun networkHint(error: IOException): String = read(error).first
+
+/**
+ * Whether a failure was the secure connection with a server that answered: its certificate
+ * turned down, or TLS that failed once it had answered. The server is there, so the failure
+ * is not "can't reach it", and isn't taken for a sign the local-network permission is missing.
+ */
+internal fun answeredOverTls(error: IOException): Boolean = read(error).second
+
+/** What a failure says, in words, and whether it was the secure connection with a server that
+ *  answered (the certificate and TLS cases below, unless something earlier came first). */
+private fun read(error: IOException): Pair<String, Boolean> {
     // Every cause, and every attempt given up on with its own causes, a few dozen at most.
     val all = mutableListOf<Throwable>()
     val waiting = ArrayDeque<Throwable>().apply { add(error) }
@@ -535,39 +552,39 @@ internal fun networkHint(error: IOException): String {
     val lower = all.joinToString(" ") { it.message.orEmpty() }.lowercase()
     fun any(kind: Class<*>) = all.any { kind.isInstance(it) }
     return when {
-        any(InsecureRedirect::class.java) -> all.first { it is InsecureRedirect }.message!!
+        any(InsecureRedirect::class.java) -> all.first { it is InsecureRedirect }.message!! to false
         // First among the rest: a server whose certificate was turned down was reached, even
         // if another of its addresses then refused (OkHttp tries them all). The system's own
         // words name the host and quote the certificate, so they aren't passed on.
         any(SSLPeerUnverifiedException::class.java) ->
-            "The server's certificate is for a different address. Check the address."
+            "The server's certificate is for a different address. Check the address." to true
         // Android says "trust anchor … not found"; the desktop JVM the tests run on says
         // "unable to find valid certification path".
         any(CertificateException::class.java) || any(CertPathValidatorException::class.java) ||
             any(CertPathBuilderException::class.java) || "trust anchor" in lower || "certification path" in lower ->
-            "The server's certificate isn't one this phone trusts."
+            "The server's certificate isn't one this phone trusts." to true
         any(UnknownHostException::class.java) || "dns" in lower || "resolve" in lower || "lookup" in lower ->
-            "The server name couldn't be found. Check the address."
+            "The server name couldn't be found. Check the address." to false
         "refused" in lower ->
-            "The connection was refused. Check the port and that Navidrome is running."
+            "The connection was refused. Check the port and that Navidrome is running." to false
         any(SocketTimeoutException::class.java) || "timeout" in lower || "timed out" in lower ->
-            "The connection timed out. Check the address and your network."
+            "The connection timed out. Check the address and your network." to false
         any(SSLException::class.java) || "certificate" in lower || "tls" in lower ->
-            "The secure connection failed."
+            "The secure connection failed." to true
         // The phone itself wouldn't let the app connect (a permission, a firewall).
         "permission denied" in lower || "eperm" in lower || "eacces" in lower || "operation not permitted" in lower ->
-            "The phone didn't allow the connection."
+            "The phone didn't allow the connection." to false
         // No way there from the network the phone is on.
         "unreachable" in lower || "no route to host" in lower || "enetunreach" in lower || "ehostunreach" in lower ->
-            "There's no way to the server from this network. Check your network."
+            "There's no way to the server from this network. Check your network." to false
         // Cut off part-way ("unexpected end of stream", a reset): Windows' words for it.
         "end of stream" in lower || "reset" in lower || "broken pipe" in lower || "eof" in lower || "closed" in lower ||
             any(java.net.ProtocolException::class.java) ->
-            "The connection dropped."
+            "The connection dropped." to false
         // Couldn't connect, for no reason the system gave.
         any(java.net.ConnectException::class.java) || "failed to connect" in lower ->
-            "Couldn't connect. Check the address and your network."
-        else -> "The connection failed."
+            "Couldn't connect. Check the address and your network." to false
+        else -> "The connection failed." to false
     }
 }
 

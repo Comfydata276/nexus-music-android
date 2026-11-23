@@ -74,6 +74,17 @@ Rules that hold everywhere:
   read (`SessionState.Restoring`). Anything that starts cold, the playback service above
   all, waits for that to settle before deciding nobody is signed in.
 - **Comments** say why, as the Windows code does. Read a few of its files for the tone.
+- **What a server says is the person's, and stays on the screen.** The person may be shown
+  what their own server said when it refused something ("The server reported: …", kept short
+  and stripped of anything that names the address, account or sign-in: `safeServerMessage`).
+  That text, like server addresses and account names, never goes into the log, the
+  Diagnostics page or its shared report, crash text, or anything another app can read (a
+  car's screen, the media session's errors, a notification); those get the kind of failure
+  in our own words ("Can't reach your music server", "playback error: ERROR_CODE_IO_…").
+  Song names go to the car and the notification as what is playing, and nowhere else of
+  those. **Not yet so:** the playback service's `trouble()` hands a car the error's own
+  message for a refusal that isn't about reaching the server, which can carry the server's
+  words; left for the service's owner.
 
 ## Playback
 
@@ -468,7 +479,8 @@ How it is built (M1a):
   15% of the app's allowance if that is less (see TESTING.md for how that was chosen). A few
   covers are read and decoded at a time, and a fetch nobody is waiting for any more is
   dropped before its turn. Now Playing's small copy leaves once the large one has drawn. A
-  cover that failed is asked for again when the connection comes back. Covers of downloaded
+  cover that failed (Now Playing's large copy too) is asked for again when the connection
+  comes back; a cover listens for that only while it has failed and the app is in front. Covers of downloaded
   music are kept where the system won't clear them.
 - **Saved queue**: `queue.json` and `queue-place.json` in the account's data folder, in
   the Windows app's form (`SavedQueue`, `QueuePlace` and its `queue_shape`), ready for
@@ -658,7 +670,10 @@ How it is built (M1b):
   allowed, a bar over every page and on Now Playing says so. When it is allowed, when the
   server answers again after failing, or when the phone has a network again, pages that
   failed load again and covers are asked for again (`Graph.reconnects`); while the screens
-  are in front and the server was out of reach, it is asked every 15 seconds. The car,
+  are in front and the server was out of reach, it is asked every 15 seconds, except a server
+  on the home network while the app may not reach it (asking can't succeed): that resumes
+  once it is allowed. A secure connection the server turned down (its certificate) means it
+  answered: that is never taken for "out of reach", nor offered the permission as the cause. The car,
   started cold with no permission, browses what is kept and is told in words, with a button
   that opens the app.
 - **Passwords**: the password field gives accessibility services dots, as a system password

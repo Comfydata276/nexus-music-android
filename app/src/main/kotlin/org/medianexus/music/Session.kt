@@ -219,7 +219,7 @@ class Session(
                 // HTTPS was the only thing tried, and not because the person said so.
                 val onlyGuessedHttps = addresses.size == 1 && splitScheme(server.trim()).first == null
                 if (generation.get() == asked) {
-                    signingIn.value = SignInState(error = error?.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server, unreachable = error is ApiError.Network)
+                    signingIn.value = SignInState(error = error?.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server, unreachable = error is ApiError.Network && !error.answered)
                 }
                 return@launch
             }

@@ -379,6 +379,9 @@ class SubsonicTest {
         assertEquals("The server's certificate is for a different address. Check the address.", networkHint(unverified))
         val handshake = javax.net.ssl.SSLHandshakeException("Received fatal alert for music.example.org")
         assertEquals("The secure connection failed.", networkHint(handshake))
+        // Those two had an answer from the server; none of the others did.
+        assertTrue(answeredOverTls(unverified) && answeredOverTls(handshake))
+        assertTrue(cases.keys.none { answeredOverTls(it) })
     }
 
     @Test

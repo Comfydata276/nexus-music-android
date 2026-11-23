@@ -66,7 +66,8 @@ fun AlbumPage(route: Route.Album) {
     val hero = if (album == null) {
         HeroData(stringResource(R.string.kind_album), route.title, route.artist, cover = route.cover)
     } else {
-        HeroData(stringResource(releaseKind(album)), album.name, album.artistLabel, albumFacts(res, album), album.coverArt)
+        val facts = remember(album, res) { albumFacts(res, album) }
+        HeroData(stringResource(releaseKind(album)), album.name, album.artistLabel, facts, album.coverArt)
     }
     // What's liked comes from the one owner of likes, as songs' hearts do: shown at once,
     // put back (and said so) if the server says no.
@@ -115,7 +116,10 @@ fun PlaylistPage(route: Route.Playlist) {
     val hero = if (playlist == null) {
         HeroData(stringResource(R.string.kind_playlist), route.name, cover = route.cover, playlist = true)
     } else {
-        HeroData(stringResource(R.string.kind_playlist), playlist.name, playlist.owner, listFacts(res, playlist.songs), playlist.coverArt, playlist = true)
+        // The facts (the length above all, a scan of every song) worked out once when the
+        // list arrives, not at every redraw.
+        val facts = remember(playlist, res) { listFacts(res, playlist.songs) }
+        HeroData(stringResource(R.string.kind_playlist), playlist.name, playlist.owner, facts, playlist.coverArt, playlist = true)
     }
     SongListPage(
         key = route.key,
