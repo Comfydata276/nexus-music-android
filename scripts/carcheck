@@ -34,6 +34,8 @@ usage: scripts/carcheck <package> [options]     check an installed app
                         the queue must survive the app's own commands sent by a controller
                         that isn't the app, and intents made to look like taps on the
                         notification (with --nexus, the app's own command names too)
+  --mode long_pause     only: play, pause, stay connected for eleven minutes (--pause-s N
+                        for another wait), and press Play: what a car does after a long stop
   --warm                don't remove the app from memory first (to measure it as it is,
                         with whatever the rig has switched on in it still on)
   --depth N             how many levels of folders to open (default 4)
@@ -99,6 +101,7 @@ while [ $# -gt 0 ]; do
     --media-id) extra+=(-e media_id "${2:?}"); shift ;;
     --list) extra+=(-e list "${2:?}"); shift ;;
     --warm) extra+=(-e cold false) ;;
+    --pause-s) extra+=(-e pause_s "${2:?}"); shift ;;
     --depth) extra+=(-e depth "${2:?}"); shift ;;
     --nodes) extra+=(-e nodes "${2:?}"); shift ;;
     --limit-ms) extra+=(-e limit_ms "${2:?}"); shift ;;
@@ -140,7 +143,10 @@ reports="$cache/reports"
 forget_host() { :; }
 if [ "$known" = 1 ]; then
   user="$(current_user)"
-  if adb_sh dumpsys package "$target" | grep -q 'DEBUGGABLE'; then
+  # (Read whole, then searched: a search that stops at the first match ends the pipe early,
+  # which this script takes for a failure.)
+  package_dump="$(adb_sh dumpsys package "$target" 2>/dev/null || true)"
+  if grep -q 'DEBUGGABLE' <<<"$package_dump"; then
     cert="$(adb_sh "am instrument --user $user -w -e target '$target' -e mode whoami org.medianexus.carprobe/.Probe" 2>&1 | tr -d '\r' | sed -n 's/^PROBE_CERT://p' | head -n 1)"
     [ "${#cert}" = 64 ] || die "could not read the probe's signing certificate"
     told="$(adb_sh "am broadcast --user $user --include-stopped-packages -n $target/.playback.DebugControl --es host 'org.medianexus.carprobe $cert'" | tr -d '\r')"

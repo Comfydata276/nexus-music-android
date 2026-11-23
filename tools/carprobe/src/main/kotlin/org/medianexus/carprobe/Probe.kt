@@ -150,6 +150,10 @@ class Probe : Instrumentation() {
             queueSlide(root)
             return
         }
+        if (mode == "long_pause") {
+            longPause()
+            return
+        }
 
         check("root.search", "Says it can search (the car shows a search button)",
             rootExtras?.getBoolean(SEARCH_SUPPORTED) == true,
@@ -820,6 +824,41 @@ class Probe : Instrumentation() {
         val ms = waitFor { playing() }
         check("resume.play", "Play with nothing chosen picks up where it left off", ms >= 0,
             "nothing played (${whyNotPlaying()}); a car that presses play after connecting gets silence", "before: $was; now ${nowPlaying()}", ms)
+        quiet()
+    }
+
+    // --- Play after a long pause, with the car still connected ----------------------------
+
+    /**
+     * `--mode long_pause`. A car stays connected to the app for the whole drive. Paused for
+     * longer than the app's service stays in the foreground with nothing playing (ten
+     * minutes with Media3), the service is an ordinary background one, still alive because
+     * the car is bound to it; and Play from the car then has to bring it back into the
+     * foreground before Android will give it the sound. This plays, pauses, waits ("-e
+     * pause_s", 660 seconds unless told), and presses Play.
+     */
+    private fun longPause() {
+        val seconds = args.getString("pause_s")?.toLong() ?: 660
+        onMain { controls.play() }
+        val began = waitFor { playing() }
+        check("long_pause.play", "Play with nothing chosen starts playback", began >= 0, whyNotPlaying(), nowPlaying(), began)
+        if (began < 0) return
+        SystemClock.sleep(3000)
+        onMain { controls.pause() }
+        waitFor { !playing() }
+        val at = position()
+        say("  paused at ${at / 1000} s; waiting $seconds seconds with the connection held, as a parked car does...")
+        SystemClock.sleep(seconds * 1000)
+        val foreground = shell("dumpsys activity services $target").contains("isForeground=true")
+        record("long_pause.background", "INFO", "After the pause the app's service is", if (foreground) "still in the foreground" else "no longer in the foreground (alive, with this probe bound to it)")
+        onMain { controls.play() }
+        val ms = waitFor { playing() }
+        SystemClock.sleep(2500)
+        val moved = position() > at + 1500
+        check("long_pause.resume", "Play after a long pause, the car still connected, carries on", ms >= 0 && playing() && moved,
+            whyNotPlaying() + ", at ${position() / 1000} s (was ${at / 1000} s)", "${nowPlaying()}, from ${at / 1000} s", ms)
+        val service = shell("dumpsys activity services $target")
+        check("long_pause.foreground", "And the service is in the foreground again", service.contains("isForeground=true"), "it is playing from a service that is not in the foreground")
         quiet()
     }
 
