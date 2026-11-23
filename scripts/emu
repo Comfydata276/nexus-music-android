@@ -48,6 +48,11 @@ Fitting checks from the design
   look [--width <dp>] [--font <scale>] [--reset]
                             e.g. `look --width 360 --font 1.3` for the narrow, large-type case
 
+Hearing it (debug builds of the app only)
+  capture start <name>      write what the app's player plays to files/capture/<name>.wav
+  capture stop              finish the file
+  capture pull <name> [out] copy it here (default: the cache's captures/ folder)
+
 Anything else
   shell <command...>        run a command on the device
   adb <arguments...>        raw adb against this emulator
@@ -178,6 +183,11 @@ start() {
     || die "only ${free_mb} MB of memory is free; the $device emulator needs about $((ram + 1000)) MB. Stop another emulator or a build first."
   mkdir -p "$cache/logs" "$cache/shots"
   docker rm -f "$container" >/dev/null 2>&1 || true
+  # An emulator stopped uncleanly (the machine restarted, its container was killed) leaves
+  # its lock files behind, and the next start refuses ("another emulator instance is
+  # running"). This emulator runs only in its own container, which isn't running now (see
+  # above), so nothing can be holding them: they go.
+  clear_stale_locks
   # Memory: the emulator raises whatever the AVD asks for to 4096 MB on recent images
   # ("Increasing RAM size to 4096MB"), and then holds 5 GB of this machine's 12. The
   # kernel setting mem= (passed at the end of the command) is what actually limits the
@@ -203,6 +213,14 @@ start() {
   local t0=$SECONDS
   wait_ready
   say "ready after $((SECONDS - t0))s: $serial"
+}
+
+clear_stale_locks() {
+  local dir="$avd_home/$avd.avd" lock
+  for lock in "$dir"/*.lock "$dir"/*.lock/; do
+    [ -e "$lock" ] || continue
+    rm -rf -- "$lock" && say "cleared a lock left by an earlier run: $(basename "$lock")"
+  done
 }
 
 stop() {
@@ -389,5 +407,27 @@ case "$cmd" in
   shell) need_emulator; adb_sh "$@" ;;
   adb) need_emulator; adb_ "$@" ;;
   root) need_emulator; adb_ root >/dev/null; sleep 2; adb_ wait-for-device; adb_sh id -un ;;
+  capture)
+    # Debug builds of the app only: what the player sends to the audio output, as a WAV
+    # (app/src/debug/.../DebugAudio.kt). The rig can't record the emulator's sound itself.
+    need_emulator
+    pkg="${NEXUS_PACKAGE:-org.medianexus.music}"
+    recv="$pkg/.playback.DebugControl"
+    case "${1:-}" in
+      start)
+        name="${2:-capture}"
+        adb_sh am broadcast -n "$recv" --es capture start --es name "$name" | tr -d '\r' | grep -o 'data="[^"]*"' || die "capture: the app didn't answer (is a debug build installed?)" ;;
+      stop) adb_sh am broadcast -n "$recv" --es capture stop | tr -d '\r' | grep -o 'data="[^"]*"' || true ;;
+      pull)
+        name="${2:?capture pull <name> [file.wav]}"
+        out="${3:-$cache/captures/$name.wav}"
+        mkdir -p "$(dirname "$out")"
+        adb_ exec-out run-as "$pkg" cat "files/capture/$name.wav" > "$out"
+        [ -s "$out" ] || die "capture: nothing was pulled (no files/capture/$name.wav?)"
+        say "pulled $(du -h "$out" | cut -f1) to $out"
+        echo "$out" ;;
+      *) die "capture start <name> | stop | pull <name> [file.wav]" ;;
+    esac
+    ;;
   *) say "unknown command: $cmd"; usage ;;
 esac

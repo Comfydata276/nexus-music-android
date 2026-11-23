@@ -120,9 +120,9 @@ fun PlaylistPage(route: Route.Playlist) {
     val feed = rememberPageFeed(route.key) { it.playlist(route.id) }
     val playlist = feed.value
     val hero = if (playlist == null) {
-        HeroData(stringResource(R.string.kind_playlist), route.name, cover = route.cover)
+        HeroData(stringResource(R.string.kind_playlist), route.name, cover = route.cover, playlist = true)
     } else {
-        HeroData(stringResource(R.string.kind_playlist), playlist.name, playlist.owner, listFacts(res, playlist.songs), playlist.coverArt)
+        HeroData(stringResource(R.string.kind_playlist), playlist.name, playlist.owner, listFacts(res, playlist.songs), playlist.coverArt, playlist = true)
     }
     SongListPage(
         key = route.key,
@@ -225,7 +225,7 @@ private fun ArtistLayout(
         context = hero.title,
         feed = feed,
         empty = if (artist != null && artist.albums.isEmpty()) stringResource(R.string.artist_empty) else "",
-        playOverride = { onPlay(null) },
+        playOverride = if (artist?.albums.isNullOrEmpty()) null else ({ onPlay(null) }),
         below = {
             for ((title, albums) in groups) {
                 gridSection(title, albums.map { it.card(albumByYear(res, it)) }) { ui.open(it) }

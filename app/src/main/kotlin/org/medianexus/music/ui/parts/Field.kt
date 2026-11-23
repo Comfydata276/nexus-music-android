@@ -26,7 +26,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.editableText
+import androidx.compose.ui.semantics.focused
+import androidx.compose.ui.semantics.onAutofillText
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onImeAction
+import androidx.compose.ui.semantics.password
+import androidx.compose.ui.semantics.requestFocus
+import androidx.compose.ui.semantics.setText
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -82,17 +96,43 @@ fun Field(
         if (contentType != null) this.contentType = contentType
     }
     if (secret) {
-        BasicSecureTextField(
-            state = state,
-            modifier = described,
-            enabled = enabled,
-            textStyle = style,
-            keyboardOptions = keyboardOptions,
-            onKeyboardAction = onKeyboardAction,
-            interactionSource = source,
-            cursorBrush = SolidColor(colors.accentBright),
-            decorator = decorator,
-        )
+        // Compose's secure field hides the characters on screen but gives accessibility
+        // services the password itself (anything reading the screen saw it in full). A
+        // password field of the system's gives them only dots. So the field's own semantics
+        // are replaced by a password's: dots, its name, and the actions TalkBack and autofill
+        // use to focus it, type into it and fill it in.
+        val focus = remember { FocusRequester() }
+        val dots = remember(state.text.length) { AnnotatedString("•".repeat(state.text.length)) }
+        Box(
+            modifier.clearAndSetSemantics {
+                contentDescription = label
+                password()
+                editableText = dots
+                this.focused = focused
+                if (contentType != null) this.contentType = contentType
+                if (enabled) {
+                    onClick { focus.requestFocus(); true }
+                    requestFocus { focus.requestFocus(); true }
+                    setText { text -> state.setTextAndPlaceCursorAtEnd(text.text); true }
+                    onAutofillText { text -> state.setTextAndPlaceCursorAtEnd(text.text); true }
+                    onImeAction(keyboardOptions.imeAction) { onKeyboardAction?.onKeyboardAction {}; true }
+                } else {
+                    disabled()
+                }
+            },
+        ) {
+            BasicSecureTextField(
+                state = state,
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                enabled = enabled,
+                textStyle = style,
+                keyboardOptions = keyboardOptions,
+                onKeyboardAction = onKeyboardAction,
+                interactionSource = source,
+                cursorBrush = SolidColor(colors.accentBright),
+                decorator = decorator,
+            )
+        }
     } else {
         BasicTextField(
             state = state,

@@ -200,7 +200,13 @@ private fun Genres() {
             },
             onOpen = { ui.open(it) },
             minWidth = 160.dp,
-            header = { SectionTitle(stringResource(R.string.browse_by_genre), Modifier.padding(start = 0.dp)) },
+            header = {
+                androidx.compose.foundation.text.BasicText(
+                    stringResource(R.string.browse_by_genre),
+                    Modifier.padding(vertical = 12.dp),
+                    style = Theme.type.section.copy(color = Theme.colors.text),
+                )
+            },
         )
     }
 }

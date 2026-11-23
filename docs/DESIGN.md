@@ -206,9 +206,13 @@ How it is built (M1a):
   held in memory. A page fetched within 15 seconds isn't fetched again.
 - **Library copy**: every artist, album and song, kept compactly for instant search; the
   search and its ranking are a port of `src/search.rs` so both apps find the same things.
-- **Covers**: one store. Each cover is fetched once at one size (640 px, Windows' largest)
-  and cut down locally, 300 MB at most per account. Coil and the car's content provider
-  (`content://org.medianexus.music.covers/<cover id>`) both read from it. Covers of downloaded music are kept
+- **Covers**: one store. Each cover is fetched once at 640 px (Windows' largest) and cut
+  down locally, 300 MB at most per account; Now Playing alone asks for a second, 1200 px
+  copy, as its cover is nearly the phone's width, and shows the 640 px one until it
+  arrives. Coil and the car's content provider
+  (`content://org.medianexus.music.covers/<cover id>`) both read from it: Coil through a
+  fetcher of our own (`CoverImages.kt`), with its own disk cache off, so no picture is kept
+  twice; it decodes at the size shown and holds recent ones in memory (15% of the app's). Covers of downloaded music are kept
   where the system won't clear them.
 - **Saved queue**: `queue.json` and `queue-place.json` in the account's data folder, in
   the Windows app's form (`SavedQueue`, `QueuePlace` and its `queue_shape`), ready for
@@ -273,6 +277,81 @@ first page.
 
 Every screen must hold up on a 360dp-wide phone and at 1.3 font scale, and be usable with
 TalkBack: every control has a name.
+
+How it is built (M1b):
+
+- **The shell**: the page, notice bars, the mini player and the bottom bar; over them Now
+  Playing, the queue sheet, a song's menu (both Material bottom sheets in our colours) and
+  toasts. Screens reach the app's objects through `Ui` (`LocalUi`). While the keyboard is
+  up the mini player and bottom bar step aside.
+- **Pages show what is kept at once** (`rememberPageFeed`, over `Library.live`): the kept
+  copy, then the server's, then any change made here while the page is open (a like). Pulling
+  down asks the server again; a failure with something on screen is a strip with "Try
+  again" above it, never in its place; skeleton rows only when nothing is kept. A page
+  opened from a card draws its header at once from what the card said.
+- **The header** (Windows' `Hero`) stands the cover above the words on a phone: a cover
+  beside the title would leave the title too little room. Then the kind ("Album"), the
+  name in the display face, and the artist or owner beside the facts ("2017, 14 songs,
+  7 min"), wrapping under it when narrow. The action bar is Windows': play, the list's own
+  shuffle (a dot under it when on), a heart for an album. A list with nothing in it offers
+  neither play nor shuffle.
+- **The playing row**: the service puts the list the queue came from and the place in it of
+  the song playing in the session's extras; a row is marked only if it is that place in
+  that list, so the same song elsewhere, or in another list, isn't.
+- **The queue follows its list**: whenever the kept copy of the list the queue came from
+  changes (a fresh copy from the server, a song unliked from Liked songs), the service runs
+  `followList` and keeps each entry's number, so the song playing carries on untouched.
+- **Mini player**: a rounded card in `overlay` above the bottom bar, with a 2dp line in the
+  text colour along its foot. Tap or swipe up opens Now Playing; a sideways swipe skips.
+  Only the line reads the position, and only while drawing.
+- **Now Playing**: the play button there is Windows' transport button (a circle in the text
+  colour), not the accent one pages use; buffering and "Lost the connection…" replace the
+  format line in words. On its side, the cover sits beside the controls. Swipe down or
+  back (predictive) to close.
+- **The queue sheet** is the Windows queue panel: "Now playing", then "Next in queue" with
+  "Clear queue", then "Next from <list>" with "Clear". Songs move by a drag handle (Lucide's
+  grip-vertical, which Windows doesn't need), across the heading into "Next in queue" or out
+  of it, by the same arithmetic as Windows (`QueueRows.move`). A sideways swipe or "Remove
+  from queue" takes one out; screen readers get Move up, Move down and Remove. Below 400dp
+  the songs' lengths are left out so their names have room.
+- **A song's menu** has what works so far: Play next, Add to queue, like, Go to album, Go to
+  artist (each credited artist when there are several), and Remove from queue from the
+  queue. Nothing that does nothing yet is shown.
+- **Home**: the greeting, four quick tiles (two lines of two, as Windows on a narrow window),
+  then Recently added, Recently played, Most played, It's been a while and Something
+  different, each sideways. "Made for you" and "Artists you might like" come later.
+- **Library**: chips for Playlists, Albums, Artists and Genres. Liked songs heads the
+  playlists, then the pinned ones, then the rest by name. Albums have Windows' seven sorts
+  as a second row of chips, sixty at a time as the grid scrolls; Home's "Show all" opens them.
+- **Artist**: albums, then singles and EPs, newest first; play plays the songs of their
+  first forty albums. "Popular" and "Fans also like" need the server to ask Last.fm, which
+  the test server can't; they come with the rest of browsing (M3).
+- **Search**: results as the words are typed (250 ms after the last key; a newer search
+  always replaces an older one), in Windows' order: the first four songs, then artists,
+  albums and playlists, with the artists first when one matches the words better than any
+  song does; chips narrow to one kind. With nothing typed, "Browse by genre". Windows keeps
+  no recent searches, so neither does the phone. A song chosen from the results plays the
+  results from it (Windows starts radio from it, which comes with M3).
+- **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
+  done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
+  a like the server refused).
+- **Notifications** (Android 13 and later) are asked for the first time something is
+  played, once; refused, music plays with no notification.
+- **Android 17 and home servers**: the app targets Android 17, where reaching an address on
+  the local network needs `ACCESS_LOCAL_NETWORK` (a runtime permission in the Nearby devices
+  group; the system's question is about "nearby devices"). Local, as Google defines it and
+  `LocalNetwork` reads it: 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, multicast,
+  IPv6 link-local and unique-local, `.local` names, and any name that leads to one of
+  these; not 127.0.0.1. Signing in to such an address first says why the question is
+  coming, then asks; the sign-in goes ahead whatever the answer. Refused, the sign-in times
+  out and the screen says why, with "Allow". Signed in and not allowed (refused, or taken
+  away later), a bar over every page says so, with "Allow" (which opens the app's settings
+  once the system stops asking). The car, started cold with no permission, browses what is
+  kept and is told in words, with a button that opens the app, rather than waiting on a
+  connection that can't happen. Nothing stops a connection being tried: through a VPN the
+  same address may be reachable after all.
+- **Passwords**: the password field gives accessibility services dots, as a system password
+  field does, not the password (Compose's own secure field gave them the text).
 
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed

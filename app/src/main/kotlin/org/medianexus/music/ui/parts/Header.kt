@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -49,6 +51,8 @@ data class HeroData(
     val round: Boolean = false,
     /** Liked songs: a heart on the accent instead of a cover. */
     val liked: Boolean = false,
+    /** A playlist: its stand-in, until a cover is drawn, is a list's. */
+    val playlist: Boolean = false,
 )
 
 /**
@@ -57,11 +61,15 @@ data class HeroData(
  * the words; on a phone's width it goes above them, as large as it can be and still leave the
  * songs in sight.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)? = null) {
     val colors = Theme.colors
     BoxWithConstraints(modifier.fillMaxWidth()) {
-        val side = (maxWidth * 0.62f).coerceIn(140.dp, 280.dp)
+        // Large, but not so large that a list's first songs can't be seen under it.
+        // (Turned on its side, the screen's height limits it too.)
+        val tall = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
+        val side = (maxWidth * 0.56f).coerceAtMost(tall * 0.42f).coerceIn(120.dp, 260.dp)
         Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Spacer(Modifier.height(8.dp))
             val shape = if (hero.round) CircleShape else RoundedCornerShape(Theme.dimens.radius)
@@ -78,7 +86,11 @@ fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)
                         hero.cover,
                         Modifier.fillMaxSize(),
                         if (hero.round) CoverShape.ROUND else CoverShape.CARD,
-                        if (hero.round) R.drawable.ic_user_round else R.drawable.ic_disc_3,
+                        when {
+                            hero.round -> R.drawable.ic_user_round
+                            hero.playlist -> R.drawable.ic_list_music
+                            else -> R.drawable.ic_disc_3
+                        },
                     )
                 }
             }
@@ -93,7 +105,9 @@ fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // The artist or owner, then the facts; on a narrow screen the facts go under.
+            // As on Windows, the two sit side by side with a gap and nothing between them.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), itemVerticalAlignment = Alignment.CenterVertically) {
                 if (hero.subtitle.isNotEmpty()) {
                     val link = if (onSubtitle != null) {
                         Modifier.heightIn(min = Theme.dimens.touch).clickable(role = Role.Button, onClick = onSubtitle)
@@ -103,12 +117,9 @@ fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)
                     Box(link, contentAlignment = Alignment.CenterStart) {
                         BasicText(hero.subtitle, style = Theme.type.label.copy(color = colors.text, fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    if (hero.meta.isNotEmpty()) {
-                        BasicText("  •  ", style = Theme.type.body.copy(color = colors.muted))
-                    }
                 }
                 if (hero.meta.isNotEmpty()) {
-                    BasicText(hero.meta, Modifier.weight(1f, fill = false), style = Theme.type.body.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    BasicText(hero.meta, Modifier.heightIn(min = 24.dp).wrapContentHeight(), style = Theme.type.body.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -137,6 +148,8 @@ private fun darker(color: Color) = Color(color.red * 0.75f, color.green * 0.75f,
 @Composable
 fun ActionBar(
     title: String,
+    /** Something to play: without it, play and shuffle aren't offered (an empty playlist). */
+    canPlay: Boolean,
     playing: Boolean,
     onPlay: () -> Unit,
     shuffle: Boolean,
@@ -151,13 +164,13 @@ fun ActionBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        PlayButton(
+        if (canPlay) PlayButton(
             playing = playing,
             onClick = onPlay,
             size = 56.dp,
             label = stringResource(if (playing) R.string.pause_named else R.string.play_named, title),
         )
-        Box(contentAlignment = Alignment.Center) {
+        if (canPlay) Box(contentAlignment = Alignment.Center) {
             IconButton(
                 R.drawable.ic_shuffle,
                 stringResource(if (shuffle) R.string.shuffle_off_for else R.string.shuffle_on_for, title),

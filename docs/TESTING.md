@@ -73,9 +73,12 @@ playlist.
   reach such addresses if it holds the local-network permission**
   (`android.permission.ACCESS_LOCAL_NETWORK`); without it the connection simply times out.
   Use this address to test exactly that: it behaves like a server on the home Wi-Fi
-  addressed by its LAN address. At the time of writing the app does not ask for the
-  permission, so on the Android 17 emulator it cannot sign in at this address ("Can't
-  reach the server. The connection timed out.") and can at the other.
+  addressed by its LAN address. The app asks for the permission when signing in to such
+  an address. `scripts/emu install` grants every permission the app declares (`-g`), so to
+  see the question, take it away first:
+  `scripts/emu shell pm revoke org.medianexus.music android.permission.ACCESS_LOCAL_NETWORK`.
+  Refused, signing in at this address times out ("Can't reach the server. The connection
+  timed out.") and the app says why; allowed, it signs in.
 
 ### What is in the library
 
@@ -143,11 +146,14 @@ scripts/emu waitfor "Home" 15     # wait until those words are on screen
 scripts/emu shot [file.png]       scripts/emu logs [package] [-f]      scripts/emu crashes
 scripts/emu look --width 360 --font 1.3     # the design's narrow, large-type case
 scripts/emu look --reset
+scripts/emu capture start|stop|pull <name>  # debug builds: what the player plays, as a WAV
 ```
 
 Things worth knowing:
 
 - Animations are switched off and the screen never sleeps, so scripts do not race them.
+- An emulator stopped uncleanly leaves lock files that stop the next start; `start`
+  clears them (it only does so when that emulator's container isn't running).
 - `scripts/emu ui` cannot read a screen that never stops moving (a seek bar that is
   advancing, for one). Pause playback first.
 - The car runs its screens as a second user and has a second display. The scripts take
@@ -381,18 +387,30 @@ reads a recording of it and lists every silence and every jump in pitch. It has 
 proved on the generated files: joined exactly it finds nothing; with 30 ms of silence put
 in at one join and 4 ms removed at another, it finds both, to the millisecond.
 
-What is missing is the recording. The emulator would not open a sound server inside the
-container, so the rig cannot yet capture what the app plays; for now a recording has to
-come from a real phone's output. See "What is not covered".
+The recording comes from the app itself. The emulator has no sound to record, so debug
+builds carry a tap at the very end of the player's audio chain (after the trimming that
+makes joins gapless) that can write every sample it sends to the audio output into a WAV
+file:
+
+```sh
+scripts/emu capture start sweep        # then play the album from its first song
+scripts/emu capture stop               # after the last song ends
+scripts/emu capture pull sweep         # to ~/.cache/nexus-music-android/captures/sweep.wav
+scripts/server sweepcheck ~/.cache/nexus-music-android/captures/sweep.wav
+```
+
+This is exactly what the player hands to Android, so it proves the player's joins. It
+can't show what Android or the phone's hardware does after that (a mixer that glitches,
+Bluetooth); that still needs ears, or a recording of a real phone's output.
 
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
   (above).
 - **Speech**, the car's buttons, the cable, wireless, reconnection: only a car.
-- **Sound itself.** No capture from the emulator, so gapless joins, crossfade, levelling
-  and the equaliser cannot be measured here yet. The better route is probably inside
-  Android (the probe recording the app's output digitally) rather than outside it.
+- **Sound after the player.** `scripts/emu capture` records what the player sends to
+  Android (gapless joins can be measured; crossfade, levelling and the equaliser can be
+  when they arrive), but not what Android's mixer or the phone's hardware do with it.
 - **Samsung's system.** The emulator is Google's Android. One UI's battery rules and its
   habit of stopping background apps are not reproduced, and they matter to a music player.
 - **Real networks.** The server is one hop away with no delay. `scripts/emu adb emu

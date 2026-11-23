@@ -99,6 +99,7 @@ fun SongListPage(
                 item(key = "actions", contentType = "actions") {
                     ActionBar(
                         title = hero.title,
+                        canPlay = !songs.isNullOrEmpty() || playOverride != null,
                         playing = playingHere,
                         onPlay = {
                             when {

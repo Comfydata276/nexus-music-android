@@ -306,7 +306,11 @@ private fun SongLine(
             BasicText(song.title, style = Theme.type.rowTitle.copy(color = if (current) colors.accentBright else colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
             BasicText(song.artistLabel, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (song.duration > 0) BasicText(clock(song.duration), style = Theme.type.rowDetail.copy(color = colors.muted))
+        // On a narrow screen the length gives way to the name, as Windows' gives way to the
+        // menu button.
+        if (song.duration > 0 && androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 400) {
+            BasicText(clock(song.duration), style = Theme.type.rowDetail.copy(color = colors.muted))
+        }
         IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, song.title), onMenu, iconSize = 20.dp)
         if (handle != null) {
             val label = stringResource(R.string.drag_to_move, song.title)

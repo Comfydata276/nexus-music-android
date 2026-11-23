@@ -130,7 +130,13 @@ private fun QuickTile(album: Album, modifier: Modifier, onClick: () -> Unit) {
         BasicText(
             album.name,
             Modifier.weight(1f).padding(horizontal = 10.dp),
-            style = Theme.type.cardTitle.copy(color = Theme.colors.text),
+            // Narrow tiles and large type: a long word is broken where a dictionary would
+            // break it, not wherever the line ends.
+            style = Theme.type.label.copy(
+                color = Theme.colors.text,
+                hyphens = androidx.compose.ui.text.style.Hyphens.Auto,
+                lineBreak = androidx.compose.ui.text.style.LineBreak.Paragraph,
+            ),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
