@@ -53,6 +53,16 @@ class MainActivity : ComponentActivity() {
                 graph.accounts.state.collect { account -> if (account != null) graph.player.connect() else graph.player.release() }
             }
         }
+        // While in front, a server that couldn't be reached is looked for now and then, so
+        // what failed comes back by itself when it's there again.
+        lifecycleScope.launch {
+            repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+                while (true) {
+                    kotlinx.coroutines.delay(15_000)
+                    graph.checkIfDown()
+                }
+            }
+        }
     }
 
     override fun onStop() {

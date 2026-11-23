@@ -70,8 +70,9 @@ fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)
         val tall = with(androidx.compose.ui.platform.LocalDensity.current) { window.height.toDp() }
         val wide = maxWidth >= 600.dp || window.width > window.height
         if (wide) {
-            // Beside: as tall as a third of the screen's height allows, within limits.
-            val side = (tall * 0.42f).coerceIn(120.dp, 220.dp)
+            // Beside: sized by the screen's height, which on a phone on its side is what is
+            // short (the bars take most of it), so the songs start within sight.
+            val side = (tall * 0.28f).coerceIn(96.dp, 220.dp)
             Row(
                 Modifier.fillMaxWidth().padding(start = Theme.dimens.pagePad, end = Theme.dimens.pagePad, top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(24.dp),

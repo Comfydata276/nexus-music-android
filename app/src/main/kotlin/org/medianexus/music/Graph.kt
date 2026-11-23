@@ -78,6 +78,17 @@ class Graph(context: Context) {
         if (ok && wasDown) reconnected()
     }
 
+    /**
+     * While the server couldn't be reached last time it was asked, asks it again (a ping),
+     * so that pages showing "Can't reach the server" come back by themselves when it does,
+     * even if nothing else asks meanwhile. Only while the screens are in front: see
+     * MainActivity.
+     */
+    suspend fun checkIfDown() {
+        if (!serverDown) return
+        runCatching { accounts.state.value?.api?.ping() }
+    }
+
     private fun reconnected() {
         accounts.state.value?.covers?.retryFailed()
         org.medianexus.music.ui.parts.CoverRetry.now()

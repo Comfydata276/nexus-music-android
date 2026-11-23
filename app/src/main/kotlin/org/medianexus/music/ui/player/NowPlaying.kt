@@ -168,6 +168,11 @@ fun NowPlaying(onClose: () -> Unit) {
                         BasicText(queue.context, style = Theme.type.label.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
+                // On its side the queue button sits up here, where it is always in sight.
+                val window = androidx.compose.ui.platform.LocalWindowInfo.current.containerSize
+                if (now != null && window.width > window.height) {
+                    IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
+                }
                 if (now != null) {
                     IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, now.title), { ui.menu = SongMenu(now) }, tint = colors.text)
                 } else {
@@ -190,7 +195,7 @@ fun NowPlaying(onClose: () -> Unit) {
                     // type makes them taller than a short screen.
                     Row(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(32.dp), verticalAlignment = Alignment.CenterVertically) {
                         Art(now.coverArt, (tall - 16.dp).coerceAtMost(wide * 0.45f))
-                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { Controls(showAlbum = !fromAlbum) }
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { Controls(showAlbum = !fromAlbum, queueButton = false) }
                     }
                 } else {
                     // The cover takes what the controls leave; if large type leaves it too
@@ -221,7 +226,7 @@ private fun Art(cover: String, side: Dp) {
 }
 
 @Composable
-private fun ColumnScope.Controls(showAlbum: Boolean) {
+private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true) {
     val ui = LocalUi.current
     val res = androidx.compose.ui.platform.LocalResources.current
     val player = ui.player
@@ -328,8 +333,10 @@ private fun ColumnScope.Controls(showAlbum: Boolean) {
             iconSize = 24.dp,
         )
     }
-    Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
-        IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
+    if (queueButton) {
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
+            IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
+        }
     }
 }
 
