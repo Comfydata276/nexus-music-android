@@ -259,7 +259,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onUpdateNotificationAsync(session: MediaSession, startInForegroundRequired: Boolean): ListenableFuture<Void?> {
-        // While the foreground is held for a button's start (see holdForeground), Media3 is
+        // While the foreground is held for a start (see holdForeground), Media3 is
         // not asked to update a notification it would take away: with nothing playing yet it
         // removes the notification and leaves the foreground, which is the one thing that
         // must not happen before the player has asked for the sound.
@@ -299,9 +299,8 @@ class PlaybackService : MediaLibraryService() {
     // ---- Started by a button, with the app not running --------------------------------------
 
     /**
-     * The service was started "in the foreground" for a media button (Media3's receiver uses
-     * `startForegroundService`, which is a promise to the system) and is holding the
-     * foreground with a notification of its own until playback begins and Media3's takes its
+     * The service is holding the foreground with a notification of its own, for a Play that
+     * has been asked for and has not begun yet, until playback begins and Media3's takes its
      * place. See [holdForeground].
      */
     private var holding = false
@@ -408,17 +407,18 @@ class PlaybackService : MediaLibraryService() {
     }.getOrNull()
 
     /**
-     * Ends a start that has nothing to play: leaves the foreground it was holding, takes its
-     * notification away (on Android 12 and later it was never shown), and stops. Does
-     * nothing if playback did start.
+     * Ends a start that has nothing to play (nobody signed in after all, no saved queue that
+     * holds together, or nothing begun within the limit): leaves the foreground it was
+     * holding, takes its notification away (on Android 12 and later it was never shown), and
+     * stops. Does nothing if playback did start.
      */
     private fun standDown() {
         val was = holding
         heldLongEnough()
         if (isPlaybackOngoing) return
         runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
-        if (was) graph.diagnostics.note("started by a button with nothing to play: stopped cleanly", now = true)
-        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "started by a button with nothing to play: stopped cleanly")
+        if (was) graph.diagnostics.note("asked to play with nothing to play: left the foreground and stopped cleanly", now = true)
+        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "asked to play with nothing to play: stopped cleanly")
         pauseAllPlayersAndStopSelf()
     }
 
