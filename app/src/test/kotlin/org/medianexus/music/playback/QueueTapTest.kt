@@ -6,6 +6,7 @@ import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -195,5 +196,73 @@ class QueueTapTest {
         val atFive = shown()[5]
         tap(5)
         assertEquals(atFive, playing())
+    }
+
+    // ---- The window as the player moves along the queue ---------------------------------------
+
+    @Test
+    fun whatThePlayerHasPassedIsLetGo() {
+        play(songs)
+        car = false
+        // A long session: on through the queue a song at a time, as playing it does.
+        repeat(450) {
+            player.seekToNextMediaItem()
+            settle()
+        }
+        assertEquals("s450", playing())
+        // The media items of the songs left behind used to be kept for the life of the queue.
+        assertTrue("${player.heldItems} items held", player.heldItems <= QueueSync.BEFORE + QueueSync.STEP + QueueSync.AFTER)
+        assertEquals(null, player.songFor("s3"))
+        assertEquals("s450", player.songFor("s450")?.id)
+    }
+
+    @Test
+    fun nextOnAOneSongQueueStartsItAgainAndStopsThereUnlessItRepeats() {
+        play(songs.take(1))
+        exo.seekTo(30_000)
+        exo.playWhenReady = true
+        settle()
+        assertEquals(30_000, player.currentPosition)
+        // The end of the queue: back to the top, paused, as on Windows. With one song the
+        // top is the song itself, and nothing used to happen at all.
+        player.seekToNext()
+        settle()
+        assertEquals(0, player.currentPosition)
+        assertEquals(false, player.playWhenReady)
+        // With repeat on it carries on from the top.
+        player.setRepeat(Repeat.ALL)
+        exo.seekTo(30_000)
+        exo.playWhenReady = true
+        settle()
+        player.seekToNext()
+        settle()
+        assertEquals(0, player.currentPosition)
+        assertEquals(true, player.playWhenReady)
+    }
+
+    @Test
+    fun withRepeatOnTheFirstSongsFollowTheLastInThePlayer() {
+        play(songs, start = 595)
+        assertEquals("s599", shown().last())
+        player.setRepeat(Repeat.ALL)
+        settle()
+        assertEquals(listOf("s599", "s0", "s1", "s2"), shown().takeLast(4))
+        assertEquals("s595", playing())
+        // On to the last song and past it, as the player goes by itself.
+        car = false
+        repeat(5) {
+            exo.seekToNextMediaItem()
+            settle()
+        }
+        assertEquals("s0", playing())
+        assertEquals(0, player.queue.cursor)
+        assertEquals("s0", shown().first())
+        // Turned off again, nothing follows the last song.
+        player.play(songs, 598, "A list", playNow = false)
+        settle()
+        assertEquals(listOf("s599", "s0", "s1", "s2"), shown().takeLast(4))
+        player.setRepeat(Repeat.OFF)
+        settle()
+        assertEquals("s599", shown().last())
     }
 }

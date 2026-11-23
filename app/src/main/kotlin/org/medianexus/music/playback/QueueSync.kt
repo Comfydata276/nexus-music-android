@@ -67,8 +67,27 @@ object QueueSync {
         return from until to
     }
 
-    /** The window as slots, in playing order. */
-    fun slots(queue: Queue): List<Slot> = window(queue.cursor, queue.order.size).map { place ->
+    /**
+     * The places at the top of the queue that the playlist holds after its last song, when
+     * the queue repeats and the window has reached its end: the first few songs, so that the
+     * player runs from the last song into the first as it runs from any song into the next,
+     * already loaded and without a gap. (A queue held whole needs none: the player's own
+     * "repeat all" goes round it. One that isn't used to stop at its end and be started
+     * again from the top, with a gap while the first song was fetched.) Never any place the
+     * window already holds.
+     */
+    fun round(queue: Queue): IntRange {
+        val held = window(queue.cursor, queue.order.size)
+        if (queue.repeat != Repeat.ALL || held.isEmpty() || held.first == 0 || held.last + 1 != queue.order.size) return IntRange.EMPTY
+        return 0 until minOf(ROUND, held.first)
+    }
+
+    /** How many of the first songs are held after the last (see [round]). */
+    const val ROUND = 3
+
+    /** What the playlist holds, as slots, in the order they play: the window, then (when the
+     *  queue repeats and its end is in the window) the first songs again. */
+    fun slots(queue: Queue): List<Slot> = (window(queue.cursor, queue.order.size) + round(queue)).map { place ->
         val entry = queue.order[place]
         Slot(queue.uids[entry], entry)
     }

@@ -262,6 +262,12 @@ class QueuePlayer(
                 val step = queue.next() ?: return Futures.immediateVoidFuture()
                 if (step.place == queue.cursor + 1) return super.handleSeek(here + 1, 0, COMMAND_SEEK_TO_MEDIA_ITEM)
                 if (!step.carriesOn) exo.pause()
+                if (step.place == queue.cursor) {
+                    // A queue of one song: "the top" is the song that's playing, which there
+                    // is nothing to move to. It is started again (and, without repeat, left
+                    // paused there), as any queue is at its end.
+                    return super.handleSeek(here, 0, COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+                }
                 queue.moveTo(step.place)
                 sync(0)
                 return Futures.immediateVoidFuture()
@@ -516,8 +522,14 @@ class QueuePlayer(
 
     fun setRepeat(mode: Int) {
         queue.repeat = mode.coerceIn(Repeat.OFF, Repeat.ONE)
-        applyRepeat()
-        changed(this)
+        // What the playlist holds after the queue's last song depends on it (see
+        // QueueSync.round); the song playing is not disturbed.
+        if (queue.isEmpty) {
+            applyRepeat()
+            changed(this)
+        } else {
+            sync()
+        }
     }
 
     /** Off, the whole queue, one song, and round again: the repeat button. */
@@ -600,8 +612,9 @@ class QueuePlayer(
         settled()
     }
 
-    /** After the playlist has been made to match the queue. */
-    private fun settled() {
+    /** Lets go of the media items (and the songs, for the loading threads) of everything the
+     *  player no longer holds. */
+    private fun prune() {
         // Only the items the player holds, and any handed to the session and not yet back.
         val keep = HashSet<Long>()
         for (waiting in staged) keep += waiting.uids
@@ -612,6 +625,14 @@ class QueuePlayer(
         held.keys.retainAll(ids)
         // Whatever was made ahead and not taken belongs to a queue that never arrived.
         if (staged.isEmpty()) made.clear()
+    }
+
+    /** How many media items are being held on to: the playlist's, and no more. */
+    internal val heldItems: Int get() = items.size
+
+    /** After the playlist has been made to match the queue. */
+    private fun settled() {
+        prune()
         placesMayHaveMoved()
         applyRepeat()
         queue.trackChanged()
@@ -624,8 +645,10 @@ class QueuePlayer(
         val place = queue.placeOf(uid)
         if (place < 0) return
         if (place != queue.cursor) queue.moveTo(place)
-        // The window the player holds moves along with the song playing.
+        // The window the player holds moves along with the song playing; and what it has
+        // left behind is let go (a long session used to keep every song it had passed).
         if (QueueSync.sync(queue, playlist)) {
+            prune()
             placesMayHaveMoved()
             applyRepeat()
         }

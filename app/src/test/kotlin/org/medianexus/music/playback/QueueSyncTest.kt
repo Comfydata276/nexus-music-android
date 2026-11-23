@@ -207,4 +207,38 @@ class QueueSyncTest {
             }
         }
     }
+
+    @Test
+    fun aRepeatingQueueRunsFromItsLastSongIntoItsFirstWithoutBeingLoadedAgain() {
+        // Too long to hold whole, so the player's own "repeat all" can't go round it.
+        val q = queueOf(1_000, start = 990).apply { repeat = Repeat.ALL }
+        val p = Fake()
+        QueueSync.load(q, p, 0)
+        // The window reaches the end, and after the last song come the first few again.
+        val last = q.uids[q.order[999]]
+        val first = q.uids[q.order[0]]
+        assertEquals(listOf(last, first, q.uids[q.order[1]], q.uids[q.order[2]]), p.uids.takeLast(4))
+        assertEquals(QueueSync.ROUND, QueueSync.round(q).count())
+        // The player plays to the last song and on, by itself, into what follows it.
+        while (p.uids[p.current] != first) {
+            p.advance()
+            q.moveTo(q.placeOf(p.uids[p.current]))
+            QueueSync.sync(q, p)
+        }
+        // It is the queue's first song, and nothing was loaded afresh to get there: the song
+        // was already in the player, as the next always is. (It used to stop at the end and
+        // be started again from the top.)
+        assertEquals(0, q.cursor)
+        assertEquals(1, p.loads)
+        assertInStep(q, p)
+        assertEquals(q.uids[q.order[1]], p.uids[p.current + 1])
+        // Without repeat, or with the queue held whole, nothing is held twice.
+        assertTrue(QueueSync.round(queueOf(1_000, start = 990)).isEmpty())
+        assertTrue(QueueSync.round(queueOf(40, start = 39).apply { repeat = Repeat.ALL }).isEmpty())
+        assertTrue(QueueSync.round(queueOf(1_000, start = 10).apply { repeat = Repeat.ALL }).isEmpty())
+        // And never a song the window already holds.
+        val short = queueOf(QueueSync.BEFORE + QueueSync.STEP + QueueSync.AFTER + 2, start = 200).apply { repeat = Repeat.ALL }
+        val slots = QueueSync.slots(short).map { it.uid }
+        assertEquals(slots.size, slots.toSet().size)
+    }
 }
