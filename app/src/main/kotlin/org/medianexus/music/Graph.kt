@@ -45,6 +45,9 @@ class Graph(context: Context) {
         io = Dispatchers.IO,
     )
 
+    /** What belongs to whoever is signed in: their library, covers, likes and queue. */
+    val accounts = Accounts(session, scope)
+
     init {
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }
         // Said once when writing starts to fail, and taken back once a write succeeds.

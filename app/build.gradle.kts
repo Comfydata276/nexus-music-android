@@ -61,6 +61,11 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.session)
     implementation(libs.media3.datasource.okhttp)
+    // Already brought in by the two above; named because the app uses them directly (the
+    // player's data sources, and the kept songs' index).
+    implementation(libs.media3.common)
+    implementation(libs.media3.datasource)
+    implementation(libs.media3.database)
     implementation(libs.okhttp)
     implementation(libs.serialization.json)
     implementation(libs.coroutines.android)

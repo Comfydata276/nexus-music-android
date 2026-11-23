@@ -3,6 +3,11 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Playing in the background, with its notification, the screen off. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- No backups: the password is sealed with a key that can't leave this phone, and a
          restored copy of the rest without it would only confuse. Plain HTTP is allowed
@@ -22,6 +27,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.NexusMusic"
         tools:targetApi="33">
+
+        <!-- What makes Android Auto list the app as a media app: this, and the file it names. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="com.google.android.gms.car.notification.SmallIcon"
+            android:resource="@drawable/ic_bars" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -32,5 +46,52 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- "Play X on Nexus Music", said to the phone. -->
+        <activity
+            android:name=".playback.VoiceActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- The player: the app's screens, the notification, headsets and the car all use it.
+             Open to every app, as the car must be able to find it; the session itself lets
+             only trusted callers (the system, the car, this app) do more than look. -->
+        <service
+            android:name=".playback.PlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <!-- The older name, which Android Auto and cars ask for. -->
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <!-- A headset's or the car's play button with the app not running: Media3 starts the
+             player and picks up where it left off. -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Cover art for the car and the system's media controls, which can't fetch it from
+             the server. Read-only, and it serves nothing but covers. -->
+        <provider
+            android:name=".store.CoverProvider"
+            android:authorities="${applicationId}.covers"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
     </application>
 </manifest>

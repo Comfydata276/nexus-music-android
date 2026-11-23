@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Debug builds only: the parts gallery (see gallery/GalleryActivity.kt). Not in the
      launcher; started from adb. -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <application>
         <activity
             android:name=".gallery.GalleryActivity"
             android:exported="true"
             android:label="Nexus parts" />
+        <!-- Lets the rig drive the player from adb (see playback/DebugControl.kt). -->
+        <receiver
+            android:name=".playback.DebugControl"
+            android:exported="true"
+            tools:ignore="ExportedReceiver" />
     </application>
 </manifest>
