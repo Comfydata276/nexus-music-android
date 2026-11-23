@@ -8,11 +8,17 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
 // What the server sends, as the Windows app reads it (src/subsonic.rs). Every field has a
 // default, so a field the server leaves out is simply empty, and fields this app doesn't know
 // are ignored (see `Subsonic.json`).
+//
+// Counts, durations and sizes are signed here (Int, Long) where Windows has them unsigned
+// (u32, u64). Known and harmless: a negative number, which Windows would refuse, is read
+// here as it is, and no real library comes near the top of either range.
 
 @Serializable
 data class ReplayGain(
@@ -143,14 +149,22 @@ data class PlayQueue(
     val changedBy: String = "",
 )
 
-/** Reads text as it is and a number as its digits; anything else is empty. */
+/** Reads text as it is and a number as its digits; anything else (true, null, a list) is
+ *  empty. As `text_or_number` in src/subsonic.rs, where the text "null" is still text. A
+ *  number is given as it was written: for whole numbers, as ids are, that is what Windows
+ *  gives too. */
 object TextOrNumber : KSerializer<String> {
     override val descriptor = PrimitiveSerialDescriptor("TextOrNumber", PrimitiveKind.STRING)
 
     override fun deserialize(decoder: Decoder): String {
         val json = decoder as? JsonDecoder ?: return decoder.decodeString()
-        val element = json.decodeJsonElement()
-        return if (element is JsonPrimitive && element.content != "null") element.content else ""
+        val element = json.decodeJsonElement() as? JsonPrimitive ?: return ""
+        return when {
+            element is JsonNull -> ""
+            element.isString -> element.content
+            element.booleanOrNull != null -> ""
+            else -> element.content
+        }
     }
 
     override fun serialize(encoder: Encoder, value: String) = encoder.encodeString(value)

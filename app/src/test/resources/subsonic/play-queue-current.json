@@ -1,0 +1,14 @@
+{
+  "comment": "Each case is the value of playQueue.current, and what src/subsonic.rs (text_or_number) reads it as.",
+  "cases": [
+    {"current": "s-9", "reads": "s-9"},
+    {"current": 7, "reads": "7"},
+    {"current": "null", "reads": "null"},
+    {"current": "", "reads": ""},
+    {"current": true, "reads": ""},
+    {"current": false, "reads": ""},
+    {"current": null, "reads": ""},
+    {"current": {"id": "7"}, "reads": ""},
+    {"current": ["7"], "reads": ""}
+  ]
+}

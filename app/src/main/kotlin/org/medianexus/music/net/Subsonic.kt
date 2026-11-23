@@ -20,7 +20,6 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -151,7 +150,8 @@ class Subsonic private constructor(
     }
 
     /** Asks for `endpoint` and reads `field` of the answer. An empty library section is
-     *  simply left out of the answer, so a missing field is `empty`. */
+     *  simply left out of the answer, so a missing field is `empty`. One sent as null is a
+     *  malformed answer, as Windows takes it, not an empty one. */
     private suspend fun <T> call(
         endpoint: String,
         params: List<Pair<String, String>>,
@@ -159,8 +159,7 @@ class Subsonic private constructor(
         serializer: KSerializer<T>,
         empty: () -> T,
     ): T {
-        val value = request(endpoint, params)[field]
-        if (value == null || value is JsonNull) return empty()
+        val value = request(endpoint, params)[field] ?: return empty()
         return decode(endpoint, value, serializer)
     }
 
@@ -455,11 +454,13 @@ class Subsonic private constructor(
 
         private val FORM = "application/x-www-form-urlencoded".toMediaType()
 
-        /** Reads the server's answers: fields it adds are ignored, fields it leaves out (or
-         *  sends as null) are empty. */
+        /** Reads the server's answers as Windows does (serde with `#[serde(default)]`):
+         *  fields it adds are ignored and fields it leaves out are empty, but a null where the
+         *  model has no room for one (a list, a name) makes the answer malformed. Only the
+         *  fields that may be absent in their own right (`starred`, `replayGain`, a lyric
+         *  line's `start`) take null. */
         val json = Json {
             ignoreUnknownKeys = true
-            coerceInputValues = true
             explicitNulls = false
         }
 
