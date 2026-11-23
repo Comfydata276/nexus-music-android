@@ -70,6 +70,9 @@ class StartingTest {
 
     @Before
     fun start() {
+        // The saved sign-in has been read (there is none: nobody is signed in on this
+        // stand-in phone), so nothing a test does waits on another thread for it.
+        kotlinx.coroutines.runBlocking { app.graph.session.restored() }
         service = Robolectric.buildService(PlaybackService::class.java).create().get()
         service.foreground = android
         inside = service.inside()
@@ -189,5 +192,42 @@ class StartingTest {
         // That used to be taken for "Media3's notification holds the foreground from here".
         assertFalse(noted().any { it.startsWith("foreground: playing in it") })
         assertTrue(noted().any { it.startsWith("foreground: Media3 did not take it over") })
+    }
+
+    @Test
+    fun aRequestFromThePhoneThatComesToNothingDoesNotStartWhatIsThere() {
+        // Someone is signed in (with nobody signed in a controller isn't offered Play at
+        // all), and something is in the player, paused.
+        val server = StandInServer().also { it.start() }
+        try {
+            server.signIn(app)
+            settle()
+            inside.player.play(songs(5), 1, "A list", playNow = false)
+            settle()
+            // "Play X on Nexus Music", said to the phone: the voice activity sends the
+            // words, "make ready" and "play" as three commands, through a controller of its
+            // own.
+            val connecting = androidx.media3.session.MediaController.Builder(app, inside.session.token).buildAsync()
+            settle()
+            val phone = connecting.get()
+            assertTrue(phone.isCommandAvailable(Player.COMMAND_PLAY_PAUSE))
+            // (An item with nothing to say which song: the request is refused as soon as it
+            // is looked at, with no word to the server.)
+            phone.setMediaItems(listOf(MediaItem.Builder().setMediaId("a").build(), MediaItem.Builder().setMediaId("b").build()))
+            phone.prepare()
+            phone.play()
+            settle()
+            // The request came to nothing. Its "make ready" and "play" arrived all the same,
+            // and used to start the paused queue.
+            assertFalse("the paused queue was started by a request that failed", inside.exo.playWhenReady)
+            assertEquals("s1", inside.player.queue.current()?.id)
+            // The same controller's next Play is a Play.
+            phone.play()
+            settle()
+            assertTrue(inside.exo.playWhenReady)
+            phone.release()
+        } finally {
+            server.stop()
+        }
     }
 }

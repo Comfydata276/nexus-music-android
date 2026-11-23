@@ -105,12 +105,14 @@ object StartPlace {
      *  (see [StartPlace.startIn]). */
     const val NEIGHBOURS = 8
 
-    /** The songs around the one tapped, as the screen showed them: those after it, nearest
-     *  first, then those before it, nearest first. */
+    /** The songs around the one tapped, as the screen showed them, nearest first: the one
+     *  after it, the one before it, the second after, the second before, and so on. */
     fun neighbours(songs: List<Song>, start: Int): ArrayList<String> {
         val near = ArrayList<String>()
-        for (step in 1..NEIGHBOURS) songs.getOrNull(start + step)?.let { near += it.id }
-        for (step in 1..NEIGHBOURS) songs.getOrNull(start - step)?.let { near += it.id }
+        for (step in 1..NEIGHBOURS) {
+            songs.getOrNull(start + step)?.let { near += it.id }
+            songs.getOrNull(start - step)?.let { near += it.id }
+        }
         return near
     }
 
@@ -119,9 +121,10 @@ object StartPlace {
      * place and the song the screen named; `songs` is the list as the phone keeps it now,
      * which may have moved on since the screen drew it. The song that was tapped, wherever
      * it is now. If it has gone from the list: the nearest song to it that is still there
-     * (`near`, from [neighbours]), which is the nearest thing to what was meant; never
-     * whatever happens to sit at the old place. With none of those left either, the place
-     * itself, as near as the list now reaches. Null if the list is empty: nothing to start.
+     * (`near`, from [neighbours]: nearest first, whichever side of the tap it was on), which
+     * is the nearest thing to what was meant. With none of those left either there is no
+     * telling what was meant: the list from its first song. Never whatever happens to sit at
+     * the old place. Null if the list is empty: nothing to start.
      */
     fun startIn(songs: List<Song>, start: Int, tapped: String?, near: List<String>): Int? {
         if (songs.isEmpty()) return null
@@ -132,6 +135,6 @@ object StartPlace {
             val places = songs.indices.filter { songs[it].id == id }
             places.minByOrNull { kotlin.math.abs(it - start) }?.let { return it }
         }
-        return start.coerceIn(0, songs.size - 1)
+        return 0
     }
 }

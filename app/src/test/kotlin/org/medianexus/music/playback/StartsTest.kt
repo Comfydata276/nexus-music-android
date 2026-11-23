@@ -38,10 +38,27 @@ class StartsTest {
     private lateinit var player: QueuePlayer
     private val scope = CoroutineScope(Dispatchers.Unconfined)
 
+    /** What the service keeps for the sender whose commands are being carried out: that its
+     *  request came to nothing, until Media3 says it has carried out all it sent. */
+    private var cameToNothing = false
+
     @Before
     fun start() {
         exo = ExoPlayer.Builder(RuntimeEnvironment.getApplication()).build()
-        player = QueuePlayer(exo, Queue(), { MediaMetadata.EMPTY }, changed = {})
+        player = QueuePlayer(
+            exo, Queue(), { MediaMetadata.EMPTY }, changed = {},
+            mayPlay = { !cameToNothing }, overtaken = { cameToNothing = true }, mayPrepare = { !cameToNothing },
+        )
+    }
+
+    /** What Media3's session does with a hand-over that succeeded, for a car: the items, then
+     *  "make ready", then "play", in one go; and then it says that sender is done. */
+    private fun deliverAndPlay(handed: Pair<List<MediaItem>, Int>, positionMs: Long = 0) {
+        player.setMediaItems(handed.first, handed.second, positionMs)
+        if (player.playbackState == androidx.media3.common.Player.STATE_IDLE) player.prepare()
+        player.play()
+        cameToNothing = false
+        settle()
     }
 
     @After
@@ -173,5 +190,77 @@ class StartsTest {
         player.clear()
         assertFalse(player.playFor(page, next))
         assertNull(playing())
+    }
+
+    // ---- What Media3 sends after a hand-over ---------------------------------------------------
+
+    @Test
+    fun theMakeReadyAndPlayThatFollowAnOvertakenHandOverDoNothing() {
+        // A spoken request is looked up and handed to the session. Before its items reach
+        // the player, the driver chooses something on the phone, and pauses it.
+        val spoken = player.beginStart()
+        val handed = chosen(spoken, list("spoken"), CompletableDeferred(Unit)).getCompleted()!!
+        onThePhone(list("phone"))
+        assertFalse(exo.playWhenReady)
+        // The items arrive, and Media3 follows them with "make ready" and "play", as it does
+        // whatever the player made of the items. The stale items were dropped, harmlessly;
+        // and then the newer choice, which the person had paused, was made ready and played.
+        deliverAndPlay(handed)
+        assertEquals("phone0", playing())
+        assertFalse("the paused choice was started by the request it overtook", exo.playWhenReady)
+        assertEquals("made ready by it too", androidx.media3.common.Player.STATE_IDLE, exo.playbackState)
+        // That sender's next Play is a Play.
+        player.play()
+        settle()
+        assertTrue(exo.playWhenReady)
+    }
+
+    @Test
+    fun aHandOverWhoseQueueWasNeverOnItsWayStartsNothingEither() {
+        // Two spoken requests in a row: the first is handed over and then overtaken by the
+        // second being begun; the first's items arrive with nothing waiting for them.
+        val first = player.beginStart()
+        val one = chosen(first, list("one"), CompletableDeferred(Unit)).getCompleted()!!
+        onThePhone(list("phone"))
+        player.clear()
+        settle()
+        onThePhone(list("later"))
+        deliverAndPlay(one)
+        assertEquals("later0", playing())
+        assertFalse(exo.playWhenReady)
+    }
+
+    @Test
+    fun carryingOnWithAQueueThatHasBeenReplacedPlaysNothing() {
+        onThePhone(list("first"))
+        // "Play music", with a queue there: carry on. Handed to the session...
+        val resume = player.stageCurrent()!!
+        // ...and before it arrives the person chooses something else, and pauses it.
+        onThePhone(list("second"))
+        deliverAndPlay(resume, positionMs = 42_000)
+        assertEquals("second0", playing())
+        assertEquals(0, exo.currentPosition)
+        assertFalse(exo.playWhenReady)
+    }
+
+    @Test
+    fun carryingOnIsForTheSongItsPlaceWasTakenFor() {
+        onThePhone(list("first"))
+        exo.seekTo(42_000)
+        settle()
+        // Carry on: the queue as it stands, and the place in the song playing, 0:42...
+        val resume = player.stageCurrent()!!
+        val place = exo.currentPosition
+        // ...and before it arrives, Next is pressed.
+        player.seekToNextMediaItem()
+        settle()
+        assertEquals("first1", playing())
+        deliverAndPlay(resume, positionMs = place)
+        // The queue is the same queue, so it used to be loaded again at the place that was
+        // taken for the other song: the next song, from 0:42 in.
+        assertEquals("first1", playing())
+        assertEquals("the other song's place", 0, exo.currentPosition)
+        // It is still "carry on", of this queue: it plays.
+        assertTrue(exo.playWhenReady)
     }
 }

@@ -66,6 +66,16 @@ class QueuePlayer(
      * [refuseStart]). Null for nothing.
      */
     private val notice: () -> PlaybackException? = { null },
+    /**
+     * Told when a queue handed to the session came back to a player that no longer wants it:
+     * its start was overtaken on the way (or, for "carry on", the queue it was to carry on
+     * with has been replaced). Media3 goes on to send "make ready" and "play" for it all the
+     * same; the service notes whose they are, and answers [mayPrepare] and [mayPlay] with
+     * no until that sender is done (see `PlayRequests`).
+     */
+    private val overtaken: () -> Unit = {},
+    /** Asked before the player is made ready at someone's request (see [overtaken]). */
+    private val mayPrepare: () -> Boolean = { true },
 ) : ForwardingSimpleBasePlayer(exo) {
     /** The media items of the entries the player holds, by entry number. */
     private val items = HashMap<Long, MediaItem>()
@@ -103,8 +113,9 @@ class QueuePlayer(
 
     /** A queue handed to the session and not yet come back as media items: the entry numbers
      *  of the items handed over, which start it was for (null: not a start, but the queue as
-     *  it stood, handed over to be carried on with), and the queue's revision then. */
-    private class Staged(val queue: Queue, val uids: List<Long>, val ticket: Long?, val revision: Long)
+     *  it stood, handed over to be carried on with), the queue's revision then, and the entry
+     *  at its cursor then (whose place in the song goes with a "carry on"). */
+    private class Staged(val queue: Queue, val uids: List<Long>, val ticket: Long?, val revision: Long, val current: Long?)
 
     /** Those still on their way, oldest first. Each is told from the others by its items;
      *  none can spoil another by being handed over after it. */
@@ -249,21 +260,26 @@ class QueuePlayer(
             if (ready.ticket == null) {
                 // This very queue, handed over to be carried on with where it is: only if it
                 // is still the queue it was. (A newer choice has since replaced it otherwise,
-                // and starting that at the old one's place is nobody's wish.)
-                if (ready.queue !== queue || ready.revision != queue.revision) return Futures.immediateVoidFuture()
+                // and starting that at the old one's place is nobody's wish: nor is starting
+                // it at all, which the "play" that follows this would do.)
+                if (ready.queue !== queue || ready.revision != queue.revision) return dropped()
+                // The same queue, but another song is at its cursor now (Next was pressed on
+                // the way): the place that came with this was taken for the song before.
+                // Nothing is loaded again; the queue carries on from where it is.
+                if (ready.current != queue.currentUid()) return Futures.immediateVoidFuture()
             } else {
                 // A start (the car chose a song, or asked for one aloud): asked once more, now
                 // that it is here, whether it is still the newest. The session delivers these
                 // a moment after they were handed over, and a choice made on the phone in that
                 // moment stands.
-                if (!stands(ready.ticket)) return Futures.immediateVoidFuture()
+                if (!stands(ready.ticket)) return dropped()
                 queue.adopt(ready.queue)
                 anotherQueue()
             }
         } else if (given.isNotEmpty() && given.all { it != null }) {
             // Items this player made ready, but for nothing that is still on its way: a start
             // that was overtaken by a newer choice. Dropped.
-            return Futures.immediateVoidFuture()
+            return dropped()
         } else {
             // Someone else's list of songs, which plays as it is: a start like any other.
             beginStart()
@@ -274,6 +290,23 @@ class QueuePlayer(
         }
         load(if (startIndex == C.INDEX_UNSET || startPositionMs == C.TIME_UNSET) 0L else startPositionMs)
         return Futures.immediateVoidFuture()
+    }
+
+    /**
+     * What came back from the session is not wanted any more. Nothing is done with it; and
+     * the service is told ([overtaken]), because Media3 follows a hand-over that it took for
+     * a success with "make ready" and "play" (a car's in the same breath, in
+     * `MediaSessionLegacyStub.handleMediaRequest`), and those would start whatever is in the
+     * player now: the newer choice, which the person may have paused.
+     */
+    private fun dropped(): ListenableFuture<*> {
+        overtaken()
+        return Futures.immediateVoidFuture()
+    }
+
+    override fun handlePrepare(): ListenableFuture<*> {
+        if (!mayPrepare()) return Futures.immediateVoidFuture()
+        return super.handlePrepare()
     }
 
     // The indexes a controller sends are places in the player's playlist, which is a window
@@ -522,7 +555,7 @@ class QueuePlayer(
 
     private fun hand(next: Queue, ticket: Long?): Pair<List<MediaItem>, Int> {
         val slots = QueueSync.slots(next)
-        staged += Staged(next, slots.map { it.uid }, ticket, next.revision)
+        staged += Staged(next, slots.map { it.uid }, ticket, next.revision, next.currentUid())
         // Never many: each is used, overtaken or forgotten within a moment.
         while (staged.size > MOST_STAGED) staged.removeAt(0)
         return slots.map { itemOf(next.songs[it.entry], it.uid) } to next.cursor - QueueSync.window(next.cursor, next.order.size).first

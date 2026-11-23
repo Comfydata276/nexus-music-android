@@ -198,6 +198,11 @@ class PlaybackService : MediaLibraryService() {
             // In the foreground before the player asks for the sound, whoever pressed Play.
             mayPlay = ::mayPlay,
             notice = ::notice,
+            // What Media3 sends after a hand-over that came to nothing does nothing: noted
+            // against whoever's commands are being carried out, until Media3 says they are
+            // done (see PlayRequests).
+            overtaken = { session.controllerForCurrentRequest?.let(requests::drop) },
+            mayPrepare = { !requests.isDropped(session.controllerForCurrentRequest) },
         )
         exo.addListener(watcher)
         // Debug builds log what the player does (track joins, underruns, errors): how
@@ -466,6 +471,9 @@ class PlaybackService : MediaLibraryService() {
      * said, and on Android 17 it runs on in silence.
      */
     private fun mayPlay(): Boolean {
+        // The Play that Media3 sends after a request that was overtaken, or failed: not a
+        // Play anyone pressed. Whatever is in the player now stays as it is.
+        if (requests.isDropped(session.controllerForCurrentRequest)) return false
         if (!holdForeground(why = "to play")) {
             cannotStart("Android would not let the player into the foreground")
             return false
@@ -1656,6 +1664,15 @@ class PlaybackService : MediaLibraryService() {
                 isNow = { it === this@PlaybackService.era },
                 signedOut = signedOut,
             ) { era -> era.scope.async { work(era) }.await() }
+        } catch (e: Throwable) {
+            // It came to nothing: overtaken, nothing found, the server out of reach. A car's
+            // request ends there (Media3 sends nothing after a hand-over that failed). A
+            // Media3 controller's doesn't: its "make ready" and "play" are commands of their
+            // own, already on their way (the phone's voice request sends all three at once),
+            // and would start whatever is in the player. They are this request's, and do
+            // nothing.
+            if (request.from.controllerVersion != MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION) requests.drop(request.from)
+            throw e
         } finally {
             requestEnded(request)
         }

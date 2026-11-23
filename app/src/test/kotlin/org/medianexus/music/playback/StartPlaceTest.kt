@@ -34,9 +34,26 @@ class StartPlaceTest {
     }
 
     @Test
-    fun withNothingAroundItLeftThePlaceIsTheNearestThereIs() {
-        assertEquals(2, start(songs("p", "q", "r"), 3))
-        assertEquals(1, start(songs("p", "q", "r"), 1))
+    fun theNearestNeighbourIsNearestByDistanceWhicheverSideOfTheTapItWasOn() {
+        // "d" was tapped. It has gone, and so have the three songs after it. "c", straight
+        // before it, is one place away; "h" is four after. Every song after it used to be
+        // tried before any song before it, so it started at "h".
+        val now = songs("a", "b", "c", "h")
+        assertEquals("c", now[start(now, 3)!!].id)
+        // After and before by turns, nearest first: with "c" gone as well, "b" (two before)
+        // comes ahead of "h" (four after), and "f" (two after) ahead of "b".
+        assertEquals("b", songs("a", "b", "h")[start(songs("a", "b", "h"), 3)!!].id)
+        assertEquals("f", songs("a", "b", "f", "h")[start(songs("a", "b", "f", "h"), 3)!!].id)
+        assertEquals(listOf("e", "c", "f", "b", "g", "a", "h"), StartPlace.neighbours(shown, 3))
+    }
+
+    @Test
+    fun withNoneOfTheNearbyOnesLeftTheListStartsAtItsFirstSong() {
+        // Nothing that was near the tap is in the list any more: there is no telling what
+        // was meant, and whatever now sits at the old place is not it. The page from its top.
+        assertEquals(0, start(songs("p", "q", "r", "s", "t"), 3))
+        assertEquals(0, start(songs("p", "q", "r"), 1))
+        assertEquals(0, start(songs("p"), 6))
     }
 
     @Test
