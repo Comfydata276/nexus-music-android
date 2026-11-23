@@ -208,7 +208,8 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
         }
     }
     LaunchedEffect(pages, feed.page) { feed.value?.let { pages.first(it, feed.page.fresh) } }
-    val grid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    // A place of its own for each sort: one sort's place means nothing in another's list.
+    val grid = rememberSaveable(sort, saver = androidx.compose.foundation.lazy.grid.LazyGridState.Saver) { androidx.compose.foundation.lazy.grid.LazyGridState() }
     // Where the grid was, and how many albums were loaded to get there: kept with the page's
     // saved state. Each time the grid is made (after Android stopped the app, too) it first
     // loads as far as that and goes there; so "restoring" is not saved, only the place.
@@ -248,6 +249,10 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
                 albums.isEmpty() && feed.value == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
                 albums.isEmpty() && feed.value == null -> SkeletonRows()
                 albums.isEmpty() && feed.value?.isEmpty() == true -> PageStatus(PageState.Empty(stringResource(if (list == AlbumList.Starred) R.string.no_liked_albums else R.string.no_albums), icon = R.drawable.ic_disc_3))
+                // The page has come but isn't in the grid yet (a frame later): no grid until it
+                // is. A grid drawn empty holds on to its foot, and the albums arriving above it
+                // leave it scrolled to the end of the first page.
+                albums.isEmpty() -> SkeletonRows()
                 else -> CardGrid(
                     albums,
                     card = { it.card() },

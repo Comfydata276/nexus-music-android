@@ -300,7 +300,9 @@ fun GenrePage(route: Route.Genre) {
             when {
                 albums.isEmpty() && feed.value == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
                 albums.isEmpty() && feed.value == null -> SkeletonRows()
-                albums.isEmpty() -> PageStatus(PageState.Empty(stringResource(R.string.genre_empty)))
+                albums.isEmpty() && feed.value?.isEmpty() == true -> PageStatus(PageState.Empty(stringResource(R.string.genre_empty)))
+                // Come, but not in the grid yet (see AlbumsPart).
+                albums.isEmpty() -> SkeletonRows()
                 else -> CardGrid(
                     albums,
                     card = { it.card() },

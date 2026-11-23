@@ -123,6 +123,12 @@ same song (the player's window of a queue moves a hundred at a time, and a queue
 window out would otherwise look right). It is added a few thousand songs at a time: the
 server refuses 20,000 in one request.
 
+**A genre longer than a page.** `scripts/server manyalbums` adds a genre, "Paging test", of 80
+one-second, one-song albums (`manyalbums 200` for more), in a folder of the library of its
+own, and waits for the server to read them; `manyalbums --remove` deletes the folder and
+scans again. For checking paging: a grid of sixty at a time, the genre page loading them
+all, coming back deep into Albums after Android has stopped the app.
+
 One thing learned making it, in case a real library shows the same: Navidrome files an
 album's songs as two albums when only some of them carry a release date, and it reads an
 M4A's single date as a release date too. The generator writes a release date to every
