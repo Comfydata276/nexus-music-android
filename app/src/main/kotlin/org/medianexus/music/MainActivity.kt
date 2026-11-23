@@ -43,6 +43,24 @@ class MainActivity : ComponentActivity() {
         val graph = graph
         setContent { Root(graph) }
     }
+
+    // The screens talk to the player only while they can be seen; it plays on either way.
+    override fun onStart() {
+        super.onStart()
+        graph.player.connect()
+    }
+
+    override fun onStop() {
+        graph.player.release()
+        super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The local-network permission may have been given or taken away in the phone's
+        // settings meanwhile.
+        graph.localAccess.recheck()
+    }
 }
 
 @Composable
@@ -57,7 +75,7 @@ private fun Root(graph: Graph) {
                 // as the window had.
                 SessionState.Restoring -> Unit
                 SessionState.SignedOut -> {
-                    SignInScreen(graph.session, settings.server, settings.username)
+                    SignInScreen(graph.session, graph.localAccess, settings.server, settings.username)
                     // Such as the settings having been found damaged, which is likely why
                     // the sign-in is being asked for.
                     Column(Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.navigationBars)) {

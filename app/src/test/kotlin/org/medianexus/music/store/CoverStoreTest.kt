@@ -35,6 +35,20 @@ class CoverStoreTest {
     private fun store(fetch: suspend (String, Int) -> ByteArray) = CoverStore(folder.root, scope, Dispatchers.IO, fetch, clock = { now })
 
     @Test
+    fun nowPlayingsLargerSizeIsKeptApartFromTheUsualOne() = runBlocking {
+        val asked = mutableListOf<Pair<String, Int>>()
+        val covers = store { id, size -> asked += id to size; jpeg }
+        val usual = covers.file("al-9")
+        val large = covers.file("al-9", CoverStore.LARGE)
+        covers.file("al-9", CoverStore.LARGE)
+        assertEquals(listOf("al-9" to CoverStore.SIZE, "al-9" to CoverStore.LARGE), asked)
+        assertEquals(setOf("al-9.${CoverStore.SIZE}", "al-9.${CoverStore.LARGE}"), setOf(usual!!.name, large!!.name))
+        // No other sizes: a file name can't be made up from an arbitrary number.
+        assertNull(CoverStore.fileName("al-9", 77))
+        assertNull(covers.file("al-9", 77))
+    }
+
+    @Test
     fun eachCoverIsFetchedOnceAtOneSizeAndKept() = runBlocking {
         val asked = mutableListOf<Pair<String, Int>>()
         val covers = store { id, size -> asked += id to size; jpeg }

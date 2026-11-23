@@ -42,10 +42,6 @@
     <string name="tab_search">Search</string>
     <string name="tab_library">Library</string>
     <string name="settings">Settings</string>
-    <string name="coming_soon">Coming soon</string>
-    <string name="home_soon">What you\'ve played lately, and what\'s new in your library, will be here.</string>
-    <string name="search_soon">Search your library for artists, albums and songs.</string>
-    <string name="library_soon">Your playlists, albums, artists and genres will be here.</string>
 
     <!-- Settings -->
     <string name="appearance">Appearance</string>
@@ -97,4 +93,101 @@
     <string name="couldnt_play">Couldn\'t play “%1$s”.</string>
     <string name="couldnt_find">Couldn\'t find “%1$s” in your library</string>
     <string name="nothing_to_play">Nothing to play yet. Like some songs, or play something on your phone.</string>
+    <!-- The screens (M1b) -->
+    <string name="good_morning">Good morning</string>
+    <string name="good_afternoon">Good afternoon</string>
+    <string name="good_evening">Good evening</string>
+    <string name="most_played">Most played</string>
+    <string name="been_a_while">It\'s been a while</string>
+    <string name="something_different">Something different</string>
+    <string name="home_empty">Your library is empty. Add music to Navidrome and it will show up here.</string>
+    <string name="kind_album">Album</string>
+    <string name="kind_single">Single</string>
+    <string name="kind_ep">EP</string>
+    <string name="kind_compilation">Compilation</string>
+    <string name="kind_playlist">Playlist</string>
+    <string name="kind_artist">Artist</string>
+    <string name="singles_and_eps">Singles and EPs</string>
+    <string name="more_by">More by %1$s</string>
+    <string name="disc">Disc</string>
+    <string name="length_minutes">%1$d min</string>
+    <string name="length_hours">%1$d hr %2$d min</string>
+    <string name="album_empty">This album has no songs.</string>
+    <string name="playlist_empty">This playlist is empty.</string>
+    <string name="liked_empty">Songs you like show up here. Tap the heart in the player, or choose Add to Liked songs from a song\'s menu.</string>
+    <string name="artist_empty">No albums by this artist in your library.</string>
+    <string name="genre_empty">No albums are tagged with this genre.</string>
+    <string name="no_albums">No albums in your library yet.</string>
+    <string name="no_liked_albums">Albums you like show up here. Open an album and tap its heart.</string>
+    <string name="no_artists">No artists in your library yet.</string>
+    <string name="no_genres">None of your music has a genre tag.</string>
+    <string name="no_playlists">No playlists yet</string>
+    <string name="no_playlists_detail">Playlists you make in Navidrome show up here.</string>
+    <string name="pinned">Pinned</string>
+    <string name="sort_recently_added">Recently added</string>
+    <string name="sort_a_to_z">A to Z</string>
+    <string name="sort_by_artist">By artist</string>
+    <string name="sort_newest_releases">Newest releases</string>
+    <string name="shuffle_on_for">Turn on shuffle for %1$s</string>
+    <string name="shuffle_off_for">Turn off shuffle for %1$s</string>
+    <string name="shuffle_off">Turn off shuffle</string>
+    <string name="repeat_off">Turn off repeat</string>
+    <string name="add_to_liked_albums">Add to liked albums</string>
+    <string name="remove_from_liked_albums">Remove from liked albums</string>
+    <string name="added_to_liked_albums">Added to liked albums</string>
+    <string name="removed_from_liked_albums">Removed from liked albums</string>
+    <string name="added_to_liked">Added to Liked songs</string>
+    <string name="removed_from_liked">Removed from Liked songs</string>
+    <string name="didnt_save">That didn\'t save. %1$s</string>
+
+    <!-- Search -->
+    <string name="search_hint">Artists, albums or songs</string>
+    <string name="search_all">All</string>
+    <string name="browse_by_genre">Browse by genre</string>
+    <string name="search_intro">Search your library for artists, albums and songs.</string>
+    <string name="search_nothing">Nothing in your library matches “%1$s”. Check the spelling or try fewer words.</string>
+    <string name="search_nothing_of_kind">No %1$s found for “%2$s”.</string>
+
+    <!-- A song\'s menu, and toasts -->
+    <string name="play_next">Play next</string>
+    <string name="add_to_queue">Add to queue</string>
+    <string name="go_to_album">Go to album</string>
+    <string name="go_to_artist">Go to artist</string>
+    <string name="go_to_named">Go to %1$s</string>
+    <string name="remove_from_queue">Remove from queue</string>
+    <string name="playing_next">Playing next</string>
+    <string name="added_to_queue">Added to queue</string>
+
+    <!-- The player -->
+    <string name="open_now_playing">Open Now Playing</string>
+    <string name="close_now_playing">Close Now Playing</string>
+    <string name="playing_from">Playing from</string>
+    <string name="nothing_playing">Nothing is playing</string>
+    <string name="next">Next</string>
+    <string name="previous">Previous</string>
+    <string name="seek">Seek</string>
+    <string name="buffering">Buffering…</string>
+    <string name="live_stream">Live stream</string>
+    <string name="queue">Queue</string>
+    <string name="now_playing">Now playing</string>
+    <string name="next_in_queue">Next in queue</string>
+    <string name="next_up">Next up</string>
+    <string name="next_from">Next from %1$s</string>
+    <string name="nothing_queued">Nothing queued after this</string>
+    <string name="queue_nothing">Nothing is playing. Pick an album or playlist to start a queue.</string>
+    <string name="clear_queue">Clear queue</string>
+    <string name="clear">Clear</string>
+    <string name="in_next_in_queue">In Next in queue</string>
+    <string name="move_up">Move up</string>
+    <string name="move_down">Move down</string>
+    <string name="drag_to_move">Drag to move %1$s</string>
+
+    <!-- The home network (Android 17) -->
+    <string name="local_network_why">Your server is on your home network. Android will now ask whether Nexus Music may reach devices there; without that, it can\'t connect to your server.</string>
+    <string name="local_network_refused">Nexus Music isn\'t allowed to reach devices on your home network, so it can\'t connect to a server there. Allow it, then connect again.</string>
+    <string name="local_network_blocked">Nexus Music isn\'t allowed to reach your home network, where your server is, so nothing can be played from it.</string>
+    <string name="car_local_network">When it\'s safe, open Nexus Music on your phone and allow it to reach your home network</string>
+    <string name="open_app">Open Nexus Music</string>
+    <string name="allow">Allow</string>
+    <string name="continue_on">Continue</string>
 </resources>

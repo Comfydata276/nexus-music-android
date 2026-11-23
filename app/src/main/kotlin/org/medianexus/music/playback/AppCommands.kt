@@ -45,11 +45,15 @@ object AppCommands {
                     1 -> true
                     else -> shuffleFor(args.getString("source").orEmpty())
                 }
+                val source = args.getString("source").orEmpty()
                 player.play(
                     list,
                     start = args.getInt("start"),
                     context = args.getString("context").orEmpty(),
-                    source = args.getString("source").orEmpty(),
+                    source = source,
+                    // A list from a page is always the page's whole list, in its order: each
+                    // song's place in it is its place here (what marks the row playing).
+                    origins = if (source.isNotEmpty()) list.indices.toList() else null,
                     sourceList = args.getStringArrayList("sourceList") ?: list.map { it.id },
                     shuffle = shuffle,
                     anyStart = args.getBoolean("anyStart"),

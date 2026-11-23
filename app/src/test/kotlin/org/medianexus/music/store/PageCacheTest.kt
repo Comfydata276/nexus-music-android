@@ -7,6 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -125,5 +127,26 @@ class PageCacheTest {
         cache.fresh(spec { listOf("a") })
         cache.update(spec { emptyList() }) { it + "b" }
         assertEquals(listOf("a", "b"), cache().kept(spec { emptyList() }))
+    }
+
+    @Test
+    fun aLivePageCarriesOnWithChangesMadeAfterwards() = runBlocking {
+        val cache = cache()
+        cache.fresh(spec { listOf("a") })
+        now += 60_000
+        val seen = mutableListOf<Page<List<String>>>()
+        val watching = async {
+            cache.live(spec { listOf("a") }).first { page ->
+                seen += page
+                // Once it has the server's copy, a change made here (a like, say) follows.
+                if (page.fresh && page.value == listOf("a")) {
+                    launch { cache.update(spec { emptyList() }) { it + "b" } }
+                }
+                page.value == listOf("a", "b")
+            }
+        }
+        withTimeout(5_000) { watching.await() }
+        assertEquals(Page(listOf("a")), seen.first())
+        assertEquals(listOf("a", "b"), seen.last().value)
     }
 }

@@ -27,6 +27,11 @@ import org.medianexus.music.store.PageSpec
 class Library(private val api: Subsonic, val pages: PageCache, val search: Search = ServerSearch(api)) {
     fun <T> page(spec: PageSpec<T>): Flow<Page<T>> = pages.page(spec)
 
+    /** A page as a screen shows it: the kept copy, the server's, then any change made here
+     *  while it's on screen. `freshFor` 0 asks the server even if it was asked just now
+     *  (pulling down to refresh). */
+    fun <T> live(spec: PageSpec<T>, freshFor: Long = PageCache.FRESH_FOR_MILLIS): Flow<Page<T>> = pages.live(spec, freshFor)
+
     suspend fun <T> quick(spec: PageSpec<T>, changed: ((T) -> Unit)? = null): T = pages.quick(spec, changed)
 
     suspend fun <T> fresh(spec: PageSpec<T>): T = pages.fresh(spec)

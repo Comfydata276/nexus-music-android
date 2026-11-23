@@ -194,7 +194,16 @@ class PlaybackService : MediaLibraryService() {
      * Where the audio processors for crossfade, levelling, the equaliser and mono will go:
      * `DefaultRenderersFactory.buildAudioSink` with them in its chain.
      */
-    private fun renderers() = DefaultRenderersFactory(this)
+    private fun renderers() = object : DefaultRenderersFactory(this) {
+        override fun buildAudioSink(context: android.content.Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean) =
+            androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                // Debug builds only: a tap that can write what goes to the speaker to a file
+                // (see DebugAudio); none in a release build.
+                .setAudioProcessors(DebugAudio.processors(context))
+                .build()
+    }
 
     // ---- Who is signed in ---------------------------------------------------------------------
 
@@ -226,10 +235,25 @@ class PlaybackService : MediaLibraryService() {
         accountJobs = scope.launch {
             // The like button follows the likes, wherever they're changed.
             launch { now.likes.liked.collect { updateButtons() } }
+            // The list the queue came from changed (a fresh copy from the server, a song
+            // unliked from Liked songs): the queue follows it.
+            launch {
+                now.pages.changes.collect { (key, value) ->
+                    if (key == player.queue.source) songsIn(value)?.let { player.follow(key, it) }
+                }
+            }
             // Back to where things were, paused, ready for "play" from anywhere.
             val saved = withContext(Dispatchers.IO) { now.queueFiles.load() }
             if (saved != null && account === now && player.queue.isEmpty) player.restore(saved)
         }
+    }
+
+    /** The songs of a kept page that a queue can come from: an album, a playlist, Liked songs. */
+    private fun songsIn(page: Any?): List<Song>? = when (page) {
+        is org.medianexus.music.net.Album -> page.songs
+        is org.medianexus.music.net.Playlist -> page.songs
+        is org.medianexus.music.net.Found -> page.songs
+        else -> null
     }
 
     private fun signInNeeded(): PlaybackException =
@@ -238,6 +262,12 @@ class PlaybackService : MediaLibraryService() {
     /** A "Sign in" button for the car's error screen, which opens the app on the phone. */
     private fun signInButton() = Bundle().apply {
         putString(MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT, getString(R.string.sign_in))
+        putParcelable(MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT, openApp())
+    }
+
+    /** An "Open Nexus Music" button for the car's error screen. */
+    private fun openAppButton() = Bundle().apply {
+        putString(MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT, getString(R.string.open_app))
         putParcelable(MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT, openApp())
     }
 
@@ -297,12 +327,33 @@ class PlaybackService : MediaLibraryService() {
                 s.copy(shuffle = queue.shuffle, repeat = queue.repeat, lists = lists)
             }
         }
-        // How long "Next in queue" is, for the app's queue sheet.
-        session.setSessionExtras(Bundle().apply { putInt(EXTRA_QUEUED_AHEAD, queue.queuedAhead()) })
+        publishExtras()
         player.refresh()
         updateButtons()
         save()
     }
+
+    /**
+     * What only the app's own screens read, in the session's extras: how long "Next in
+     * queue" is (for the queue sheet), the list the queue came from and the place in it of
+     * the song playing (to mark its row, and no other row of the same song), and whether the
+     * server is converting the song (for the format line).
+     */
+    private fun publishExtras() {
+        val queue = player.queue
+        val extras = Bundle().apply {
+            putInt(EXTRA_QUEUED_AHEAD, queue.queuedAhead())
+            putString(EXTRA_SOURCE, queue.source)
+            putInt(EXTRA_ORIGIN, queue.currentOrigin() ?: -1)
+            putBoolean(EXTRA_CONVERTED, queue.current()?.id?.let { it in needsConverting } == true)
+        }
+        val before = shownExtras
+        if (before != null && before.keySet() == extras.keySet() && extras.keySet().all { before.get(it) == extras.get(it) }) return
+        shownExtras = extras
+        session.setSessionExtras(extras)
+    }
+
+    private var shownExtras: Bundle? = null
 
     private fun save() {
         if (leaving) return
@@ -386,11 +437,13 @@ class PlaybackService : MediaLibraryService() {
             when {
                 undecodable(error) && needsConverting.mark(song.id) -> {
                     // The phone can't play this file as it is: have the server convert it.
+                    publishExtras()
                     exo.prepare()
                 }
                 network(error) -> {
                     // Not the song's fault: the player has already tried a few times. Wait
-                    // where it is for the server to come back, trying now and then.
+                    // where it is for the server to come back, trying now and then (with no
+                    // permission to reach the home network, until it is given).
                     waitingForServer = true
                     retryLater(SERVER_WAIT_MILLIS)
                 }
@@ -436,6 +489,9 @@ class PlaybackService : MediaLibraryService() {
 
     /** The words the car, the notification and the app show for a playback error. */
     private fun explain(error: PlaybackException, song: Song?): PlaybackException? = when {
+        // Android 17, a server on the home network, and no permission to reach it: waiting
+        // for it to come back would be waiting for ever. Say what will put it right.
+        network(error) && graph.localAccess.blocked.value -> PlaybackException(getString(R.string.car_local_network), error, error.errorCode, openAppButton())
         network(error) -> PlaybackException(getString(R.string.lost_connection), error, error.errorCode)
         song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play, song.title), error, error.errorCode)
         else -> null
@@ -642,8 +698,13 @@ class PlaybackService : MediaLibraryService() {
 
     /** What to tell the car when the server couldn't help. */
     private fun trouble(controller: MediaSession.ControllerInfo, error: ApiError): SessionError {
-        val message = if (CarTree.unreachable(error)) getString(R.string.car_unreachable) else error.message ?: getString(R.string.car_unreachable)
-        val sessionError = SessionError(SessionError.ERROR_IO, message)
+        val blocked = CarTree.unreachable(error) && graph.localAccess.blocked.value
+        val message = when {
+            blocked -> getString(R.string.car_local_network)
+            CarTree.unreachable(error) -> getString(R.string.car_unreachable)
+            else -> error.message ?: getString(R.string.car_unreachable)
+        }
+        val sessionError = if (blocked) SessionError(SessionError.ERROR_IO, message, openAppButton()) else SessionError(SessionError.ERROR_IO, message)
         // Said on the car's screen too, not only in the list that failed.
         session.sendError(controller, sessionError)
         return sessionError
@@ -663,7 +724,9 @@ class PlaybackService : MediaLibraryService() {
 
     private fun staged(list: PlayList): MediaItemsWithStartPosition {
         val shuffle = list.shuffle ?: shuffleFor(list.source)
-        val (items, start) = player.stage(list.songs, list.start, list.context, list.source, list.songs.map { it.id }, shuffle, list.anyStart)
+        // A list with a source is that page's whole list, so each song's place is its origin.
+        val origins = if (list.source.isNotEmpty()) list.songs.indices.toList() else null
+        val (items, start) = player.stage(list.songs, list.start, list.context, list.source, list.songs.map { it.id }, shuffle, list.anyStart, origins)
         return MediaItemsWithStartPosition(items, start, 0)
     }
 
@@ -714,9 +777,13 @@ class PlaybackService : MediaLibraryService() {
         val SHUFFLE = SessionCommand("org.medianexus.music.SHUFFLE", Bundle.EMPTY)
         val REPEAT = SessionCommand("org.medianexus.music.REPEAT", Bundle.EMPTY)
 
-        /** In the session's extras: how many songs straight after the current one are in
-         *  "Next in queue". */
+        /** In the session's extras (see `publishExtras`): how many songs straight after the
+         *  current one are in "Next in queue"; the list the queue came from; the place in it
+         *  of the song playing (-1 for none); whether the server is converting that song. */
         const val EXTRA_QUEUED_AHEAD = "org.medianexus.music.QUEUED_AHEAD"
+        const val EXTRA_SOURCE = "org.medianexus.music.SOURCE"
+        const val EXTRA_ORIGIN = "org.medianexus.music.ORIGIN"
+        const val EXTRA_CONVERTED = "org.medianexus.music.CONVERTED"
 
         /** The extras the Assistant names a playlist and a genre with (MediaStore has no
          *  constants for these two). */

@@ -253,4 +253,27 @@ class QueueTest {
         assertEquals("Slow Rivers", back.context)
         assertEquals(1, back.queuedAhead())
     }
+
+    @Test
+    fun aQueueFollowingItsListKeepsItsEntriesNumbers() {
+        val q = Queue().apply { replace(listOf("a", "b", "c").map(::named), 1, context = "", source = "playlist:1", origins = listOf(0, 1, 2), sourceList = listOf("a", "b", "c"), shuffle = false) }
+        val before = q.uids.toList()
+        // "a" leaves, "x" arrives after "c": the song playing carries on, as the same entry.
+        assertTrue(q.follow(listOf("b", "c", "x"), { listOf("b", "c", "x").getOrNull(it)?.let(::named) }))
+        assertEquals("b | c x", coming(q))
+        assertEquals(before[1], q.currentUid())
+        assertEquals(before[2], q.uids[q.order[q.cursor + 1]])
+        assertFalse(before.contains(q.uids[q.order[q.cursor + 2]]))
+        assertEquals(listOf(0, 1, 2), q.origins)
+        assertEquals(0, q.currentOrigin())
+        // The same list again is nothing to follow.
+        assertFalse(q.follow(listOf("b", "c", "x"), { null }))
+    }
+
+    @Test
+    fun aQueueFromNoListFollowsNothing() {
+        val q = queueOf("a", "b")
+        assertFalse(q.follow(listOf("a"), { named("a") }))
+        assertEquals("a | b", coming(q))
+    }
 }

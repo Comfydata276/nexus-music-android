@@ -9,7 +9,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart.UNDISPATCHED
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,6 +67,11 @@ class PageCache(
     }
 
     private val inFlight = ConcurrentHashMap<String, Deferred<Any?>>()
+
+    /** Every page as it is kept afresh (a fetch, or a change made here such as a like), with
+     *  its key. For whatever shows or plays a list to follow it. */
+    private val keptNow = MutableSharedFlow<Pair<String, Any?>>(extraBufferCapacity = 32)
+    val changes: SharedFlow<Pair<String, Any?>> = keptNow.asSharedFlow()
 
     /** The kept copy of a page, from memory or disk; null if there isn't one (or it can no
      *  longer be read, as when the app has changed how pages are written). */
@@ -123,6 +133,21 @@ class PageCache(
     }
 
     /**
+     * As [page], and then every later change to the kept copy (a like here, a fetch made for
+     * someone else) as it happens, for as long as it's collected: what a screen shows.
+     */
+    fun <T> live(spec: PageSpec<T>, freshFor: Long = FRESH_FOR_MILLIS): Flow<Page<T>> = channelFlow {
+        // Listening before anything is fetched, so a change made meanwhile isn't missed.
+        launch(start = UNDISPATCHED) {
+            changes.collect { (key, value) ->
+                @Suppress("UNCHECKED_CAST")
+                if (key == spec.key) send(Page(value as T, fresh = true))
+            }
+        }
+        page(spec, freshFor).collect { send(it) }
+    }
+
+    /**
      * One answer, as soon as possible: the kept copy if there is one, else the server's.
      * When a kept copy is given, it is checked with the server afterwards, and `changed` is
      * told if the server's differs. For the car, which wants one list and can be told later
@@ -149,6 +174,7 @@ class PageCache(
      *  reached the server. */
     suspend fun <T> put(spec: PageSpec<T>, value: T) {
         remember(spec.key, value, fresh = true)
+        keptNow.tryEmit(spec.key to value)
         withContext(io) { writeFile(spec, value) }
     }
 

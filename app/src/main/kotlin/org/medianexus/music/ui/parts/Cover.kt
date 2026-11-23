@@ -6,6 +6,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,27 +30,46 @@ enum class CoverShape {
     ROW,
     /** Artists. */
     ROUND,
+    /** Set into something that has corners of its own (Home's quick tiles). */
+    SQUARE,
 }
 
 /**
  * Album, artist or playlist artwork, sized by `modifier`. `cover` is the server's cover id;
  * an empty one has no art. Until art is drawn (and for none), a glyph stands in.
  *
- * Images arrive in a later milestone, through the cover store: this is where they'll be
- * drawn, asked for at the size shown, so nothing that shows a cover will need to change.
+ * The picture comes from the cover store through Coil (see `coverImageLoader`), decoded at
+ * the size it's shown. `large` asks for Now Playing's larger copy, showing the usual one
+ * until it arrives.
  */
 @Composable
 fun Cover(
-    @Suppress("UNUSED_PARAMETER") cover: String,
+    cover: String,
     modifier: Modifier = Modifier,
     shape: CoverShape = CoverShape.CARD,
     @DrawableRes placeholder: Int = R.drawable.ic_music,
+    large: Boolean = false,
 ) {
     Box(
         modifier.clip(shapeOf(shape)).background(Theme.colors.raised),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(placeholder, Modifier.glyphSize(), tint = Theme.colors.faint)
+        var shown by remember(cover) { mutableStateOf(false) }
+        if (!shown) Icon(placeholder, Modifier.glyphSize(), tint = Theme.colors.faint)
+        if (cover.isNotEmpty()) {
+            val art = remember(cover) { CoverArt(cover) }
+            AsyncImage(
+                art,
+                contentDescription = null,
+                modifier = Modifier.matchParentSize(),
+                contentScale = ContentScale.Crop,
+                onSuccess = { shown = true },
+            )
+            if (large) {
+                val big = remember(cover) { CoverArt(cover, large = true) }
+                AsyncImage(big, contentDescription = null, modifier = Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+            }
+        }
     }
 }
 
@@ -55,6 +80,7 @@ private fun shapeOf(shape: CoverShape): Shape = when (shape) {
     CoverShape.CARD -> card
     CoverShape.ROW -> row
     CoverShape.ROUND -> CircleShape
+    CoverShape.SQUARE -> androidx.compose.ui.graphics.RectangleShape
 }
 
 /** The stand-in glyph is a little over a third of the cover, within limits (as on Windows). */

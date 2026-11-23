@@ -192,10 +192,11 @@ class QueuePlayer(
         sourceList: List<String> = emptyList(),
         shuffle: Boolean = queue.shuffle,
         anyStart: Boolean = false,
+        origins: List<Int?>? = null,
     ): Pair<List<MediaItem>, Int> {
         val next = Queue()
         next.repeat = queue.repeat
-        next.replace(songs, start, context, source, null, sourceList, shuffle, anyStart, random)
+        next.replace(songs, start, context, source, origins, sourceList, shuffle, anyStart, random)
         staged = next
         val items = next.order.map { itemOf(next.songs[it], next.uids[it]) }
         return items to next.cursor
@@ -295,6 +296,15 @@ class QueuePlayer(
         if (queue.isEmpty) return
         queue.clearAhead(queued)
         sync()
+    }
+
+    /**
+     * The list the queue came from (`source`, a route key) has changed, here or on the
+     * server: the queue follows it (see [Queue.follow]). The song playing carries on.
+     */
+    fun follow(source: String, songs: List<Song>) {
+        if (source.isEmpty() || source != queue.source) return
+        if (queue.follow(songs.map { it.id }, songs::getOrNull, random)) sync()
     }
 
     /** Plays the entry `offset` places after the current song now. */

@@ -49,6 +49,9 @@ class Queue {
 
     fun currentUid(): Long? = order.getOrNull(cursor)?.let { uids.getOrNull(it) }
 
+    /** Where the song playing sits in the list the queue came from, if it came from one. */
+    fun currentOrigin(): Int? = order.getOrNull(cursor)?.let { origins.getOrNull(it) }
+
     /** The songs in the order they play. */
     fun playingOrder(): List<Song> = order.map { songs[it] }
 
@@ -318,6 +321,28 @@ class Queue {
         return true
     }
 
+    /**
+     * The list the queue was started from now reads `ids` (`songAt` gives its songs): songs
+     * that left it leave the queue, songs that joined it join, and the rest take up its new
+     * order, as [followList] has it. Returns false if there was nothing to follow (another
+     * list, or no change).
+     */
+    fun follow(ids: List<String>, songAt: (Int) -> Song?, random: Random = Random.Default): Boolean {
+        if (isEmpty || sourceList.isEmpty() || sourceList == ids) return false
+        val (moved, arrivals) = compareLists(sourceList, ids)
+        val lineup = followList(
+            Lineup(songs.toList(), origins.toList(), order.toList(), cursor, uids.toList()),
+            shuffle, moved, arrivals, ids.indices.toList(), songAt,
+        ) { n -> random.nextInt(n.coerceAtLeast(1)) }
+        songs.clear(); songs.addAll(lineup.songs)
+        uids.clear(); lineup.entries.mapTo(uids) { if (it < 0) newUid() else it }
+        origins.clear(); origins.addAll(lineup.origins)
+        order.clear(); order.addAll(lineup.order)
+        cursor = lineup.cursor
+        sourceList.clear(); sourceList.addAll(ids)
+        return true
+    }
+
     /** A copy of the queue as it stands, for saving. */
     fun saved(position: Double, stamp: Long): SavedQueue = SavedQueue(
         songs = songs.toList(),
@@ -351,12 +376,15 @@ fun compareLists(old: List<String>, new: List<String>): Pair<List<Int?>, List<In
 }
 
 /** The queue as [followList] sees it: its songs, where each sits in the list it came from,
- *  the order they play in, and which of those is playing. */
+ *  the order they play in, and which of those is playing. `entries`, if given, is a number
+ *  for each song that goes with it wherever it ends up (the queue's entry numbers); an
+ *  arrival gets -1. */
 data class Lineup(
     val songs: List<Song>,
     val origins: List<Int?>,
     val order: List<Int>,
     val cursor: Int,
+    val entries: List<Long> = emptyList(),
 )
 
 /**
@@ -381,7 +409,7 @@ fun followList(
     songAt: (Int) -> Song?,
     pick: (Int) -> Int,
 ): Lineup {
-    val (songs, origins, order, cursor) = lineup
+    val (songs, origins, order, cursor, entries) = lineup
     val current = order.getOrNull(cursor) ?: return lineup
     // Where each entry now sits in the list, and which entries go.
     val now = origins.map { origin -> origin?.let { moved.getOrNull(it) } }
@@ -418,6 +446,7 @@ fun followList(
     // The new set of songs, and where each old entry went in it.
     val newSongs = mutableListOf<Song>()
     val newOrigins = mutableListOf<Int?>()
+    val newEntries = mutableListOf<Long>()
     val went = arrayOfNulls<Int>(songs.size)
     val added = mutableListOf<Int>()
     for (item in items) {
@@ -425,13 +454,16 @@ fun followList(
             went[item] = newSongs.size
             newSongs += songs[item]
             newOrigins += now[item]
+            newEntries += entries.getOrElse(item) { -1L }
         } else {
             val place = -item - 1
             added += newSongs.size
             newSongs += songAt(place)!!
             newOrigins += place
+            newEntries += -1L
         }
     }
+    val kept = if (entries.size == songs.size) newEntries else emptyList()
     val playing = went[current] ?: 0
     return if (shuffled) {
         val newOrder = order.mapNotNull { went[it] }.toMutableList()
@@ -441,8 +473,8 @@ fun followList(
             val slot = at + 1 + pick(newOrder.size - at)
             newOrder.add(slot.coerceAtMost(newOrder.size), entry)
         }
-        Lineup(newSongs, newOrigins, newOrder, at)
+        Lineup(newSongs, newOrigins, newOrder, at, kept)
     } else {
-        Lineup(newSongs, newOrigins, newSongs.indices.toList(), playing)
+        Lineup(newSongs, newOrigins, newSongs.indices.toList(), playing, kept)
     }
 }

@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
+import androidx.compose.runtime.Immutable
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -23,13 +24,31 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import org.medianexus.music.Accounts
 import org.medianexus.music.net.Song
+import org.medianexus.music.store.SettingsStore
 
 /** What's in the queue, as the screens show it: the songs to come, the first `queuedAhead`
  *  of which are "Next in queue". */
+@Immutable
 data class UpNext(val songs: List<Song> = emptyList(), val queuedAhead: Int = 0, val context: String = "")
+
+/**
+ * Where what's playing came from: the list's route key ("album:<id>"), and the place in that
+ * list of the song playing (-1 if it isn't from a list, or isn't known). A row is marked as
+ * playing only if it is that place in that list, so the same song elsewhere on the page, or
+ * in another list, isn't.
+ */
+@Immutable
+data class PlayingFrom(val source: String = "", val origin: Int = -1, val songId: String = "", val paused: Boolean = false) {
+    fun isRow(key: String, index: Int): Boolean = source.isNotEmpty() && source == key && origin == index
+
+    /** This list is what's playing (its play button pauses and resumes). */
+    fun isList(key: String): Boolean = songId.isNotEmpty() && source.isNotEmpty() && source == key
+}
 
 /**
  * Everything the screens need to show and drive playback, and nothing else: it connects to
@@ -38,10 +57,20 @@ data class UpNext(val songs: List<Song> = emptyList(), val queuedAhead: Int = 0,
  * for a screen to reach the player.
  *
  * Connect with [connect] when the app comes to the front and [release] when it goes; the
- * service carries on playing either way.
+ * service carries on playing either way. Commands sent while not connected connect first.
+ *
+ * The position is a flow of its own, moved four times a second only while playing, so the
+ * few things that show it are all that redraw; the rest change only when the player does.
  */
 @OptIn(UnstableApi::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-class PlayerConnection(private val context: Context, accounts: Accounts, scope: CoroutineScope) {
+class PlayerConnection(
+    private val context: Context,
+    private val accounts: Accounts,
+    settings: SettingsStore,
+    scope: CoroutineScope,
+    /** The words for a radio station's format line. */
+    private val liveStream: String = "Live stream",
+) {
     private var future: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private val main = Handler(Looper.getMainLooper())
@@ -55,6 +84,8 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
     private val shuffleNow = MutableStateFlow(false)
     private val repeatNow = MutableStateFlow(Repeat.OFF)
     private val errorNow = MutableStateFlow<String?>(null)
+    private val fromNow = MutableStateFlow(PlayingFrom())
+    private val convertedNow = MutableStateFlow(false)
 
     /** The song playing (or paused on); null with an empty queue. */
     val song: StateFlow<Song?> = currentSong.asStateFlow()
@@ -69,8 +100,11 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
     val shuffle: StateFlow<Boolean> = shuffleNow.asStateFlow()
     /** [Repeat.OFF], [Repeat.ALL] or [Repeat.ONE]. */
     val repeat: StateFlow<Int> = repeatNow.asStateFlow()
-    /** Why the song isn't playing, in words, when something went wrong. */
+    /** Why the song isn't playing, in words, when something went wrong ("Lost the
+     *  connection to the server…", in the service's words). */
     val error: StateFlow<String?> = errorNow.asStateFlow()
+    /** The list what's playing came from, and its place in it. */
+    val from: StateFlow<PlayingFrom> = fromNow.asStateFlow()
 
     /** Whether the song playing is liked. */
     val liked: StateFlow<Boolean> = accounts.state
@@ -78,18 +112,34 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
         .let { likes -> combine(likes, currentSong) { set, song -> song != null && song.id in set } }
         .stateIn(scope, SharingStarted.Eagerly, false)
 
-    private val accounts = accounts
+    /** What's being played, as the line under the song says it. */
+    val format: StateFlow<FormatLine> = combine(currentSong, convertedNow, settings.state.map { it.bitrate }.distinctUntilChanged()) { song, converted, cap ->
+        if (song == null) FormatLine("", false) else formatLine(song, cap, converted, liveStream)
+    }.stateIn(scope, SharingStarted.Eagerly, FormatLine("", false))
 
     private val listener = object : Player.Listener, MediaController.Listener {
-        override fun onEvents(player: Player, events: Player.Events) = read()
+        override fun onEvents(player: Player, events: Player.Events) {
+            // The list of what's to come is rebuilt only when it can have changed.
+            val queueToo = events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_PLAYLIST_METADATA_CHANGED)
+            read(queueToo)
+        }
 
-        override fun onExtrasChanged(controller: MediaController, extras: Bundle) = read()
+        override fun onExtrasChanged(controller: MediaController, extras: Bundle) = read(queueToo = true)
+
+        override fun onDisconnected(controller: MediaController) {
+            // The service went (the system stopped it): the next command connects again.
+            main.removeCallbacks(ticker)
+            this@PlayerConnection.controller = null
+            future = null
+            playingNow.value = false
+        }
     }
 
     private val ticker = object : Runnable {
         override fun run() {
-            controller?.let { positionNow.value = it.currentPosition.coerceAtLeast(0) }
-            main.postDelayed(this, TICK_MILLIS)
+            val c = controller ?: return
+            positionNow.value = c.currentPosition.coerceAtLeast(0)
+            if (c.isPlaying) main.postDelayed(this, TICK_MILLIS)
         }
     }
 
@@ -99,11 +149,19 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
         val pending = MediaController.Builder(context, token).setListener(listener).buildAsync()
         future = pending
         pending.addListener({
-            val connected = runCatching { pending.get() }.getOrNull() ?: return@addListener
+            val connected = runCatching { pending.get() }.getOrNull()
+            if (connected == null) {
+                if (future === pending) future = null
+                return@addListener
+            }
+            if (future !== pending) {
+                // Released while connecting.
+                connected.release()
+                return@addListener
+            }
             controller = connected
             connected.addListener(listener)
-            read()
-            main.post(ticker)
+            read(queueToo = true)
         }, ContextCompat.getMainExecutor(context))
     }
 
@@ -115,21 +173,34 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
         future = null
     }
 
-    private fun read() {
+    private fun read(queueToo: Boolean) {
         val c = controller ?: return
-        val items = (0 until c.mediaItemCount).map { c.getMediaItemAt(it) }
         val index = c.currentMediaItemIndex
-        val songs = items.map(::songOf)
-        currentSong.value = songs.getOrNull(index)
-        playingNow.value = c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)
-        bufferingNow.value = c.playbackState == Player.STATE_BUFFERING
+        val song = c.currentMediaItem?.let(::songOf)
+        currentSong.value = song
+        val playing = c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)
+        playingNow.value = playing
+        bufferingNow.value = c.playWhenReady && c.playbackState == Player.STATE_BUFFERING
         positionNow.value = c.currentPosition.coerceAtLeast(0)
-        durationNow.value = c.duration.takeIf { it != C.TIME_UNSET } ?: ((currentSong.value?.duration ?: 0) * 1000L)
-        val ahead = c.sessionExtras.getInt(PlaybackService.EXTRA_QUEUED_AHEAD)
-        queueNow.value = UpNext(songs.drop(index + 1), ahead, c.playlistMetadata.title?.toString().orEmpty())
+        durationNow.value = c.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: ((song?.duration ?: 0) * 1000L)
+        val extras = c.sessionExtras
+        if (queueToo) {
+            val ahead = extras.getInt(PlaybackService.EXTRA_QUEUED_AHEAD)
+            val songs = (index + 1 until c.mediaItemCount).map { songOf(c.getMediaItemAt(it)) }
+            queueNow.value = UpNext(songs, ahead.coerceAtMost(songs.size), c.playlistMetadata.title?.toString().orEmpty())
+        }
         shuffleNow.value = c.shuffleModeEnabled
         repeatNow.value = QueuePlayer.ourRepeat(c.repeatMode)
         errorNow.value = c.playerError?.message
+        fromNow.value = PlayingFrom(
+            source = extras.getString(PlaybackService.EXTRA_SOURCE).orEmpty(),
+            origin = extras.getInt(PlaybackService.EXTRA_ORIGIN, -1),
+            songId = song?.id.orEmpty(),
+            paused = !playing,
+        )
+        convertedNow.value = extras.getBoolean(PlaybackService.EXTRA_CONVERTED)
+        main.removeCallbacks(ticker)
+        if (c.isPlaying) main.postDelayed(ticker, TICK_MILLIS)
     }
 
     private fun songOf(item: MediaItem): Song =
@@ -141,7 +212,8 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
     /**
      * Plays a list from one of its songs. `context` is what it is, in words ("Slow Rivers");
      * `source` the route key of the page it came from ("album:<id>"), so the list's shuffle
-     * is remembered; `shuffle` null plays it as it was last played.
+     * is remembered and its playing row marked; a list with a source is the page's whole
+     * list, in its order. `shuffle` null plays it as it was last played.
      */
     fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false) =
         send(AppCommands.PLAY, Bundle().apply {
@@ -176,20 +248,31 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
     /** Plays the song `offset` places after the current one now. */
     fun jump(offset: Int) = send(AppCommands.JUMP, Bundle().apply { putInt("offset", offset) })
 
-    fun playPause() {
-        val c = controller ?: return
-        if (c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)) c.pause() else c.play()
+    fun playPause() = withController { c ->
+        if (c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)) {
+            c.pause()
+        } else {
+            // A song that failed (the server was out of reach) is asked for again.
+            if (c.playerError != null || c.playbackState == Player.STATE_IDLE) c.prepare()
+            c.play()
+        }
     }
 
-    fun next() = controller?.seekToNext()
+    fun next() = withController { it.seekToNext() }
 
-    fun previous() = controller?.seekToPrevious()
+    fun previous() = withController { it.seekToPrevious() }
 
-    fun seek(positionMs: Long) = controller?.seekTo(positionMs)
+    fun seek(positionMs: Long) = withController {
+        it.seekTo(positionMs)
+        positionNow.value = positionMs
+    }
 
-    fun setShuffle(on: Boolean) = controller?.setShuffleModeEnabled(on)
+    fun setShuffle(on: Boolean) = withController { it.shuffleModeEnabled = on }
 
-    fun setRepeat(mode: Int) = controller?.setRepeatMode(QueuePlayer.exoRepeat(mode))
+    fun setRepeat(mode: Int) = withController { it.repeatMode = QueuePlayer.exoRepeat(mode) }
+
+    /** Off, the whole queue, one song, and round again: the repeat button. */
+    fun cycleRepeat() = setRepeat((repeatNow.value + 1) % 3)
 
     /** Likes or unlikes the song playing. */
     fun toggleLike() {
@@ -197,16 +280,19 @@ class PlayerConnection(private val context: Context, accounts: Accounts, scope: 
         accounts.state.value?.likes?.toggle(song)
     }
 
-    private fun send(command: SessionCommand, args: Bundle) {
+    private fun withController(block: (MediaController) -> Unit) {
         val c = controller
         if (c != null) {
-            c.sendCustomCommand(command, args)
+            block(c)
         } else {
-            // Not connected yet (the app has just opened): connect, then send.
+            // Not connected yet (the app has just opened, or the service was stopped):
+            // connect, then do it.
             connect()
-            future?.addListener({ controller?.sendCustomCommand(command, args) }, ContextCompat.getMainExecutor(context))
+            future?.addListener({ controller?.let(block) }, ContextCompat.getMainExecutor(context))
         }
     }
+
+    private fun send(command: SessionCommand, args: Bundle) = withController { it.sendCustomCommand(command, args) }
 
     private companion object {
         const val TICK_MILLIS = 250L

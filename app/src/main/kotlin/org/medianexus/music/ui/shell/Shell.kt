@@ -1,12 +1,16 @@
 package org.medianexus.music.ui.shell
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,20 +20,27 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavEntry
@@ -40,27 +51,80 @@ import org.medianexus.music.Graph
 import org.medianexus.music.Notice
 import org.medianexus.music.R
 import org.medianexus.music.store.SettingsDamage
+import org.medianexus.music.ui.home.HomePage
+import org.medianexus.music.ui.library.AlbumsPage
+import org.medianexus.music.ui.library.LibraryPage
+import org.medianexus.music.ui.lists.AlbumPage
+import org.medianexus.music.ui.lists.ArtistPage
+import org.medianexus.music.ui.lists.GenrePage
+import org.medianexus.music.ui.lists.LikedPage
+import org.medianexus.music.ui.lists.PlaylistPage
+import org.medianexus.music.ui.menu.SongMenuSheet
 import org.medianexus.music.ui.parts.Icon
 import org.medianexus.music.ui.parts.NoticeBar
+import org.medianexus.music.ui.parts.TextButton
+import org.medianexus.music.ui.parts.ToastHost
+import org.medianexus.music.ui.player.MiniPlayer
+import org.medianexus.music.ui.player.NowPlaying
+import org.medianexus.music.ui.player.QueueSheet
+import org.medianexus.music.ui.search.SearchPage
 import org.medianexus.music.ui.settings.SettingsPage
 import org.medianexus.music.ui.theme.Theme
 
 /**
- * The app once signed in: the page, any notices, room for the mini player, and the bottom
- * bar. Pages draw their own title bars, below the status bar; the bottom bar reaches under
- * the navigation bar.
+ * The app once signed in: the page, any notices, the mini player and the bottom bar; over
+ * them, Now Playing, the queue, a song's menu and toasts. Pages draw their own title bars,
+ * below the status bar; the bottom bar reaches under the navigation bar. While the keyboard
+ * is up (searching) the bar and the mini player step aside for it.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun Shell(graph: Graph) {
     val navigator = rememberNavigator()
+    val ui = remember(graph, navigator) { Ui(graph, navigator) }
+    val account by graph.accounts.state.collectAsStateWithLifecycle()
+    ui.account = account
+    ui.beforePlay = rememberNotificationAsk(graph.settings)
     val colors = Theme.colors
-    Column(Modifier.fillMaxSize().background(colors.base)) {
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            Pages(graph, navigator)
+    val keyboard = WindowInsets.isImeVisible
+    val song by graph.player.song.collectAsStateWithLifecycle()
+    // Rotating or coming back keeps Now Playing open if it was.
+    val open = rememberSaveable { arrayOf(false) }
+    LaunchedEffect(Unit) { if (open[0]) ui.nowPlaying = true }
+    LaunchedEffect(ui.nowPlaying) { open[0] = ui.nowPlaying }
+    LaunchedEffect(song == null) { if (song == null) ui.nowPlaying = false }
+
+    androidx.compose.runtime.CompositionLocalProvider(LocalUi provides ui) {
+        Box(Modifier.fillMaxSize().background(colors.base)) {
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxWidth().then(if (keyboard) Modifier.imePadding() else Modifier)) {
+                    Pages(graph, navigator)
+                }
+                LocalNetworkBar(graph)
+                NoticeList(graph)
+                if (!keyboard) {
+                    MiniPlayer()
+                    BottomBar(navigator.tab, navigator::select)
+                }
+            }
+            AnimatedVisibility(
+                ui.nowPlaying,
+                enter = slideInVertically(tween(280)) { it } + fadeIn(tween(200)),
+                exit = slideOutVertically(tween(240)) { it } + fadeOut(tween(200)),
+            ) {
+                NowPlaying(onClose = { ui.nowPlaying = false })
+            }
+            ToastHost(
+                graph.toasts.shown,
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    // Above the bottom bar and the mini player, unless Now Playing covers them.
+                    .padding(bottom = if (ui.nowPlaying || keyboard) 16.dp else 64.dp + Theme.dimens.miniPlayer + 8.dp),
+            )
         }
-        NoticeList(graph)
-        // M1 docks the mini player here, between the page and the bottom bar.
-        BottomBar(navigator.tab, navigator::select)
+        if (ui.queueOpen) QueueSheet(onClose = { ui.queueOpen = false })
+        ui.menu?.let { menu -> SongMenuSheet(menu, onClose = { ui.menu = null }) }
     }
 }
 
@@ -99,12 +163,17 @@ private fun slide(forward: Boolean): ContentTransform {
 
 @Composable
 private fun Page(graph: Graph, navigator: Navigator, route: Route) {
-    val openSettings = { navigator.open(Route.Settings) }
     when (route) {
-        Route.Home -> PlaceholderPage(R.string.tab_home, R.string.home_soon, R.drawable.ic_house, openSettings)
-        Route.Search -> PlaceholderPage(R.string.tab_search, R.string.search_soon, R.drawable.ic_search, openSettings)
-        Route.Library -> PlaceholderPage(R.string.tab_library, R.string.library_soon, R.drawable.ic_library, openSettings)
+        Route.Home -> HomePage()
+        Route.Search -> SearchPage()
+        Route.Library -> LibraryPage()
         Route.Settings -> SettingsPage(graph, onBack = navigator::back)
+        is Route.Album -> AlbumPage(route)
+        is Route.Artist -> ArtistPage(route)
+        is Route.Playlist -> PlaylistPage(route)
+        Route.Liked -> LikedPage()
+        is Route.Genre -> GenrePage(route)
+        is Route.Albums -> AlbumsPage(route)
     }
 }
 
@@ -125,6 +194,31 @@ fun NoticeList(graph: Graph, modifier: Modifier = Modifier) {
             Notice.SettingsNotSaved -> stringResource(R.string.notice_settings_not_saved)
         }
         NoticeBar(text, onDismiss = { graph.notices.dismiss(notice) }, modifier)
+    }
+}
+
+/**
+ * While the server is on the home network and the app isn't allowed to reach it (Android
+ * 17), a bar says so and offers to ask; it goes once allowed.
+ */
+@Composable
+private fun LocalNetworkBar(graph: Graph) {
+    val blocked by graph.localAccess.blocked.collectAsStateWithLifecycle()
+    if (!blocked) return
+    val ask = rememberLocalNetworkAsk(graph.localAccess)
+    val colors = Theme.colors
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Theme.dimens.gap, vertical = 4.dp)
+            .background(colors.overlay, RoundedCornerShape(Theme.dimens.radius))
+            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(R.drawable.ic_wifi_off, size = 18.dp, tint = colors.warm)
+        BasicText(stringResource(R.string.local_network_blocked), Modifier.weight(1f), style = Theme.type.rowDetail.copy(color = colors.text))
+        TextButton(stringResource(R.string.allow), ask)
     }
 }
 
@@ -153,7 +247,7 @@ private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
                 Icon(tab.icon, size = 24.dp, tint = if (on) colors.text else colors.faint)
                 BasicText(
                     stringResource(tab.label),
-                    style = Theme.type.caption.copy(color = if (on) colors.text else colors.muted, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                    style = Theme.type.caption.copy(color = if (on) colors.text else colors.muted, fontWeight = FontWeight.SemiBold),
                     maxLines = 1,
                 )
             }

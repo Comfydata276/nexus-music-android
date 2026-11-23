@@ -1,6 +1,9 @@
 package org.medianexus.music
 
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -32,4 +35,18 @@ class Notices {
     fun post(notice: Notice) = waiting.update { if (notice in it) it else it + notice }
 
     fun dismiss(notice: Notice) = waiting.update { it - notice }
+}
+
+/**
+ * Toasts: a few words about something that just happened ("Added to queue"), or that happened
+ * out of sight (a like the server refused), shown for a moment at the foot of the screen as
+ * the Windows app's toast. Unlike a notice, nothing waits to be dismissed.
+ */
+class Toasts {
+    private val said = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val shown: SharedFlow<String> = said.asSharedFlow()
+
+    fun show(text: String) {
+        said.tryEmit(text)
+    }
 }

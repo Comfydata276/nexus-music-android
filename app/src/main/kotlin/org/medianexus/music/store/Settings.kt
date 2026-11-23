@@ -103,6 +103,10 @@ data class Settings(
     /** When the pins and the theme were last changed, to settle which device's are newer. */
     val pinsAt: Long = 0,
     val themeAt: Long = 0,
+
+    // ---- The phone's own ----
+    /** Notifications have been asked for once (the first time something played). */
+    val askedNotifications: Boolean = false,
 ) {
     /** The name of the preset matching the equaliser curve: one of the app's, one of the
      *  user's own, or neither. */

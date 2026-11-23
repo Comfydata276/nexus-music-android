@@ -13,10 +13,13 @@ import org.medianexus.music.net.ApiError
 
 /**
  * Cover art, as the Windows app keeps it (src/covers.rs): each picture is fetched from the
- * server once, at one size, and kept on disk for the account; whatever shows it (Coil in the
+ * server once at a size and kept on disk for the account; whatever shows it (Coil in the
  * app, the car and the system's media controls through [CoverProvider]) cuts it down to the
  * size it needs. Two requests for the same picture at once share one fetch, and a picture
  * that couldn't be fetched is left alone for a minute before it is asked for again.
+ *
+ * Two sizes, as Windows has more than one: [SIZE] for everything (rows, cards, the car), and
+ * [LARGE] for Now Playing only, where a whole phone's width of cover would look soft at 640.
  *
  * `fetch` gets the picture's bytes from the server (the signed-in account's client).
  */
@@ -31,23 +34,25 @@ class CoverStore(
     private val failedAt = ConcurrentHashMap<String, Long>()
 
     /** The kept file for a cover, if it's on the phone already. Doesn't fetch. */
-    fun kept(id: String): File? = fileFor(id)?.takeIf { it.isFile && it.length() > 0 }
+    fun kept(id: String, size: Int = SIZE): File? = fileFor(id, size)?.takeIf { it.isFile && it.length() > 0 }
 
     /**
-     * The file holding a cover, fetched first if it isn't kept yet. Null if there's no such
-     * cover or it can't be fetched now. Safe to call from many places at once.
+     * The file holding a cover at `size` ([SIZE] or [LARGE]), fetched first if it isn't kept
+     * yet. Null if there's no such cover or it can't be fetched now. Safe to call from many
+     * places at once.
      */
-    suspend fun file(id: String): File? {
-        val file = fileFor(id) ?: return null
+    suspend fun file(id: String, size: Int = SIZE): File? {
+        val file = fileFor(id, size) ?: return null
         if (withContext(io) { file.isFile && file.length() > 0 }) return file
-        failedAt[id]?.let { at -> if (clock() - at < RETRY_AFTER_MILLIS) return null }
-        val shared = inFlight.computeIfAbsent(id) {
+        val key = file.name
+        failedAt[key]?.let { at -> if (clock() - at < RETRY_AFTER_MILLIS) return null }
+        val shared = inFlight.computeIfAbsent(key) {
             // On the store's scope, so a caller giving up doesn't stop the fetch for another.
             scope.async(io, start = CoroutineStart.LAZY) {
                 try {
-                    download(id, file)
+                    download(id, size, file)
                 } finally {
-                    inFlight.remove(id)
+                    inFlight.remove(key)
                 }
             }
         }
@@ -55,21 +60,22 @@ class CoverStore(
         return shared.await()
     }
 
-    private suspend fun download(id: String, file: File): File? {
+    private suspend fun download(id: String, size: Int, file: File): File? {
+        val key = file.name
         val bytes = try {
-            fetch(id, SIZE)
+            fetch(id, size)
         } catch (_: ApiError) {
-            failedAt[id] = clock()
+            failedAt[key] = clock()
             return null
         }
         if (!looksLikePicture(bytes)) {
             // The server sends a JSON error, or nothing, for a cover it doesn't have.
-            failedAt[id] = clock()
+            failedAt[key] = clock()
             return null
         }
         return try {
             writeAtomically(file, bytes)
-            failedAt.remove(id)
+            failedAt.remove(key)
             file
         } catch (_: IOException) {
             null
@@ -92,15 +98,22 @@ class CoverStore(
         }
     }
 
-    internal fun fileFor(id: String): File? = fileName(id)?.let { File(dir, it) }
+    internal fun fileFor(id: String, size: Int = SIZE): File? = fileName(id, size)?.let { File(dir, it) }
 
     companion object {
         /**
-         * The one size every cover is fetched at, in pixels. The Windows app's largest (its Now
-         * Playing art): enough for the car, which asks for about 512, and for the phone's own
-         * Now Playing; rows and cards are cut down from it.
+         * The size covers are fetched at, in pixels: the Windows app's largest (its Now Playing
+         * art). Enough for the car, which asks for about 512; rows and cards are cut down from
+         * it.
          */
         const val SIZE = 640
+
+        /**
+         * Now Playing's size: its cover is nearly the phone's width, over a thousand pixels on
+         * a large phone. Fetched only for that screen, which shows the [SIZE] copy until it
+         * arrives. Navidrome never makes a picture larger than its original.
+         */
+        const val LARGE = 1200
 
         const val RETRY_AFTER_MILLIS = 60_000L
 
@@ -113,9 +126,9 @@ class CoverStore(
          * rather than tidied, so nothing handed to [CoverProvider] can name a file outside the
          * folder.
          */
-        fun fileName(id: String): String? =
-            if (id.isNotEmpty() && id.length <= 160 && id.all { it.isLetterOrDigit() && it.code < 128 || it == '-' || it == '_' }) {
-                "$id.$SIZE"
+        fun fileName(id: String, size: Int = SIZE): String? =
+            if (id.isNotEmpty() && id.length <= 160 && id.all { it.isLetterOrDigit() && it.code < 128 || it == '-' || it == '_' } && (size == SIZE || size == LARGE)) {
+                "$id.$size"
             } else {
                 null
             }

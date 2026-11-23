@@ -15,13 +15,36 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.medianexus.music.R
 
-/** A page the app can show. Later milestones add the album, artist, playlist… pages here. */
+/**
+ * A page the app can show. A page for one thing carries what the card or row it was opened
+ * from already said about it (a name, a cover), so its header is drawn the moment it opens,
+ * before anything is read, as Windows does (`pages::hint`).
+ */
 @Serializable
 sealed interface Route {
     @Serializable data object Home : Route
     @Serializable data object Search : Route
     @Serializable data object Library : Route
     @Serializable data object Settings : Route
+    @Serializable data class Album(val id: String, val title: String = "", val artist: String = "", val cover: String = "") : Route
+    @Serializable data class Artist(val id: String, val name: String = "", val cover: String = "") : Route
+    @Serializable data class Playlist(val id: String, val name: String = "", val cover: String = "") : Route
+    @Serializable data object Liked : Route
+    @Serializable data class Genre(val name: String) : Route
+    /** Every album, in one of the Albums sorts (a place in `ALBUM_SORTS`). */
+    @Serializable data class Albums(val sort: Int) : Route
+
+    /** The key the Windows app files the page under ("album:<id>"): where its list's
+     *  choices are remembered, and what a queue started from it is said to come from. */
+    val key: String
+        get() = when (this) {
+            is Album -> "album:$id"
+            is Artist -> "artist:$id"
+            is Playlist -> "playlist:$id"
+            Liked -> "liked"
+            is Genre -> "genre:$name"
+            else -> ""
+        }
 }
 
 /** The bottom bar's tabs, each with its own history of pages. */

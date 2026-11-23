@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Android 17: reaching a server on the home network (192.168.x.x and the like). Asked
+         for when signing in to one; see LocalAccess. Earlier versions don't have it. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <!-- No backups: the password is sealed with a key that can't leave this phone, and a
          restored copy of the rest without it would only confuse. Plain HTTP is allowed

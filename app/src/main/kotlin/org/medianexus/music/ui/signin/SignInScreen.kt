@@ -48,8 +48,14 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
+import org.medianexus.music.LocalAccess
 import org.medianexus.music.R
 import org.medianexus.music.Session
+import org.medianexus.music.ui.shell.rememberLocalNetworkAsk
 import org.medianexus.music.net.unencryptedBeyondHome
 import org.medianexus.music.ui.parts.Field
 import org.medianexus.music.ui.parts.Icon
@@ -62,9 +68,10 @@ import org.medianexus.music.ui.theme.Theme
  * screen is rebuilt part-way.
  */
 @Composable
-fun SignInScreen(session: Session, savedServer: String, savedUsername: String) {
+fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String, savedUsername: String) {
     val colors = Theme.colors
     val state by session.signIn.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     val server = rememberTextFieldState(savedServer)
     val username = rememberTextFieldState(savedUsername)
     // Not `rememberTextFieldState`: that is saved with the activity's state, which Android
@@ -80,10 +87,26 @@ fun SignInScreen(session: Session, savedServer: String, savedUsername: String) {
     }
     val keyboard = LocalSoftwareKeyboardController.current
     val ready = !state.busy && server.text.isNotBlank() && username.text.isNotBlank() && password.text.isNotEmpty()
+    // Android 17: a server on the home network can't be reached without the local-network
+    // permission. Before signing in to one, a sentence says why the question is coming, then
+    // the system asks; the sign-in goes ahead either way.
+    var explaining by remember { mutableStateOf(false) }
+    var refused by remember { mutableStateOf(false) }
+    val go = { session.signIn(server.text.toString(), username.text.toString(), password.text.toString()) }
+    val ask = rememberLocalNetworkAsk(localAccess) { granted ->
+        refused = !granted
+        if (explaining) {
+            explaining = false
+            go()
+        }
+    }
     val connect = {
         if (ready) {
             keyboard?.hide()
-            session.signIn(server.text.toString(), username.text.toString(), password.text.toString())
+            scope.launch {
+                if (localAccess.neededFor(server.text.toString())) explaining = true else go()
+            }
+            Unit
         }
     }
     val accent = colors.accent
@@ -179,14 +202,28 @@ fun SignInScreen(session: Session, savedServer: String, savedUsername: String) {
                         style = Theme.type.rowDetail.copy(color = colors.danger),
                     )
                 }
+                if (explaining) {
+                    // Why the system is about to ask, said before it does.
+                    BasicText(
+                        stringResource(R.string.local_network_why),
+                        Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                        style = Theme.type.body.copy(color = colors.text),
+                    )
+                    TextButton(stringResource(R.string.continue_on), onClick = ask, modifier = Modifier.fillMaxWidth(), primary = true)
+                } else if (refused && error != null) {
+                    BasicText(stringResource(R.string.local_network_refused), style = Theme.type.rowDetail.copy(color = colors.warm))
+                    TextButton(stringResource(R.string.allow), onClick = ask, modifier = Modifier.fillMaxWidth())
+                }
                 Spacer(Modifier.height(4.dp))
-                TextButton(
-                    stringResource(if (state.busy) R.string.connecting else R.string.connect),
-                    onClick = connect,
-                    modifier = Modifier.fillMaxWidth(),
-                    primary = true,
-                    enabled = ready,
-                )
+                if (!explaining) {
+                    TextButton(
+                        stringResource(if (state.busy) R.string.connecting else R.string.connect),
+                        onClick = connect,
+                        modifier = Modifier.fillMaxWidth(),
+                        primary = true,
+                        enabled = ready,
+                    )
+                }
                 BasicText(stringResource(R.string.password_kept), style = Theme.type.caption.copy(color = colors.muted))
             }
         }
