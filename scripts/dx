@@ -10,8 +10,13 @@ kvm=()
 if [ -e /dev/kvm ]; then
   kvm=(--device /dev/kvm --group-add "$(stat -c %g /dev/kvm)")
 fi
+# Gradle builds take turns: two at once, beside an emulator, run this machine out of memory.
+turn=()
+if [ "${1:-}" = "./gradlew" ] && command -v flock >/dev/null; then
+  turn=(flock "$cache/gradle.lock")
+fi
 # shellcheck disable=SC2086
-exec docker run --rm ${DX_DOCKER_ARGS:-} "${kvm[@]}" \
+exec "${turn[@]}" docker run --rm ${DX_DOCKER_ARGS:-} "${kvm[@]}" \
   -u "$(id -u):$(id -g)" --network host \
   -e HOME=/home/dev -e GRADLE_USER_HOME=/home/dev/.gradle \
   -v "$root":/work -v "$cache/home":/home/dev -v "$cache/sdk":/sdk \
