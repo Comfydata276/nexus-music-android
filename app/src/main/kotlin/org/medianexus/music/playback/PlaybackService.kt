@@ -885,6 +885,29 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            // "Tap to try again", opened: the folder (or search) it stands in for, fetched
+            // again; and the car is told that folder has changed, so going back finds it too.
+            when (val again = CarIds.retryOf(parentId)) {
+                is CarRetry.Folder -> {
+                    session.notifyChildrenChanged(again.parentId, Int.MAX_VALUE, params)
+                    return children(session, browser, again.parentId, page, pageSize, params)
+                }
+                is CarRetry.Search -> return answer({ LibraryResult.ofError(signedOut()) }) { era ->
+                    try {
+                        val found = inTime { era.tree.search(again.query) }
+                        era.searches.put(again.query, found)
+                        era.searchedBy[again.query]?.let { session.notifySearchResultChanged(it, again.query, found.size, null) }
+                        LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
+                    } catch (e: ApiError) {
+                        if (CarTree.unreachable(e)) {
+                            LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(again.query, retriesMade.incrementAndGet())))), params)
+                        } else {
+                            LibraryResult.ofError(trouble(browser, e))
+                        }
+                    }
+                }
+                null -> {}
+            }
             askedFor(parentId)
             return children(session, browser, parentId, page, pageSize, params)
         }
@@ -902,7 +925,7 @@ class PlaybackService : MediaLibraryService() {
                     // (Not when the phone isn't allowed to reach it: trying again can't help,
                     // and the error's button opens the app, where it can be allowed.)
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
-                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retryFolder(parentId)))), params)
+                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retryFolder(parentId, retriesMade.incrementAndGet())))), params)
                     } else {
                         LibraryResult.ofError(trouble(browser, e))
                     }
@@ -937,7 +960,7 @@ class PlaybackService : MediaLibraryService() {
                 } catch (e: ApiError) {
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
                         // Out of reach: the one entry that says so, and tries again when tapped.
-                        val retry = listOf(tryAgain(CarIds.retrySearch(query)))
+                        val retry = listOf(tryAgain(CarIds.retrySearch(query, retriesMade.incrementAndGet())))
                         era.searches.put(query, retry)
                         session.notifySearchResultChanged(browser, query, retry.size, params)
                         return@answer LibraryResult.ofVoid()
@@ -957,7 +980,7 @@ class PlaybackService : MediaLibraryService() {
                     LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
                 } catch (e: ApiError) {
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
-                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(query)))), params)
+                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(query, retriesMade.incrementAndGet())))), params)
                     } else {
                         LibraryResult.ofError(trouble(browser, e))
                     }
@@ -1159,8 +1182,16 @@ class PlaybackService : MediaLibraryService() {
         throw ApiError.Network("(It didn't answer in time.)")
     }
 
-    /** The entry a folder or search shows while the server is out of reach. */
-    private fun tryAgain(id: String) = CarEntry(id, getString(R.string.cant_reach_server), getString(R.string.tap_to_try_again), icon = R.drawable.ic_refresh_cw, playable = true)
+    /** "Tap to try again" entries made so far: each has an id of its own. */
+    private val retriesMade = java.util.concurrent.atomic.AtomicLong()
+
+    /**
+     * The entry a folder or search shows while the server is out of reach. A folder, not
+     * something to play: a car shows its player when something playable is chosen, which here
+     * would be an empty one. Opened, it is the folder fetched again (see onGetChildren). Drawn
+     * as a row, whatever its list is.
+     */
+    private fun tryAgain(id: String) = CarEntry(id, getString(R.string.cant_reach_server), getString(R.string.tap_to_try_again), icon = R.drawable.ic_refresh_cw, browsable = true, style = CarStyle.LIST)
 
     /** A "Tap to try again" was tapped: the car is told the folder, or the search, has
      *  changed, and asks for it again (fetching it afresh, now). */

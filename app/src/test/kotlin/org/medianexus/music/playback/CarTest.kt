@@ -17,12 +17,14 @@ class CarTest {
     @Test
     fun aTryAgainEntryNamesWhatToLoadAgainAndNothingToPlay() {
         for (folder in listOf("albums", "genre/Drum%2FBass", "part/0/200/playlist/p1", "home~album/x")) {
-            val id = CarIds.retryFolder(folder)
+            val id = CarIds.retryFolder(folder, 7)
             assertEquals(CarRetry.Folder(folder), CarIds.retryOf(id))
+            // Each attempt is an id of its own, so a car asks again rather than show the last.
+            assertFalse(id == CarIds.retryFolder(folder, 8))
             // It is no place in the tree: choosing it can't be taken for a song or a list.
             assertNull(CarIds.parse(id))
         }
-        assertEquals(CarRetry.Search("paper/lanterns ~ x"), CarIds.retryOf(CarIds.retrySearch("paper/lanterns ~ x")))
+        assertEquals(CarRetry.Search("paper/lanterns ~ x"), CarIds.retryOf(CarIds.retrySearch("paper/lanterns ~ x", 1)))
         assertNull(CarIds.retryOf("album/retry"))
         assertNull(CarIds.retryOf("retry/song/x"))
     }

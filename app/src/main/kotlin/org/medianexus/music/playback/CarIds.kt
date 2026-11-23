@@ -139,19 +139,21 @@ object CarIds {
     }
 
     /** The id of the "Tap to try again" entry shown in a folder that couldn't be fetched. It
-     *  names nothing to play: tapping it loads the folder again. */
-    fun retryFolder(parentId: String): String = "retry/folder/${escape(parentId)}"
+     *  names nothing to play: opening it loads the folder again. `attempt` makes each one's id
+     *  its own: a car keeps what it was given for an id it has opened before, and would show
+     *  the same failure again without asking. */
+    fun retryFolder(parentId: String, attempt: Long): String = "retry/folder/$attempt/${escape(parentId)}"
 
     /** The same, in the results of a search. */
-    fun retrySearch(query: String): String = "retry/search/${escape(query)}"
+    fun retrySearch(query: String, attempt: Long): String = "retry/search/$attempt/${escape(query)}"
 
     /** What a "Tap to try again" entry's id asks to load again; null for any other id. */
     fun retryOf(id: String): CarRetry? {
         val parts = id.split('/')
-        if (parts.size != 3 || parts[0] != "retry") return null
+        if (parts.size != 4 || parts[0] != "retry" || parts[2].toLongOrNull() == null) return null
         return when (parts[1]) {
-            "folder" -> CarRetry.Folder(unescape(parts[2]))
-            "search" -> CarRetry.Search(unescape(parts[2]))
+            "folder" -> CarRetry.Folder(unescape(parts[3]))
+            "search" -> CarRetry.Search(unescape(parts[3]))
             else -> null
         }
     }
