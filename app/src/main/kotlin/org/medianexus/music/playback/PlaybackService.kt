@@ -91,9 +91,8 @@ class PlaybackService : MediaLibraryService() {
     private val songsById = ConcurrentHashMap<String, Song>()
     private val needsConverting = NeedsConverting()
 
-    private val playCount = PlayCount()
-    /** The queue entry last reported as "now playing", so each play is reported once. */
-    private var reportedUid: Long? = null
+    /** What the server is told about listening: "now playing", and each play that counts. */
+    private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::scrobble)
     private var failures = 0
     private var waitingForServer = false
 
@@ -220,7 +219,7 @@ class PlaybackService : MediaLibraryService() {
             leaving = true
             player.clear()
             leaving = false
-            reportedUid = null
+            plays.reset()
             kept?.let { old -> scope.launch(Dispatchers.IO) { old.close() } }
             kept = null
         }
@@ -416,20 +415,35 @@ class PlaybackService : MediaLibraryService() {
             if (isPlaying) {
                 failures = 0
                 waitingForServer = false
-                reportNowPlaying()
+                countPlaying()
             } else {
+                // A last sample: what was heard up to the pause counts.
+                plays.paused(exo.currentPosition / 1000.0, clock())
                 save()
             }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            // Repeating one song is a new listen of it.
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) reportedUid = null
-            if (exo.isPlaying) reportNowPlaying()
+            // Rolled into the next song while playing (the song before it has had its last
+            // sample, in onPositionDiscontinuity, which comes first).
+            if (exo.isPlaying) countPlaying()
         }
 
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-            if (reason == Player.DISCONTINUITY_REASON_SEEK) playCount.jumped(newPosition.positionMs / 1000.0)
+            val from = oldPosition.positionMs / 1000.0
+            val sameEntry = entryOf(oldPosition.mediaItem) != null && entryOf(oldPosition.mediaItem) == entryOf(newPosition.mediaItem)
+            when {
+                // Repeating one song: the play that just finished is counted, and the next
+                // time round is a new play of it.
+                reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> plays.left(from, clock(), again = sameEntry)
+                sameEntry -> plays.sought(from, newPosition.positionMs / 1000.0, clock())
+                else -> plays.left(from, clock())
+            }
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            // The end of the queue. The same song started again from the top is a new play.
+            if (playbackState == Player.STATE_ENDED) plays.ended(clock())
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -501,20 +515,26 @@ class PlaybackService : MediaLibraryService() {
     private val ticker = object : Runnable {
         override fun run() {
             if (exo.isPlaying) {
-                val seconds = exo.currentPosition / 1000.0
-                if (playCount.at(seconds)) scrobble(playCount.songId)
+                plays.tick(exo.currentPosition / 1000.0, clock())
                 if (System.currentTimeMillis() - lastSaveAt >= CHECKPOINT_MILLIS) save()
             }
             main.postDelayed(this, TICK_MILLIS)
         }
     }
 
-    private fun reportNowPlaying() {
+    /** The clock listening is timed on: it only has to run steadily while a song plays. */
+    private fun clock(): Long = android.os.SystemClock.elapsedRealtime()
+
+    private fun entryOf(item: MediaItem?): Long? = (item?.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid
+
+    /** The song at the cursor is playing: count it (see [PlayReporter]). */
+    private fun countPlaying() {
         val uid = player.queue.currentUid() ?: return
-        if (uid == reportedUid) return
-        reportedUid = uid
         val song = player.queue.current() ?: return
-        playCount.start(song.id, song.duration.toDouble(), exo.currentPosition / 1000.0)
+        plays.playing(uid, song, exo.currentPosition / 1000.0, clock())
+    }
+
+    private fun reportNowPlaying(song: Song) {
         val graph = account ?: return
         if (!this.graph.settings.value.scrobble) return
         graph.scope.launch { runCatching { graph.api.scrobble(song.id, submission = false) } }

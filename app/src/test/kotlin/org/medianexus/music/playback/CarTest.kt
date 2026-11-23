@@ -136,36 +136,6 @@ class CarTest {
         assertEquals("Slow Rivers", VoiceRequest("play the album Slow Rivers on Nexus Music").searchWords())
     }
 
-    // ---- Counting plays -------------------------------------------------------------------
-
-    @Test
-    fun aPlayCountsAfterHalfTheSongOrFourMinutes() {
-        val count = PlayCount()
-        count.start("s1", 100.0)
-        var counted = 0
-        for (second in 1..60) if (count.at(second.toDouble())) counted++
-        // Once, at 50 seconds.
-        assertEquals(1, counted)
-        // A long song counts at four minutes.
-        assertEquals(240.0, PlayCount.threshold(3600.0), 0.0)
-        assertEquals(240.0, PlayCount.threshold(0.0), 0.0)
-    }
-
-    @Test
-    fun skippingAheadIsNotListening() {
-        val count = PlayCount()
-        count.start("s1", 100.0)
-        for (second in 1..10) count.at(second.toDouble())
-        count.jumped(80.0)
-        var counted = false
-        for (second in 81..99) counted = count.at(second.toDouble()) || counted
-        // 10 seconds before the jump and 19 after it: short of 50.
-        assertFalse(counted)
-        // A big jump that wasn't announced as a seek isn't counted either.
-        count.start("s2", 100.0)
-        assertFalse(count.at(90.0))
-    }
-
     // ---- How songs are streamed -----------------------------------------------------------
 
     @Test
