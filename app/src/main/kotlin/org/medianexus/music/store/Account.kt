@@ -88,7 +88,6 @@ class PasswordVault(private val file: File, private val box: SecretBox) {
         }
     }
 
-    fun delete() {
-        file.delete()
-    }
+    /** Removes the password. True once it is gone (or was never there). */
+    fun delete(): Boolean = file.delete() || !file.exists()
 }

@@ -16,6 +16,9 @@ sealed interface Notice {
 
     /** Signed in over plain HTTP to somewhere beyond the home network. */
     data object SignedInWithoutEncryption : Notice
+
+    /** Signing out didn't happen: the saved password couldn't be removed from the phone. */
+    data object SignOutFailed : Notice
 }
 
 /** The notices waiting to be seen, oldest first. */

@@ -1,15 +1,22 @@
 package org.medianexus.music
 
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -43,6 +50,11 @@ data class SignInState(val busy: Boolean = false, val error: String? = null, val
  * The signed-in account and its client for the server. Signing in and out happen here, not
  * in a screen, so they carry on through a screen being rebuilt and work for the playback
  * service with no screen at all.
+ *
+ * Every change of who is signed in (reading the saved sign-in at start-up, signing in,
+ * signing out) is a step in one queue, run one at a time in the order asked for. So a
+ * restore can't land after a sign-out, a sign-out's deletion can't land after the next
+ * sign-in has saved its password, and `state` only changes once the password on disk agrees.
  */
 class Session(
     private val settings: SettingsStore,
@@ -57,26 +69,38 @@ class Session(
     private val current = MutableStateFlow<SessionState>(SessionState.Restoring)
     val state: StateFlow<SessionState> = current.asStateFlow()
 
-    /** The client for the signed-in account; null when nobody is (or not yet known). */
-    val api: StateFlow<Subsonic?> = current
-        .map { (it as? SessionState.SignedIn)?.api }
-        .stateIn(scope, SharingStarted.Eagerly, null)
+    /** The client for the signed-in account; null when nobody is (or not yet known). Read
+     *  straight from `state`, so the two can never disagree. */
+    val api: StateFlow<Subsonic?> = ApiOf(current)
 
     private val signingIn = MutableStateFlow(SignInState())
     val signIn: StateFlow<SignInState> = signingIn.asStateFlow()
     private var signInJob: Job? = null
 
+    /** The steps that change who is signed in, run by one consumer (see the class). */
+    private val steps = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+    /** Moves on at every sign-out, so a sign-in or restore begun before it can tell it has
+     *  been overtaken and must not sign anyone in. */
+    private val generation = AtomicLong(0)
+
+    /** Work that belongs to the signed-in session (warming up connections), stopped when it
+     *  ends. Only touched by steps. */
+    private var sessionWork: Job? = null
+
     init {
+        scope.launch(io) { for (step in steps) step() }
         // The password is opened by the Keystore, which can take a moment: not on the main
         // thread. Nothing is asked of the server here; pages show what's kept and check after.
-        scope.launch(io) {
+        val asked = generation.get()
+        inOrder {
             val saved = settings.value
             val password = if (saved.server.isNotEmpty() && saved.username.isNotEmpty()) {
                 vault.load(saved.server, saved.username)
             } else {
                 null
             }
-            current.value = if (password != null) {
+            current.value = if (password != null && generation.get() == asked) {
                 signedIn(Subsonic(saved.server, saved.username, password, http, offline))
             } else {
                 SessionState.SignedOut
@@ -86,6 +110,20 @@ class Session(
 
     /** Waits until the saved sign-in has been read. */
     suspend fun restored(): SessionState = state.first { it != SessionState.Restoring }
+
+    /** Queues a step that changes who is signed in; the result says when it has run. */
+    private fun <T> inOrder(step: suspend () -> T): Deferred<T> {
+        val done = CompletableDeferred<T>()
+        steps.trySend {
+            try {
+                done.complete(step())
+            } catch (e: Throwable) {
+                done.completeExceptionally(e)
+                if (e is CancellationException) throw e
+            }
+        }
+        return done
+    }
 
     private fun signedIn(api: Subsonic): SessionState.SignedIn {
         val key = accountKey(api.server, api.username)
@@ -101,6 +139,7 @@ class Session(
         if (signingIn.value.busy) return
         signingIn.value = SignInState(busy = true)
         val name = username.trim()
+        val asked = generation.get()
         signInJob = scope.launch {
             var answer: Result<Pair<Subsonic, ServerInfo>> = Result.failure(ApiError.Network("No address was given."))
             val addresses = addressesToTry(server)
@@ -118,38 +157,70 @@ class Session(
                 val error = answer.exceptionOrNull()
                 if (error == null || error is ApiError.Server) break
             }
-            answer.fold(
-                onSuccess = { (client, _) ->
-                    settings.update { it.copy(server = client.server, username = name) }
-                    val kept = withContext(io) { vault.save(client.server, name, password) }
-                    if (!kept) notices.post(Notice.PasswordNotSaved)
-                    if (unencryptedBeyondHome(client.server)) notices.post(Notice.SignedInWithoutEncryption)
-                    current.value = signedIn(client)
-                    signingIn.value = SignInState()
-                    // Have connections open before the first taps need them.
-                    scope.launch { client.warmUp(WARM_CONNECTIONS) }
-                },
-                onFailure = { error ->
-                    // HTTPS was the only thing tried, and not because the person said so.
-                    val onlyGuessedHttps = addresses.size == 1 && splitScheme(server.trim()).first == null
-                    signingIn.value = SignInState(error = error.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server)
-                },
-            )
+            val client = answer.getOrNull()?.first
+            if (client == null) {
+                val error = answer.exceptionOrNull()
+                // HTTPS was the only thing tried, and not because the person said so.
+                val onlyGuessedHttps = addresses.size == 1 && splitScheme(server.trim()).first == null
+                if (generation.get() == asked) {
+                    signingIn.value = SignInState(error = error?.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server)
+                }
+                return@launch
+            }
+            inOrder {
+                // Signed out while the server was being asked: that sign-out wins.
+                if (generation.get() != asked) return@inOrder
+                settings.update { it.copy(server = client.server, username = name) }
+                val kept = withContext(io) { vault.save(client.server, name, password) }
+                if (!kept) notices.post(Notice.PasswordNotSaved)
+                if (unencryptedBeyondHome(client.server)) notices.post(Notice.SignedInWithoutEncryption)
+                current.value = signedIn(client)
+                signingIn.value = SignInState()
+                // Have connections open before the first taps need them.
+                sessionWork?.cancel()
+                sessionWork = scope.launch { client.warmUp(WARM_CONNECTIONS) }
+            }.await()
         }
     }
 
-    /** Signs out and forgets the password. The address and username stay, ready for signing
-     *  in again. */
-    fun signOut() {
+    /**
+     * Signs out and forgets the password. The address and username stay, ready for signing
+     * in again. Done once the saved password is gone from the phone; if it can't be removed,
+     * the account stays signed in (it would be back at the next start anyway) and a notice
+     * says so. The job returned finishes when the sign-out has.
+     */
+    fun signOut(): Job {
+        generation.incrementAndGet()
         signInJob?.cancel()
         signingIn.value = SignInState()
-        notices.dismiss(Notice.SignedInWithoutEncryption)
-        current.value = SessionState.SignedOut
-        scope.launch(io) { vault.delete() }
+        return inOrder {
+            sessionWork?.cancel()
+            sessionWork = null
+            if (withContext(io) { vault.delete() }) {
+                notices.dismiss(Notice.SignOutFailed)
+                notices.dismiss(Notice.SignedInWithoutEncryption)
+                current.value = SessionState.SignedOut
+            } else {
+                notices.post(Notice.SignOutFailed)
+            }
+        }
     }
 
     private companion object {
         const val GUESS_LIMIT_MILLIS = 5_000L
         const val WARM_CONNECTIONS = 6
+    }
+}
+
+/** `state`'s client, as a `StateFlow` whose value is worked out from `state`'s at the moment
+ *  it is read, rather than a copy kept up to date after it (which would lag behind). */
+@OptIn(ExperimentalForInheritanceCoroutinesApi::class)
+private class ApiOf(private val state: StateFlow<SessionState>) : StateFlow<Subsonic?> {
+    override val value: Subsonic? get() = (state.value as? SessionState.SignedIn)?.api
+    override val replayCache: List<Subsonic?> get() = listOf(value)
+
+    override suspend fun collect(collector: FlowCollector<Subsonic?>): Nothing {
+        state.map { (it as? SessionState.SignedIn)?.api }.distinctUntilChanged().collect(collector)
+        awaitCancellation()
     }
 }

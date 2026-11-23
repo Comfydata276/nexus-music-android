@@ -56,5 +56,6 @@
     <string name="notice_settings_backup">Your settings file was damaged, so the copy from the last time the app started was used.</string>
     <string name="notice_settings_reset">Your settings file couldn\'t be read and there was no copy to fall back on. It has been kept as %1$s, and the app has started with its default settings.</string>
     <string name="notice_password_not_saved">Couldn\'t save your password; you\'ll need to sign in next time.</string>
+    <string name="notice_sign_out_failed">Couldn\'t sign out: your saved password couldn\'t be removed from this phone. Try again.</string>
     <string name="notice_unencrypted">Signed in without encryption: over plain HTTP your sign-in and your music can be read on the way. If your server has an https:// address, sign in with that.</string>
 </resources>
