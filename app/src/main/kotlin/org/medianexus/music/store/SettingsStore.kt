@@ -122,7 +122,7 @@ class SettingsStore private constructor(
         }
 
         private fun decode(bytes: ByteArray?): Settings? = try {
-            bytes?.let { json.decodeFromString(Settings.serializer(), it.decodeToString()) }
+            bytes?.let { json.decodeFromString(Settings.serializer(), it.decodeToString()).repaired() }
         } catch (_: SerializationException) {
             null
         } catch (_: IllegalArgumentException) {

@@ -26,7 +26,8 @@ data class SavedCurve(val name: String = "", val gains: List<Float> = FLAT)
 /**
  * The settings, as the Windows app keeps them (src/config.rs), less what only makes sense on
  * a computer: the window, the tray, the output device, exclusive mode, interface size and
- * folders of the user's choosing. Saved as JSON with the same field names.
+ * folders of the user's choosing. Saved as JSON with the same field names, but the file is
+ * the phone's own: it need not be one Windows can read, nor read one of Windows'.
  *
  * Every field has a default, so a file written by an older version reads as it was, with
  * anything new at its default.
@@ -112,6 +113,14 @@ data class Settings(
         return EqCurve.Custom
     }
 
+    /** The settings with what can't be used put right, as they're read: an equaliser curve
+     *  has exactly six bands, so one of any other length is set flat, or dropped if saved. */
+    internal fun repaired(): Settings {
+        val gains = eqGains.takeIf { it.size == EQ_BANDS } ?: FLAT
+        val saved = eqSaved.filter { it.gains.size == EQ_BANDS }
+        return if (gains === eqGains && saved.size == eqSaved.size) this else copy(eqGains = gains, eqSaved = saved)
+    }
+
     /** The preamp in use, in dB: the amount set, or for Auto exactly enough room for the band
      *  turned up the most. */
     fun eqPreampNow(): Float = if (eqPreamp > 0f) -eqGains.fold(0f) { most, gain -> maxOf(most, gain) } else eqPreamp
@@ -126,7 +135,10 @@ sealed interface EqCurve {
 
 const val DEFAULT_THEME = "Violet"
 
-private val FLAT = List(6) { 0f }
+/** How many bands the equaliser has. */
+const val EQ_BANDS = 6
+
+private val FLAT = List(EQ_BANDS) { 0f }
 
 // The choices Settings offers, as on Windows. Their names are words a person reads, so they
 // live in the string resources, in the same order.

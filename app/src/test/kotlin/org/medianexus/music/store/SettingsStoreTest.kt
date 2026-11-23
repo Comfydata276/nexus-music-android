@@ -190,6 +190,23 @@ class SettingsStoreTest {
         assertFalse(File(dir, "settings.backup.tmp").exists())
     }
 
+    @Test
+    fun anEqualiserCurveOfTheWrongLengthIsPutRightOnLoad() {
+        val path = File(folder.newFolder(), "settings.json")
+        path.writeText(
+            """{"eq_gains":[1,2,3],"eq_saved":[{"name":"Short","gains":[1]},{"name":"Good","gains":[1,2,3,4,5,6]},{"name":"Long","gains":[1,2,3,4,5,6,7]}],"theme":"Ocean"}""",
+        )
+        val (settings, damage) = SettingsStore.loadChecked(path)
+        // Put right, not taken for damage: the rest of the file stands.
+        assertNull(damage)
+        assertEquals("Ocean", settings.theme)
+        assertEquals(List(6) { 0f }, settings.eqGains)
+        assertEquals(listOf("Good"), settings.eqSaved.map { it.name })
+        // A good curve is left as it is.
+        val good = Settings(eqGains = listOf(1f, 2f, 3f, 4f, 5f, 6f))
+        assertTrue(good.repaired() === good)
+    }
+
     /** Ported from `names_the_equaliser_curve_and_works_out_the_preamp` in src/config.rs. */
     @Test
     fun namesTheEqualiserCurveAndWorksOutThePreamp() {
