@@ -211,6 +211,13 @@ class QueuePlayer(
         return next.order.map { itemOf(next.songs[it], next.uids[it]) } to next.cursor
     }
 
+    /** The song at the cursor, as the session shows it; null with an empty queue. Changes
+     *  nothing. */
+    fun currentItem(): MediaItem? {
+        val uid = queue.currentUid() ?: return null
+        return queue.current()?.let { itemOf(it, uid) }
+    }
+
     /** The saved queue, from the last run: paused where it stopped. */
     fun restore(saved: SavedQueue) {
         if (!queue.isEmpty) return

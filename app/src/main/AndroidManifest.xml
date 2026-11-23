@@ -79,10 +79,11 @@
             </intent-filter>
         </service>
 
-        <!-- A headset's or the car's play button with the app not running: Media3 starts the
-             player and picks up where it left off. -->
+        <!-- A headset's or the car's play button with the app not running: the player starts
+             and picks up where it left off, if there is anything to pick up (see
+             PlayButtonReceiver). -->
         <receiver
-            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:name=".playback.PlayButtonReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />

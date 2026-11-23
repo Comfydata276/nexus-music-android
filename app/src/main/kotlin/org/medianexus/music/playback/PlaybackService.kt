@@ -1,12 +1,17 @@
 package org.medianexus.music.playback
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -46,6 +51,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -186,6 +192,63 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
+
+    // ---- Started by a button, with the app not running --------------------------------------
+
+    /**
+     * Set when the service was started "in the foreground" for a media button and has not
+     * yet shown the notification that keeps that promise. Media3 shows it when playback
+     * starts. If there turns out to be nothing to play, the promise is kept deliberately and
+     * the service stopped (see [standDown]); left alone, the system kills the whole app with
+     * ForegroundServiceDidNotStartInTimeException.
+     */
+    private var promised = false
+    private val promiseCheck = Runnable { if (promised) standDown() }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == Intent.ACTION_MEDIA_BUTTON && !isPlaybackOngoing) {
+            promised = true
+            // Whatever happens to the request (a reply that never comes, a command Media3
+            // drops), the promise is looked at again well inside the system's time limit.
+            main.removeCallbacks(promiseCheck)
+            main.postDelayed(promiseCheck, PROMISE_MILLIS)
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    /**
+     * Ends a start that has nothing to play, the way Media3's own service does when it has
+     * no session to give (`stopSelfSafely`): enter the foreground with a notification that
+     * is never shown (the system holds a new foreground notification back for ten seconds),
+     * leave it at once, and stop. Does nothing if playback did start.
+     */
+    private fun standDown() {
+        promised = false
+        main.removeCallbacks(promiseCheck)
+        if (isPlaybackOngoing) return
+        try {
+            val manager = getSystemService(NotificationManager::class.java)
+            val channel = DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID
+            if (manager.getNotificationChannel(channel) == null) {
+                manager.createNotificationChannel(
+                    NotificationChannel(channel, getString(DefaultMediaNotificationProvider.DEFAULT_CHANNEL_NAME_RESOURCE_ID), NotificationManager.IMPORTANCE_LOW),
+                )
+            }
+            val notification = NotificationCompat.Builder(this, channel)
+                .setSmallIcon(R.drawable.ic_bars)
+                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+                .setOnlyAlertOnce(true)
+                .setOngoing(false)
+                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
+                .build()
+            ServiceCompat.startForeground(this, STAND_DOWN_NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        } catch (_: IllegalStateException) {
+            // Not allowed into the foreground at all: then nothing was promised either.
+        }
+        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "started by a button with nothing to play: stopped cleanly")
+        pauseAllPlayersAndStopSelf()
+    }
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
@@ -491,6 +554,16 @@ class PlaybackService : MediaLibraryService() {
             if (playbackState == Player.STATE_ENDED) plays.ended(clock())
         }
 
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // "Play" with nothing to play is not playing: Media3 presses play all the same
+            // when there was nothing to resume, and left like that the next queue to arrive
+            // would start by itself.
+            if (playWhenReady && player.queue.isEmpty) {
+                exo.pause()
+                if (promised) standDown()
+            }
+        }
+
         override fun onPlayerError(error: PlaybackException) {
             val song = player.queue.current() ?: return
             when {
@@ -725,10 +798,33 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
 
-        /** "Play", with nothing in the player: the queue as it was left; failing that, Liked
-         *  songs shuffled. */
+        /**
+         * "Play", with nothing in the player: a headset or car button, or the system asking
+         * what it would resume. The queue as it was left, and nothing else: read from the
+         * phone, waited for only briefly, with no word to the server. (Looking for something
+         * to play when there is nothing to carry on with is for a spoken "play music", which
+         * can wait; a button that started the app cold can't.)
+         *
+         * With `isForPlayback` false the system only wants to know what would play, to draw
+         * its "resume" card: it is told, and nothing is loaded or started.
+         */
         override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, isForPlayback: Boolean): ListenableFuture<MediaItemsWithStartPosition> =
-            answer({ throw refuse(controller, signedOut()) }) { era -> resume(era, controller) }
+            scope.future {
+                val era = withTimeoutOrNull(RESUME_WAIT_MILLIS) { eraOrNull() }
+                val ready = era != null && withTimeoutOrNull(RESUME_WAIT_MILLIS) { era.restoring.await() } != null && era === this@PlaybackService.era
+                if (!isForPlayback) {
+                    val item = (if (ready) player.currentItem() else null) ?: throw UnsupportedOperationException("Nothing to resume")
+                    return@future MediaItemsWithStartPosition(listOf(item), 0, exo.currentPosition)
+                }
+                val (items, start) = (if (ready) player.stageCurrent() else null) ?: run {
+                    // Said in words to whoever asked, unless what's wrong is that nobody is
+                    // signed in, which the car is already being told.
+                    if (era != null) session.sendError(controller, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.nothing_to_play)))
+                    main.post { if (promised) standDown() }
+                    throw UnsupportedOperationException("Nothing to resume")
+                }
+                MediaItemsWithStartPosition(items, start, exo.currentPosition)
+            }
 
         override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
             // Authorised here, where it is carried out, and not only by what the controller
@@ -911,6 +1007,16 @@ class PlaybackService : MediaLibraryService() {
         private const val SERVER_WAIT_MILLIS = 15_000L
         private const val TICK_MILLIS = 1_000L
         private const val CAR_WAIT_MILLIS = 7_000L
+
+        /** How long "play" with nothing loaded waits for the saved sign-in, and then for the
+         *  saved queue, to be read from the phone. */
+        private const val RESUME_WAIT_MILLIS = 3_000L
+
+        /** How long after a button started the service the promise to enter the foreground
+         *  is looked at again. The system allows 30 seconds on Android 17 and 10 on older
+         *  versions; this is well inside both. */
+        private const val PROMISE_MILLIS = 7_000L
+        private const val STAND_DOWN_NOTIFICATION = 20_001
         private const val CHECKPOINT_MILLIS = 20_000L
     }
 }

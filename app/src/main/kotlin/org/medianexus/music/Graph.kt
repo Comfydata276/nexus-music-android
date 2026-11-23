@@ -38,8 +38,7 @@ class Graph(context: Context) {
 
     val session = Session(
         settings = settings,
-        // Kept out of backups: the key that opens it can't leave the phone anyway.
-        vault = PasswordVault(File(context.noBackupFilesDir, "password.sealed"), KeystoreBox()),
+        vault = PasswordVault(passwordFile(context), KeystoreBox()),
         http = http,
         offline = offline,
         dirsFor = { key -> accountDirs(context.filesDir, context.cacheDir, key) },
@@ -62,6 +61,12 @@ class Graph(context: Context) {
 
     /** The screens' one way to the player (the playback service's session). */
     val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream))
+
+    companion object {
+        /** Where the saved password is. Kept out of backups: the key that opens it can't
+         *  leave the phone anyway. */
+        fun passwordFile(context: Context): File = File(context.noBackupFilesDir, "password.sealed")
+    }
 
     init {
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }

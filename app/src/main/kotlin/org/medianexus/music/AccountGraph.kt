@@ -44,7 +44,7 @@ class AccountGraph(
     val likes = Likes(pages, library.liked(), send = { id, liked -> api.setStarred(StarTarget.SONG, id, liked) }, scope)
 
     /** The play queue as it was left, kept with the account's own data. */
-    val queue = KeptQueue(QueueFiles(File(account.dirs.data, "queue.json"), File(account.dirs.data, "queue-place.json")), queueSaver)
+    val queue = KeptQueue(QueueFiles.of(account.dirs.data), queueSaver)
 
     /** Where kept songs go. Opened by the playback service, which owns them. */
     val keptSongsDir = File(account.dirs.cache, "songs")

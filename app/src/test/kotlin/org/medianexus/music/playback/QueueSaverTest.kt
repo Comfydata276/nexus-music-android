@@ -97,6 +97,28 @@ class QueueSaverTest {
     }
 
     @Test
+    fun aButtonOnlyStartsThePlayerWhenThereIsSomethingToResume() {
+        // What the Play button looks at before it promises the system that music is coming.
+        val password = File(folder.root, "password.sealed")
+        val saved = File(folder.root, "queue.json")
+        fun worth(server: String = "https://music.example", name: String = "ada") = Resumption.possible(server, name, password, saved)
+        // Signed out: no password. (The address and name stay after a sign-out.)
+        assertFalse(worth())
+        password.writeText("sealed")
+        // Signed in, and nothing was ever played.
+        assertFalse(worth())
+        saved.writeText("")
+        assertFalse(worth())
+        files().save(queue("a", "b"))
+        assertTrue(worth())
+        // Never signed in at all.
+        assertFalse(worth(server = ""))
+        assertFalse(worth(name = ""))
+        password.delete()
+        assertFalse(worth())
+    }
+
+    @Test
     fun readingNothingIsStillHavingRead() = runBlocking {
         val kept = KeptQueue(files(), saver)
         assertFalse(kept.restored)

@@ -148,6 +148,11 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
             explicitNulls = false
             encodeDefaults = false
         }
+
+        /** An account's saved queue, in its data folder. */
+        fun of(data: File) = QueueFiles(queueFile(data), File(data, "queue-place.json"))
+
+        fun queueFile(data: File) = File(data, "queue.json")
     }
 }
 
