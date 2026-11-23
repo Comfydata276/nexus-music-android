@@ -89,3 +89,47 @@ adb_() {
 adb_sh() {
   docker exec -i "$container" adb -s "$serial" shell "$@"
 }
+
+# --- the rig's own tools (the car probe and the stand-in fixture) ----------------------
+probe_apk="$root/tools/carprobe/build/outputs/apk/debug/carprobe-debug.apk"
+standin_apk="$root/tools/standin/build/outputs/apk/debug/standin-debug.apk"
+
+# Build them if an APK is missing or older than its sources. One Gradle build at a time on
+# this machine: if the app's build is running, wait for it rather than fight it for memory.
+build_tools() {
+  local stale=0 apk
+  for apk in "$probe_apk" "$standin_apk"; do
+    if [ ! -f "$apk" ]; then stale=1; continue; fi
+    local module; module="$(echo "$apk" | sed -E 's|.*/tools/([^/]+)/build/.*|\1|')"
+    if [ -n "$(find "$root/tools/$module/src" "$root/tools/$module/build.gradle.kts" "$root/tools/settings.gradle.kts" \
+               "$root/gradle/libs.versions.toml" -newer "$apk" -print -quit 2>/dev/null)" ]; then stale=1; fi
+  done
+  [ "$stale" = 1 ] || return 0
+  need_rig_image
+  local waited=0
+  while docker ps --format '{{.Image}} {{.Command}}' | grep -q -E "^$base_image .*gradlew"; do
+    [ "$waited" = 0 ] && say "another Gradle build is running; waiting for it to finish..."
+    waited=$((waited + 5)); [ "$waited" -lt 900 ] || die "another Gradle build has been running for 15 minutes; try again later"
+    sleep 5
+  done
+  say "building the rig's tools (about a minute)..."
+  local log="$cache/logs/tools-build.log"; mkdir -p "$cache/logs"
+  if ! "$root/scripts/dx" ./gradlew --no-daemon -q -p tools :carprobe:assembleDebug :standin:assembleDebug >"$log" 2>&1; then
+    tail -n 30 "$log" >&2
+    die "the rig's tools did not build (full log: $log)"
+  fi
+}
+
+# Is this package installed, at the same version as this APK file? Installs it if not.
+ensure_installed() {
+  local apk="$1" package="$2" stamp
+  stamp="$(stat -c %Y "$apk")"
+  if [ "$(adb_sh "pm path $package >/dev/null 2>&1 && cat /data/local/tmp/$package.stamp 2>/dev/null" | tr -d '\r\n')" != "$stamp" ]; then
+    docker exec -i "$container" sh -c "cat > /tmp/$package.apk" < "$apk"
+    adb_ install -r -t -g "/tmp/$package.apk" >/dev/null 2>&1 \
+      || { adb_ uninstall "$package" >/dev/null 2>&1; adb_ install -r -t -g "/tmp/$package.apk" >/dev/null; } \
+      || die "could not install $(basename "$apk") on the $device emulator"
+    docker exec "$container" rm -f "/tmp/$package.apk"
+    adb_sh "echo $stamp > /data/local/tmp/$package.stamp"
+  fi
+}

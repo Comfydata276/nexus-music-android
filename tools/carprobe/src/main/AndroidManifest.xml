@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- As Android Auto does: look for every app with a media browser service. -->
+    <queries>
+        <intent>
+            <action android:name="android.media.browse.MediaBrowserService" />
+        </intent>
+    </queries>
+
+    <application android:label="Car probe (test tool)">
+        <!-- Does nothing. It is here so the rig can give this app notification access,
+             which is what makes a media session treat a caller as trusted, as it treats
+             Android Auto. Without it the probe is an unknown app and may only look. -->
+        <service
+            android:name=".Listener"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+
+    <!-- Run with `am instrument`; scripts/carcheck does it. It tests no app of its own:
+         it runs in this package's process, as a separate app from the one it examines. -->
+    <instrumentation
+        android:name=".Probe"
+        android:label="Car probe"
+        android:targetPackage="org.medianexus.carprobe" />
+</manifest>

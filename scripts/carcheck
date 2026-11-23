@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# The automated Android Auto check: connects to an installed app's media service the way
+# Android Auto does and reports, item by item, what a car would get. See docs/TESTING.md.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+usage() {
+  cat >&2 <<'TXT'
+usage: scripts/carcheck <package> [options]     check an installed app
+       scripts/carcheck --standin [options]     install the stand-in fixture and check it
+       scripts/carcheck --selftest              prove the checks fail when they should
+
+  --nexus               hold the app to what docs/DESIGN.md promises the car
+                        (the four tabs by name; like, shuffle and repeat buttons)
+  --query "<words>"     what to search for (default: a word from a song the app lists)
+  --voice "<requests>"  spoken requests, separated by ';', each
+                          kind:words[|field=value...][=>words expected in what plays]
+                        kind is any, artist, album, song, playlist or genre, e.g.
+                          "artist:Paper Lanterns=>Paper Lanterns;song:Slow Rivers|artist=Juniper Vale=>Slow Rivers"
+  --tabs "A,B,C"        the tabs must be exactly these
+  --buttons "a,b"       the player's extra buttons must include these (part of a name)
+  --press-buttons       press each extra button and see that the session answers
+  --mode browse         stop after browsing, artwork and search (nothing is played)
+  --mode signed_out     only check that the car is told, in words, to sign in
+  --depth N             how many levels of folders to open (default 4)
+  --nodes N             how many folders to open at most (default 80)
+  --limit-ms N          how long any one answer may take (default 10000)
+  --json <file>         where to write the full report (default: under the cache)
+  --untrusted           connect as an ordinary app instead of a trusted one like Android
+                        Auto, to see what any app on the phone is allowed to do
+
+Uses the phone emulator; set NEXUS_DEVICE=car to run it on the car emulator instead.
+Exit status is 0 when nothing failed.
+TXT
+  exit 2
+}
+
+run_probe() { # <package> <report file> <extra am arguments...>; prints the probe's lines
+  local package="$1" report="$2"; shift 2
+  local out; out="$(mktemp)"
+  # One quoted string for the device's shell, so words with spaces survive the trip.
+  local cmd="am instrument -w -e target '$package'" a
+  for a in "$@"; do cmd+=" '${a//\'/\'\\\'\'}'"; done
+  cmd+=" org.medianexus.carprobe/.Probe"
+  adb_sh "$cmd" 2>&1 | tr -d '\r' | tee "$out" | grep -v -E '^PROBE_JSON:|^INSTRUMENTATION_CODE|^$' || true
+  if ! grep -q '^PROBE_JSON:' "$out"; then
+    rm -f "$out"; die "the probe did not finish (see above; scripts/emu logs org.medianexus.carprobe may say why)"
+  fi
+  mkdir -p "$(dirname "$report")"
+  grep '^PROBE_JSON:' "$out" | sed 's/^PROBE_JSON://' > "$report"
+  rm -f "$out"
+}
+
+failed_in() { grep -o '"failed":[0-9]*' "$1" | head -n 1 | cut -d: -f2; }
+status_of() { # <report> <check id>
+  docker exec -i "$container" python3 -c '
+import json, sys
+wanted = sys.argv[1]
+print(next((r["status"] for r in json.load(sys.stdin)["results"] if r["id"] == wanted), "MISSING"))' "$2" < "$1"
+}
+
+device_setup ""
+[ $# -ge 1 ] || usage
+target=""; extra=(); json=""; selftest=0; trusted=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --standin) target=org.medianexus.standin ;;
+    --selftest) selftest=1; target=org.medianexus.standin ;;
+    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library,Downloads" -e expect_buttons "like,shuffle,repeat") ;;
+    --query) extra+=(-e query "${2:?}"); shift ;;
+    --voice) extra+=(-e voice "${2:?}"); shift ;;
+    --tabs) extra+=(-e expect_tabs "${2:?}"); shift ;;
+    --buttons) extra+=(-e expect_buttons "${2:?}"); shift ;;
+    --press-buttons) extra+=(-e press_buttons true) ;;
+    --mode) extra+=(-e mode "${2:?}"); shift ;;
+    --depth) extra+=(-e depth "${2:?}"); shift ;;
+    --nodes) extra+=(-e nodes "${2:?}"); shift ;;
+    --limit-ms) extra+=(-e limit_ms "${2:?}"); shift ;;
+    --json) json="${2:?}"; shift ;;
+    --untrusted) trusted=0 ;;
+    -h|--help) usage ;;
+    -*) say "unknown option: $1"; usage ;;
+    *) target="$1" ;;
+  esac
+  shift
+done
+[ -n "$target" ] || usage
+need_emulator
+build_tools
+ensure_installed "$probe_apk" org.medianexus.carprobe
+# Android Auto is a caller media sessions trust (it may read notifications, among other
+# things), and Media3 gives full control only to callers it trusts. Give the probe the same
+# standing, or take it away to see what an unknown app is allowed.
+listener=org.medianexus.carprobe/org.medianexus.carprobe.Listener
+if [ "$trusted" = 1 ]; then adb_sh cmd notification allow_listener "$listener" >/dev/null
+else adb_sh cmd notification disallow_listener "$listener" >/dev/null; fi
+if [ "$target" = org.medianexus.standin ]; then
+  ensure_installed "$standin_apk" org.medianexus.standin
+  adb_sh "am broadcast -n org.medianexus.standin/.Faults --es set ''" >/dev/null
+else
+  adb_sh pm path "$target" >/dev/null 2>&1 || die "$target is not installed on the $device emulator (scripts/emu install <apk>)"
+fi
+reports="$cache/reports"
+
+if [ "$selftest" = 0 ]; then
+  [ -n "$json" ] || json="$reports/carcheck-$target-$(date +%Y%m%d-%H%M%S).json"
+  run_probe "$target" "$json" "${extra[@]}"
+  say "full report: $json"
+  [ "$(failed_in "$json")" = 0 ]
+  exit
+fi
+
+# --- selftest: break the stand-in one way at a time; the matching check must notice ------
+standin_voice="album:Bravo Nights=>Bravo;artist:Fixture Four=>Fixture Four;playlist:Fixture favourites=>Alpha First;song:Delta Third=>Delta Third;any:echo=>Echo"
+problems=0
+expect() { # <label> <fault list> <check id> <status wanted> <probe arguments...>
+  local label="$1" faults="$2" id="$3" want="$4"; shift 4
+  adb_sh "am force-stop org.medianexus.standin; am broadcast -n org.medianexus.standin/.Faults --es set '$faults'" >/dev/null
+  local report="$reports/selftest-${faults:-healthy}-$id.json"
+  run_probe org.medianexus.standin "$report" "$@" >/dev/null
+  local got; got="$(status_of "$report" "$id")"
+  if [ "$got" = "$want" ]; then echo "ok    $label: $id is $got"
+  else echo "WRONG $label: $id is $got, expected $want (report: $report)"; problems=$((problems + 1)); fi
+}
+say "1/3 the healthy stand-in must pass everything..."
+adb_sh "am broadcast -n org.medianexus.standin/.Faults --es set ''" >/dev/null
+healthy="$reports/selftest-healthy.json"
+run_probe org.medianexus.standin "$healthy" -e expect_tabs "Home,Playlists,Library,Downloads" -e expect_buttons "like,shuffle,repeat" \
+  -e press_buttons true -e query "bravo" -e voice "$standin_voice" | grep -E "^(FAIL|RESULT)" || true
+if [ "$(failed_in "$healthy")" = 0 ]; then echo "ok    healthy stand-in: no failures"
+else echo "WRONG healthy stand-in: $(failed_in "$healthy") failures (report: $healthy)"; problems=$((problems + 1)); fi
+say "2/3 faults that browsing should catch..."
+expect "artwork given as web addresses" art_http art.addresses FAIL -e mode browse
+expect "artwork other apps may not read" art_private art.readable FAIL -e mode browse
+expect "service that cannot search" no_search root.search FAIL -e mode browse
+expect "a folder that takes 12 seconds" slow browse.loads FAIL -e mode browse
+expect "five things at the root" five_tabs browse.tabs FAIL -e mode browse
+expect "nobody signed in" signed_out signed_out.message PASS -e mode signed_out
+say "3/3 faults that playing should catch (a minute or so each)..."
+expect "spoken requests refused" deaf voice.1 FAIL -e voice "album:Bravo Nights=>Bravo"
+expect "nothing to resume" no_resume resume.play FAIL
+adb_sh "am force-stop org.medianexus.standin; am broadcast -n org.medianexus.standin/.Faults --es set ''" >/dev/null
+if [ "$problems" = 0 ]; then echo "selftest passed: every fault was caught and the healthy stand-in passed"
+else echo "selftest FAILED: $problems unexpected results"; exit 1; fi
