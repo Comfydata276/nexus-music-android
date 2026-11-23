@@ -57,6 +57,10 @@ class AddressesTest {
         assertEquals("https://music.example.com", normalizeServerUrl(" https://music.example.com/ "))
         assertEquals("http://tower:4533", normalizeServerUrl("http://tower:4533/app/#/album"))
         assertEquals("http://tower/music", normalizeServerUrl("http://tower/music/"))
+        // Beyond the Windows tests: a trailing slash doesn't keep "/rest" or "/app" in.
+        assertEquals("https://music.example.com", normalizeServerUrl("https://music.example.com/rest/"))
+        assertEquals("https://music.example.com", normalizeServerUrl("https://music.example.com/rest"))
+        assertEquals("http://tower:4533/music", normalizeServerUrl("http://tower:4533/music/app//"))
     }
 
     @Test

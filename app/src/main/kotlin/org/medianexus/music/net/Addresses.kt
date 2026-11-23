@@ -12,6 +12,9 @@ fun normalizeServerUrl(input: String): String {
     url = if (scheme == null) "http://$url" else "$scheme://$rest"
     val app = url.indexOf("/app/")
     if (app >= 0) url = url.substring(0, app)
+    // Trailing slashes first, so ".../rest/" loses its "/rest" too and the first request
+    // isn't sent to ".../rest/rest/ping". (Windows still has that slip.)
+    while (url.endsWith('/') || url.endsWith('#')) url = url.dropLast(1)
     for (suffix in listOf("/app", "/rest")) {
         if (url.endsWith(suffix)) url = url.dropLast(suffix.length)
     }
