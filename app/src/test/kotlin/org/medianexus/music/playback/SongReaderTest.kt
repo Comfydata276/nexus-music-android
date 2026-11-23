@@ -215,8 +215,15 @@ class SongReaderTest {
             )
         }
 
-        override fun wholeLength(key: String, converted: Boolean): Long =
-            kept[key]?.takeIf { it.length >= 0 && it.bytes.size().toLong() == it.length && (it.marked || !converted) }?.length ?: -1
+        /** Run by whoever next looks for a whole copy, once it has looked and before it has
+         *  its answer: where a test lets another read get on. */
+        var whenLookedAt: (() -> Unit)? = null
+
+        override fun wholeLength(key: String, converted: Boolean): Long {
+            val length = kept[key]?.takeIf { it.length >= 0 && it.bytes.size().toLong() == it.length && (it.marked || !converted) }?.length ?: -1
+            whenLookedAt?.also { whenLookedAt = null }?.invoke()
+            return length
+        }
 
         override fun keep(key: String, length: Long): Boolean {
             val entry = kept[key]?.takeIf { it.length == length && it.bytes.size().toLong() == length } ?: return false
@@ -835,5 +842,45 @@ class SongReaderTest {
         reader.close()
         // It used to ask the server once more first, and only then notice.
         assertEquals("asked of the server in offline mode: $asked", 1, asked.size)
+    }
+
+    @Test
+    fun aSecondReadCannotThrowAwayTheCopyTheFirstHasJustFinished() {
+        val streams = Streams()
+        val writers = ConversionWriters()
+        val where = converted()
+        val whole = conversion(128, 0)
+        // One read is keeping the conversion as it plays, and is part-way through.
+        val first = SongReader(streams, heads, writers, pause = { waits += it })
+        first.open(where, 0)
+        val began = first.take(30_000)
+        // A second read of the same song opens (the player fetching ahead, or a seek back to
+        // its start). It looks for a whole copy: there is none yet. And in the moment after
+        // it has looked, the first read comes to its end and closes, its copy whole.
+        var rest = ByteArray(0)
+        val finishing = Thread {
+            rest = first.take()
+            first.close()
+        }
+        streams.whenLookedAt = {
+            finishing.start()
+            // Until it has finished, or can get no further because the second read's look
+            // is not over (which is the point).
+            while (finishing.isAlive && finishing.state != Thread.State.BLOCKED) Thread.yield()
+        }
+        val second = SongReader(streams, heads, writers, pause = { waits += it })
+        second.open(where, 0)
+        // It reads the song's start and is closed, as a read is when the player moves on.
+        val heard = second.take(20_000)
+        second.close()
+        finishing.join()
+        assertArrayEquals(whole, began + rest)
+        assertArrayEquals(whole.copyOf(20_000), heard)
+        // Looking and claiming were two steps: having seen no whole copy, the second read
+        // went on to claim the right to keep one, found it free (the first had just let it
+        // go), and began by clearing away "whatever is kept, which is not whole": the copy
+        // the first read had that moment finished. What it then kept itself was only the
+        // start of the song, and went when it closed: nothing was left kept at all.
+        assertEquals("the finished copy was thrown away", whole.size.toLong(), streams.wholeLength(where.key))
     }
 }

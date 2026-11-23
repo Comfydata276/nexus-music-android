@@ -252,7 +252,9 @@ class PlaybackService : MediaLibraryService() {
         scope.launch {
             graph.settings.state.map { it.cacheLimitMb }.distinctUntilChanged().drop(1).collect {
                 val kept = era?.kept ?: return@collect
-                graph.scope.launch(Dispatchers.IO) { kept.enforce() }
+                // (Tried again if the folder is still held by the account's turn before
+                // this one; a limit of nothing clears everything kept, now.)
+                graph.scope.launch(Dispatchers.IO) { limitApplied(kept.enforceWhenFree()) }
             }
         }
         main.postDelayed(ticker, TICK_MILLIS)
@@ -720,7 +722,13 @@ class PlaybackService : MediaLibraryService() {
         // nothing the kept songs are never opened to play from, so nothing else would ever
         // clear them. A look at the folder's size, off the main thread; nothing is opened
         // unless there is something to remove.
-        graph.scope.launch(Dispatchers.IO) { next.kept.enforceIfOver() }
+        graph.scope.launch(Dispatchers.IO) { limitApplied(next.kept.enforceWhenFree(onlyIfOver = true)) }
+    }
+
+    /** Noted when the limit on kept songs could not be applied because their folder never
+     *  came free (not when the account simply went). */
+    private fun limitApplied(done: Boolean) {
+        if (!done && era != null) graph.diagnostics.note("kept songs: the limit could not be applied yet (their folder was still in use)")
     }
 
     /**

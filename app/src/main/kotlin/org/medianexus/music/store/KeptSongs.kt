@@ -41,23 +41,49 @@ class KeptSongs(private val dir: File, private val database: DatabaseProvider, p
      * and turning it off, which stops songs being added, freed nothing at all.) Opens the
      * cache if need be; call it off the main thread.
      */
-    fun enforce() {
-        val cache = shared.acquire() ?: return
+    fun enforce(): Enforced {
+        // Closed for good (the account has gone): nothing to do, now or later.
+        if (shared.closing) return Enforced.CLOSED
+        // The folder is still held by the account's turn before this one (the same account
+        // signed out and straight back in: its reads are closing): not yet. It used to be
+        // passed over there, and what was over the limit stayed until something else played.
+        val cache = shared.acquire() ?: return if (shared.closing) Enforced.CLOSED else Enforced.BUSY
         try {
             evictor.trim(cache)
         } finally {
             shared.release()
         }
+        return Enforced.DONE
     }
+
+    /** What became of applying the limit. */
+    enum class Enforced { DONE, BUSY, CLOSED }
 
     /**
      * As [enforce], if what is kept on disk is more than the limit allows. For when an account
      * is taken on: the limit may have been lowered, or set to nothing, while it was away.
      * (Told from the size of the folder, without opening anything.)
      */
-    fun enforceIfOver() {
+    fun enforceIfOver(): Enforced {
         val onDisk = dir.listFiles()?.sumOf { file -> if (file.isDirectory) file.listFiles()?.sumOf { it.length() } ?: 0L else file.length() } ?: 0L
-        if (onDisk > limitBytes()) enforce()
+        return if (onDisk > limitBytes()) enforce() else Enforced.DONE
+    }
+
+    /**
+     * Applies the limit, trying again while the folder is still held by whoever had it last:
+     * `pause` waits between tries (a second at a time by default; call this off the main
+     * thread). True once the limit has been applied; false if it was given up (the account
+     * went, or the folder never came free).
+     */
+    fun enforceWhenFree(onlyIfOver: Boolean = false, tries: Int = TRIES, pause: (Long) -> Unit = { Thread.sleep(it) }): Boolean {
+        repeat(tries) { attempt ->
+            when (if (onlyIfOver) enforceIfOver() else enforce()) {
+                Enforced.DONE -> return true
+                Enforced.CLOSED -> return false
+                Enforced.BUSY -> if (attempt + 1 < tries) pause(RETRY_MILLIS)
+            }
+        }
+        return false
     }
 
     /** The cache, for one read, which must call [release] when it closes. Null if the
@@ -68,6 +94,13 @@ class KeptSongs(private val dir: File, private val database: DatabaseProvider, p
 
     /** No more reads; the cache is released when the ones under way have closed. */
     fun close() = shared.close()
+
+    private companion object {
+        /** How often, and how many times, the limit is tried again while the folder is
+         *  held: a minute in all, far longer than reads take to close. */
+        const val RETRY_MILLIS = 1_000L
+        const val TRIES = 60
+    }
 }
 
 /**

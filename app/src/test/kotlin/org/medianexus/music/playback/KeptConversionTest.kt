@@ -15,6 +15,7 @@ import java.nio.file.Files
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -331,5 +332,40 @@ class KeptConversionTest {
     private companion object {
         /** What the player's own loads ask with. */
         const val PLAYER_FLAGS = DataSpec.FLAG_DONT_CACHE_IF_LENGTH_UNKNOWN or DataSpec.FLAG_ALLOW_CACHE_FRAGMENTATION
+    }
+
+    /** The audio kept on the phone, in bytes: Media3's cache keeps each piece as a file. */
+    private fun keptBytes(): Long = dir.walkTopDown().filter { it.isFile && it.name.endsWith(".exo") }.sumOf { it.length() }
+
+    @Test
+    fun aLimitThatCannotBeAppliedWhileTheFolderIsStillHeldIsTriedAgainNotPassedOver() {
+        answers += conversion(200_000)
+        assertEquals(200_000, play().size)
+        assertTrue(keptBytes() >= 200_000)
+        // A song is still being read from the kept songs when the account signs out and
+        // straight back in: the first turn's cache stays open until that read closes, and
+        // only one cache may be open on a folder.
+        val stillReading = open()
+        kept.close()
+        // Meanwhile the limit was set to nothing. The new turn at the account applies it.
+        limit = 0
+        val next = KeptSongs(dir, database) { limit }
+        assertEquals("applied through a folder another cache still holds?", KeptSongs.Enforced.BUSY, next.enforce())
+        assertTrue(keptBytes() >= 200_000)
+        // It was passed over there, for good: what was kept stayed, over a limit of nothing,
+        // until something else was played (which with no limit is never). Tried again: and
+        // while it waits, the read closes and the folder comes free.
+        val waits = mutableListOf<Long>()
+        val applied = next.enforceWhenFree(pause = {
+            waits += it
+            stillReading.close()
+        })
+        assertTrue(applied)
+        assertEquals(1, waits.size)
+        // A limit of nothing: nothing is kept, at once.
+        assertEquals(0, keptBytes())
+        // And an account that has gone is not waited for.
+        next.close()
+        assertFalse(next.enforceWhenFree(pause = { fail("waited for an account that has gone") }))
     }
 }

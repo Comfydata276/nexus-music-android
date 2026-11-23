@@ -84,13 +84,55 @@ interface SongStreams {
  * so far, and back to the server, asking it for a byte range a conversion ignores).
  */
 class ConversionWriters {
-    private val writing = ConcurrentHashMap.newKeySet<String>()
+    private val writing = HashSet<String>()
 
-    /** Whether this read is now the one keeping `key`; it must [release] it when it closes. */
-    fun claim(key: String): Boolean = writing.add(key)
+    /** What a read that wants a conversion from its start finds. */
+    sealed interface Start {
+        /** A whole copy is kept, this long: it is read from the phone. */
+        data class Whole(val length: Long) : Start
+
+        /** None is, and nobody is keeping one: this read is now the one that does, and must
+         *  [finish] or [release] it when it closes. */
+        data object Keeper : Start
+
+        /** None is, and another read is keeping one right now: this one reads beside it,
+         *  from the server alone, and touches nothing kept. */
+        data object Beside : Start
+    }
+
+    /**
+     * Looks for a whole kept copy of `key` (`whole` gives its length, or -1) and, if there
+     * is none, claims the keeping of one: in one step, which no other read's [start] or
+     * [finish] can fall inside. They were two, and between them another read could finish
+     * its copy and let the keeping go: this read, having seen no whole copy, then took the
+     * keeping and began by clearing away "whatever is kept, which is not whole", which was
+     * the copy just finished.
+     */
+    fun start(key: String, whole: () -> Long): Start = synchronized(writing) {
+        val length = whole()
+        when {
+            length >= 0 -> Start.Whole(length)
+            writing.add(key) -> Start.Keeper
+            else -> Start.Beside
+        }
+    }
+
+    /** The read keeping `key` has closed. `judge` marks what it kept as whole, or forgets
+     *  it; and only then is the keeping let go. One step, as [start] is. */
+    fun finish(key: String, judge: () -> Unit) = synchronized(writing) {
+        try {
+            judge()
+        } finally {
+            writing.remove(key)
+        }
+    }
+
+    /** Whether this read is now the one keeping `key`, whatever is kept (for the tests of
+     *  the keeping alone; a read uses [start]). */
+    fun claim(key: String): Boolean = synchronized(writing) { writing.add(key) }
 
     fun release(key: String) {
-        writing.remove(key)
+        synchronized(writing) { writing.remove(key) }
     }
 }
 
@@ -389,6 +431,9 @@ class SongReader(
             }
             return opened.length
         }
+        // From its start: whether there is a whole copy, and if not who keeps one, is one
+        // question (see fresh).
+        if (at == 0L) return fresh(where, 0)
         val whole = streams.wholeLength(where.key)
         if (whole >= 0) {
             // A place at or past the end of a copy kept whole (a seek to the last moment of
@@ -399,7 +444,6 @@ class SongReader(
                 val opened = streams.keptOnly(where.key, at)
                 source = opened.source
                 fromKept = true
-                if (at == 0L) sniffer = HeadSniffer()
                 return (whole - at).coerceAtLeast(0)
             } catch (_: IOException) {
                 // It looked whole and isn't (the phone cleared part of it away): forget it.
@@ -421,12 +465,30 @@ class SongReader(
     private fun fresh(where: SongWhere, at: Long): Long {
         fromKept = false
         if (at == 0L) {
+            // Is there a whole copy; and if not, is this the read that keeps one? Asked as
+            // one question (ConversionWriters.start).
+            var start = writers.start(where.key) { streams.wholeLength(where.key) }
+            if (start is ConversionWriters.Start.Whole) {
+                try {
+                    source = streams.keptOnly(where.key, 0).source
+                    fromKept = true
+                    sniffer = HeadSniffer()
+                    return start.length
+                } catch (_: IOException) {
+                    // It looked whole and isn't (the phone cleared part of it away): forget
+                    // it, and ask again.
+                    streams.drop(where.key)
+                    start = writers.start(where.key) { streams.wholeLength(where.key) }
+                }
+            }
             // Kept as it goes by, unless another read is keeping this same conversion right
-            // now: then this one is the server's bytes alone, and touches nothing kept.
-            val kept = if (writers.claim(where.key)) {
+            // now (or has, in this very moment, kept it whole): then this one is the
+            // server's bytes alone, and touches nothing kept.
+            val kept = if (start == ConversionWriters.Start.Keeper) {
                 claimed = where.key
                 try {
-                    // Whatever is kept is not whole (or it would have been used): start it again.
+                    // Whatever is kept is not whole (this read has just seen so, and holds
+                    // the keeping, so nobody can have made it whole since): start it again.
                     streams.drop(where.key)
                     streams.kept(where.stream(0), where.key, 0)
                 } catch (e: IOException) {
@@ -639,8 +701,19 @@ class SongReader(
                 // taken for the whole song ever after. Closed before its end (a seek, the next
                 // song, a dropped connection), what was kept is only part. Anything but a
                 // whole one is forgotten.
-                val whole = ended && position >= where.least && runCatching { streams.keep(where.key, position) }.getOrDefault(false)
-                if (!whole) runCatching { streams.drop(where.key) }
+                // Judged and let go in one step, so that a read opening at this moment sees
+                // either "being kept" or the finished copy, never the gap between.
+                val judge = {
+                    val whole = ended && position >= where.least && runCatching { streams.keep(where.key, position) }.getOrDefault(false)
+                    if (!whole) runCatching { streams.drop(where.key) }
+                    Unit
+                }
+                if (claimed == where.key) {
+                    claimed = null
+                    writers.finish(where.key, judge)
+                } else {
+                    judge()
+                }
             }
             unclaim()
             source = null
