@@ -146,6 +146,10 @@ class Probe : Instrumentation() {
             signedOut(root)
             return
         }
+        if (mode == "queue_slide") {
+            queueSlide(root)
+            return
+        }
 
         check("root.search", "Says it can search (the car shows a search button)",
             rootExtras?.getBoolean(SEARCH_SUPPORTED) == true,
@@ -816,6 +820,89 @@ class Probe : Instrumentation() {
         val ms = waitFor { playing() }
         check("resume.play", "Play with nothing chosen picks up where it left off", ms >= 0,
             "nothing played (${whyNotPlaying()}); a car that presses play after connecting gets silence", "before: $was; now ${nowPlaying()}", ms)
+        quiet()
+    }
+
+    // --- a tap on a queue that has just moved under the car -------------------------------
+
+    /**
+     * `--mode queue_slide`. A car's queue items are numbered by Media3 with their place in
+     * the player's playlist, and a tap sends that number back. An app that holds only part
+     * of a long queue in its playlist moves that part along as it plays, and every number
+     * the car is still showing then means another song. This starts a long list ("-e list",
+     * part of its name; `scripts/server longlist` makes one), keeps the queue as the car was
+     * first shown it, goes far enough down it for the app's part to move, and at once taps
+     * an entry of the queue it kept: the song that entry showed must be the one that plays.
+     */
+    private fun queueSlide(root: String) {
+        val wanted = args.getString("list") ?: "Long list"
+        // The list, found as a car finds it: some folder two levels down by that name.
+        var list: MediaItem? = null
+        for (tab in children(root).first.orEmpty()) {
+            list = children(tab.mediaId ?: continue).first.orEmpty().firstOrNull { it.isBrowsable && it.description.title?.contains(wanted) == true }
+            if (list != null) break
+        }
+        if (list == null) {
+            record("queue.slide", "FAIL", "A tap across the player's part of the queue moving", "no list named \"$wanted…\" to play: make one with scripts/server longlist 600 and open the app once so it is listed")
+            return
+        }
+        // Its first song: straight in the folder, or in the first of the ranges a long list is shown as.
+        var inside = children(list.mediaId!!).first.orEmpty()
+        var first = inside.firstOrNull { it.isPlayable && it.mediaId?.startsWith("track/") == true }
+        if (first == null) {
+            inside = children(inside.firstOrNull { it.isBrowsable }?.mediaId ?: "").first.orEmpty()
+            first = inside.firstOrNull { it.isPlayable && it.mediaId?.startsWith("track/") != false && it.description.title != "Shuffle" }
+        }
+        if (first == null) {
+            record("queue.slide", "FAIL", "A tap across the player's part of the queue moving", "found \"${list.description.title}\" but no song in it")
+            return
+        }
+        onMain { controls.playFromMediaId(first.mediaId, null) }
+        waitFor { playing() }
+        waitFor(6000) { (queue?.size ?: 0) > 150 }
+        val before = queue.orEmpty().toList()
+        fun song(item: MediaSessionCompat.QueueItem?) = item?.description?.mediaId
+        if (before.size < 150) {
+            record("queue.slide", "SKIP", "A tap across the player's part of the queue moving", "the queue shown is only ${before.size} long: nothing to move")
+            return
+        }
+        // Down the queue until what the car is shown starts somewhere else: the app's part has moved.
+        var went = -1
+        for (step in listOf(130, before.size - 20)) {
+            if (step >= before.size) continue
+            val held = queue
+            onMain { controls.skipToQueueItem(before[step].queueId) }
+            waitFor(6000) { mediaId() == song(before[step]) }
+            if (waitFor(1500) { queue !== held && song(queue?.firstOrNull()) != song(before.first()) } >= 0) { went = step; break }
+        }
+        if (went < 0) {
+            record("queue.slide", "SKIP", "A tap across the player's part of the queue moving",
+                "going down the queue of ${before.size} never changed where it starts: this app shows the car the whole queue, so no place can go stale")
+            return
+        }
+        // At once, on the queue as it was shown before: the entry a dozen below where it went.
+        val tapped = before[(went + 12).coerceAtMost(before.size - 1)]
+        val now = queue.orEmpty()
+        val wrong = now.getOrNull(tapped.queueId.toInt())
+        onMain { controls.skipToQueueItem(tapped.queueId) }
+        val ms = waitFor(6000) { mediaId() == song(tapped) }
+        SystemClock.sleep(600)
+        check("queue.slide", "A tap on the queue as the car was showing it, just as the player's part of the queue moved, plays the song that was shown",
+            ms >= 0 && mediaId() == song(tapped),
+            "tapped \"${tapped.description.title}\" (place ${tapped.queueId} of the queue the car was showing); what plays is ${nowPlaying()}" +
+                if (song(wrong) != null && mediaId() == song(wrong)) ", which is the song now at that place" else "",
+            "\"${tapped.description.title}\"; the queue had moved from starting at \"${before.first().description.title}\" to \"${now.firstOrNull()?.description?.title}\"", ms)
+        // And once the car has caught up, a place means what it says.
+        SystemClock.sleep(1500)
+        val settled = queue.orEmpty()
+        val active = settled.indexOfFirst { it.queueId == state?.activeQueueItemId }
+        val next = settled.getOrNull(active + 3)
+        if (next != null) {
+            onMain { controls.skipToQueueItem(next.queueId) }
+            val took = waitFor(6000) { mediaId() == song(next) }
+            check("queue.settled", "A moment later, an entry of the queue as it now is plays that entry", took >= 0,
+                "tapped \"${next.description.title}\"; what plays is ${nowPlaying()}", "\"${next.description.title}\"", took)
+        }
         quiet()
     }
 

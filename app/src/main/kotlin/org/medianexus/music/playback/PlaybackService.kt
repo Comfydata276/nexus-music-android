@@ -182,7 +182,11 @@ class PlaybackService : MediaLibraryService() {
             shuffle = graph.settings.value.shuffle
             repeat = graph.settings.value.repeat.coerceIn(Repeat.OFF, Repeat.ONE)
         }
-        player = QueuePlayer(exo, queue, CarMedia::metadata, changed = { queueChanged() }, explain = ::explain)
+        player = QueuePlayer(
+            exo, queue, CarMedia::metadata, changed = { queueChanged() }, explain = ::explain,
+            // Everyone but the app's own screens names a queue entry by its place.
+            byPlace = { session.controllerForCurrentRequest?.let { callerOf(session, it) != Caller.OWN_INTERFACE } ?: false },
+        )
         exo.addListener(Watcher())
         // Debug builds log what the player does (track joins, underruns, errors): how
         // gapless joins and seeking are checked on the emulator, which can't record sound.
@@ -581,11 +585,6 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- The queue changing -----------------------------------------------------------------
 
-    /** The queue's revision as last seen, and when its order last changed (for a tap on a
-     *  queue that has not caught up: see [Access.staleQueueTap]). */
-    private var seenRevision = -1L
-    private var reorderedAt = 0L
-
     /**
      * Counts the times something was asked to start playing. A start that has to look
      * something up first (the car choosing a song, a spoken request) takes the number as it
@@ -596,10 +595,6 @@ class PlaybackService : MediaLibraryService() {
 
     private fun queueChanged() {
         val queue = player.queue
-        if (queue.revision != seenRevision) {
-            seenRevision = queue.revision
-            reorderedAt = android.os.SystemClock.elapsedRealtime()
-        }
         // Shuffle and repeat are settings, and the list being played remembers its shuffle.
         val settings = graph.settings.value
         if (settings.shuffle != queue.shuffle || settings.repeat != queue.repeat) {
@@ -929,13 +924,10 @@ class PlaybackService : MediaLibraryService() {
         @Deprecated("Media3 offers nothing else that is asked per command and per controller")
         override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
             val caller = callerOf(session, controller)
-            return when {
-                !Access.mayPlayer(caller, playerCommand) -> SessionError.ERROR_PERMISSION_DENIED
-                // "Play that entry of the queue", by its place, from someone whose screen may
-                // still show the order from before a reorder a moment ago (see Access).
-                Access.staleQueueTap(caller, playerCommand, android.os.SystemClock.elapsedRealtime() - reorderedAt) -> SessionError.ERROR_INVALID_STATE
-                else -> SessionResult.RESULT_SUCCESS
-            }
+            // ("Play that entry of the queue", by its place, from someone whose screen may
+            // still show the places as they were a moment ago, is the player's to read
+            // rightly: see QueuePlayer.entryMeant.)
+            return if (Access.mayPlayer(caller, playerCommand)) SessionResult.RESULT_SUCCESS else SessionError.ERROR_PERMISSION_DENIED
         }
 
         override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> {

@@ -25,6 +25,10 @@ usage: scripts/carcheck <package> [options]     check an installed app
   --mode play           only press play (or, with --media-id "<id>", choose that item) and
                         see that something plays; --mode pause stops it
   --mode signed_out     only check that the car is told, in words, to sign in
+  --mode queue_slide    only check a tap on the car's queue made just as the player's part of
+                        a long queue moves along (needs a long playlist: scripts/server
+                        longlist 600, and the app opened once since; --list "<part of its
+                        name>" for another list)
   --mode outsider       what an app that isn't the car may do. With --untrusted: it must be
                         refused a connection outright. Without: once something is playing,
                         the queue must survive the app's own commands sent by a controller
@@ -91,6 +95,7 @@ while [ $# -gt 0 ]; do
     --press-buttons) extra+=(-e press_buttons true) ;;
     --mode) extra+=(-e mode "${2:?}"); shift ;;
     --media-id) extra+=(-e media_id "${2:?}"); shift ;;
+    --list) extra+=(-e list "${2:?}"); shift ;;
     --depth) extra+=(-e depth "${2:?}"); shift ;;
     --nodes) extra+=(-e nodes "${2:?}"); shift ;;
     --limit-ms) extra+=(-e limit_ms "${2:?}"); shift ;;

@@ -15,7 +15,10 @@ package org.medianexus.music.playback
  *
  * The window moves in steps, not with every song: its edges only change when the song
  * playing crosses a multiple of [STEP], so the playlist (and everything that copies it) is
- * rebuilt once in fifty songs rather than at every one.
+ * rebuilt once in a hundred songs rather than at every one. Rarely, and always at the same
+ * places in a queue (its 125th song, its 225th, …): each move changes every place in the
+ * playlist, and a car names a queue entry by its place (see `QueuePlayer.entryMeant` for
+ * what is done about a tap that crosses a move).
  *
  * Plain Kotlin against [Playlist], which ExoPlayer stands behind in the app and a list
  * stands behind in tests.
@@ -25,7 +28,7 @@ object QueueSync {
      *  has that many). */
     const val BEFORE = 25
     const val AFTER = 200
-    const val STEP = 50
+    const val STEP = 100
 
     /** An entry of the queue as the playlist holds it: its own number, and where its song is
      *  in the queue's list of songs. */

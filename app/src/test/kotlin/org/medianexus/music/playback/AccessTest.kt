@@ -68,22 +68,6 @@ class AccessTest {
         assertFalse(Access.mayCustom(screens, "org.medianexus.music.app.SOMETHING_ELSE"))
     }
 
-    @Test
-    fun aTapOnAQueueThatHasJustBeenReorderedIsLetDrop() {
-        val jump = Player.COMMAND_SEEK_TO_MEDIA_ITEM
-        // The car names a queue entry by its place. Half a second after the phone reordered
-        // the queue, the car's screen may still show the old order.
-        assertTrue(Access.staleQueueTap(car, jump, 500))
-        assertTrue(Access.staleQueueTap(car, jump, 0))
-        assertFalse(Access.staleQueueTap(car, jump, Access.STALE_QUEUE_MILLIS))
-        assertFalse(Access.staleQueueTap(car, jump, 60_000))
-        // Anything else it sends is not a place in the queue.
-        assertFalse(Access.staleQueueTap(car, Player.COMMAND_SEEK_TO_NEXT, 10))
-        assertFalse(Access.staleQueueTap(car, Player.COMMAND_PLAY_PAUSE, 10))
-        // The app's own screens name the entry itself, so they are never stale.
-        assertFalse(Access.staleQueueTap(screens, jump, 10))
-    }
-
     // ---- Carrying on ---------------------------------------------------------------------------
 
     @Test

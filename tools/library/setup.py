@@ -56,11 +56,13 @@ LONG_PREFIX = "Long list ("
 
 def long_list(api, count):
     """A playlist of `count` songs, the library's 100 over and over, for measuring a long
-    list: opening, scrolling, starting it. Replaces one made before."""
+    list: opening, scrolling, starting it. Replaces one made before. Each time round starts
+    one song later than the last, so that the song 100 places on is never the same song: a
+    queue that is a hundred places out (the player's window moves by that much) shows."""
     remove_long(api)
     found = api.call("search3", query="", songCount=1000, albumCount=0, artistCount=0)["searchResult3"]["song"]
     ordered = sorted(found, key=lambda s: (s["album"], s.get("discNumber", 1), s.get("track", 0)))
-    ids = [ordered[n % len(ordered)]["id"] for n in range(count)]
+    ids = [ordered[(n + n // len(ordered)) % len(ordered)]["id"] for n in range(count)]
     name = "%s%s songs)" % (LONG_PREFIX, format(count, ","))
     made = api.call("createPlaylist", name=name, songId=ids)["playlist"]
     print("made \"%s\": %d songs (id %s)" % (name, made.get("songCount", 0), made["id"]))

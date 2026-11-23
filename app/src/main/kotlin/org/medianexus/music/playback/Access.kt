@@ -67,21 +67,6 @@ object Access {
         else -> true
     }
 
-    /**
-     * Whether a "play that entry of the queue" should be let drop. Everyone but the app's
-     * own screens names a queue entry by its place (Media3 gives a car's queue items their
-     * index as an id, and a controller sends an index too). Just after the queue has been
-     * reordered, whoever is looking at it is still looking at the old order, and a tap made
-     * then would play whatever now sits in that place: the wrong song. For a moment after a
-     * reorder such a tap is dropped instead; the queue on their screen has caught up by the
-     * time they tap again. This narrows the gap; it can't close it, as nothing in the
-     * command says which order its sender was looking at.
-     */
-    fun staleQueueTap(caller: Caller, command: Int, sinceReorderMillis: Long): Boolean =
-        caller != Caller.OWN_INTERFACE && command == Player.COMMAND_SEEK_TO_MEDIA_ITEM && sinceReorderMillis in 0 until STALE_QUEUE_MILLIS
-
-    const val STALE_QUEUE_MILLIS = 1_000L
-
     /** The buttons on the car's player and the notification. */
     val BUTTONS = setOf("org.medianexus.music.LIKE", "org.medianexus.music.SHUFFLE", "org.medianexus.music.REPEAT")
 
