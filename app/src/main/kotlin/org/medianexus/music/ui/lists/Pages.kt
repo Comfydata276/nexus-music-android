@@ -86,8 +86,9 @@ fun AlbumPage(route: Route.Album) {
         liked = if (album == null) null else liked,
         onLike = {
             val shown = album ?: return@SongListPage
-            ui.account?.likes?.setAlbum(shown, !liked)
-            ui.toast(res.getString(if (!liked) R.string.added_to_liked_albums else R.string.removed_from_liked_albums))
+            // On the likes as they stand, not as last drawn: two quick taps are two changes.
+            val now = ui.account?.likes?.toggleAlbum(shown) ?: return@SongListPage
+            ui.toast(res.getString(if (now) R.string.added_to_liked_albums else R.string.removed_from_liked_albums))
         },
         below = {
             val more = others?.value?.albums?.filter { it.id != route.id }.orEmpty()

@@ -563,7 +563,12 @@ How it is built (M1b):
 - **Likes have one owner** (`Likes`): what the server last said, from every page that says
   whether something is liked, and what has been done here and is still being sent. Every
   heart, album hearts too, and Liked songs itself are read from it. Changes to one item go to
-  the server one at a time in the order made.
+  the server one at a time in the order made. Each change the server takes reaches the kept
+  Liked songs, in order; a refusal is said, and undoes anything, only for the last tap on
+  that item, never for one a later tap has overtaken. A song found liked on another page
+  (liked on another device) joins Liked songs at once, with what that page knows of it.
+  Starting Liked songs by name plays the list as shown (`Library.likedShown`), changes still
+  on their way included. A heart acts on the likes as they stand, not as last drawn.
 - **The queue follows its list**: whenever the kept copy of the list the queue came from
   changes (a fresh copy from the server, a song unliked from Liked songs), the service runs
   `followList` and keeps each entry's number, so the song playing carries on untouched.

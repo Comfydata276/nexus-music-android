@@ -101,11 +101,17 @@ class Library(private val api: Subsonic, val pages: PageCache, val search: Searc
      * the screen shows the kept copy, so this is the same list.
      */
     suspend fun keptSongs(source: String): List<Song>? = when {
-        source == "liked" -> pages.kept(liked())?.songs
+        // As the page shows it: with the likes and unlikes still being sent (see [likedShown]).
+        source == "liked" -> likedShown(pages.kept(liked()))
         source.startsWith("album:") -> pages.kept(album(source.removePrefix("album:")))?.songs
         source.startsWith("playlist:") -> pages.kept(playlist(source.removePrefix("playlist:")))?.songs
         else -> null
     }
+
+    /** Liked songs as its page shows it, from the server's list as kept: set by the account
+     *  to its likes' `songsOf`, so a list started by name is the list on screen, a like or
+     *  unlike still on its way included, and the song tapped is the song played. */
+    @Volatile var likedShown: (Found?) -> List<Song>? = { it?.songs }
 
     // ---- Asked for each time ----------------------------------------------------------------
 

@@ -64,8 +64,11 @@ class Likes(
     /** When each item's last change was settled with the server (by `clock`): an answer
      *  asked for before then doesn't speak for it. */
     private val settledAt = HashMap<Item, Long>()
-    /** Songs liked here and not yet in the server's Liked songs: they head it meanwhile. */
+    /** Songs liked here, or found liked on another page, and not yet in the server's Liked
+     *  songs as last heard: they head it meanwhile. */
     private val justLiked = LinkedHashMap<String, Song>()
+    /** The songs in the server's Liked songs as last heard. */
+    private var listed: Set<String> = emptySet()
     /** Each item's changes take turns on its own lock. */
     private val turns = HashMap<Item, Mutex>()
 
@@ -125,6 +128,7 @@ class Likes(
                 songs = songs.keepingNewer(server.songs, StarTarget.SONG, askedAt),
                 albums = albums.keepingNewer(server.albums, StarTarget.ALBUM, askedAt),
             )
+            listed = songs
             justLiked.keys.retainAll { it !in songs }
             publish()
         }
@@ -142,9 +146,24 @@ class Likes(
         publish()
     }
 
+    /**
+     * Songs from a page the server sent (an album, a playlist), each saying whether it is
+     * liked: taken in one pass, however many (a playlist of 20,000 is one update, not 20,000
+     * copies of the set). One found liked that Liked songs doesn't list yet (liked on another
+     * device) joins it at once, with what the page knows of it.
+     */
     private fun heardSongsLocked(songs: List<Song>, askedAt: Long) {
-        var now = server.songs
-        for (song in songs) if (song.id.isNotEmpty()) now = now.with(Item(StarTarget.SONG, song.id), song.starred != null, askedAt)
+        val now = server.songs.toMutableSet()
+        for (song in songs) {
+            if (song.id.isEmpty()) continue
+            if ((settledAt[Item(StarTarget.SONG, song.id)] ?: Long.MIN_VALUE) >= askedAt) continue
+            if (song.starred != null) {
+                now += song.id
+                if (song.id !in listed && song.id !in justLiked) justLiked[song.id] = song.copy(queued = false)
+            } else {
+                now -= song.id
+            }
+        }
         server = server.copy(songs = now)
     }
 
@@ -167,21 +186,27 @@ class Likes(
     /** Likes or unlikes a song: at once here, then on the server. */
     fun set(song: Song, liked: Boolean) {
         if (song.id.isEmpty() || song.radioUrl.isNotEmpty()) return
-        change(Item(StarTarget.SONG, song.id), liked, song.title) {
-            synchronized(lock) {
-                if (liked && song.id !in server.songs) justLiked[song.id] = song.copy(starred = song.starred ?: "", queued = false)
-            }
+        val kept = song.copy(starred = song.starred ?: "", queued = false)
+        change(Item(StarTarget.SONG, song.id), liked, song.title, kept) {
+            if (liked && song.id !in server.songs) justLiked[song.id] = kept
         }
     }
 
-    fun toggleAlbum(album: Album) = setAlbum(album, !isAlbumLiked(album.id))
+    /** Likes an album if it isn't, as things stand now (not as last drawn: two quick taps
+     *  are two changes), or unlikes it. Says whether it is liked now. */
+    fun toggleAlbum(album: Album): Boolean {
+        val liked = !isAlbumLiked(album.id)
+        setAlbum(album, liked)
+        return liked
+    }
 
     fun setAlbum(album: Album, liked: Boolean) {
         if (album.id.isEmpty()) return
-        change(Item(StarTarget.ALBUM, album.id), liked, album.name) {}
+        change(Item(StarTarget.ALBUM, album.id), liked, album.name, null) {}
     }
 
-    private fun change(item: Item, liked: Boolean, name: String, also: () -> Unit) {
+    /** `also` runs under the lock as the change is made. */
+    private fun change(item: Item, liked: Boolean, name: String, song: Song?, also: () -> Unit) {
         val turn = synchronized(lock) {
             if (shown(item) == liked) return
             wanted[item] = liked
@@ -215,14 +240,20 @@ class Likes(
                     } else {
                         unsent[item] = left
                     }
-                    if (item.target == StarTarget.SONG && item.id !in server.songs) justLiked.remove(item.id)
+                    // What heads Liked songs belongs to the last tap: an earlier one's answer
+                    // leaves it to the taps still to be sent.
+                    if (left <= 0 && item.target == StarTarget.SONG && item.id !in server.songs) justLiked.remove(item.id)
                     publish()
                     left <= 0
                 }
                 if (error != null) {
-                    refusals.emit(LikeRefused(item.target, item.id, name, liked, error))
-                } else if (last && item.target == StarTarget.SONG) {
-                    keep(item.id, liked)
+                    // Said only of the last tap: one a later tap has overtaken was never
+                    // what the person was left looking at.
+                    if (last) refusals.emit(LikeRefused(item.target, item.id, name, liked, error))
+                } else if (item.target == StarTarget.SONG) {
+                    // Every change the server took, in the order taken: the kept Liked songs
+                    // is what the server has.
+                    keep(item.id, liked, song)
                 }
             }
         }
@@ -230,18 +261,17 @@ class Likes(
 
     /** Liked songs, as kept, gains or loses a song the server has taken the change for:
      *  newest likes first, as the server lists them. */
-    private suspend fun keep(id: String, liked: Boolean) {
-        val song = synchronized(lock) { justLiked[id] }
+    private suspend fun keep(id: String, liked: Boolean, song: Song?) {
         pages.update(spec) { found ->
-            val without = found.songs.filter { it.id != id }
             when {
-                !liked -> found.copy(songs = without)
-                song != null -> found.copy(songs = listOf(song) + without)
-                else -> found
+                !liked -> found.copy(songs = found.songs.filter { it.id != id })
+                found.songs.any { it.id == id } || song == null -> found
+                else -> found.copy(songs = listOf(song) + found.songs)
             }
         }
+        // Once kept, it no longer needs to head the list, unless a later tap is still to go.
         synchronized(lock) {
-            justLiked.remove(id)
+            if (liked && Item(StarTarget.SONG, id) !in unsent) justLiked.remove(id)
         }
     }
 

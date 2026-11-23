@@ -191,4 +191,113 @@ class LikesTest {
         likes.heard(Found(), askedAt = 0)
         assertTrue(likes.isAlbumLiked("al-1"))
     }
+    // ---- Taps that overtake one another ----------------------------------------------------
+
+    @Test
+    fun aRefusalOfAnEarlierTapLeavesTheLaterOnesAlone() = runBlocking {
+        server = Found()
+        // Each answer is the test's to give: the first refused, the rest taken.
+        val answers = Channel<Boolean>(Channel.UNLIMITED)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val (likes, pages) = setUp { _, _, _ -> calls.incrementAndGet(); if (!answers.receive()) throw ApiError.Server(50, "not allowed") }
+        pages.fresh(likedSpec)
+        val refusals = Collections.synchronizedList(mutableListOf<LikeRefused>())
+        val listening = scope.async(start = CoroutineStart.UNDISPATCHED) { likes.refused.collect { refusals += it } }
+        likes.set(a, true)
+        likes.set(a, false)
+        likes.set(a, true)
+        // The first is refused while the other two are still to go.
+        answers.send(false)
+        // The last tap's like still shows, at the head of Liked songs, and nothing is said
+        // about a tap that has been overtaken.
+        // (The second tap is sent only once the first has been dealt with.)
+        withTimeout(5_000) { while (calls.get() < 2) kotlinx.coroutines.delay(5) }
+        assertTrue(likes.isLiked("a"))
+        assertEquals(listOf("a"), likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
+        answers.send(true)
+        answers.send(true)
+        withTimeout(5_000) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(5) }
+        assertTrue(likes.isLiked("a"))
+        assertTrue(refusals.isEmpty())
+        listening.cancel()
+    }
+
+    @Test
+    fun keptLikedSongsFollowsWhatTheServerConfirmedInOrder() = runBlocking {
+        server = Found()
+        val answers = Channel<Boolean>(Channel.UNLIMITED)
+        val (likes, pages) = setUp { _, _, _ -> if (!answers.receive()) throw ApiError.Server(50, "not allowed") }
+        pages.fresh(likedSpec)
+        likes.set(a, true)
+        likes.set(a, false)
+        // The like is taken, the unlike refused: the server has it liked, and so does the
+        // kept Liked songs.
+        answers.send(true)
+        answers.send(false)
+        likes.waitFor(setOf("a"))
+        withTimeout(5_000) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(5) }
+        assertEquals(listOf("a"), likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
+    }
+
+    @Test
+    fun aSongFoundLikedOnAnotherPageJoinsLikedSongsAtOnce() = runBlocking {
+        server = Found(songs = listOf(a))
+        val (likes, pages) = setUp { _, _, _ -> }
+        likes.load()
+        likes.waitFor(setOf("a"))
+        now += 1_000
+        val liked = b.copy(starred = "2026-01-01T00:00:00Z", album = "Second Wind")
+        pages.fresh(PageSpec("album:1", Album.serializer()) { Album(id = "1", songs = listOf(liked)) })
+        likes.waitFor(setOf("a", "b"))
+        // In the list, with what the album page knew of it, before Liked songs is asked again.
+        val shown = likes.songsOf(pages.kept(likedSpec))!!
+        assertEquals(setOf("a", "b"), shown.map { it.id }.toSet())
+        assertEquals("Second Wind", shown.first { it.id == "b" }.album)
+    }
+
+    @Test
+    fun aLongPlaylistIsTakenInOneGo() = runBlocking {
+        val many = (1..20_000).map { Song(id = "s$it", starred = "2026-01-01T00:00:00Z") }
+        server = Found()
+        val (likes, pages) = setUp { _, _, _ -> }
+        likes.load()
+        pages.fresh(likedSpec)
+        now += 1_000
+        val started = System.nanoTime()
+        pages.fresh(PageSpec("playlist:long", org.medianexus.music.net.Playlist.serializer()) { org.medianexus.music.net.Playlist(id = "long", songs = many) })
+        withTimeout(10_000) { while (likes.state.value.songs.size != many.size) kotlinx.coroutines.delay(5) }
+        // One pass over the songs, not a copy of the set for each (20,000 copies of 20,000).
+        assertTrue("took ${(System.nanoTime() - started) / 1_000_000} ms", System.nanoTime() - started < 1_000_000_000L)
+    }
+
+    @Test
+    fun likedSongsStartedByNameIsTheListAsShown() = runBlocking {
+        server = Found(songs = listOf(a))
+        val answer = CompletableDeferred<Unit>()
+        val (likes, pages) = setUp { _, _, _ -> answer.await() }
+        val library = Library(org.medianexus.music.net.Subsonic("http://127.0.0.1:1", "u", "p", okhttp3.OkHttpClient(), org.medianexus.music.net.OfflineSwitch()), pages)
+        library.likedShown = likes::songsOf
+        pages.fresh(likedSpec)
+        likes.heard(Found(songs = listOf(a)))
+        // "b" liked, still on its way to the server; "a" unliked, the same.
+        likes.set(b, true)
+        likes.set(a, false)
+        // What the player reads, starting Liked songs by name, is what the page shows.
+        assertEquals(listOf("b"), library.keptSongs("liked")!!.map { it.id })
+        assertEquals(likes.songsOf(pages.kept(likedSpec)), library.keptSongs("liked"))
+        answer.complete(Unit)
+        Unit
+    }
+
+    @Test
+    fun theAlbumHeartActsOnTheLikesAsTheyStand() = runBlocking {
+        val sent = Collections.synchronizedList(mutableListOf<Boolean>())
+        val (likes, _) = setUp { _, _, liked -> sent += liked }
+        val album = Album(id = "al-1", name = "First Light")
+        // Two taps before anything is drawn again: two changes.
+        assertTrue(likes.toggleAlbum(album))
+        assertFalse(likes.toggleAlbum(album))
+        withTimeout(5_000) { while (sent.size < 2) kotlinx.coroutines.delay(5) }
+        assertEquals(listOf(true, false), sent.toList())
+    }
 }

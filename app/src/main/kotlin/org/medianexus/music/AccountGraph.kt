@@ -48,6 +48,7 @@ class AccountGraph(
     val keptSongsDir = File(account.dirs.cache, "songs")
 
     init {
+        library.likedShown = likes::songsOf
         likes.load()
         // Covers past their limit go, oldest first, once a start: it reads the whole folder.
         scope.launch { covers.trim() }
