@@ -348,7 +348,7 @@ class PlaybackService : MediaLibraryService() {
      * button: later buttons don't push the limit back.
      */
     private fun holdForeground(why: String) {
-        if (isPlaybackOngoing) return
+        if (inForeground()) return
         if (!holding) {
             try {
                 val manager = getSystemService(NotificationManager::class.java)
@@ -392,6 +392,23 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /**
+     * Whether the service is in the foreground at this moment, by Android's own word.
+     * (Media3's `isPlaybackOngoing` is not that: in 1.11.1 it says whether the service has
+     * ever been started in the foreground, and stays true after Media3 has left it.)
+     */
+    private fun inForeground(): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            foregroundServiceType != ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(android.app.ActivityManager::class.java).getRunningServices(Int.MAX_VALUE)
+                .any { it.service.className == javaClass.name && it.foreground }
+        }
+    } catch (_: RuntimeException) {
+        false
+    }
+
     /** Playback has begun and Media3's notification holds the foreground now (or the start
      *  came to nothing). The next start has a limit of its own. */
     private fun heldLongEnough() {
@@ -415,7 +432,7 @@ class PlaybackService : MediaLibraryService() {
     private fun standDown() {
         val was = holding
         heldLongEnough()
-        if (isPlaybackOngoing) return
+        if (exo.playWhenReady && (exo.playbackState == Player.STATE_READY || exo.playbackState == Player.STATE_BUFFERING)) return
         runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
         if (was) graph.diagnostics.note("asked to play with nothing to play: left the foreground and stopped cleanly", now = true)
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "asked to play with nothing to play: stopped cleanly")
@@ -1026,6 +1043,23 @@ class PlaybackService : MediaLibraryService() {
                 .setAvailablePlayerCommands(MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS)
                 .setMediaButtonPreferences(buttons())
                 .build()
+        }
+
+        /**
+         * Media3 copies a standing error ("sign in") to the platform's session, which is
+         * what a car reads, only through its own notification controller, and only if that
+         * controller is connected at the moment the error is set. With nobody signed in the
+         * saved sign-in is read in no time at all, well before that controller has
+         * connected: the error was set on the session and never reached the car, which was
+         * told nothing until it opened a folder. So when the notification controller does
+         * connect, the error is set again. (Taken off first: Media3 passes over an error it
+         * takes for the one already there.)
+         */
+        override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            if (told && era == null && session.isMediaNotificationController(controller)) {
+                session.setPlaybackException(null)
+                session.setPlaybackException(signInNeeded())
+            }
         }
 
         /**
