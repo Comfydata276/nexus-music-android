@@ -66,7 +66,10 @@ fun MiniPlayer(modifier: Modifier = Modifier) {
     // The service words it for the car ("When it's safe, open Nexus Music…"); on the phone
     // itself, it's said plainly.
     val blocked by ui.graph.localAccess.blocked.collectAsStateWithLifecycle()
-    val error = if (reported != null && blocked) stringResource(R.string.local_network_short) else reported
+    // What the server itself said when it refused something the car asked for: shown here,
+    // where the phone shows a playback error, and nowhere outside the app (see Refusals).
+    val refusal by ui.graph.refusals.last.collectAsStateWithLifecycle()
+    val error = if (reported != null && blocked) stringResource(R.string.local_network_short) else reported ?: refusal?.words
     // Read only while drawing the line, so it moving redraws the line and nothing else.
     val position = player.position.collectAsStateWithLifecycle()
     val duration = player.duration.collectAsStateWithLifecycle()

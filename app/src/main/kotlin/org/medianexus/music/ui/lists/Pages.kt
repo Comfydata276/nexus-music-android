@@ -84,6 +84,7 @@ fun AlbumPage(route: Route.Album) {
         feed = feed,
         empty = stringResource(R.string.album_empty),
         look = ListLook(album = true),
+        downloadable = true,
         onSubtitle = album?.takeIf { it.artistId.isNotEmpty() }?.let { { ui.open(Route.Artist(it.artistId, it.artistLabel)) } },
         liked = if (album == null) null else liked,
         onLike = {
@@ -128,6 +129,7 @@ fun PlaylistPage(route: Route.Playlist) {
         context = playlist?.name ?: route.name,
         feed = feed,
         empty = stringResource(R.string.playlist_empty),
+        downloadable = true,
     )
 }
 
@@ -148,6 +150,7 @@ fun LikedPage() {
         context = title,
         feed = feed,
         empty = stringResource(R.string.liked_empty),
+        downloadable = true,
     )
 }
 

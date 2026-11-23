@@ -185,6 +185,8 @@ fun ActionBar(
     onLike: () -> Unit = {},
     /** Beside a header's words, rather than a row of its own. */
     inline: Boolean = false,
+    /** The list's download button (an album, a playlist, Liked songs), if it has one. */
+    download: DownloadButton? = null,
 ) {
     val colors = Theme.colors
     Row(
@@ -220,9 +222,32 @@ fun ActionBar(
                 iconSize = 24.dp,
             )
         }
+        if (download != null) {
+            IconButton(
+                if (download.state == 0) R.drawable.ic_download else R.drawable.ic_circle_arrow_down,
+                stringResource(
+                    when (download.state) {
+                        0 -> R.string.download
+                        1 -> R.string.cancel_download
+                        else -> R.string.remove_download
+                    },
+                ),
+                download.onClick,
+                tint = if (download.state == 0) colors.muted else colors.accentBright,
+                active = download.state == 2,
+                iconSize = 24.dp,
+            )
+            if (download.state == 1) {
+                BasicText("${download.done}/${download.total}", style = Theme.type.label.copy(color = colors.muted))
+            }
+        }
         Spacer(Modifier.width(0.dp))
     }
 }
+
+/** A list's download button: 0 nothing downloaded, 1 on its way (`done` of `total`), 2 all
+ *  of it downloaded (as Windows' `download_state`). */
+data class DownloadButton(val state: Int, val done: Int, val total: Int, val onClick: () -> Unit)
 
 /** A heading between parts of a list: "Disc 2". */
 @Composable

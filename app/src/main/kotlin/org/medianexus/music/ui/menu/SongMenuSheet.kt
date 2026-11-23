@@ -96,6 +96,27 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
                     ui.toast(res.getString(if (liked) R.string.removed_from_liked else R.string.added_to_liked))
                 }
             }
+            // Download, or what can be done about one under way or done (Windows' song menu).
+            val downloadState = org.medianexus.music.ui.downloads.downloadsNow().stateOf(song.id)
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val ask = org.medianexus.music.ui.downloads.rememberDownloadAsk()
+            if (song.radioUrl.isEmpty() && ui.account?.downloads != null) {
+                Rule()
+                when (downloadState) {
+                    org.medianexus.music.downloads.SongState.Done -> Entry(R.drawable.ic_trash_2, stringResource(R.string.remove_download)) {
+                        choose { ui.account?.downloads?.remove(listOf(song.id)); ui.toast(res.getString(R.string.removed_from_downloads)) }
+                    }
+                    org.medianexus.music.downloads.SongState.Waiting, is org.medianexus.music.downloads.SongState.Fetching -> Entry(R.drawable.ic_x, stringResource(R.string.cancel_download)) {
+                        choose { ui.account?.downloads?.cancel(listOf(song.id)); ui.toast(res.getString(R.string.download_cancelled)) }
+                    }
+                    else -> Entry(R.drawable.ic_download, stringResource(R.string.download)) {
+                        val account = ui.account
+                        choose {
+                            if (account != null) ask { ui.graph.scope.launch { org.medianexus.music.downloads.DownloadPages.songs(context, account, listOf(song))?.let(ui::toast) } }
+                        }
+                    }
+                }
+            }
             val credited = song.artists.filter { it.id.isNotEmpty() }
             if (song.albumId.isNotEmpty() || credited.isNotEmpty() || song.artistId.isNotEmpty()) Rule()
             if (song.albumId.isNotEmpty()) {

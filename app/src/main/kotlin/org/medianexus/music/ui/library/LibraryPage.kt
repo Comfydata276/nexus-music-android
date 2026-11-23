@@ -27,6 +27,9 @@ import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.launch
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -135,6 +138,14 @@ private fun Playlists() {
         val error = feed.page.error
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
             if (error != null && playlists != null) item(key = "failed") { FailedStrip(error.message.orEmpty(), feed::refresh) }
+            item(key = "downloads", contentType = "row") {
+                val downloads = org.medianexus.music.ui.downloads.downloadsNow()
+                ListRow(stringResource(R.string.downloads), if (downloads.busy) stringResource(R.string.downloading_n_of, downloads.at, downloads.batchTotal) else songCount(res, downloads.downloaded.size), onClick = { ui.open(Route.Downloads) }) {
+                    Box(Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised), contentAlignment = Alignment.Center) {
+                        Icon(R.drawable.ic_download, size = 24.dp, tint = Theme.colors.accentBright)
+                    }
+                }
+            }
             item(key = "liked", contentType = "row") {
                 ListRow(stringResource(R.string.liked_songs), songCount(res, liked.size), onClick = { ui.open(Route.Liked) }) {
                     LikedTile(Modifier.size(56.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius))

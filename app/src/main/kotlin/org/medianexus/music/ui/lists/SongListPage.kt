@@ -37,6 +37,8 @@ import org.medianexus.music.ui.shell.PageFeed
 import org.medianexus.music.ui.shell.SongMenu
 import org.medianexus.music.ui.shell.likedSongs
 import org.medianexus.music.ui.theme.Theme
+import org.medianexus.music.ui.downloads.withDownload
+import kotlinx.coroutines.launch
 
 /** How a list's songs are drawn. */
 @Immutable
@@ -69,8 +71,16 @@ fun SongListPage(
     playOverride: (() -> Unit)? = null,
     /** What follows the songs, told how many cards to a line suit the page's width. */
     below: LazyListScope.(columns: Int) -> Unit = {},
+    /** The list can be downloaded whole (an album, a playlist, Liked songs). */
+    downloadable: Boolean = false,
 ) {
     val ui = LocalUi.current
+    val android = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val downloads = org.medianexus.music.ui.downloads.downloadsNow()
+    val reach = org.medianexus.music.ui.downloads.reachNow()
+    val ask = org.medianexus.music.ui.downloads.rememberDownloadAsk()
+    val plays = ui.account?.availability?.let { it::plays } ?: { _: Song -> true }
     val player = ui.player
     val from by player.from.collectAsStateWithLifecycle()
     val queueShuffle by player.shuffle.collectAsStateWithLifecycle()
@@ -120,6 +130,20 @@ fun SongListPage(
                     liked = liked,
                     onLike = onLike,
                     inline = inline,
+                    download = if (!downloadable || songs.isNullOrEmpty()) null else {
+                        val saved = songs.count { it.id in downloads.downloaded }
+                        val busy = songs.any { downloads.stateOf(it.id).let { s -> s == org.medianexus.music.downloads.SongState.Waiting || s is org.medianexus.music.downloads.SongState.Fetching } }
+                        org.medianexus.music.ui.parts.DownloadButton(
+                            state = if (busy) 1 else if (saved == songs.size) 2 else 0,
+                            done = saved, total = songs.size,
+                            onClick = {
+                                val account = ui.account ?: return@DownloadButton
+                                val go = { scope.launch { org.medianexus.music.downloads.DownloadPages.toggle(android, account, key)?.let(ui::toast) }; Unit }
+                                // The first download asks for the notification it shows progress in.
+                                if (!busy && saved < songs.size) ask(go) else go()
+                            },
+                        )
+                    },
                 )
             }
             LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -140,7 +164,7 @@ fun SongListPage(
                             heading?.let { ListHeading(it) }
                             val current = from.isRow(key, index, song.id)
                             TrackRow(
-                                base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
+                                base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused).withDownload(downloads, reach.offline, plays, song),
                                 onClick = { ui.play(songs, index, context, key) },
                                 onMore = { ui.menu = SongMenu(song) },
                                 showCover = !look.album,

@@ -66,6 +66,9 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
                 graph.settings.update { it.copy(theme = name, themeAt = System.currentTimeMillis() / 1000) }
             }
 
+            Heading(stringResource(R.string.storage))
+            StorageSettings(graph)
+
             Heading(stringResource(R.string.account))
             (session as? SessionState.SignedIn)?.let { signedIn ->
                 Row(
@@ -89,6 +92,56 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
             Setting(stringResource(R.string.diagnostics), stringResource(R.string.diagnostics_detail))
             TextButton(stringResource(R.string.show_diagnostics), onClick = onDiagnostics, modifier = Modifier.padding(vertical = 8.dp))
         }
+    }
+}
+
+/**
+ * Offline mode, downloads and kept songs, as Windows' Settings has them (its wording), plus
+ * the phone's own Wi-Fi only. Plain for now: the real screen comes with the next step.
+ */
+@Composable
+private fun StorageSettings(graph: Graph) {
+    val settings by graph.settings.state.collectAsStateWithLifecycle()
+    val res = androidx.compose.ui.platform.LocalResources.current
+    ToggleRow(stringResource(R.string.offline_mode), stringResource(R.string.offline_mode_detail), settings.offline) { on ->
+        graph.settings.update { it.copy(offline = on) }
+        if (on) graph.toasts.show(res.getString(R.string.offline_mode_on))
+    }
+    ToggleRow(stringResource(R.string.wifi_only), stringResource(R.string.wifi_only_detail), settings.downloadWifiOnly) { on ->
+        graph.settings.update { it.copy(downloadWifiOnly = on) }
+    }
+    Setting(stringResource(R.string.download_quality), stringResource(R.string.download_quality_detail))
+    val qualities = org.medianexus.music.store.QUALITIES
+    org.medianexus.music.ui.parts.ChipRow(
+        qualities.map { if (it == 0) stringResource(R.string.quality_original) else stringResource(R.string.quality_kbps, it) },
+        qualities.indexOf(settings.downloadQuality).coerceAtLeast(0),
+        { at -> graph.settings.update { it.copy(downloadQuality = qualities[at]) } },
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+    )
+    Setting(stringResource(R.string.kept_songs), stringResource(R.string.kept_songs_detail))
+    val limits = org.medianexus.music.store.CACHE_LIMITS
+    org.medianexus.music.ui.parts.ChipRow(
+        limits.map { if (it == 0) stringResource(R.string.none) else stringResource(R.string.size_gb, it / 1024) },
+        limits.indexOf(settings.cacheLimitMb).coerceAtLeast(0),
+        { at -> graph.settings.update { it.copy(cacheLimitMb = limits[at]) } },
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+    )
+    Setting(stringResource(R.string.fetch_ahead), stringResource(R.string.fetch_ahead_detail))
+    val ahead = org.medianexus.music.store.CACHE_AHEAD
+    org.medianexus.music.ui.parts.ChipRow(
+        ahead.map { if (it == 0) stringResource(R.string.none) else it.toString() },
+        ahead.indexOf(settings.cacheAhead).coerceAtLeast(0),
+        { at -> graph.settings.update { it.copy(cacheAhead = ahead[at]) } },
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+    )
+    Box(Modifier.padding(top = 16.dp).height(1.dp).fillMaxWidth().background(Theme.colors.line))
+}
+
+@Composable
+private fun ToggleRow(title: String, detail: String, on: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Setting(title, detail, Modifier.weight(1f))
+        org.medianexus.music.ui.parts.Toggle(on, onToggle, title)
     }
 }
 
