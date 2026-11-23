@@ -177,10 +177,11 @@ class Subsonic private constructor(
         }
     }
 
-    /** What the server said went wrong, unless it could give away the sign-in, the address
-     *  or a chunk of the request (some servers echo it back): then nothing. */
+    /** What the server said went wrong, unless it could give away the sign-in (the
+     *  username counts: it is half of one), the address or a chunk of the request (some
+     *  servers echo it back): then nothing. */
     private fun safeServerMessage(text: String): String {
-        val giveaways = listOfNotNull(token, salt, host).filter { it.isNotEmpty() }
+        val giveaways = listOfNotNull(token, salt, host, username).filter { it.isNotEmpty() }
         val risky = text.length > 200 || "://" in text || '{' in text || '[' in text ||
             giveaways.any { text.contains(it, ignoreCase = true) }
         return if (risky) "" else text

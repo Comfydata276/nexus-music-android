@@ -340,6 +340,11 @@ class SubsonicTest {
         assertNothingPrivate(expect<ApiError.Server> { client().ping() })
         failed(0, "bad request: {\\\"id\\\":\\\"x\\\"}")
         assertEquals("The server reported an error (code 0).", expect<ApiError.Server> { client().ping() }.message)
+        // The username is half of the sign-in: a message that names it isn't shown either.
+        failed(40, "Wrong username or password for user Ada Lovelace")
+        val named = expect<ApiError.Server> { client().ping() }
+        assertEquals("", named.serverMessage)
+        assertFalse(named.toString(), named.toString().contains("Lovelace"))
         // An ordinary message still comes through.
         failed(10, "Required parameter is missing")
         assertEquals("The server reported: Required parameter is missing", expect<ApiError.Server> { client().ping() }.message)
