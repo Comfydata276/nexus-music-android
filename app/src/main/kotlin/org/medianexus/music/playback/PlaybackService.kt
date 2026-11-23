@@ -678,6 +678,8 @@ class PlaybackService : MediaLibraryService() {
         // with nobody signed in is "no change" from the start, and must still be said.
         if (now === era?.account && told) return
         told = true
+        // (That playing could not be started was said of the queue that was there.)
+        cantStart = false
         // Someone else, or nobody: what was playing was theirs.
         if (era != null) {
             save()

@@ -229,12 +229,8 @@ class QueuePlayer(
     fun refuseStart() {
         refused = true
         if (exo.playWhenReady) exo.pause()
-        if (exo.playbackState != STATE_IDLE) {
-            val place = exo.currentPosition
-            exo.stop()
-            // (Stopping keeps the place; said again in case a seek was still on its way.)
-            if (exo.mediaItemCount > 0) exo.seekTo(exo.currentMediaItemIndex, place)
-        }
+        // (Stopping keeps the queue and the place in the song.)
+        if (exo.playbackState != STATE_IDLE) exo.stop()
         invalidateState()
     }
 

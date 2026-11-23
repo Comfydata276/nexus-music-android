@@ -20,6 +20,11 @@ import androidx.media3.session.SessionToken
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --ei item 4
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es say state
  *
+ * pressing Play (or Pause) from wherever the app is, which with the app in the background is
+ * a Play Android may refuse (docs/TESTING.md, "A Play that Android refuses"):
+ *
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es press play
+ *
  * logging whenever the main thread is held up for more than two frames (tag NexusStall):
  *
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es stalls start
@@ -88,7 +93,8 @@ class DebugControl : BroadcastReceiver() {
         val seek = intent.getLongExtra("seek", -1)
         val item = intent.getIntExtra("item", -1)
         val say = intent.getStringExtra("say")
-        if (seek < 0 && item < 0 && say == null) return
+        val press = intent.getStringExtra("press")
+        if (seek < 0 && item < 0 && say == null && press == null) return
         val done = goAsync()
         val app = context.applicationContext
         val future = MediaController.Builder(app, SessionToken(app, ComponentName(app, PlaybackService::class.java))).buildAsync()
@@ -98,6 +104,13 @@ class DebugControl : BroadcastReceiver() {
                     // "--ei item 4": to the fifth entry of the queue ("--ei item 9999": the last).
                     item >= 0 -> controller.seekTo(item.coerceAtMost(controller.mediaItemCount - 1).coerceAtLeast(0), seek.coerceAtLeast(0))
                     seek >= 0 -> controller.seekTo(seek)
+                }
+                // "--es press play": Play, as the app's screens press it. Sent while the app
+                // is in the background and its service out of the foreground, it is a Play
+                // with nothing of the person's behind it: the one Android refuses.
+                when (press) {
+                    "play" -> controller.play()
+                    "pause" -> controller.pause()
                 }
                 // "--es say state": where the player is, as the result of the broadcast.
                 if (say != null) {
