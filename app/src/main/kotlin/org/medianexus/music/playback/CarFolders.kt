@@ -23,9 +23,11 @@ object CarFolders {
     /** Media3's limit for a list of items sent to a MediaBrowserService client. */
     const val LIMIT = 256 * 1024
 
-    /** What a folder's items may come to by this file's reckoning: the limit, less a margin
-     *  for whatever the reckoning has missed. */
-    const val BUDGET = 190_000
+    /** What a folder's items may come to by this file's reckoning: the limit, less a quarter
+     *  of it for whatever the reckoning has missed. (190,000 until a cover's address began
+     *  to carry its account's key, 33 characters more for every item with a cover: two
+     *  hundred ordinary songs must still make one folder.) */
+    const val BUDGET = 196_000
 
     /** Items in one folder at most, however small: a list much longer than this is no use on
      *  a car's screen anyway. */
@@ -147,7 +149,8 @@ object CarFolders {
     private val URI_CLASS_NAME = utf16Chars(25)
 
     private fun artChars(entry: CarEntry): Int = when {
-        CoverStore.fileName(entry.cover) != null -> "content://".length + CoverProvider.AUTHORITY.length + 1 + entry.cover.length
+        // (With the account's key in it: see CoverProvider.uriFor.)
+        CoverStore.fileName(entry.cover) != null -> "content://".length + CoverProvider.AUTHORITY.length + 1 + CoverProvider.KEY_CHARS + 1 + entry.cover.length
         entry.icon != 0 -> "android.resource://".length + BuildConfig.APPLICATION_ID.length + 1 + 10
         else -> 0
     }

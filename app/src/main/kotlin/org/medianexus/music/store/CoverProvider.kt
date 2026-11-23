@@ -14,8 +14,15 @@ import org.medianexus.music.graph
 /**
  * Hands cover art to other apps: the car and the system's media controls can't fetch
  * pictures from the server, they can only open content addresses. Each address names one
- * cover by its id (`content://<app>.covers/<id>`); the picture comes from the cover store,
- * fetched first if it isn't kept yet, within limits: see `openFile`.
+ * cover of one account (`content://<app>.covers/<the account's key>/<cover id>`); the
+ * picture comes from that account's cover store, fetched first if it isn't kept yet, within
+ * limits: see `openFile`.
+ *
+ * The account is in the address because a cover id is only its server's to give: two
+ * servers can use the same id for two pictures, and a car keeps the addresses it was sent.
+ * An address made for an account that is not the one signed in is "no such cover", whether
+ * or not the phone has a picture by that id, and nothing is fetched for it. The key is the
+ * account's folder name: it gives away neither the server nor the username.
  *
  * It gives away nothing but covers: it is read-only, answers no queries, and an address
  * names a cover id, never a file, so nothing else on the phone can be reached through it
@@ -36,15 +43,23 @@ class CoverProvider : ContentProvider() {
         // Who is asking, before what for: a caller that isn't let in learns nothing here,
         // not even which ids are covers.
         admit(context)
-        val id = idOf(uri) ?: throw FileNotFoundException("Not a cover")
-        if (CoverStore.fileName(id) == null) throw FileNotFoundException("Not a cover")
-        // A cover already on the phone, for an account already known: no waiting at all.
-        val known = try {
-            context.graph.accounts.state.value
+        val (key, id) = partsOf(uri) ?: throw FileNotFoundException("Not a cover")
+        if (CoverStore.fileName(id) == null || !isKey(key)) throw FileNotFoundException("Not a cover")
+        val accounts = try {
+            context.graph.accounts
         } catch (_: UninitializedPropertyAccessException) {
             null
         }
-        known?.covers?.kept(id)?.let { return ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY) }
+        val known = accounts?.state?.value
+        if (known != null) {
+            // Someone is signed in, and it is not who this address was made for: no such
+            // cover. At once, with nothing fetched and nothing waited for.
+            if (known.account.key != key) throw FileNotFoundException("No cover $id")
+            // A cover already on the phone, for the account signed in: no waiting at all.
+            // Handed over only if that account is still the one signed in, as below.
+            val file = known.covers.kept(id)
+            if (file != null && accounts.state.value === known) return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
         // Anything else waits: for the app to start, for the saved sign-in, for the server.
         // This is one of the handful of threads the system gives the app for every call from
         // outside it, the car's browsing and the player's controls among them, so only a few
@@ -60,7 +75,8 @@ class CoverProvider : ContentProvider() {
                     // of seconds is long enough for someone else to have signed in, and their
                     // car must not be shown the last person's album.
                     forWhoeverIsSignedIn(graph.accounts::restored, { graph.accounts.state.value }) { account ->
-                        account.covers.kept(id) ?: account.covers.forOutside(id, MISS_WAIT_MILLIS)
+                        // (Asked of the account the address names, or of nobody.)
+                        if (account.account.key != key) null else account.covers.kept(id) ?: account.covers.forOutside(id, MISS_WAIT_MILLIS)
                     }
                 }
             }
@@ -143,11 +159,25 @@ class CoverProvider : ContentProvider() {
             return if (current() === theirs) found else null
         }
 
-        /** The address of a cover, for a media item; null for no cover. */
-        fun uriFor(coverId: String): Uri? =
-            if (CoverStore.fileName(coverId) == null) null else Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(coverId).build()
+        /** How long an account's key is (`accountKey`: sixteen bytes, in hex). */
+        const val KEY_CHARS = 32
 
-        private fun idOf(uri: Uri): String? =
-            if (uri.scheme == "content" && uri.authority == AUTHORITY && uri.pathSegments.size == 1) uri.pathSegments[0] else null
+        /**
+         * The address of a cover of the account with this key (`Account.key`, which gives away
+         * neither the server nor the username), for a media item; null for no cover, or no
+         * account.
+         */
+        fun uriFor(accountKey: String, coverId: String): Uri? =
+            if (CoverStore.fileName(coverId) == null || !isKey(accountKey)) null
+            else Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(accountKey).appendPath(coverId).build()
+
+        /** Whether this could be an account's key: hex digits, of the right number. */
+        internal fun isKey(key: String): Boolean = key.length == KEY_CHARS && key.all { it in '0'..'9' || it in 'a'..'f' }
+
+        /** The account's key and the cover's id that an address names; null if it isn't one. */
+        internal fun partsOf(uri: Uri): Pair<String, String>? =
+            if (uri.scheme == "content" && uri.authority == AUTHORITY && uri.pathSegments.size == 2) uri.pathSegments[0] to uri.pathSegments[1] else null
+
+        private fun idOf(uri: Uri): String? = partsOf(uri)?.second
     }
 }

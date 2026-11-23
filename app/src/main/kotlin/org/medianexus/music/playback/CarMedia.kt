@@ -15,13 +15,16 @@ import org.medianexus.music.store.CoverProvider
 /** Turns songs and the car's entries into what Media3 hands to the car and the system. */
 @OptIn(UnstableApi::class)
 object CarMedia {
-    /** The details of a song as the notification, the lock screen and the car show them. */
-    fun metadata(song: Song): MediaMetadata = MediaMetadata.Builder()
+    /** The details of a song as the notification, the lock screen and the car show them.
+     *  `account` is the opaque key of the account the song is from (`Account.key`): its
+     *  cover's address names it, so the address is no good to anyone once another account
+     *  is signed in (see [CoverProvider]). Empty for no account, and then no cover. */
+    fun metadata(song: Song, account: String): MediaMetadata = MediaMetadata.Builder()
         .setTitle(song.title)
         .setArtist(song.artistLabel)
         .setAlbumTitle(song.album.ifEmpty { null })
         .setAlbumArtist(song.artist.ifEmpty { null })
-        .setArtworkUri(CoverProvider.uriFor(song.coverArt))
+        .setArtworkUri(CoverProvider.uriFor(account, song.coverArt))
         .setTrackNumber(song.track.takeIf { it > 0 })
         .setDiscNumber(song.discNumber.takeIf { it > 0 })
         .setReleaseYear(song.year.takeIf { it > 0 })
@@ -32,8 +35,8 @@ object CarMedia {
         .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
         .build()
 
-    /** A browse tree entry as the car gets it. */
-    fun item(entry: CarEntry): MediaItem {
+    /** A browse tree entry as the car gets it, for the account with this key (see [metadata]). */
+    fun item(entry: CarEntry, account: String): MediaItem {
         val extras = Bundle()
         if (entry.group.isNotEmpty()) extras.putString(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_GROUP_TITLE, entry.group)
         entry.inside?.let {
@@ -43,7 +46,7 @@ object CarMedia {
             }
         }
         entry.style?.let { extras.putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_SINGLE_ITEM, style(it)) }
-        val art = CoverProvider.uriFor(entry.cover) ?: entry.icon.takeIf { it != 0 }?.let(::iconUri)
+        val art = CoverProvider.uriFor(account, entry.cover) ?: entry.icon.takeIf { it != 0 }?.let(::iconUri)
         val metadata = MediaMetadata.Builder()
             .setTitle(entry.title)
             .setSubtitle(entry.subtitle.ifEmpty { null })

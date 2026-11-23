@@ -113,6 +113,9 @@ class PlaybackService : MediaLibraryService() {
         val queue = KeptQueue(account.queueFiles, graph.queueSaver)
         /** Done once the saved queue has been read and put back (see [restore]). */
         val restoring = CompletableDeferred<Unit>()
+
+        /** The account's opaque key: what its covers' addresses carry. */
+        val key: String get() = account.account.key
     }
 
     /** The account signed in, on the main thread. */
@@ -196,7 +199,9 @@ class PlaybackService : MediaLibraryService() {
             repeat = graph.settings.value.repeat.coerceIn(Repeat.OFF, Repeat.ONE)
         }
         player = QueuePlayer(
-            exo, queue, CarMedia::metadata, changed = { queueChanged() }, explain = ::explain,
+            // (A song's cover is addressed to the account it is from: whoever is signed in
+            // when its media item is made, which is whose queue it is.)
+            exo, queue, { CarMedia.metadata(it, current?.key.orEmpty()) }, changed = { queueChanged() }, explain = ::explain,
             // Everyone but the app's own screens names a queue entry by its place.
             byPlace = { session.controllerForCurrentRequest?.let { callerOf(session, it) != Caller.OWN_INTERFACE } ?: false },
             // In the foreground before the player asks for the sound, whoever pressed Play.
@@ -1308,7 +1313,7 @@ class PlaybackService : MediaLibraryService() {
                 putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM)
             }
             graph.diagnostics.note("library opened by ${browser.packageName}" + (params?.let { " (recent: ${yes(it.isRecent)}; offline: ${yes(it.isOffline)}; suggested: ${yes(it.isSuggested)})" } ?: ""))
-            val root = CarMedia.item(CarEntry(CarIds.ROOT, getString(R.string.app_name), browsable = true))
+            val root = CarMedia.item(CarEntry(CarIds.ROOT, getString(R.string.app_name), browsable = true), "")
             return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(root, LibraryParams.Builder().setExtras(extras).build()))
         }
 
@@ -1340,10 +1345,10 @@ class PlaybackService : MediaLibraryService() {
                         era.searches.put(again.query, found)
                         // Told: every browser that made this search lately (not only the last).
                         for (who in era.searchedBy.of(again.query)) session.notifySearchResultChanged(who, again.query, found.size, null)
-                        LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
+                        LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map { CarMedia.item(it, era.key) }), params)
                     } catch (e: ApiError) {
                         if (CarTree.unreachable(e)) {
-                            LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(again.query, retriesMade.incrementAndGet())))), params)
+                            LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(again.query, retriesMade.incrementAndGet())), "")), params)
                         } else {
                             LibraryResult.ofError(trouble(browser, e))
                         }
@@ -1362,7 +1367,7 @@ class PlaybackService : MediaLibraryService() {
                     // Made into what the car is sent off the main thread too: two hundred
                     // entries are two hundred bundles.
                     val items = fromTree(era) { tree ->
-                        tree.children(node) { toldToLookAgain(era, parentId, params) }?.let { ImmutableList.copyOf(slice(it, page, pageSize).map(CarMedia::item)) }
+                        tree.children(node) { toldToLookAgain(era, parentId, params) }?.let { ImmutableList.copyOf(slice(it, page, pageSize).map { CarMedia.item(it, era.key) }) }
                     } ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                     LibraryResult.ofItemList(items, params)
                 } catch (e: ApiError) {
@@ -1371,7 +1376,7 @@ class PlaybackService : MediaLibraryService() {
                     // (Not when the phone isn't allowed to reach it: trying again can't help,
                     // and the error's button opens the app, where it can be allowed.)
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
-                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retryFolder(parentId, retriesMade.incrementAndGet())))), params)
+                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retryFolder(parentId, retriesMade.incrementAndGet())), "")), params)
                     } else {
                         LibraryResult.ofError(trouble(browser, e))
                     }
@@ -1382,7 +1387,7 @@ class PlaybackService : MediaLibraryService() {
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 val node = CarIds.parse(mediaId) ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 try {
-                    fromTree(era) { it.item(node) }?.let { LibraryResult.ofItem(CarMedia.item(it), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+                    fromTree(era) { it.item(node) }?.let { LibraryResult.ofItem(CarMedia.item(it, era.key), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 } catch (e: ApiError) {
                     LibraryResult.ofError(trouble(browser, e))
                 }
@@ -1423,10 +1428,10 @@ class PlaybackService : MediaLibraryService() {
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 try {
                     val found = era.searches.get(query) ?: fromTree(era) { it.search(query) }.also { era.searches.put(query, it) }
-                    LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map(CarMedia::item)), params)
+                    LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map { CarMedia.item(it, era.key) }), params)
                 } catch (e: ApiError) {
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
-                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(query, retriesMade.incrementAndGet())))), params)
+                        LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(query, retriesMade.incrementAndGet())), "")), params)
                     } else {
                         LibraryResult.ofError(trouble(browser, e))
                     }
@@ -1493,7 +1498,7 @@ class PlaybackService : MediaLibraryService() {
                     } catch (_: ApiError) {
                         null
                     } ?: return@mapNotNull null
-                    MediaItem.Builder().setMediaId(song.id).setUri(songUri(song.id)).setTag(QueuePlayer.SongTag(song, 0)).setMediaMetadata(CarMedia.metadata(song)).build()
+                    MediaItem.Builder().setMediaId(song.id).setUri(songUri(song.id)).setTag(QueuePlayer.SongTag(song, 0)).setMediaMetadata(CarMedia.metadata(song, era.key)).build()
                 }
             }
 
@@ -1667,24 +1672,30 @@ class PlaybackService : MediaLibraryService() {
      * to that account's generation: if the account goes while it is being done, the work is
      * dropped, and nothing of theirs is handed on afterwards. `signedOut` is the answer when
      * nobody is signed in; if someone else has signed in meanwhile, the question is answered
-     * again for them (see [ForAccount]).
+     * again for them (see [ForAccount]). One that is overtaken by a change of account every
+     * time it is asked is given up without an answer (the future is cancelled, and Media3
+     * then reports nothing for it): not "sign in", and not a success, either of which Media3
+     * would copy to the car's session as how things stand.
      */
-    private fun <T> answer(signedOut: () -> T, work: suspend (Era) -> T): ListenableFuture<T> = scope.future {
+    private fun <T> answer(signedOut: () -> T, superseded: () -> T = { throw kotlinx.coroutines.CancellationException("Overtaken by a change of account") }, work: suspend (Era) -> T): ListenableFuture<T> = scope.future {
         ForAccount.answer(
             now = ::eraOrNull,
             isNow = { it === this@PlaybackService.era },
             signedOut = signedOut,
+            superseded = superseded,
         ) { era -> era.scope.async { work(era) }.await() }
     }
 
     /** As [answer], for a request that is meant to end in playing: it is being worked on
      *  until this has its answer, whatever the answer is. */
     private fun <T> answer(request: PlayRequests.Request<MediaSession.ControllerInfo>, signedOut: () -> T, work: suspend (Era) -> T): ListenableFuture<T> = scope.future {
+        val superseded: () -> T = { throw UnsupportedOperationException("Overtaken by a change of account") }
         try {
             ForAccount.answer(
                 now = ::eraOrNull,
                 isNow = { it === this@PlaybackService.era },
                 signedOut = signedOut,
+                superseded = superseded,
             ) { era -> era.scope.async { work(era) }.await() }
         } catch (e: Throwable) {
             // It came to nothing: overtaken, nothing found, the server out of reach. A car's

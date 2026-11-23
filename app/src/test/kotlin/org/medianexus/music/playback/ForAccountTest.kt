@@ -44,6 +44,7 @@ class ForAccountTest {
             now = { signedIn },
             isNow = { it === signedIn },
             signedOut = { "Sign in" },
+            superseded = { "nothing said" },
         ) { turn ->
             turn.scope.async {
                 asked += turn.name
@@ -99,7 +100,7 @@ class ForAccountTest {
         signedIn = first
         var runs = 0
         val answer = CoroutineScope(Dispatchers.Unconfined).async {
-            ForAccount.answer(now = { signedIn }, isNow = { it === signedIn }, signedOut = { "Sign in" }) { turn ->
+            ForAccount.answer(now = { signedIn }, isNow = { it === signedIn }, signedOut = { "Sign in" }, superseded = { "nothing said" }) { turn ->
                 runs++
                 if (turn === first) signedIn = second
                 "${turn.name}'s albums"
@@ -110,10 +111,28 @@ class ForAccountTest {
     }
 
     @Test
+    fun aQuestionOvertakenAgainAndAgainEndsWithoutSayingAnyoneIsSignedOut() {
+        // Each time the folder is fetched, whoever it was fetched for has gone and someone
+        // else is signed in: the question is put to them, and so on. It is given up in the
+        // end, with someone signed in throughout. It used to be given up as "sign in", which
+        // Media3 puts on the car's screen, and keeps there, over a library that is signed in.
+        var number = 1
+        signedIn = Turn("account 1")
+        val answer = CoroutineScope(Dispatchers.Unconfined).async {
+            ForAccount.answer(now = { signedIn }, isNow = { it === signedIn }, signedOut = { "Sign in" }, superseded = { "nothing said" }) { turn ->
+                signedIn = Turn("account ${++number}")
+                "${turn.name}'s albums"
+            }
+        }
+        assertEquals("nothing said", answer.getCompleted())
+        assertTrue(number > 2)
+    }
+
+    @Test
     fun aRequestCalledOffItselfIsNotAskedAgain() {
         signedIn = Turn("first")
         val answer = CoroutineScope(Dispatchers.Unconfined).async {
-            ForAccount.answer(now = { signedIn }, isNow = { it === signedIn }, signedOut = { "Sign in" }) { throw CancellationException("called off") }
+            ForAccount.answer(now = { signedIn }, isNow = { it === signedIn }, signedOut = { "Sign in" }, superseded = { "nothing said" }) { throw CancellationException("called off") }
         }
         assertTrue(answer.isCancelled)
     }

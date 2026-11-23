@@ -46,9 +46,10 @@ class CarFoldersTest {
     fun theBoundIsWorkedOutFromTheSizeOfAnItemAndLeavesAMargin() {
         // An ordinary song, as the car gets it: this many bytes by the reckoning here. If
         // this number moves, the reckoning has changed and the bound below with it.
-        assertEquals(924, CarFolders.bytes(song(1)))
-        // A folder is at most 200 items and at most 190,000 of those bytes, which leaves more
-        // than a quarter of Media3's 256 KiB for whatever the reckoning has missed.
+        // (With the account's key in the cover's address: 924 before that.)
+        assertEquals(959, CarFolders.bytes(song(1)))
+        // A folder is at most 200 items and at most 196,000 of those bytes, which leaves a
+        // quarter of Media3's 256 KiB for whatever the reckoning has missed.
         assertEquals(200, CarFolders.MOST)
         assertTrue(CarFolders.BUDGET <= CarFolders.LIMIT * 3 / 4)
         // A full folder of ordinary songs is inside the budget with room to spare...
