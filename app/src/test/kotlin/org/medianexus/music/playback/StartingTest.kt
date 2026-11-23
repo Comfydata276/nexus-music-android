@@ -253,4 +253,43 @@ class StartingTest {
         // And where the system has checked the name (Android 13 and later), nothing more is asked.
         assertTrue(inside.callback.onConnect(inside.session, car).isAccepted)
     }
+
+    // ---- What a car is told when the server says no ---------------------------------------------
+
+    /** Lets the main thread run until `future` is done: what it waits on is other threads'
+     *  work (a request to the stand-in server), which comes back to the main thread. */
+    private fun <T> await(future: com.google.common.util.concurrent.ListenableFuture<T>): T {
+        val until = System.nanoTime() + 30_000_000_000L
+        while (!future.isDone) {
+            settle()
+            check(System.nanoTime() < until) { "no answer in thirty seconds" }
+            Thread.yield()
+        }
+        return future.get()
+    }
+
+    @Test
+    fun theServersOwnWordsNeverReachTheSession() {
+        val server = StandInServer().also { it.start() }
+        try {
+            server.signIn(app)
+            settle()
+            // The server refuses, in words of its own: a path on its disk, as servers do.
+            val words = "open /srv/music/Private Sessions/demo.flac: permission denied"
+            server.refuses["getPlaylist"] = words
+            val answer = await(inside.callback.onGetChildren(inside.session, car, "playlist/p1", 0, Int.MAX_VALUE, null))
+            // The car is told something went wrong, in the app's words for that kind of
+            // failure. The server's went into the session's error before: where a car's
+            // screen, and any other app with a controller, reads it.
+            val said = answer.sessionError!!.message
+            assertEquals(app.getString(R.string.car_server_refused), said)
+            assertFalse(said.contains("Private") || said.contains("permission"))
+            // Inside the app they are kept, for the phone's own screens to show the person
+            // whose server it is.
+            assertTrue(app.graph.refusals.last.value!!.words.contains(words))
+            assertFalse(noted().any { it.contains("Private") })
+        } finally {
+            server.stop()
+        }
+    }
 }

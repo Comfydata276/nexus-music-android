@@ -50,3 +50,30 @@ class Toasts {
         said.tryEmit(text)
     }
 }
+
+/**
+ * What the person's own server said when it refused something asked of it from somewhere the
+ * words can't be shown: a car above all. The car, and the media session every other app with
+ * a controller can read, are told the kind of failure in the app's own words; what the server
+ * itself said is kept here, inside the app and in memory only, for the phone's own screens to
+ * show the person whose server it is (see docs/DESIGN.md, "What a server says is the
+ * person's").
+ */
+class Refusals(private val clock: () -> Long = System::currentTimeMillis) {
+    /** The words (as `ApiError` gives them, already stripped of anything that names the
+     *  address, account or sign-in), and when. */
+    data class Refusal(val words: String, val at: Long)
+
+    private val said = MutableStateFlow<Refusal?>(null)
+
+    /** The last thing the server refused, or null. */
+    val last: StateFlow<Refusal?> = said.asStateFlow()
+
+    fun said(words: String) {
+        if (words.isNotBlank()) said.value = Refusal(words, clock())
+    }
+
+    fun clear() {
+        said.value = null
+    }
+}

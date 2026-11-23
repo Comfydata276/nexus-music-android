@@ -94,6 +94,12 @@
     <string name="repeat_one">Repeat one</string>
     <string name="car_sign_in">When it\'s safe, open Nexus Music on your phone to sign in</string>
     <string name="sign_in">Sign in</string>
+    <!-- What a car is told when the server refuses something: the kind of failure, never the server's own words (those stay on the phone). -->
+    <string name="car_server_refused">Your music server couldn\'t do that</string>
+    <string name="car_sign_in_refused">Your music server didn\'t accept the sign-in. When it\'s safe, open Nexus Music on your phone</string>
+    <string name="car_not_allowed">Your account isn\'t allowed to do that</string>
+    <string name="car_not_found">That isn\'t on your music server any more</string>
+    <string name="car_not_understood">Your music server\'s answer wasn\'t understood</string>
     <string name="car_unreachable">Can\'t reach your music server. Check your connection.</string>
     <string name="lost_connection_short">Reconnecting…</string>
     <string name="cant_reach_server">Can\'t reach the server</string>

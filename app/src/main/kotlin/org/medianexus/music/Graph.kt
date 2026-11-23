@@ -70,6 +70,9 @@ class Graph(context: Context) {
 
     val toasts = Toasts()
 
+    /** What the server last said in refusing something asked from the car (see [Refusals]). */
+    val refusals = Refusals()
+
     /** Whether a server on the home network can be reached (Android 17's permission). */
     val localAccess = LocalAccess(context.applicationContext, session, settings, scope)
 
@@ -140,6 +143,8 @@ class Graph(context: Context) {
         scope.launch {
             accounts.state.collect { account ->
                 serverDown = false
+                // (What one account's server said is not the next account's to be shown.)
+                refusals.clear()
                 account?.api?.onReached = ::reached
             }
         }

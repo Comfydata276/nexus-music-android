@@ -1786,15 +1786,32 @@ class PlaybackService : MediaLibraryService() {
 
     private fun signedOut() = SessionError(SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED, getString(R.string.car_sign_in), signInButton())
 
-    /** What to tell the car when the server couldn't help. */
+    /**
+     * What to tell the car when the server couldn't help: one of a few fixed sentences, by
+     * the kind of failure ([CarTrouble]). Never the error's own message: for a refusal that
+     * is "The server reported: …" with the server's words in it, which a car shows on its
+     * screen and every app with a controller can read. Those words are the person's, and
+     * are kept for the phone's own screens ([org.medianexus.music.Refusals]).
+     */
     private fun trouble(controller: MediaSession.ControllerInfo, error: ApiError): SessionError {
-        val blocked = CarTree.unreachable(error) && graph.localAccess.blocked.value
-        val message = when {
-            blocked -> getString(R.string.car_local_network)
-            CarTree.unreachable(error) -> getString(R.string.car_unreachable)
-            else -> error.message ?: getString(R.string.car_unreachable)
+        val kind = CarTrouble.of(error, graph.localAccess.blocked.value)
+        if (error is ApiError.Server) graph.refusals.said(error.message.orEmpty())
+        val message = getString(
+            when (kind) {
+                CarTrouble.LOCAL_NETWORK -> R.string.car_local_network
+                CarTrouble.UNREACHABLE -> R.string.car_unreachable
+                CarTrouble.SIGN_IN -> R.string.car_sign_in_refused
+                CarTrouble.NOT_ALLOWED -> R.string.car_not_allowed
+                CarTrouble.NOT_FOUND -> R.string.car_not_found
+                CarTrouble.REFUSED -> R.string.car_server_refused
+                CarTrouble.NOT_UNDERSTOOD -> R.string.car_not_understood
+            },
+        )
+        // What opening the app can put right comes with a button that opens it.
+        val sessionError = when (kind) {
+            CarTrouble.LOCAL_NETWORK, CarTrouble.SIGN_IN -> SessionError(SessionError.ERROR_IO, message, openAppButton())
+            else -> SessionError(SessionError.ERROR_IO, message)
         }
-        val sessionError = if (blocked) SessionError(SessionError.ERROR_IO, message, openAppButton()) else SessionError(SessionError.ERROR_IO, message)
         // Said on the car's screen too, not only in the list that failed.
         session.sendError(controller, sessionError)
         return sessionError
