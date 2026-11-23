@@ -359,7 +359,20 @@ class SubsonicTest {
     fun aDroppedConnectionIsReportedWithoutTheAddress() {
         val dropped = java.io.IOException("unexpected end of stream on http://music.example.org:4533/...")
         val hint = networkHint(dropped)
-        assertEquals("(The connection failed: IOException.)", hint)
+        assertEquals("The connection dropped.", hint)
+        // No class names, ever, and never the address, whatever the system says.
+        val cases = mapOf(
+            java.net.ConnectException("Failed to connect to music.example.org/203.0.113.9:4533") to "Couldn't connect. Check the address and your network.",
+            java.net.ConnectException("failed to connect to /10.0.2.2 (port 4533): connect failed: ENETUNREACH (Network is unreachable)") to "There's no way to the server from this network. Check your network.",
+            java.net.SocketException("connect failed: EPERM (Operation not permitted)") to "The phone didn't allow the connection.",
+            java.net.SocketException("Connection reset") to "The connection dropped.",
+            java.io.IOException("something nobody planned for, music.example.org") to "The connection failed.",
+        )
+        for ((error, words) in cases) {
+            val said = networkHint(error)
+            assertEquals(error.toString(), words, said)
+            assertFalse(said, said.contains("Exception") || said.contains("example") || said.contains("203.0") || said.contains("10.0.2.2"))
+        }
         val unverified = javax.net.ssl.SSLPeerUnverifiedException(
             "Hostname music.example.org not verified: certificate: sha256/AAAA DN: CN=music.example.org",
         )

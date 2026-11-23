@@ -17,6 +17,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.nullable
+import kotlinx.serialization.descriptors.nullable
+import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -69,6 +72,10 @@ class Subsonic private constructor(
     /** The server's host name, kept out of error messages. */
     private val host: String? = this.server.toHttpUrlOrNull()?.host
 
+    /** Told after each request whether the server answered (true) or couldn't be reached at
+     *  all (false): how the app notices it has come back. Not told about offline mode. */
+    @Volatile var onReached: ((Boolean) -> Unit)? = null
+
     /** The same sign-in, under another offline switch. */
     fun sharing(offline: OfflineSwitch): Subsonic = Subsonic(server, username, salt, token, http, offline, io)
 
@@ -119,9 +126,25 @@ class Subsonic private constructor(
     // Requests
     // ------------------------------------------------------------------------------------
 
-    /** Sends a request and returns the `subsonic-response` object, once the server has said
-     *  it's "ok". */
-    private suspend fun request(endpoint: String, params: List<Pair<String, String>>, app: String = CLIENT_NAME): JsonObject {
+    /**
+     * Sends a request and reads `field` of the `subsonic-response` object with `serializer`,
+     * once the server has said it's "ok"; `empty` if the answer leaves it out. With no
+     * `field`, only whether it's "ok".
+     *
+     * The answer is read straight from the stream into the app's own models, as it arrives:
+     * never by way of the whole answer as text, nor as a tree of JSON first. (A 12 MB
+     * playlist as a tree took 80 to 100 MB more of the app's memory while it was read.) What
+     * Windows makes of an answer still holds: an absent section is empty, one sent as null is
+     * malformed, and anything the app doesn't know is passed over.
+     */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    private suspend fun <T> request(
+        endpoint: String,
+        params: List<Pair<String, String>>,
+        field: String?,
+        serializer: KSerializer<T>?,
+        app: String = CLIENT_NAME,
+    ): Answer<T> {
         val url = url(endpoint, params, app)
         // A long list of song ids can outgrow what servers and proxies accept in an address,
         // so those go in the body of a POST instead (the OpenSubsonic "formPost" extension).
@@ -133,26 +156,43 @@ class Subsonic private constructor(
         } else {
             buildRequest(url) { get() }
         }
-        // Read and parsed together, off the caller's thread: an answer can be megabytes.
-        val (status, root) = send(request, Http.API_TIMEOUT_SECONDS * 1000) { response ->
-            val tree = try {
-                // From the stream, not by way of the whole answer as text: a long playlist
-                // is megabytes, and as text it is twice that again in memory.
-                response.body.byteStream().use { json.decodeFromStream(JsonElement.serializer(), it) }
-            } catch (_: IllegalArgumentException) {
-                null
+        // Read and decoded together, off the caller's thread: an answer can be megabytes.
+        val (status, answer) = send(request, Http.API_TIMEOUT_SECONDS * 1000) { response ->
+            val reading = Answer<T>()
+            try {
+                response.body.byteStream().use { json.decodeFromStream(Envelope(field, serializer, reading), it) }
+            } catch (e: IllegalArgumentException) {
+                // Inside the section asked for: the server's answer is malformed. The
+                // decoder's message quotes what the server sent; only the place it went
+                // wrong (made of this app's own field names) is passed on.
+                if (reading.inField) throw unexpected(endpoint, field, e)
+                reading.readable = false
             }
-            response.code to tree
+            response.code to reading
         }
-        val body = (root as? JsonObject)?.get("subsonic-response") as? JsonObject
-            ?: throw ApiError.NotSubsonic("Check the address (HTTP status $status).")
-        if ((body["status"] as? JsonPrimitive)?.takeIf { it.isString }?.content != "ok") {
-            val error = body["error"] as? JsonObject
+        if (!answer.readable || !answer.subsonic) throw ApiError.NotSubsonic("Check the address (HTTP status $status).")
+        if ((answer.status as? JsonPrimitive)?.takeIf { it.isString }?.content != "ok") {
+            val error = answer.error as? JsonObject
             val code = (error?.get("code") as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: 0
             val message = (error?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "unknown error"
             throw ApiError.Server(code, safeServerMessage(message))
         }
-        return body
+        if (answer.sentNull) throw ApiError.NotSubsonic("Unexpected response from $endpoint (at $).")
+        return answer
+    }
+
+    /** Sends a request whose answer is only whether it was carried out. */
+    private suspend fun request(endpoint: String, params: List<Pair<String, String>>, app: String = CLIENT_NAME) {
+        request<Unit>(endpoint, params, field = null, serializer = null, app = app)
+    }
+
+    private fun unexpected(endpoint: String, field: String?, e: IllegalArgumentException): ApiError.NotSubsonic {
+        val at = e.message?.let { PATH.find(it)?.groupValues?.get(1) }?.let { path ->
+            // As the place inside the section: "$.songCount", not where the section sits.
+            val section = "$.subsonic-response.$field"
+            if (path.startsWith(section)) "$" + path.removePrefix(section) else path
+        }
+        return ApiError.NotSubsonic("Unexpected response from $endpoint${if (at != null) " (at $at)" else ""}.")
     }
 
     /** Asks for `endpoint` and reads `field` of the answer. An empty library section is
@@ -165,19 +205,9 @@ class Subsonic private constructor(
         serializer: KSerializer<T>,
         empty: () -> T,
     ): T {
-        val value = request(endpoint, params)[field] ?: return empty()
-        return decode(endpoint, value, serializer)
-    }
-
-    private suspend fun <T> decode(endpoint: String, value: JsonElement, serializer: KSerializer<T>): T = withContext(io) {
-        try {
-            json.decodeFromJsonElement(serializer, value)
-        } catch (e: IllegalArgumentException) {
-            // The decoder's message quotes what the server sent; only the place it went
-            // wrong (made of this app's own field names) is passed on.
-            val at = e.message?.let { PATH.find(it)?.groupValues?.get(1) }
-            throw ApiError.NotSubsonic("Unexpected response from $endpoint${if (at != null) " (at $at)" else ""}.")
-        }
+        val answer = request(endpoint, params, field, serializer)
+        @Suppress("UNCHECKED_CAST")
+        return if (answer.present) answer.value as T else empty()
     }
 
     /** What the server said went wrong, unless it could give away the sign-in (the
@@ -204,8 +234,9 @@ class Subsonic private constructor(
         val call = http.newCall(request)
         if (limitMillis != null) call.timeout().timeout(limitMillis, TimeUnit.MILLISECONDS)
         return try {
-            call.fetch(io, read)
+            call.fetch(io, read).also { onReached?.invoke(true) }
         } catch (e: IOException) {
+            onReached?.invoke(false)
             throw ApiError.Network(networkHint(e))
         }
     }
@@ -243,8 +274,8 @@ class Subsonic private constructor(
     // ------------------------------------------------------------------------------------
 
     suspend fun ping(): ServerInfo {
-        val body = request("ping", emptyList())
-        val version = (body["serverVersion"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
+        val answer = request("ping", emptyList(), "serverVersion", JsonElement.serializer())
+        val version = (answer.value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
         return ServerInfo(version)
     }
 
@@ -443,8 +474,9 @@ class Subsonic private constructor(
                 val source = it.body.source()
                 if (source.request(limit + 1)) throw ApiError.Network("(The answer was larger than $limit bytes.)")
                 source.buffer.readByteArray()
-            }
+            }.also { onReached?.invoke(true) }
         } catch (e: IOException) {
+            onReached?.invoke(false)
             throw ApiError.Network(networkHint(e))
         }
     }
@@ -454,7 +486,7 @@ class Subsonic private constructor(
         const val CLIENT_NAME = "NexusMusic"
 
         /** Where a decoding error happened, as kotlinx.serialization puts it: `$.song[0].duration`. */
-        private val PATH = Regex("""at path: (\$[A-Za-z0-9_.\[\]]*)""")
+        private val PATH = Regex("""at path: (\$[A-Za-z0-9_.\[\]-]*)""")
 
         /** Requests with addresses longer than this go as a form POST. */
         internal const val FORM_POST_OVER = 1800
@@ -481,9 +513,14 @@ class Subsonic private constructor(
     }
 }
 
-/** What went wrong reaching the server, in words a person can act on. OkHttp wraps the
- *  system's error (a refused connection inside "Failed to connect"), so the causes and the
- *  attempts it gave up on are read too. */
+/**
+ * What went wrong reaching the server, in words a person can act on: Windows' `network_hint`
+ * for each kind of failure it names, and plain words of the same kind for the rest, where
+ * Windows quotes the underlying error. The phone never does: the system's own text can name
+ * the server's address, and a class name means nothing to anyone. OkHttp wraps the system's
+ * error (a refused connection inside "Failed to connect"), so the causes and the attempts it
+ * gave up on are read too.
+ */
 internal fun networkHint(error: IOException): String {
     // Every cause, and every attempt given up on with its own causes, a few dozen at most.
     val all = mutableListOf<Throwable>()
@@ -517,9 +554,96 @@ internal fun networkHint(error: IOException): String {
             "The connection timed out. Check the address and your network."
         any(SSLException::class.java) || "certificate" in lower || "tls" in lower ->
             "The secure connection failed."
-        // Others ("unexpected end of stream on <address>") can quote the address: only the
-        // kind of failure is given.
-        else -> "(The connection failed: ${error.javaClass.simpleName}.)"
+        // The phone itself wouldn't let the app connect (a permission, a firewall).
+        "permission denied" in lower || "eperm" in lower || "eacces" in lower || "operation not permitted" in lower ->
+            "The phone didn't allow the connection."
+        // No way there from the network the phone is on.
+        "unreachable" in lower || "no route to host" in lower || "enetunreach" in lower || "ehostunreach" in lower ->
+            "There's no way to the server from this network. Check your network."
+        // Cut off part-way ("unexpected end of stream", a reset): Windows' words for it.
+        "end of stream" in lower || "reset" in lower || "broken pipe" in lower || "eof" in lower || "closed" in lower ||
+            any(java.net.ProtocolException::class.java) ->
+            "The connection dropped."
+        // Couldn't connect, for no reason the system gave.
+        any(java.net.ConnectException::class.java) || "failed to connect" in lower ->
+            "Couldn't connect. Check the address and your network."
+        else -> "The connection failed."
+    }
+}
+
+/** What was read of one answer, as it was read. */
+private class Answer<T> {
+    /** It was JSON at all, and it had a `subsonic-response`. */
+    var readable = true
+    var subsonic = false
+    var status: JsonElement? = null
+    var error: JsonElement? = null
+    /** The section asked for was there, and what it held; or it was there as null. */
+    var present = false
+    var value: T? = null
+    var sentNull = false
+    /** The section is being read now: what goes wrong is the section's fault. */
+    var inField = false
+}
+
+/**
+ * Reads `{"subsonic-response": {"status": …, "error": …, <field>: …}}` as it arrives, into
+ * `answer`, with `inner` for the field and everything else passed over. One is made for each
+ * answer.
+ */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+private class Envelope<T>(private val field: String?, private val inner: KSerializer<T>?, private val answer: Answer<T>) :
+    kotlinx.serialization.DeserializationStrategy<Answer<T>> {
+    private val body = kotlinx.serialization.descriptors.buildClassSerialDescriptor("SubsonicResponse/${field.orEmpty()}") {
+        element("status", JsonElement.serializer().descriptor, isOptional = true)
+        element("error", JsonElement.serializer().descriptor, isOptional = true)
+        if (field != null && inner != null) element(field, inner.descriptor.nullable, isOptional = true)
+    }
+
+    override val descriptor = kotlinx.serialization.descriptors.buildClassSerialDescriptor("Subsonic/${field.orEmpty()}") {
+        element("subsonic-response", body, isOptional = true)
+    }
+
+    private val bodyReader = object : kotlinx.serialization.DeserializationStrategy<Unit> {
+        override val descriptor = body
+
+        override fun deserialize(decoder: Decoder) {
+            val reading = decoder.beginStructure(body)
+            while (true) {
+                when (val index = reading.decodeElementIndex(body)) {
+                    kotlinx.serialization.encoding.CompositeDecoder.DECODE_DONE -> break
+                    0 -> answer.status = reading.decodeSerializableElement(body, 0, JsonElement.serializer())
+                    1 -> answer.error = reading.decodeSerializableElement(body, 1, JsonElement.serializer())
+                    2 -> {
+                        answer.inField = true
+                        @Suppress("UNCHECKED_CAST")
+                        val value = reading.decodeNullableSerializableElement(body, 2, (inner as KSerializer<Any>).nullable)
+                        answer.inField = false
+                        @Suppress("UNCHECKED_CAST")
+                        if (value == null) answer.sentNull = true else answer.value = value as T
+                        answer.present = value != null
+                    }
+                    else -> throw kotlinx.serialization.SerializationException("Unexpected index $index")
+                }
+            }
+            reading.endStructure(body)
+        }
+    }
+
+    override fun deserialize(decoder: Decoder): Answer<T> {
+        val reading = decoder.beginStructure(descriptor)
+        while (true) {
+            when (reading.decodeElementIndex(descriptor)) {
+                kotlinx.serialization.encoding.CompositeDecoder.DECODE_DONE -> break
+                0 -> {
+                    answer.subsonic = true
+                    reading.decodeSerializableElement(descriptor, 0, bodyReader)
+                }
+                else -> throw kotlinx.serialization.SerializationException("Unexpected element")
+            }
+        }
+        reading.endStructure(descriptor)
+        return answer
     }
 }
 
