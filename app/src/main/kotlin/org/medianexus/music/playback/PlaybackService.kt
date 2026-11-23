@@ -55,6 +55,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -193,6 +195,13 @@ class PlaybackService : MediaLibraryService() {
             combine(graph.session.state, graph.accounts.state) { state, account -> state to account }
                 .distinctUntilChanged()
                 .collect { (state, account) -> signedIn(state, account) }
+        }
+        // The limit on kept songs applies the moment it is changed in Settings.
+        scope.launch {
+            graph.settings.state.map { it.cacheLimitMb }.distinctUntilChanged().drop(1).collect {
+                val kept = era?.kept ?: return@collect
+                graph.scope.launch(Dispatchers.IO) { kept.enforce() }
+            }
         }
         main.postDelayed(ticker, TICK_MILLIS)
     }

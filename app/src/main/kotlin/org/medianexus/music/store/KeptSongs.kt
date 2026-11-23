@@ -22,12 +22,29 @@ import java.util.TreeSet
  */
 @OptIn(UnstableApi::class)
 class KeptSongs(private val dir: File, private val database: DatabaseProvider, private val limitBytes: () -> Long) {
+    private val evictor = LimitEvictor(limitBytes)
     private val shared = SharedResource<SimpleCache>(
         // Only one may be open on a folder at a time. If the one before is still closing
         // (the same account signed out and straight back in), this read goes without.
-        open = { if (SimpleCache.isCacheFolderLocked(dir)) null else SimpleCache(dir, LimitEvictor(limitBytes), database) },
+        open = { if (SimpleCache.isCacheFolderLocked(dir)) null else SimpleCache(dir, evictor, database) },
         close = { it.release() },
     )
+
+    /**
+     * The limit has changed: whatever is over it goes now, least lately played first, and
+     * with a limit of nothing, all of it. (Left to itself the cache only looks at its limit
+     * when a song is added, so turning it down freed nothing until something else played,
+     * and turning it off, which stops songs being added, freed nothing at all.) Opens the
+     * cache if need be; call it off the main thread.
+     */
+    fun enforce() {
+        val cache = shared.acquire() ?: return
+        try {
+            evictor.trim(cache)
+        } finally {
+            shared.release()
+        }
+    }
 
     /** The cache, for one read, which must call [release] when it closes. Null if the
      *  account has gone, or the folder isn't free yet: then the read does without. */
@@ -45,7 +62,7 @@ class KeptSongs(private val dir: File, private val database: DatabaseProvider, p
  * change in Settings applies at once.
  */
 @OptIn(UnstableApi::class)
-private class LimitEvictor(private val limitBytes: () -> Long) : CacheEvictor {
+internal class LimitEvictor(private val limitBytes: () -> Long) : CacheEvictor {
     private val leastRecentlyUsed = TreeSet<CacheSpan> { a, b ->
         if (a.lastTouchTimestamp == b.lastTouchTimestamp) a.compareTo(b) else a.lastTouchTimestamp.compareTo(b.lastTouchTimestamp)
     }
@@ -74,6 +91,16 @@ private class LimitEvictor(private val limitBytes: () -> Long) : CacheEvictor {
         onSpanRemoved(cache, oldSpan)
         onSpanAdded(cache, newSpan)
     }
+
+    /**
+     * Brings what is kept down to the limit as it is now. The cache calls everything else
+     * here while holding its own lock, so this takes that lock too: the same one, in the
+     * same order, and nothing here has a lock of its own to be taken the other way round.
+     */
+    fun trim(cache: Cache) = synchronized(cache) { evict(cache, 0) }
+
+    /** How much is kept, by this evictor's count. */
+    val kept: Long get() = size
 
     private fun evict(cache: Cache, required: Long) {
         val limit = limitBytes()
