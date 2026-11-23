@@ -94,6 +94,19 @@ class Library(private val api: Subsonic, val pages: PageCache, val search: Searc
      *  and artists. */
     fun liked() = PageSpec("liked", Found.serializer()) { api.starred() }
 
+    /**
+     * The songs of a list as the phone has it kept, by the list's route key ("album:<id>",
+     * "playlist:<id>", "liked"); null if it isn't a list of that kind, or isn't kept. For
+     * starting a list that a screen is showing without the screen handing over every song:
+     * the screen shows the kept copy, so this is the same list.
+     */
+    suspend fun keptSongs(source: String): List<Song>? = when {
+        source == "liked" -> pages.kept(liked())?.songs
+        source.startsWith("album:") -> pages.kept(album(source.removePrefix("album:")))?.songs
+        source.startsWith("playlist:") -> pages.kept(playlist(source.removePrefix("playlist:")))?.songs
+        else -> null
+    }
+
     // ---- Asked for each time ----------------------------------------------------------------
 
     /** One song, from the server. */

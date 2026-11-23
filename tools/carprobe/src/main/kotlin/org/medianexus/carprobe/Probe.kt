@@ -96,9 +96,13 @@ class Probe : Instrumentation() {
             // For scripts/measure: start (or stop) whatever the app would resume, nothing else.
             if (!connect(service, "connect", "Connects")) return
             if (mode == "pause") { quiet(); return }
-            onMain { controls.play() }
+            // "-e media_id <id>": choose that item, as a car does from a list; otherwise
+            // just press play.
+            val chosen = args.getString("media_id")
+            onMain { if (chosen != null) controls.playFromMediaId(chosen, null) else controls.play() }
             val ms = waitFor { playing() }
-            check("play", "Play with nothing chosen starts playback", ms >= 0, whyNotPlaying(), "now ${nowPlaying()}", ms)
+            check("play", if (chosen != null) "Choosing an item starts playback" else "Play with nothing chosen starts playback", ms >= 0, whyNotPlaying(),
+                "now ${nowPlaying()}; the car is shown a queue of ${queue?.size}", ms)
             return
         }
         if (args.getString("cold") != "false") {

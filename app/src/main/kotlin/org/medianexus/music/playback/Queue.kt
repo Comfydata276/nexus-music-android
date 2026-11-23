@@ -28,18 +28,23 @@ object Repeat {
  * the queue can tell its entries apart even when one song is in it twice.
  */
 class Queue {
-    val songs = mutableListOf<Song>()
-    val uids = mutableListOf<Long>()
-    val order = mutableListOf<Int>()
+    var songs = mutableListOf<Song>()
+        private set
+    var uids = mutableListOf<Long>()
+        private set
+    var order = mutableListOf<Int>()
+        private set
     var cursor = 0
     /** What's playing, in words ("Slow Rivers", "Liked songs"): the queue's title. */
     var context = ""
     /** The page the queue was started from (its route key), and for each entry of `songs`
      *  its position in that page's song list. */
     var source = ""
-    val origins = mutableListOf<Int?>()
+    var origins = mutableListOf<Int?>()
+        private set
     /** The ids of every song in that page's list, as last seen. */
-    val sourceList = mutableListOf<String>()
+    var sourceList = mutableListOf<String>()
+        private set
     var shuffle = false
     var repeat = Repeat.OFF
 
@@ -89,19 +94,22 @@ class Queue {
 
     private fun newUid() = uidCounter.getAndIncrement()
 
-    /** Becomes `other`, which was made ready to take this one's place. */
+    /**
+     * Becomes `other`, which was made ready (perhaps on another thread) to take this one's
+     * place, by taking what it holds: nothing is copied, however long it is, and `other` is
+     * spent and must not be used again. Repeat is the player's own setting and stays.
+     */
     fun adopt(other: Queue) {
         revision++
-        songs.clear(); songs.addAll(other.songs)
-        uids.clear(); uids.addAll(other.uids)
-        order.clear(); order.addAll(other.order)
-        origins.clear(); origins.addAll(other.origins)
-        sourceList.clear(); sourceList.addAll(other.sourceList)
+        songs = other.songs
+        uids = other.uids
+        order = other.order
+        origins = other.origins
+        sourceList = other.sourceList
         cursor = other.cursor
         context = other.context
         source = other.source
         shuffle = other.shuffle
-        repeat = other.repeat
     }
 
     // ---- Starting afresh ------------------------------------------------------------------
@@ -226,7 +234,8 @@ class Queue {
         rearrange()
         val current = order.getOrNull(cursor) ?: return
         if (ahead.isEmpty()) return
-        order.removeAll { it in ahead }
+        val queued = ahead.toHashSet()
+        order.removeAll { it in queued }
         cursor = order.indexOf(current).coerceAtLeast(0)
         for ((place, entry) in ahead.withIndex()) order.add(cursor + 1 + place, entry)
     }
@@ -322,11 +331,54 @@ class Queue {
      *  the rest of the list behind them. */
     fun clearAhead(queued: Boolean) {
         val ahead = queuedAhead()
-        if (queued) {
-            repeat(ahead) { dropAt(cursor + 1) }
-        } else {
-            while (order.size > cursor + 1 + ahead) dropAt(order.size - 1)
+        if (queued) dropPlaces(cursor + 1, cursor + 1 + ahead) else dropPlaces(cursor + 1 + ahead, order.size)
+    }
+
+    /** Takes the entries at places `from` up to `to` of the playing order out, in one pass
+     *  however many they are. */
+    fun dropPlaces(from: Int, to: Int) {
+        val start = from.coerceIn(0, order.size)
+        val end = to.coerceIn(start, order.size)
+        if (start == end) return
+        val gone = BooleanArray(songs.size)
+        for (place in start until end) gone[order[place]] = true
+        drop(gone)
+    }
+
+    /** Takes the entries with these numbers out, wherever they are, in one pass. */
+    fun dropUids(numbers: Set<Long>) {
+        if (numbers.isEmpty()) return
+        val gone = BooleanArray(songs.size) { uids[it] in numbers }
+        if (gone.any { it }) drop(gone)
+    }
+
+    /** Removes the marked entries of `songs`. If the current one goes, the one that followed
+     *  it (or failing that the last) is current. */
+    private fun drop(gone: BooleanArray) {
+        revision++
+        // How many places before the cursor survive: where the cursor ends up.
+        var before = 0
+        for (place in 0 until cursor.coerceAtMost(order.size)) if (!gone[order[place]]) before++
+        val moved = IntArray(songs.size)
+        var kept = 0
+        for (entry in songs.indices) {
+            if (gone[entry]) continue
+            moved[entry] = kept
+            songs[kept] = songs[entry]
+            uids[kept] = uids[entry]
+            if (entry < origins.size) origins[kept] = origins[entry]
+            kept++
         }
+        while (songs.size > kept) songs.removeAt(songs.size - 1)
+        while (uids.size > kept) uids.removeAt(uids.size - 1)
+        while (origins.size > kept) origins.removeAt(origins.size - 1)
+        var place = 0
+        for (entry in order) {
+            if (gone[entry]) continue
+            order[place++] = moved[entry]
+        }
+        while (order.size > place) order.removeAt(order.size - 1)
+        cursor = before.coerceAtMost(order.size - 1).coerceAtLeast(0)
     }
 
     /**

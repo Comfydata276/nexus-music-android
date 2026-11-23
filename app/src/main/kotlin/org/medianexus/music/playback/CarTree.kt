@@ -103,12 +103,27 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
      */
     suspend fun children(node: CarNode, changed: () -> Unit = {}): List<CarEntry>? {
         if (node is CarNode.Part) {
-            val whole = listing(node.parent, changed) ?: return null
+            // One range of a long list. The list was looked at with the server when it was
+            // opened; its ranges are read from the phone's copy, not fetched again each.
+            val whole = listing(node.parent, changed, part = true) ?: return null
             return cut(whole, node.parent, node.from, node.to)
         }
-        val whole = listing(node, changed) ?: return null
+        val whole = listing(node, changed, part = false) ?: return null
         return whole.head + cut(whole, node, 0, whole.body.size)
     }
+
+    /** The last list of songs laid out, and the kept list it was made from: opening the
+     *  ranges of a long list one after another lays it out once, not once for each. */
+    private var laidOut: Triple<ListRef, List<Song>, Listing>? = null
+
+    /**
+     * A page for a folder: as [Library.quick] gives it, or, for one range of a long list
+     * (`part`), the kept copy without asking the server again if it was asked in the last
+     * few minutes. A list long enough to be shown in ranges is megabytes to fetch, and a car
+     * opening its ranges in turn would otherwise fetch all of it for each.
+     */
+    private suspend fun <T> page(spec: org.medianexus.music.store.PageSpec<T>, part: Boolean, again: (Any?) -> Unit): T =
+        if (part) library.later(spec, LISTING_FRESH_MILLIS, again) ?: library.quick(spec, again) else library.quick(spec, again)
 
     /**
      * The entries of a folder's list from `from` up to `to`, as one folder shows them: the
@@ -133,12 +148,12 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
 
     private fun brief(title: String): String = if (title.length <= 24) title else title.take(23).trimEnd() + "…"
 
-    private suspend fun listing(node: CarNode, changed: () -> Unit): Listing? {
+    private suspend fun listing(node: CarNode, changed: () -> Unit, part: Boolean): Listing? {
         val again: (Any?) -> Unit = { changed() }
         return when (node) {
             CarNode.Root -> Listing(tabs())
             CarNode.Home -> Listing(home(again), inside = CarStyle.GRID)
-            CarNode.Playlists -> Listing(library.quick(library.playlists(), again).map(::playlistEntry), inside = CarStyle.GRID)
+            CarNode.Playlists -> Listing(page(library.playlists(), part, again).map(::playlistEntry), inside = CarStyle.GRID)
             CarNode.Library -> Listing(listOf(
                 CarEntry(CarIds.format(CarNode.Albums), words.albums, icon = R.drawable.ic_disc_album, browsable = true, inside = CarStyle.GRID),
                 CarEntry(CarIds.format(CarNode.Artists), words.artists, icon = R.drawable.ic_user_round, browsable = true, inside = CarStyle.LIST),
@@ -156,26 +171,34 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             }
             is CarNode.AlbumLetter -> Listing(everyAlbum(again).filter { letterOf(it.name) == node.letter }.map { albumEntry(it) }, inside = CarStyle.GRID)
             CarNode.Artists -> {
-                val all = library.quick(library.artists(), again)
+                val all = page(library.artists(), part, again)
                 Listing(if (all.size <= MOST_IN_A_LIST) all.map(::artistEntry) else letters(all.map { letterOf(it.name) }, CarStyle.LIST) { CarNode.ArtistLetter(it) })
             }
-            is CarNode.ArtistLetter -> Listing(library.quick(library.artists(), again).filter { letterOf(it.name) == node.letter }.map(::artistEntry))
-            CarNode.Genres -> Listing(library.quick(library.genres(), again).map(::genreEntry))
-            CarNode.Liked -> songs(library.quick(library.liked(), again).songs, ListRef.Liked)
-            is CarNode.Album -> songs(library.quick(library.album(node.id), again).songs, ListRef.Album(node.id))
-            is CarNode.Playlist -> songs(library.quick(library.playlist(node.id), again).songs, ListRef.Playlist(node.id))
-            is CarNode.Artist -> Listing(library.quick(library.artist(node.id), again).albums.map { albumEntry(it, byYear = true) }, inside = CarStyle.GRID)
-            is CarNode.Genre -> Listing(library.quick(library.genre(node.name), again).map { albumEntry(it) }, inside = CarStyle.GRID)
+            is CarNode.ArtistLetter -> Listing(page(library.artists(), part, again).filter { letterOf(it.name) == node.letter }.map(::artistEntry))
+            CarNode.Genres -> Listing(page(library.genres(), part, again).map(::genreEntry))
+            CarNode.Liked -> songs(page(library.liked(), part, again).songs, ListRef.Liked)
+            is CarNode.Album -> songs(page(library.album(node.id), part, again).songs, ListRef.Album(node.id))
+            is CarNode.Playlist -> songs(page(library.playlist(node.id), part, again).songs, ListRef.Playlist(node.id))
+            is CarNode.Artist -> Listing(page(library.artist(node.id), part, again).albums.map { albumEntry(it, byYear = true) }, inside = CarStyle.GRID)
+            is CarNode.Genre -> Listing(page(library.genre(node.name), part, again).map { albumEntry(it) }, inside = CarStyle.GRID)
             is CarNode.Track, is CarNode.Shuffle, is CarNode.Part -> null
         }
     }
 
     /** A list of songs as a folder: "Shuffle" first (unless there is nothing to shuffle),
      *  then the songs, each of which plays the list from itself. */
-    private fun songs(songs: List<Song>, list: ListRef): Listing = Listing(
-        body = songs.mapIndexed { i, song -> songEntry(song, list, i) },
-        head = if (songs.isEmpty()) emptyList() else listOf(shuffleEntry(list, songs.size)),
-    )
+    private fun songs(songs: List<Song>, list: ListRef): Listing {
+        // The same kept list as last time (the very same one, not one that reads the same):
+        // it is laid out already.
+        laidOut?.let { (was, from, listing) -> if (was == list && from === songs) return listing }
+        val listing = Listing(
+            body = songs.mapIndexed { i, song -> songEntry(song, list, i) },
+            head = if (songs.isEmpty()) emptyList() else listOf(shuffleEntry(list, songs.size)),
+        )
+        // Only worth holding on to when it is long enough to be opened in ranges.
+        laidOut = if (songs.size > CarFolders.MOST) Triple(list, songs, listing) else null
+        return listing
+    }
 
     /**
      * Albums. What costs one request each comes first and at once: recently added, recently

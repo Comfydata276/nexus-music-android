@@ -22,6 +22,8 @@ usage: scripts/carcheck <package> [options]     check an installed app
   --buttons "a,b"       the player's extra buttons must include these (part of a name)
   --press-buttons       press each extra button and see that the session answers
   --mode browse         stop after browsing, artwork and search (nothing is played)
+  --mode play           only press play (or, with --media-id "<id>", choose that item) and
+                        see that something plays; --mode pause stops it
   --mode signed_out     only check that the car is told, in words, to sign in
   --mode outsider       what an app that isn't the car may do. With --untrusted: it must be
                         refused a connection outright. Without: once something is playing,
@@ -83,6 +85,7 @@ while [ $# -gt 0 ]; do
     --buttons) extra+=(-e expect_buttons "${2:?}"); shift ;;
     --press-buttons) extra+=(-e press_buttons true) ;;
     --mode) extra+=(-e mode "${2:?}"); shift ;;
+    --media-id) extra+=(-e media_id "${2:?}"); shift ;;
     --depth) extra+=(-e depth "${2:?}"); shift ;;
     --nodes) extra+=(-e nodes "${2:?}"); shift ;;
     --limit-ms) extra+=(-e limit_ms "${2:?}"); shift ;;

@@ -42,7 +42,6 @@ import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,9 +111,6 @@ class PlaybackService : MediaLibraryService() {
     private val account: AccountGraph? get() = era?.account
     private val database by lazy { StandaloneDatabaseProvider(this) }
 
-    /** Every song in the queue, by id, for the data source (which runs on the player's
-     *  loading threads) to know a song's file type. */
-    private val songsById = ConcurrentHashMap<String, Song>()
     private val needsConverting = NeedsConverting()
 
     /** What the server is told about listening: "now playing", and each play that counts. */
@@ -332,7 +328,11 @@ class PlaybackService : MediaLibraryService() {
      */
     private suspend fun restore(era: Era) {
         val saved = era.account.queue.restore()
-        if (saved != null && player.queue.isEmpty) player.restore(saved)
+        if (saved != null) {
+            // Made ready off the main thread: it can be thousands of songs.
+            val revived = withContext(Dispatchers.Default) { player.revive(saved) }
+            player.restore(revived, (saved.position * 1000).toLong())
+        }
         era.restoring.complete(Unit)
         // Something started while the saved queue was being read is the queue now.
         if (!player.queue.isEmpty) save()
@@ -426,7 +426,7 @@ class PlaybackService : MediaLibraryService() {
     /** Called on the player's loading threads, for a read that belongs to `era`. */
     private fun resolve(era: Era, songId: String): SongWhere {
         val api = era.account.api
-        val song = songsById[songId]
+        val song = player.songFor(songId)
         val suffix = song?.suffix?.lowercase().orEmpty()
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in needsConverting
         val form = streamForm(native, graph.settings.value.bitrate, suffix)
@@ -473,9 +473,6 @@ class PlaybackService : MediaLibraryService() {
             seenRevision = queue.revision
             reorderedAt = android.os.SystemClock.elapsedRealtime()
         }
-        // Changed in place, never emptied: the player may be opening a song right now.
-        for (song in queue.songs) songsById[song.id] = song
-        if (songsById.size > queue.songs.size) songsById.keys.retainAll(queue.songs.mapTo(HashSet()) { it.id })
         // Shuffle and repeat are settings, and the list being played remembers its shuffle.
         val settings = graph.settings.value
         if (settings.shuffle != queue.shuffle || settings.repeat != queue.repeat) {
@@ -497,7 +494,8 @@ class PlaybackService : MediaLibraryService() {
 
     /**
      * What only the app's own screens read, in the session's extras: how long "Next in
-     * queue" is (for the queue sheet), the list the queue came from and the place in it of
+     * queue" is and how many songs are to come in all (for the queue sheet, which is shown
+     * the nearest few hundred), the list the queue came from and the place in it of
      * the song playing (to mark its row, and no other row of the same song), and whether the
      * server is converting the song (for the format line).
      */
@@ -505,6 +503,7 @@ class PlaybackService : MediaLibraryService() {
         val queue = player.queue
         val extras = Bundle().apply {
             putInt(EXTRA_QUEUED_AHEAD, queue.queuedAhead())
+            putInt(EXTRA_AHEAD, player.ahead)
             putString(EXTRA_SOURCE, queue.source)
             putInt(EXTRA_ORIGIN, queue.currentOrigin() ?: -1)
             putBoolean(EXTRA_CONVERTED, queue.current()?.id?.let { it in needsConverting } == true)
@@ -522,7 +521,12 @@ class PlaybackService : MediaLibraryService() {
     private fun save() {
         if (leaving) return
         val kept = account?.queue ?: return
-        kept.save { player.queue.saved(exo.currentPosition / 1000.0, System.currentTimeMillis() / 1000) }
+        val queue = player.queue
+        val position = exo.currentPosition / 1000.0
+        val stamp = System.currentTimeMillis() / 1000
+        // The queue is copied for the writer only when it has changed; while it only plays,
+        // where it has got to is all that's handed over.
+        kept.save(queue.revision, queue.cursor, position, stamp) { queue.saved(position, stamp) }
         lastSaveAt = System.currentTimeMillis()
     }
 
@@ -930,17 +934,44 @@ class PlaybackService : MediaLibraryService() {
                     player.cycleRepeat()
                     true
                 }
-                else -> {
+                AppActions.PLAY -> {
                     // A choice made on the phone: anything still being looked up for the car
                     // has been overtaken.
-                    if (customCommand.customAction == AppActions.PLAY) starts++
-                    AppCommands.handle(player, customCommand, args, ::shuffleFor)
+                    val mine = ++starts
+                    if (AppCommands.byPage(args)) playPage(mine, args) else AppCommands.handle(player, customCommand, args, ::shuffleFor)
                 }
+                else -> AppCommands.handle(player, customCommand, args, ::shuffleFor)
             }
             return com.google.common.util.concurrent.Futures.immediateFuture(
                 SessionResult(if (done) SessionResult.RESULT_SUCCESS else SessionError.ERROR_NOT_SUPPORTED),
             )
         }
+    }
+
+    /**
+     * Starts a list the app's screens named rather than sent (a long album, playlist or Liked
+     * songs): its songs are read from the library's kept copy, where the screen read them,
+     * off the main thread. Dropped if something else is chosen meanwhile.
+     */
+    private fun playPage(mine: Long, args: Bundle): Boolean {
+        val era = era ?: return false
+        val source = args.getString("source").orEmpty()
+        era.scope.launch {
+            val shuffle = AppCommands.shuffleOf(args, ::shuffleFor)
+            // Read, and made into a queue, off the main thread: it is thousands of songs.
+            val next = withContext(Dispatchers.Default) {
+                era.account.library.keptSongs(source)?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle) }
+            }
+            if (mine != starts || era !== this@PlaybackService.era) return@launch
+            if (next == null) {
+                // The phone has cleared its copy away since the screen drew it. Nothing to
+                // start with; the screen's next refresh fetches it again.
+                if (BuildConfig.DEBUG) android.util.Log.w(TAG, "nothing kept to start $source from")
+                return@launch
+            }
+            player.play(next)
+        }
+        return true
     }
 
     /** Who a controller is (see [Access]). */
@@ -1018,11 +1049,15 @@ class PlaybackService : MediaLibraryService() {
     private fun shuffleFor(source: String): Boolean =
         if (source.isEmpty()) player.queue.shuffle else graph.settings.value.lists[source]?.shuffle ?: false
 
-    private fun staged(list: PlayList): MediaItemsWithStartPosition {
+    private suspend fun staged(list: PlayList): MediaItemsWithStartPosition {
         val shuffle = list.shuffle ?: shuffleFor(list.source)
-        // A list with a source is that page's whole list, so each song's place is its origin.
-        val origins = if (list.source.isNotEmpty()) list.songs.indices.toList() else null
-        val (items, start) = player.stage(list.songs, list.start, list.context, list.source, list.songs.map { it.id }, shuffle, list.anyStart, origins)
+        // Made into a queue off the main thread: a list can be thousands of songs.
+        val next = withContext(Dispatchers.Default) {
+            // A list with a source is that page's whole list, so each song's place is its origin.
+            val origins = if (list.source.isNotEmpty()) list.songs.indices.toList() else null
+            player.prepare(list.songs, list.start, list.context, list.source, origins, list.songs.map { it.id }, shuffle, list.anyStart)
+        }
+        val (items, start) = player.stage(next)
         return MediaItemsWithStartPosition(items, start, 0)
     }
 
@@ -1076,9 +1111,10 @@ class PlaybackService : MediaLibraryService() {
         val REPEAT = SessionCommand("org.medianexus.music.REPEAT", Bundle.EMPTY)
 
         /** In the session's extras (see `publishExtras`): how many songs straight after the
-         *  current one are in "Next in queue"; the list the queue came from; the place in it
+         *  current one are in "Next in queue"; how many are to come in all; the list the queue came from; the place in it
          *  of the song playing (-1 for none); whether the server is converting that song. */
         const val EXTRA_QUEUED_AHEAD = "org.medianexus.music.QUEUED_AHEAD"
+        const val EXTRA_AHEAD = "org.medianexus.music.AHEAD"
         const val EXTRA_SOURCE = "org.medianexus.music.SOURCE"
         const val EXTRA_ORIGIN = "org.medianexus.music.ORIGIN"
         const val EXTRA_CONVERTED = "org.medianexus.music.CONVERTED"

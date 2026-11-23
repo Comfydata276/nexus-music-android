@@ -20,6 +20,10 @@ import androidx.media3.session.SessionToken
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --ei item 4
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es say state
  *
+ * logging whenever the main thread is held up for more than two frames (tag NexusStall):
+ *
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es stalls start
+ *
  * and capturing what is played to a WAV file in the app's files (see [DebugAudio]):
  *
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es capture start --es name sweep
@@ -29,6 +33,11 @@ import androidx.media3.session.SessionToken
  * (`scripts/emu capture start|stop|pull` does these.)
  */
 class DebugControl : BroadcastReceiver() {
+    private companion object {
+        /** Two frames at 60 a second. */
+        const val STALL_MILLIS = 33L
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.getStringExtra("capture")) {
             "start" -> {
@@ -39,6 +48,29 @@ class DebugControl : BroadcastReceiver() {
             }
             "stop" -> {
                 resultData = DebugAudio.stop().joinToString(" ") { "files/capture/${it.name}" }
+                return
+            }
+        }
+        when (intent.getStringExtra("stalls")) {
+            // "--es stalls start": from now on, log every time the main thread is held for
+            // longer than two frames (tag NexusStall), with what held it.
+            "start" -> {
+                var began = 0L
+                var what = ""
+                android.os.Looper.getMainLooper().setMessageLogging { line ->
+                    if (line.startsWith(">")) {
+                        began = android.os.SystemClock.uptimeMillis()
+                        what = line
+                    } else {
+                        val took = android.os.SystemClock.uptimeMillis() - began
+                        if (took > STALL_MILLIS) android.util.Log.w("NexusStall", "main thread held for $took ms by ${what.substringAfter("Dispatching to ").take(160)}")
+                    }
+                }
+                resultData = "logging main-thread stalls over $STALL_MILLIS ms"
+                return
+            }
+            "stop" -> {
+                android.os.Looper.getMainLooper().setMessageLogging(null)
                 return
             }
         }

@@ -22,6 +22,29 @@ fun writeAtomically(file: File, bytes: ByteArray) {
     Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
 }
 
+/**
+ * As above, for something too big to hold in memory twice over: `write` puts it straight
+ * into the file beside. (A 20,000-song queue is 12 MB of JSON; built as text and then as
+ * bytes before being written, it was 36 MB more of the app's memory at each save.)
+ */
+@Throws(IOException::class)
+fun writeAtomically(file: File, write: (java.io.OutputStream) -> Unit) {
+    file.parentFile?.mkdirs()
+    val temp = siblingWithExtension(file, "tmp")
+    try {
+        FileOutputStream(temp).use { out ->
+            val buffered = out.buffered(64 * 1024)
+            write(buffered)
+            buffered.flush()
+            out.fd.sync()
+        }
+    } catch (e: Exception) {
+        temp.delete()
+        throw e
+    }
+    Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+}
+
 /** `settings.json` with its extension changed, as Rust's `with_extension` does it:
  *  `settings.backup.json`, `settings.tmp`. */
 fun siblingWithExtension(file: File, extension: String): File {

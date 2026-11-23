@@ -22,9 +22,11 @@ import org.medianexus.music.net.Song
  * The player the session (and so the car, the notification and the app's own screens)
  * controls: ExoPlayer, with the queue model ([Queue]) as the truth about what plays.
  *
- * ExoPlayer's playlist always holds the queue's songs in exactly the order they will play,
- * and its own shuffle is never turned on: shuffling reorders what is to come. Everything
- * that changes the queue, from whichever side, goes through here and is put to ExoPlayer by
+ * ExoPlayer's playlist holds the queue's songs in exactly the order they will play, and its
+ * own shuffle is never turned on: shuffling reorders what is to come. It holds a window of
+ * the queue around the song playing, not all of it (see [QueueSync]); the session, the car
+ * and the app's screens see that window, and the model holds the rest. Everything that
+ * changes the queue, from whichever side, goes through here and is put to ExoPlayer by
  * [sync]; everything ExoPlayer does by itself (moving on to the next song) is put back to
  * the model by [followPlayer]. So "next", gapless joins, the car's queue and the app's queue
  * can't disagree.
@@ -43,25 +45,60 @@ class QueuePlayer(
     private val explain: (PlaybackException, Song?) -> PlaybackException? = { _, _ -> null },
     private val random: Random = Random.Default,
 ) : ForwardingSimpleBasePlayer(exo) {
+    /** The media items of the entries the player holds, by entry number. */
     private val items = HashMap<Long, MediaItem>()
+
+    /** Media items made ahead of need, off the main thread (see [ready]): taken from here
+     *  the first time each is wanted, and whatever is left is dropped at the next change. */
+    private val made = java.util.concurrent.ConcurrentHashMap<Long, MediaItem>()
+
+    /** The songs of those entries, by song id, for the player's loading threads (which are
+     *  told a song's id and need to know what kind of file it is). */
+    private val held = java.util.concurrent.ConcurrentHashMap<String, Song>()
+
+    /** The song with this id, if the player holds it. Safe from any thread. */
+    fun songFor(id: String): Song? = held[id]
     private val main = Handler(Looper.getMainLooper())
 
-    /** A queue made ready for the session to hand to the player (see [stage]). */
+    /** A queue made ready for the session to hand to the player (see [stage]), and the
+     *  entry numbers of the items that were handed over for it. */
     private var staged: Queue? = null
+    private var stagedUids: List<Long> = emptyList()
+
+    /** ExoPlayer's playlist, as [QueueSync] sees it. */
+    private val playlist = object : QueueSync.Playlist {
+        override val count: Int get() = exo.mediaItemCount
+        override fun uidAt(index: Int): Long? = if (index in 0 until exo.mediaItemCount) uidOf(exo.getMediaItemAt(index)) else null
+        override val currentIndex: Int get() = exo.currentMediaItemIndex
+        override fun set(slots: List<QueueSync.Slot>, index: Int, positionMs: Long) = exo.setMediaItems(slots.map(::itemFor), index, positionMs)
+        override fun clear() = exo.clearMediaItems()
+        override fun remove(from: Int, to: Int) = exo.removeMediaItems(from, to)
+        override fun add(at: Int, slots: List<QueueSync.Slot>) = exo.addMediaItems(at, slots.map(::itemFor))
+        override fun seekTo(index: Int, positionMs: Long) = exo.seekTo(index, positionMs)
+    }
 
     init {
         exo.shuffleModeEnabled = false
-        exo.repeatMode = exoRepeat(queue.repeat)
+        applyRepeat()
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = followPlayer()
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED && queue.repeat == Repeat.OFF && !queue.isEmpty) {
-                    // The end of the queue: park on the first song, ready to go again, as
-                    // Windows does.
+                if (playbackState != Player.STATE_ENDED || queue.isEmpty) return
+                // The end of the queue (the window moves along with the song playing, so the
+                // player only runs out when the queue has).
+                if (queue.repeat == Repeat.ALL) {
+                    // Too long for the player to hold whole, so its own "repeat all" was
+                    // off: round to the top by hand.
+                    queue.moveTo(0)
+                    sync(0)
+                    exo.prepare()
+                    exo.play()
+                } else if (queue.repeat == Repeat.OFF) {
+                    // Park on the first song, ready to go again, as Windows does.
                     exo.pause()
-                    exo.seekTo(0, 0)
-                    followPlayer()
+                    queue.moveTo(0)
+                    sync(0)
                 }
             }
         })
@@ -72,15 +109,16 @@ class QueuePlayer(
     override fun getState(): State {
         val state = super.getState()
         val builder = state.buildUpon()
-            // Ours, not ExoPlayer's (which stays off).
+            // Ours, not ExoPlayer's (whose shuffle stays off, and whose repeat is off when it
+            // holds only part of the queue).
             .setShuffleModeEnabled(queue.shuffle)
+            .setRepeatMode(exoRepeat(queue.repeat))
+            .setPlaylistMetadata(MediaMetadata.Builder().setTitle(queue.context.ifEmpty { null }).build())
         // Next is always there to press while there is a queue: on the last song ExoPlayer
         // withdraws it, and Windows goes round to the top (see handleSeek).
         if (!queue.isEmpty) {
             builder.setAvailableCommands(state.availableCommands.buildUpon().add(COMMAND_SEEK_TO_NEXT).add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM).build())
         }
-        builder
-            .setPlaylistMetadata(MediaMetadata.Builder().setTitle(queue.context.ifEmpty { null }).build())
         if (exo.isCommandAvailable(COMMAND_GET_TIMELINE)) {
             // The playlist is already in playing order, whatever shuffle says: nobody should
             // look for a shuffled order underneath it.
@@ -92,6 +130,10 @@ class QueuePlayer(
 
     /** The state may have changed in a way ExoPlayer didn't announce (our shuffle). */
     fun refresh() = invalidateState()
+
+    /** How many songs come after the one playing, in the whole queue (the player and the
+     *  session hold only the nearest of them). */
+    val ahead: Int get() = (queue.order.size - queue.cursor - 1).coerceAtLeast(0)
 
     override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {
         setShuffle(shuffleModeEnabled)
@@ -105,12 +147,16 @@ class QueuePlayer(
 
     override fun handleSetMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
         val ready = staged
+        val handed = stagedUids
         staged = null
-        if (ready != null && mediaItems.map(::uidOf) == ready.playingUids()) {
+        stagedUids = emptyList()
+        val given = mediaItems.map(::uidOf)
+        if (ready != null && given == handed) {
             // A queue this player made ready itself (the car chose a song, or asked for one
-            // aloud): take it with everything known about it.
-            queue.adopt(ready)
-        } else if (mediaItems.isNotEmpty() && mediaItems.all { uidOf(it) != null }) {
+            // aloud): take it with everything known about it. (Unless it is this very queue,
+            // handed over to be started again where it is.)
+            if (ready !== queue) queue.adopt(ready)
+        } else if (given.isNotEmpty() && given.all { it != null }) {
             // Items this player made ready, but not the ones ready now: a start that was
             // overtaken by a newer choice while it was on its way here. Dropped.
             return Futures.immediateVoidFuture()
@@ -123,21 +169,26 @@ class QueuePlayer(
         return Futures.immediateVoidFuture()
     }
 
+    // The indexes a controller sends are places in the player's playlist, which is a window
+    // of the queue: `base` is the place in the queue of the window's first item.
+    private val base: Int get() = queue.cursor - exo.currentMediaItemIndex
+
     override fun handleAddMediaItems(index: Int, mediaItems: MutableList<MediaItem>): ListenableFuture<*> {
         // Added by hand, as far as this app is concerned: into "Next in queue", at the top
         // if put straight after the song playing.
-        enqueue(mediaItems.map { songOf(it) }, playNext = index == queue.cursor + 1)
+        enqueue(mediaItems.map { songOf(it) }, playNext = index == exo.currentMediaItemIndex + 1)
         return Futures.immediateVoidFuture()
     }
 
     override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> {
-        for (place in (fromIndex until toIndex.coerceAtMost(queue.order.size)).reversed()) queue.dropAt(place)
+        val gone = (fromIndex until toIndex.coerceAtMost(exo.mediaItemCount)).mapNotNullTo(HashSet()) { playlist.uidAt(it) }
+        queue.dropUids(gone)
         sync()
         return Futures.immediateVoidFuture()
     }
 
     override fun handleMoveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int): ListenableFuture<*> {
-        queue.move(fromIndex, toIndex, newIndex)
+        queue.move(base + fromIndex, base + toIndex, base + newIndex)
         sync()
         return Futures.immediateVoidFuture()
     }
@@ -146,28 +197,43 @@ class QueuePlayer(
         // Not something this app's screens or a car asks for; played as a list of its own.
         val songs = queue.playingOrder().toMutableList()
         val replaced = mediaItems.map { songOf(it) }
-        repeat(toIndex - fromIndex) { songs.removeAt(fromIndex) }
-        songs.addAll(fromIndex, replaced)
+        val from = (base + fromIndex).coerceIn(0, songs.size)
+        repeat((toIndex - fromIndex).coerceAtMost(songs.size - from)) { songs.removeAt(from) }
+        songs.addAll(from, replaced)
         queue.replace(songs, queue.cursor.coerceAtMost(songs.size - 1), queue.context, shuffle = false)
         load(exo.currentPosition)
         return Futures.immediateVoidFuture()
     }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
-        if (mediaItemIndex == C.INDEX_UNSET && (seekCommand == COMMAND_SEEK_TO_NEXT || seekCommand == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)) {
-            // Next, with nothing after this song (Media3 passes that on as a seek to nowhere):
-            // round to the top, as Windows does, playing on only if repeat is on.
-            val step = queue.next() ?: return Futures.immediateVoidFuture()
-            if (step.place != queue.cursor + 1) {
-                exo.seekTo(step.place, 0)
+        val here = exo.currentMediaItemIndex
+        when (seekCommand) {
+            COMMAND_SEEK_TO_NEXT, COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
+                // Where Next goes is the queue's to say, not the playlist's: the playlist may
+                // hold only part of the queue, and has no next at all after its last song
+                // (Media3 passes that on as a seek to nowhere). On the last song, round to the
+                // top, as Windows does, playing on only if repeat is on.
+                val step = queue.next() ?: return Futures.immediateVoidFuture()
+                if (step.place == queue.cursor + 1) return super.handleSeek(here + 1, 0, COMMAND_SEEK_TO_MEDIA_ITEM)
                 if (!step.carriesOn) exo.pause()
+                queue.moveTo(step.place)
+                sync(0)
                 return Futures.immediateVoidFuture()
             }
-        }
-        if (seekCommand == COMMAND_SEEK_TO_MEDIA_ITEM && mediaItemIndex > queue.cursor + 1 && queue.queuedAhead() > 0) {
-            // Jumping down the queue past songs queued by hand: they stay next, after it.
-            jumpAhead(mediaItemIndex - queue.cursor - 1, positionMs)
-            return Futures.immediateVoidFuture()
+            COMMAND_SEEK_TO_PREVIOUS, COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> return when {
+                // Nothing before this one, and not asked to start it again.
+                mediaItemIndex == C.INDEX_UNSET -> Futures.immediateVoidFuture()
+                // The start of this song: asked for, or because it is the first in the queue
+                // (the playlist, asked with "repeat all", would say its own last item; on
+                // Windows "previous" on the first song starts it again).
+                mediaItemIndex == here || queue.cursor == 0 -> super.handleSeek(here, 0, COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+                else -> super.handleSeek(here - 1, 0, COMMAND_SEEK_TO_MEDIA_ITEM)
+            }
+            COMMAND_SEEK_TO_MEDIA_ITEM -> if (mediaItemIndex > here + 1 && queue.queuedAhead() > 0) {
+                // Jumping down the queue past songs queued by hand: they stay next, after it.
+                jumpAhead(mediaItemIndex - here - 1, positionMs)
+                return Futures.immediateVoidFuture()
+            }
         }
         return super.handleSeek(mediaItemIndex, positionMs, seekCommand)
     }
@@ -175,9 +241,35 @@ class QueuePlayer(
     // ---- Playing --------------------------------------------------------------------------
 
     /**
-     * Plays a list from one of its songs. `source` is the route key of the page it came from
-     * ("album:<id>"), `shuffle` whether it plays shuffled (each list remembers that).
+     * A queue of these songs, to play from `start`, made ready to be played ([play]) or handed
+     * to the session ([stage]). `source` is the route key of the page they came from
+     * ("album:<id>"), `shuffle` whether they play shuffled (each list remembers that).
+     *
+     * Building it is all the work there is in starting a long list (a copy of 20,000 songs,
+     * a number for each, a shuffle), and it touches nothing of the player: so this may be
+     * called on any thread, and for a long list should be called off the main one.
      */
+    fun prepare(
+        songs: List<Song>,
+        start: Int,
+        context: String,
+        source: String = "",
+        origins: List<Int?>? = null,
+        sourceList: List<String> = emptyList(),
+        shuffle: Boolean,
+        anyStart: Boolean = false,
+    ): Queue = Queue().apply { replace(songs, start, context, source, origins, sourceList, shuffle, anyStart, random) }.also(::ready)
+
+    /**
+     * Makes the media items the player will want first for a queue that isn't its own yet
+     * (the window around its current song), so that they are there, already made, when the
+     * queue is taken on. Safe from any thread: it only adds to maps that are.
+     */
+    private fun ready(next: Queue) {
+        for (slot in QueueSync.slots(next)) made.getOrPut(slot.uid) { build(next.songs[slot.entry], slot.uid) }
+    }
+
+    /** Plays a list from one of its songs (see [prepare] for the rest). */
     fun play(
         songs: List<Song>,
         start: Int,
@@ -191,9 +283,16 @@ class QueuePlayer(
         playNow: Boolean = true,
     ) {
         if (songs.isEmpty()) return
+        play(prepare(songs, start, context, source, origins, sourceList, shuffle, anyStart), startPositionMs, playNow)
+    }
+
+    /** Plays a queue made ready by [prepare]. */
+    fun play(next: Queue, startPositionMs: Long = 0, playNow: Boolean = true) {
+        if (next.isEmpty) return
         // A queue made ready earlier and not yet handed over has been overtaken.
         staged = null
-        queue.replace(songs, start, context, source, origins, sourceList, shuffle, anyStart, random)
+        stagedUids = emptyList()
+        queue.adopt(next)
         load(startPositionMs)
         if (playNow) {
             exo.prepare()
@@ -202,35 +301,22 @@ class QueuePlayer(
     }
 
     /**
-     * Makes a queue ready for the session to start, for the times the session asks for media
-     * items rather than letting this player be told directly (a car choosing a song). The
-     * items come back to [handleSetMediaItems], which recognises them.
+     * Hands a queue made ready by [prepare] to the session to start, for the times the
+     * session asks for media items rather than letting this player be told directly (a car
+     * choosing a song). What is handed back is the part of it the player will hold (see
+     * [QueueSync]), and which of those to start at; the items come back to
+     * [handleSetMediaItems], which recognises them.
      */
-    fun stage(
-        songs: List<Song>,
-        start: Int,
-        context: String,
-        source: String = "",
-        sourceList: List<String> = emptyList(),
-        shuffle: Boolean = queue.shuffle,
-        anyStart: Boolean = false,
-        origins: List<Int?>? = null,
-    ): Pair<List<MediaItem>, Int> {
-        val next = Queue()
-        next.repeat = queue.repeat
-        next.replace(songs, start, context, source, origins, sourceList, shuffle, anyStart, random)
-        staged = next
-        val items = next.order.map { itemOf(next.songs[it], next.uids[it]) }
-        return items to next.cursor
-    }
+    fun stage(next: Queue): Pair<List<MediaItem>, Int> = hand(next)
 
     /** The queue as it stands, for the session to start again where it is. */
-    fun stageCurrent(): Pair<List<MediaItem>, Int>? {
-        if (queue.isEmpty) return null
-        val next = Queue()
-        next.adopt(queue)
+    fun stageCurrent(): Pair<List<MediaItem>, Int>? = if (queue.isEmpty) null else hand(queue)
+
+    private fun hand(next: Queue): Pair<List<MediaItem>, Int> {
+        val slots = QueueSync.slots(next)
         staged = next
-        return next.order.map { itemOf(next.songs[it], next.uids[it]) } to next.cursor
+        stagedUids = slots.map { it.uid }
+        return slots.map { itemOf(next.songs[it.entry], it.uid) } to next.cursor - QueueSync.window(next.cursor, next.order.size).first
     }
 
     /** The song at the cursor, as the session shows it; null with an empty queue. Changes
@@ -240,32 +326,36 @@ class QueuePlayer(
         return queue.current()?.let { itemOf(it, uid) }
     }
 
-    /** The saved queue, from the last run: paused where it stopped. */
-    fun restore(saved: SavedQueue) {
+    /** The saved queue, from the last run, as a queue ready to be put back with [restore].
+     *  Touches nothing of the player: for a long queue, call it off the main thread. */
+    fun revive(saved: SavedQueue): Queue = Queue().apply { restore(saved) }.also(::ready)
+
+    /** Puts back the queue from the last run: paused where it stopped. */
+    fun restore(revived: Queue, positionMs: Long) {
         if (!queue.isEmpty) return
-        queue.restore(saved)
-        load((saved.position * 1000).toLong())
+        // Shuffle is as it was set when the service started (from the settings); a saved
+        // queue doesn't say.
+        revived.shuffle = queue.shuffle
+        queue.adopt(revived)
+        load(positionMs)
     }
 
     /** Nothing to play any more (signed out). */
     fun clear() {
         queue.clear()
         items.clear()
+        held.clear()
+        staged = null
+        stagedUids = emptyList()
         exo.stop()
         exo.clearMediaItems()
         changed(this)
     }
 
-    /** Puts the whole queue to ExoPlayer afresh, at the current song. */
+    /** Puts the queue to ExoPlayer afresh, at the current song. */
     private fun load(positionMs: Long) {
-        items.keys.retainAll(queue.uids.toSet())
-        if (queue.isEmpty) {
-            exo.clearMediaItems()
-        } else {
-            exo.setMediaItems(queue.order.map { itemOf(queue.songs[it], queue.uids[it]) }, queue.cursor, positionMs.coerceAtLeast(0))
-        }
-        queue.trackChanged()
-        changed(this)
+        QueueSync.load(queue, playlist, positionMs)
+        settled()
     }
 
     // ---- Shuffle and repeat ---------------------------------------------------------------
@@ -279,12 +369,23 @@ class QueuePlayer(
 
     fun setRepeat(mode: Int) {
         queue.repeat = mode.coerceIn(Repeat.OFF, Repeat.ONE)
-        exo.repeatMode = exoRepeat(queue.repeat)
+        applyRepeat()
         changed(this)
     }
 
     /** Off, the whole queue, one song, and round again: the repeat button. */
     fun cycleRepeat() = setRepeat((queue.repeat + 1) % 3)
+
+    /** ExoPlayer repeats one song by itself, and the whole queue only when it holds the
+     *  whole queue: otherwise going round is done here, when it reaches the end. */
+    private fun applyRepeat() {
+        val mode = when {
+            queue.repeat == Repeat.ONE -> Player.REPEAT_MODE_ONE
+            queue.repeat == Repeat.ALL && QueueSync.whole(queue) -> Player.REPEAT_MODE_ALL
+            else -> Player.REPEAT_MODE_OFF
+        }
+        if (exo.repeatMode != mode) exo.repeatMode = mode
+    }
 
     // ---- Editing the queue ----------------------------------------------------------------
 
@@ -340,89 +441,59 @@ class QueuePlayer(
 
     // ---- Keeping ExoPlayer in step ----------------------------------------------------------
 
-    /**
-     * Makes ExoPlayer's playlist match the queue's playing order without disturbing the song
-     * that's playing: what comes before it and after it is replaced around it, in as few
-     * changes as possible, so the next song stays loaded when it hasn't changed. If the song
-     * that's playing has left the queue, or the queue has moved to another song (a jump), the
-     * player goes there.
-     */
+    /** Makes ExoPlayer's playlist match the queue (see [QueueSync.sync]), after a change to
+     *  the queue. */
     private fun sync(positionMs: Long = 0) {
-        val target = queue.playingUids()
-        items.keys.retainAll(target.toSet())
-        val now = (0 until exo.mediaItemCount).map { uidOf(exo.getMediaItemAt(it)) }
-        val playing = exo.currentMediaItem?.let(::uidOf)
-        val k = if (playing != null) target.indexOf(playing) else -1
-        if (k < 0) {
-            if (target.isEmpty()) exo.clearMediaItems() else exo.setMediaItems(target.map(::itemFor), queue.cursor, positionMs)
-            queue.trackChanged()
-            changed(this)
-            return
-        }
-        val c = exo.currentMediaItemIndex
-        val wantBefore = target.subList(0, k)
-        if (now.subList(0, c) != wantBefore) replace(0, c, wantBefore)
-        val haveAfter = now.subList(c + 1, now.size)
-        val wantAfter = target.subList(k + 1, target.size)
-        if (haveAfter != wantAfter) {
-            var head = 0
-            while (head < haveAfter.size && head < wantAfter.size && haveAfter[head] == wantAfter[head]) head++
-            var tail = 0
-            while (tail < haveAfter.size - head && tail < wantAfter.size - head &&
-                haveAfter[haveAfter.size - 1 - tail] == wantAfter[wantAfter.size - 1 - tail]) tail++
-            replace(k + 1 + head, k + 1 + haveAfter.size - tail, wantAfter.subList(head, wantAfter.size - tail))
-        }
-        if (queue.cursor != k) exo.seekTo(queue.cursor, positionMs)
-        queue.trackChanged()
-        changed(this)
+        QueueSync.sync(queue, playlist, positionMs)
+        settled()
     }
 
-    private fun replace(from: Int, to: Int, uids: List<Long>) {
-        val list = uids.map(::itemFor)
-        when {
-            list.isEmpty() -> exo.removeMediaItems(from, to)
-            from == to -> exo.addMediaItems(from, list)
-            else -> exo.replaceMediaItems(from, to, list)
-        }
+    /** After the playlist has been made to match the queue. */
+    private fun settled() {
+        // Only the items the player holds, and any made ready and not yet handed over.
+        val keep = HashSet<Long>(stagedUids)
+        for (index in 0 until exo.mediaItemCount) playlist.uidAt(index)?.let { keep += it }
+        items.keys.retainAll(keep)
+        // Changed in place, never emptied: the player may be opening a song right now.
+        val ids = items.values.mapTo(HashSet()) { it.mediaId }
+        held.keys.retainAll(ids)
+        // Whatever was made ahead and not taken belongs to a queue that never arrived.
+        if (staged == null) made.clear()
+        applyRepeat()
+        queue.trackChanged()
+        changed(this)
     }
 
     /** ExoPlayer moved on by itself, or was told to by next, previous or a queue entry. */
     private fun followPlayer() {
         val uid = exo.currentMediaItem?.let(::uidOf) ?: return
         val place = queue.placeOf(uid)
-        if (place >= 0 && place != queue.cursor) {
-            queue.moveTo(place)
-            changed(this)
-        } else if (place >= 0) {
-            changed(this)
-        }
+        if (place < 0) return
+        if (place != queue.cursor) queue.moveTo(place)
+        // The window the player holds moves along with the song playing.
+        if (QueueSync.sync(queue, playlist)) applyRepeat()
+        changed(this)
     }
 
     // ---- Media items ----------------------------------------------------------------------
 
-    private fun itemFor(uid: Long): MediaItem {
-        items[uid]?.let { return it }
-        val entry = queue.uids.indexOf(uid)
-        return itemOf(queue.songs[entry], uid)
-    }
+    private fun itemFor(slot: QueueSync.Slot): MediaItem = itemOf(queue.songs[slot.entry], slot.uid)
 
     private fun itemOf(song: Song, uid: Long): MediaItem = items.getOrPut(uid) {
-        MediaItem.Builder()
-            .setMediaId(song.id)
-            .setUri(songUri(song.id))
-            .setTag(SongTag(song, uid))
-            .setMediaMetadata(metadataFor(song))
-            .build()
+        held[song.id] = song
+        made.remove(uid) ?: build(song, uid)
     }
+
+    private fun build(song: Song, uid: Long): MediaItem = MediaItem.Builder()
+        .setMediaId(song.id)
+        .setUri(songUri(song.id))
+        .setTag(SongTag(song, uid))
+        .setMediaMetadata(metadataFor(song))
+        .build()
 
     /** The song a media item stands for: ours carry it; anyone else's is read from its
      *  details. */
     private fun songOf(item: MediaItem): Song {
-        uidOf(item)?.let { uid ->
-            val entry = queue.uids.indexOf(uid)
-            if (entry >= 0) return queue.songs[entry]
-            staged?.let { s -> s.uids.indexOf(uid).takeIf { it >= 0 }?.let { return s.songs[it] } }
-        }
         (item.localConfiguration?.tag as? SongTag)?.let { return it.song }
         val m = item.mediaMetadata
         return Song(

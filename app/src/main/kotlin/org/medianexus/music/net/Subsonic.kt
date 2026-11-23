@@ -20,6 +20,7 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -135,7 +136,9 @@ class Subsonic private constructor(
         // Read and parsed together, off the caller's thread: an answer can be megabytes.
         val (status, root) = send(request, Http.API_TIMEOUT_SECONDS * 1000) { response ->
             val tree = try {
-                json.parseToJsonElement(response.body.string())
+                // From the stream, not by way of the whole answer as text: a long playlist
+                // is megabytes, and as text it is twice that again in memory.
+                response.body.byteStream().use { json.decodeFromStream(JsonElement.serializer(), it) }
             } catch (_: IllegalArgumentException) {
                 null
             }

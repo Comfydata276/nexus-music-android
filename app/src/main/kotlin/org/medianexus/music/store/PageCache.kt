@@ -21,6 +21,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import org.medianexus.music.net.ApiError
 
 /**
@@ -221,15 +223,15 @@ class PageCache(
 
     internal fun fileFor(key: String): File = File(dir, "${nameFor(key)}.json")
 
+    // Read from the file and written to it directly, never by way of the whole page as
+    // text: a playlist of thousands of songs is megabytes, and as text it is twice that.
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     private fun <T> readFile(spec: PageSpec<T>): T? {
         val file = fileFor(spec.key)
-        val text = try {
-            file.readText()
-        } catch (_: IOException) {
-            return null
-        }
         return try {
-            json.decodeFromString(spec.serializer, text)
+            file.inputStream().buffered(64 * 1024).use { json.decodeFromStream(spec.serializer, it) }
+        } catch (_: IOException) {
+            null
         } catch (_: SerializationException) {
             file.delete()
             null
@@ -239,11 +241,14 @@ class PageCache(
         }
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     private fun <T> writeFile(spec: PageSpec<T>, value: T) {
         try {
-            writeAtomically(fileFor(spec.key), json.encodeToString(spec.serializer, value).toByteArray())
+            writeAtomically(fileFor(spec.key)) { out -> json.encodeToStream(spec.serializer, value, out) }
         } catch (_: IOException) {
             // A page that can't be written is fetched again next time; nothing is lost.
+        } catch (_: SerializationException) {
+            // The same.
         }
     }
 

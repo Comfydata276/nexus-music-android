@@ -11,6 +11,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.writeAtomically
 
@@ -88,6 +90,7 @@ fun queueShape(ids: List<String>, order: List<Int>, context: String, source: Str
  * only when it changes) and, beside it, where playback has got to (a few numbers, written
  * often). Called off the main thread.
  */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 class QueueFiles(private val queueFile: File, private val placeFile: File) {
     private var savedShape: ULong? = null
 
@@ -115,11 +118,28 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
         val shape = queue.shape()
         try {
             if (shape != savedShape) {
-                writeAtomically(queueFile, json.encodeToString(SavedQueue.serializer(), queue).toByteArray())
+                // Straight into the file: a long queue is too big to build as text first.
+                writeAtomically(queueFile) { out -> json.encodeToStream(SavedQueue.serializer(), queue, out) }
                 savedShape = shape
             }
             val place = QueuePlace(shape, queue.cursor, queue.position, queue.stamp)
             writeAtomically(placeFile, json.encodeToString(QueuePlace.serializer(), place).toByteArray())
+        } catch (_: IOException) {
+            // Tried again at the next save.
+        } catch (_: SerializationException) {
+            // The same (it wraps a failure to write).
+        }
+    }
+
+    /**
+     * Writes only where playback has got to, for the queue last written or read here. The
+     * queue itself is not looked at: nothing of it is copied, hashed or written. Does nothing
+     * if no queue has been written or read yet (the next full save writes both).
+     */
+    fun savePlace(cursor: Int, position: Double, stamp: Long) {
+        val shape = savedShape ?: return
+        try {
+            writeAtomically(placeFile, json.encodeToString(QueuePlace.serializer(), QueuePlace(shape, cursor, position, stamp)).toByteArray())
         } catch (_: IOException) {
             // Tried again at the next save.
         }
@@ -132,7 +152,7 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
     }
 
     private fun <T> read(file: File, serializer: kotlinx.serialization.KSerializer<T>): T? = try {
-        json.decodeFromString(serializer, file.readText())
+        file.inputStream().buffered(64 * 1024).use { json.decodeFromStream(serializer, it) }
     } catch (_: IOException) {
         null
     } catch (_: SerializationException) {
@@ -171,20 +191,47 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
 class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
     private val steps = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
-    /** The newest snapshot of each queue that hasn't been written yet. */
-    private val waiting = HashMap<String, Pair<QueueFiles, SavedQueue>>()
+    /** What is waiting to be written for one queue: the whole queue (null if it hasn't
+     *  changed since it was last written) and where playback has got to in it. */
+    private class Waiting(val files: QueueFiles, val queue: SavedQueue?, val cursor: Int, val position: Double, val stamp: Long)
+
+    /** The newest of what hasn't been written yet, for each queue. */
+    private val waiting = HashMap<String, Waiting>()
 
     init {
         scope.launch(io) { for (step in steps) step() }
     }
 
     /** Asks for this snapshot to be written, and returns at once. */
-    fun save(files: QueueFiles, queue: SavedQueue) {
-        val alreadyInLine = synchronized(waiting) { waiting.put(files.key, files to queue) != null }
+    fun save(files: QueueFiles, queue: SavedQueue) = line(Waiting(files, queue, queue.cursor, queue.position, queue.stamp))
+
+    /**
+     * Asks for only the place to be written: the queue is as it was last saved, and playback
+     * has moved along it. If a snapshot of the whole queue is still waiting, it is written
+     * with this place.
+     */
+    fun savePlace(files: QueueFiles, cursor: Int, position: Double, stamp: Long) = line(Waiting(files, null, cursor, position, stamp))
+
+    private fun line(next: Waiting) {
+        val alreadyInLine = synchronized(waiting) {
+            val before = waiting[next.files.key]
+            // A place alone never takes the place of a queue still waiting to be written.
+            waiting[next.files.key] = if (next.queue == null && before?.queue != null) {
+                Waiting(before.files, before.queue, next.cursor, next.position, next.stamp)
+            } else {
+                next
+            }
+            before != null
+        }
         if (alreadyInLine) return
         steps.trySend {
             // Whatever is newest by the time its turn comes.
-            synchronized(waiting) { waiting.remove(files.key) }?.let { (to, newest) -> to.save(newest) }
+            val newest = synchronized(waiting) { waiting.remove(next.files.key) } ?: return@trySend
+            if (newest.queue != null) {
+                newest.files.save(newest.queue.copy(cursor = newest.cursor, position = newest.position, stamp = newest.stamp))
+            } else {
+                newest.files.savePlace(newest.cursor, newest.position, newest.stamp)
+            }
         }
     }
 
@@ -229,11 +276,31 @@ class KeptQueue(private val files: QueueFiles, private val saver: QueueSaver) {
         return saved
     }
 
+    /** The queue's revision when it was last handed over whole. */
+    private var savedRevision = -1L
+
     /** Saves the queue as `snapshot` gives it; does nothing (and takes no snapshot) before
      *  [restore] has finished. Returns whether it was handed to the writer. */
     fun save(snapshot: () -> SavedQueue): Boolean {
         if (!restored) return false
+        savedRevision = -1
         saver.save(files, snapshot())
+        return true
+    }
+
+    /**
+     * As [save], for a queue that says when it has changed (`revision`, see
+     * [Queue.revision]): the snapshot is only taken when it has. Otherwise only the place
+     * (`cursor`, `position`) is handed over, which copies nothing, however long the queue.
+     */
+    fun save(revision: Long, cursor: Int, position: Double, stamp: Long, snapshot: () -> SavedQueue): Boolean {
+        if (!restored) return false
+        if (revision != savedRevision) {
+            saver.save(files, snapshot())
+            savedRevision = revision
+        } else {
+            saver.savePlace(files, cursor, position, stamp)
+        }
         return true
     }
 }

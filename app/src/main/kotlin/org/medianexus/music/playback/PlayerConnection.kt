@@ -31,10 +31,13 @@ import org.medianexus.music.Accounts
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.SettingsStore
 
-/** What's in the queue, as the screens show it: the songs to come, the first `queuedAhead`
- *  of which are "Next in queue". */
+/**
+ * What's in the queue, as the screens show it: the songs to come, the first `queuedAhead` of
+ * which are "Next in queue". `songs` is the next few hundred (as Windows shows 400 rows),
+ * not a queue of thousands; `total` is how many are to come in all.
+ */
 @Immutable
-data class UpNext(val songs: List<Song> = emptyList(), val queuedAhead: Int = 0, val context: String = "")
+data class UpNext(val songs: List<Song> = emptyList(), val queuedAhead: Int = 0, val context: String = "", val total: Int = songs.size)
 
 /**
  * Where what's playing came from: the list's route key ("album:<id>"), and the place in that
@@ -193,7 +196,10 @@ class PlayerConnection(
             val items = (index + 1 until c.mediaItemCount).map { c.getMediaItemAt(it) }
             val songs = items.map(::songOf)
             aheadUids = items.map { (it.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid ?: AppCommands.NONE }
-            queueNow.value = UpNext(songs, ahead.coerceAtMost(songs.size), c.playlistMetadata.title?.toString().orEmpty())
+            queueNow.value = UpNext(
+                songs, ahead.coerceAtMost(songs.size), c.playlistMetadata.title?.toString().orEmpty(),
+                total = extras.getInt(PlaybackService.EXTRA_AHEAD, songs.size).coerceAtLeast(songs.size),
+            )
         }
         shuffleNow.value = c.shuffleModeEnabled
         repeatNow.value = QueuePlayer.ourRepeat(c.repeatMode)
@@ -223,7 +229,16 @@ class PlayerConnection(
      */
     fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false) =
         send(AppCommands.PLAY, Bundle().apply {
-            putString("songs", AppCommands.songsArg(songs))
+            // A long list that is a page the phone keeps (an album, a playlist, Liked songs)
+            // is named, and the service reads it from where the screen read it: writing
+            // 20,000 songs out here and reading them back there would hold the main thread
+            // for both. A short list, or one put together on the spot, is sent as it is.
+            if (songs.size > AppCommands.MOST_SENT && keptPage(source)) {
+                putBoolean("byPage", true)
+                songs.getOrNull(start)?.let { putString("startId", it.id) }
+            } else {
+                putString("songs", AppCommands.songsArg(songs))
+            }
             putInt("start", start)
             putString("context", context)
             putString("source", source)
@@ -302,6 +317,10 @@ class PlayerConnection(
         val song = currentSong.value ?: return
         accounts.state.value?.likes?.toggle(song)
     }
+
+    /** Whether a list's route key names a page the library keeps whole (see
+     *  `Library.keptSongs`). */
+    private fun keptPage(source: String): Boolean = source == "liked" || source.startsWith("album:") || source.startsWith("playlist:")
 
     private fun withController(block: (MediaController) -> Unit) {
         val c = controller

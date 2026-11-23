@@ -39,30 +39,52 @@ object AppCommands {
 
     private fun songsOf(args: Bundle): List<Song> = args.getString("songs")?.let { runCatching { json.decodeFromString(songs, it) }.getOrNull() }.orEmpty()
 
-    /** Carries out one, on the main thread. Returns false if it isn't one of these. */
+    /** A list longer than this that is a page the phone keeps is started by naming the
+     *  page, not by sending its songs. */
+    const val MOST_SENT = 200
+
+    /** Whether a PLAY names its list ("byPage") instead of carrying the songs. */
+    fun byPage(args: Bundle): Boolean = args.getBoolean("byPage")
+
+    /** Whether a PLAY's list plays shuffled: as it says, or as that list was last played. */
+    fun shuffleOf(args: Bundle, shuffleFor: (source: String) -> Boolean): Boolean = when (args.getInt("shuffle", -1)) {
+        0 -> false
+        1 -> true
+        else -> shuffleFor(args.getString("source").orEmpty())
+    }
+
+    /**
+     * The queue a PLAY asks for, made ready to play. `songs` is the list: the one the
+     * command carried, or, for a command that names a page instead, that page's songs as the
+     * phone keeps them. Touches nothing of the player (see [QueuePlayer.prepare]): for a
+     * long list, call it off the main thread.
+     */
+    fun queueFor(player: QueuePlayer, args: Bundle, songs: List<Song>, shuffle: Boolean): Queue {
+        val source = args.getString("source").orEmpty()
+        // Where to start: the place the screen named, unless the kept list has moved on
+        // since the screen drew it, in which case the song that was tapped is found again.
+        var start = args.getInt("start")
+        val tapped = args.getString("startId")
+        if (tapped != null && songs.getOrNull(start)?.id != tapped) songs.indexOfFirst { it.id == tapped }.takeIf { it >= 0 }?.let { start = it }
+        return player.prepare(
+            songs,
+            start = start,
+            context = args.getString("context").orEmpty(),
+            source = source,
+            // A list from a page is always the page's whole list, in its order: each song's
+            // place in it is its place here (what marks the row playing).
+            origins = if (source.isNotEmpty()) songs.indices.toList() else null,
+            sourceList = songs.map { it.id },
+            shuffle = shuffle,
+            anyStart = args.getBoolean("anyStart"),
+        )
+    }
+
+    /** Carries out one, on the main thread. Returns false if it isn't one of these. (A PLAY
+     *  that names a page is the service's to carry out: it has to read the page.) */
     fun handle(player: QueuePlayer, command: SessionCommand, args: Bundle, shuffleFor: (source: String) -> Boolean): Boolean {
         when (command.customAction) {
-            PLAY.customAction -> {
-                val list = songsOf(args)
-                val shuffle = when (args.getInt("shuffle", -1)) {
-                    0 -> false
-                    1 -> true
-                    else -> shuffleFor(args.getString("source").orEmpty())
-                }
-                val source = args.getString("source").orEmpty()
-                player.play(
-                    list,
-                    start = args.getInt("start"),
-                    context = args.getString("context").orEmpty(),
-                    source = source,
-                    // A list from a page is always the page's whole list, in its order: each
-                    // song's place in it is its place here (what marks the row playing).
-                    origins = if (source.isNotEmpty()) list.indices.toList() else null,
-                    sourceList = args.getStringArrayList("sourceList") ?: list.map { it.id },
-                    shuffle = shuffle,
-                    anyStart = args.getBoolean("anyStart"),
-                )
-            }
+            PLAY.customAction -> player.play(queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor)))
             ENQUEUE.customAction -> player.enqueue(songsOf(args), args.getBoolean("playNext"))
             // Each of these names the entry it means by the entry's own number (see
             // Queue.dropUid), not by where it was on the screen when it was tapped.
