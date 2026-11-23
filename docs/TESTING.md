@@ -373,6 +373,9 @@ JSON under `reports/` in the cache.
 First numbers, for the record: release build 0.1.0 (M0, sign-in and the empty shell)
 on the Android 17 emulator: APK 2.9 MB, installed 3.1 MB, cold start 590 ms (483 to 747),
 idle 28.6 MB.
+M1b (the screens; signed in, kept with `--keep`, idle on Home with its covers): APK 5.3 MB,
+installed code 5.5 MB, cold start 471 ms (433 to 511), idle 76.6 MB, playing 82.2 MB (82.5
+in the background); scrolling the 100-song playlist, 5.6% slow frames, 95% under 34 ms.
 
 ## Gapless playback
 
@@ -399,7 +402,13 @@ scripts/emu capture pull sweep         # to ~/.cache/nexus-music-android/capture
 scripts/server sweepcheck ~/.cache/nexus-music-android/captures/sweep.wav
 ```
 
-This is exactly what the player hands to Android, so it proves the player's joins. It
+This is exactly what the player hands to Android, so it proves the player's joins.
+First results (M1b, Android 17 emulator): the FLAC album joins exactly, no gap and no jump
+at any of its seven joins. The MP3 album does not: about 11.5 ms of silence at every join
+(roughly 529 samples, an MP3 decoder's own delay), though ffmpeg decodes each file to
+exactly its 882,000 samples using the same LAME header. (A capture also catches a moment
+of the first song after the last one ends, where the player parks back at the start: cut
+the file at the album's length.) It
 can't show what Android or the phone's hardware does after that (a mixer that glitches,
 Bluetooth); that still needs ears, or a recording of a real phone's output.
 
