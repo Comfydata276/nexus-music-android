@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Home servers are often reached over plain HTTP, by IP address. Certificates are the
-     system's own: no user-added ones, so nothing installed later can listen in. -->
+<!-- Home servers are often reached over plain HTTP, by IP address, or over HTTPS with a
+     certificate of their owner's making. So plain HTTP is allowed (the sign-in screen warns
+     when it goes beyond the home network), and certificates the person has installed on the
+     phone are trusted as well as the system's, as Windows trusts them for the Windows app. -->
 <network-security-config xmlns:tools="http://schemas.android.com/tools">
-    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration,AcceptsUserCertificates">
         <trust-anchors>
             <certificates src="system" />
+            <certificates src="user" />
         </trust-anchors>
     </base-config>
 </network-security-config>
