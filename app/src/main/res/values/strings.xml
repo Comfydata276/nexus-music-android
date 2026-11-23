@@ -15,6 +15,9 @@
     <string name="liked">Liked</string>
     <string name="downloaded">Downloaded</string>
     <string name="downloading_named">Downloading %1$s</string>
+    <string name="track_playing">Playing</string>
+    <string name="track_paused">Paused</string>
+    <string name="track_unavailable">Unavailable</string>
     <string name="show_all">Show all</string>
     <string name="loading">Loading…</string>
     <string name="page_failed">Couldn\'t load this page</string>

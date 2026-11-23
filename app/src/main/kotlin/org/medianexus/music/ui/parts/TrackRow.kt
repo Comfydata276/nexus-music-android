@@ -3,6 +3,7 @@ package org.medianexus.music.ui.parts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,16 +18,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,15 +81,35 @@ fun TrackRow(
     showDuration: Boolean = false,
 ) {
     val colors = Theme.colors
+    // What the dimming and the accent show, said to screen readers.
+    val status = when {
+        track.unavailable -> stringResource(R.string.track_unavailable)
+        track.current && track.paused -> stringResource(R.string.track_paused)
+        track.current -> stringResource(R.string.track_playing)
+        else -> null
+    }
+    val menu by rememberUpdatedState(onLongClick ?: onMore)
+    val press = if (track.unavailable) {
+        // Nothing to play, so no play action for a finger or a screen reader; the menu still
+        // opens on a long press.
+        Modifier
+            .pointerInput(Unit) { detectTapGestures(onLongPress = { menu() }) }
+            .semantics { onLongClick { menu(); true } }
+    } else {
+        Modifier.combinedClickable(onClickLabel = stringResource(R.string.play), onLongClick = { menu() }, onClick = onClick)
+    }
     Row(
         modifier
             .fillMaxWidth()
             .height(Theme.dimens.rowHeight)
             .alpha(if (track.unavailable) 0.4f else 1f)
             .background(if (track.selected) colors.press else androidx.compose.ui.graphics.Color.Transparent)
-            .combinedClickable(onLongClick = onLongClick ?: onMore, onClick = onClick)
+            .then(press)
             // Read out as its title, artist and marks; the "…" button stays a button of its own.
-            .semantics(mergeDescendants = true) { selected = track.selected }
+            .semantics(mergeDescendants = true) {
+                selected = track.selected
+                if (status != null) stateDescription = status
+            }
             .padding(start = Theme.dimens.pagePad, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
