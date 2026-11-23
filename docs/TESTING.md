@@ -195,8 +195,10 @@ failed. The full report is saved as JSON under `reports/` in the cache.
 | `discover.*` | Android Auto can find the app: an exported service answering `android.media.browse.MediaBrowserService`, and the manifest entry and `automotive_app_desc` file that declare a media app |
 | `connect.cold` | With the app removed from memory, the service starts with no screen and answers (the time is reported) |
 | `root.search` | The car is told the app can search, so it shows the search button |
-| `browse.tabs`, `tab_icons`, `tab_names` | One to four tabs, all folders, each with an icon; with `--nexus`, exactly Home, Playlists, Library, Downloads |
+| `browse.tabs`, `tab_icons`, `tab_names` | One to four tabs, all folders, each with an icon; with `--nexus`, exactly Home, Playlists, Library (Downloads joins them when there are downloads) |
 | `browse.loads`, `titles`, `ids`, `playable`, `empty` | Every folder (four levels, up to 80 folders) opens within ten seconds; every item has a title and its own id; something can be played; empty folders are listed |
+| `browse.complete` | No folder lost its tail. A car asks for a folder in one go and Media3 silently cuts the answer to what fits in 256 KiB, so the probe asks each long folder twice, in one go and page by page, and the two must agree; the longest folder is reported |
+| `browse.shuffle`, `play.shuffle` | With `--nexus`: every list of songs is headed by "Shuffle", and choosing it plays that list, shuffled |
 | `browse.styles` | The app says what is a grid and what is a list; the report shows the style of each folder |
 | `art.*` | Artwork addresses are `content://` or `android.resource://` (a car cannot open web or file addresses), and another app can actually open and decode each one |
 | `search.*` | A search returns results that can be shown and chosen; a search with no match returns an empty list, not an error |
@@ -208,15 +210,18 @@ failed. The full report is saved as JSON under `reports/` in the cache.
 | `voice.unnamed`, `voice.no_match` | "Play music" with nothing named plays something; a request for something that does not exist either falls back or tells the car why in words |
 | `focus.*` | When another app takes the sound for a moment (a navigation prompt, a call) playback gives way, and comes back afterwards |
 | `resume.*` | After the app is removed from memory, the car can connect again and "play" with nothing chosen picks up |
-| `--mode signed_out` | With nobody signed in, the session carries a standing error in words for the car to show, and nothing plays |
+| `--mode signed_out` | With nobody signed in, the session carries a standing error in words for the car to show, and nothing plays. `signed_out.unasked`: the error is there on connecting, before anything has browsed (a car that only shows the player never browses). `signed_out.search`: a search is answered at once, not left spinning |
+| `--mode outsider` | What an app that is not the car may do. With `--untrusted`, nothing: no connection by either protocol. Without it (trusted, as Android Auto is): it connects, but none of the app's own commands are granted or carried out, and intents forged to the exported service (the notification's own actions, Media3's built-in player commands) can do no more than the notification's buttons can |
+| `--mode play` | Only press play and say what plays; with `--media-id "<id>"`, choose that item instead. For scripted checks of one thing |
 
 **Trusted and untrusted.** Media3 gives full control only to callers it trusts: the app
-itself, the system, and anything allowed to read notifications. Android Auto is one. An
-ordinary app gets to look (browse, search, see what is playing) but not to touch. The
-probe is given notification access so that it stands where Android Auto stands;
-`--untrusted` takes that away, to see what any app on the phone is allowed. With the
-stand-in, untrusted, browsing and search pass and every playback item fails, which is
-Media3's default and a sensible one.
+itself, the system, and anything allowed to read notifications. Android Auto is one. By
+Media3's default an ordinary app gets to look (browse, search, see what is playing) but
+not to touch. The probe is given notification access so that it stands where Android
+Auto stands; `--untrusted` takes that away, to see what any app on the phone is allowed.
+With the stand-in, untrusted, browsing and search pass and every playback item fails,
+which is that default. The app is stricter: a person's library is private, so an
+untrusted caller gets no connection at all, and `--mode outsider --untrusted` checks it.
 
 **Is a green report worth anything?** `scripts/carcheck --selftest` answers that. It runs
 the stand-in healthy (every item must pass), then switches on one fault at a time, each
@@ -261,6 +266,11 @@ things: tabs and their icons, grid or list, group headings, artwork through cont
 addresses, the queue, the extra buttons, search, error messages. If a grid comes out as a
 list here, or a cover is missing, or a button has no icon, it will very likely be the
 same in Android Auto.
+
+It is also how to see what a driver sees when something is wrong. Signed out: clear the
+app's data on the car (`scripts/emu -d car shell pm clear --user 10 org.medianexus.music`)
+and run the tour. Server out of reach: sign in, run the tour once so the screens are
+loaded, `scripts/server stop`, and run it again.
 
 Why it is not Android Auto: the layout, colours and proportions differ; Android Auto's
 limits while driving are not applied; there is no Assistant; and here the app is
@@ -403,14 +413,89 @@ scripts/server sweepcheck ~/.cache/nexus-music-android/captures/sweep.wav
 ```
 
 This is exactly what the player hands to Android, so it proves the player's joins.
-First results (M1b, Android 17 emulator): the FLAC album joins exactly, no gap and no jump
-at any of its seven joins. The MP3 album does not: about 11.5 ms of silence at every join
-(roughly 529 samples, an MP3 decoder's own delay), though ffmpeg decodes each file to
-exactly its 882,000 samples using the same LAME header. (A capture also catches a moment
-of the first song after the last one ends, where the player parks back at the start: cut
-the file at the album's length.) It
-can't show what Android or the phone's hardware does after that (a mixer that glitches,
-Bluetooth); that still needs ears, or a recording of a real phone's output.
+(A capture also catches a moment of the first song after the last one ends, where the
+player parks back at the start: cut the file at the album's length. A capture that
+crosses a change of sample rate is written as one file per rate.)
+
+`sweepcheck` knows only the sweep. For any songs at all:
+
+```sh
+scripts/server joincheck recording.wav song-1.mp3 song-2.mp3 song-3.mp3
+```
+
+decodes each song file with ffmpeg, finds each in the recording, and says to the sample
+where it starts and ends against where it should, and how far the recording is from
+ffmpeg's decoding. (Several recordings, in order, separated by commas, for a capture that
+was split.)
+
+Results on the Android 17 emulator:
+
+- **FLAC** joins exactly, no gap and no jump at any of the sweep's seven joins.
+- **MP3** did not at first (M1b): 529 samples (12 ms) of silence at every join, and what
+  `sweepcheck` could not see, the first 529 samples of every song missing. The cause and
+  the cure are in `docs/DESIGN.md` ("Gapless MP3"). Now each song starts on exactly its
+  sample (0, 882,000, 1,764,000 …) and the recording is within 0.0001 of full scale of
+  ffmpeg's decoding. `sweepcheck` still reports two small jumps in pitch on the MP3 album:
+  they are in the files (ffmpeg's own decoding of them has the same two), from encoding
+  each song separately.
+- **AAC (M4A) and Opus** join exactly (the compilation album, with `joincheck`).
+- **Ogg Vorbis** runs 156 to 224 samples (3.5 to 5 ms) past its end. Not fixed.
+- **A song the server converts** has no gapless information; expect a join of about 50 ms.
+
+The MP3 cure is tied to the decoder by name (Android's own software decoder). Every build
+logs once which decoder it met: `adb logcat -s NexusPlayback | grep "MP3 is decoded by"`.
+On a phone whose maker supplies another, the numbers are left as Media3 gives them and
+only a recording of that phone can say whether they are right.
+
+None of this can show what Android or the phone's hardware does after the player (a mixer
+that glitches, Bluetooth); that still needs ears, or a recording of a real phone's output.
+
+## The playback service's hard cases
+
+Debug builds answer to adb through `DebugControl`, a `MediaController` like the app's own
+screens have (`scripts/emu shell am broadcast -n org.medianexus.music/.playback.DebugControl …`):
+
+| Extras | What it does |
+|---|---|
+| `--el seek 250000` | Seeks in the song, to that many milliseconds |
+| `--ei item 4` | Jumps to that item of the player's playlist |
+| `--es say state` | Answers with the state, the song, the position, the place in the queue and its length |
+| `--es stalls start` (`stop`) | Logs, under the tag `NexusStall`, every time the main thread is held for more than two frames (33 ms), and by what |
+| `--es capture start --es name x` (`stop`) | The recording above; `scripts/emu capture` does these |
+
+**A Play button with the app not running.** The system gives a service started this way
+a few seconds to show itself as playing, and kills the app if it doesn't. Kill the process
+(`scripts/emu shell am kill org.medianexus.music`, or `kill -9` as root), clear the log,
+send the button (`scripts/emu shell input keyevent 126`), wait 40 seconds, and read the
+log for `ForegroundServiceDidNotStartInTimeException` and for the service's own account
+of what it did (tag `NexusPlayback`). The cases: signed out; signed in with no saved
+queue; a saved queue; a saved queue with the server stopped; a saved queue file with
+rubbish in it. None may end in that exception, and only the saved-queue cases may start
+the service at all. After installing a build over one whose button receiver had another
+name, open the app once first: the system remembers the old name until then.
+
+**Swiped away.** Play something, swipe the app out of the recent-apps list, and look ten
+seconds later: `dumpsys media_session` says PLAYING and `dumpsys activity services
+org.medianexus.music` says `isForeground=true`. Paused first, the service is gone.
+
+**A very long queue.** The library has nothing long, so make a playlist of every song many
+times over through the API (`createPlaylist` with thousands of `songId`s; 20,000 was
+used). Then with `stalls start`: open it in the car check, start it, press Next for a
+minute, jump far down it, press Next on its last song. Measure in a build that is not
+debuggable, since a debuggable one runs several times slower: add
+`isDebuggable = false` to the debug build type for the measurement and take it out again.
+With the player holding a window of the queue (see `docs/DESIGN.md`), 20,000 songs
+measured: starting it from the car, one stall of 35 ms; Next, none over 33 ms; a jump far
+away 54 ms; the app's Java heap about 55 MB. Before, the same playlist ran the app out of
+memory.
+
+**A song the server converts.** Set a quality in Settings, turn on debug logging, play a
+long song and seek: the log line "a conversion opened part-way, at byte N: asked of the
+server from second S" shows what was asked. To see where a seek really landed, record the
+sweep album converted and read the pitch at the landing (`sweepcheck` prints it): at
+128 kbps, seeks to 15.0, 4.0 and 18.5 seconds landed at 15.05, 4.07 and 18.56. To see that
+only whole conversions are kept: play one to its end and another only part-way, stop the
+server, and play both again.
 
 ## What is not covered
 
@@ -460,7 +545,9 @@ the car has it)
 | Try | Expect |
 |---|---|
 | Find Nexus Music among the car's apps | Its icon and name are there |
-| Open it | Four tabs: Home, Playlists, Library, Downloads. Covers load. No blank screens |
+| Open it | Three tabs: Home, Playlists, Library (and Downloads once the build has downloads). Covers load. No blank screens |
+| Open a long playlist (over 200 songs) | Numbered ranges ("1–200 …"); a song chosen in one plays the whole playlist from there; nothing missing at the end |
+| "Shuffle" at the top of an album or playlist | The whole list plays, shuffled |
 | Open an album, play the third song | It plays; the queue holds the whole album from that song |
 | The car's player | Title, artist, cover, progress; like, shuffle and repeat buttons work |
 | Steering-wheel next, previous, pause | Each works, with the phone's screen off |
@@ -470,6 +557,10 @@ the car has it)
 | Start navigation and let it speak | The music dips or pauses and comes back |
 | Take a phone call | The music pauses and comes back |
 | Switch the car off and on (or pull the cable and plug it back) | The app is still there; play carries on from where it was |
+| Force-stop the app, then press play on the steering wheel or a Bluetooth headset | The saved queue carries on; with nothing saved, nothing happens (and nothing crashes) |
+| Play, swipe the app away on the phone | The music carries on |
+| Drive out of reach of the server (or switch Wi-Fi and data off) for a minute, then back | "Lost the connection to the server…" on the car's screen, the song stays where it was, and it carries on by itself |
+| Sign in on the phone while the car shows "Sign in" | The car's lists appear without leaving and re-entering the app |
 | Force-stop the app on the phone, then open it from the car | It starts and browses with no phone screen involved |
 | Drive (a passenger looks) | Lists still usable; note anything cut short or locked |
 | Flight mode on, then the Downloads tab | Downloaded music browses and plays |
