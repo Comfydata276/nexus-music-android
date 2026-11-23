@@ -116,11 +116,13 @@ fun NoticeList(graph: Graph, modifier: Modifier = Modifier) {
         val text = when (notice) {
             is Notice.SettingsDamaged -> when (val damage = notice.damage) {
                 SettingsDamage.UsedBackup -> stringResource(R.string.notice_settings_backup)
-                is SettingsDamage.StartedAfresh -> stringResource(R.string.notice_settings_reset, damage.keptAs)
+                is SettingsDamage.StartedAfresh -> damage.keptAs?.let { stringResource(R.string.notice_settings_reset, it) }
+                    ?: stringResource(R.string.notice_settings_reset_lost)
             }
             Notice.PasswordNotSaved -> stringResource(R.string.notice_password_not_saved)
             Notice.SignedInWithoutEncryption -> stringResource(R.string.notice_unencrypted)
             Notice.SignOutFailed -> stringResource(R.string.notice_sign_out_failed)
+            Notice.SettingsNotSaved -> stringResource(R.string.notice_settings_not_saved)
         }
         NoticeBar(text, onDismiss = { graph.notices.dismiss(notice) }, modifier)
     }

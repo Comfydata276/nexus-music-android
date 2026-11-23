@@ -4,6 +4,7 @@ import java.io.File
 import java.net.InetAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +38,8 @@ import org.medianexus.music.store.accountDirs
 class SessionTest {
     @get:Rule val folder = TemporaryFolder()
     private lateinit var server: MockWebServer
+    /** Requests the stand-in understood and answered (a TLS hello sent to it doesn't count). */
+    private val answered = AtomicInteger()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private object PlainBox : SecretBox {
@@ -51,6 +54,7 @@ class SessionTest {
         // does a wrong one.
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
+                answered.incrementAndGet()
                 val url = request.url
                 val good = url.queryParameter("t") == Subsonic.md5Hex("sesame" + url.queryParameter("s"))
                 val body = if (good) {
@@ -138,7 +142,7 @@ class SessionTest {
         assertTrue(result.error != null)
         assertTrue(result.suggestHttp)
         assertEquals(SessionState.SignedOut, session.state.value)
-        assertEquals(0, server.requestCount)
+        assertEquals(0, answered.get())
     }
 
     @Test
@@ -228,6 +232,20 @@ class SessionTest {
         assertEquals(SessionState.SignedOut, session.state.value)
         assertFalse(File(vaultDir, "password.sealed").exists())
         assertFalse(Notice.SignOutFailed in notices.state.value)
+    }
+
+    @Test
+    fun settingsThatCantBeWrittenLeaveNobodySignedInAndNoPasswordSaved() = runBlocking {
+        val dir = folder.newFolder()
+        val (session, _, _) = session(dir)
+        withTimeout(5_000) { session.restored() }
+        // A folder where the settings file should go.
+        File(dir, "settings.json/in-the-way").apply { parentFile!!.mkdirs() }.writeText("x")
+        session.signIn("http://127.0.0.1:${server.port}", "ada", "sesame")
+        val result = withTimeout(10_000) { session.settled() }
+        assertTrue(result.settingsNotSaved)
+        assertEquals(SessionState.SignedOut, session.state.value)
+        assertFalse(File(dir, "password.sealed").exists())
     }
 
     @Test

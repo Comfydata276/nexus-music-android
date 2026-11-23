@@ -44,7 +44,14 @@ sealed interface SessionState {
 /** How the sign-in screen's request is going. `suggestHttp` is set when an address typed
  *  without a scheme got nowhere over HTTPS and wasn't tried over plain HTTP, because it is
  *  beyond the home network: the screen says how to ask for plain HTTP. */
-data class SignInState(val busy: Boolean = false, val error: String? = null, val suggestHttp: Boolean = false)
+data class SignInState(
+    val busy: Boolean = false,
+    val error: String? = null,
+    val suggestHttp: Boolean = false,
+    /** The server said yes, but the settings naming the account couldn't be written, so
+     *  nobody was signed in. */
+    val settingsNotSaved: Boolean = false,
+)
 
 /**
  * The signed-in account and its client for the server. Signing in and out happen here, not
@@ -170,7 +177,15 @@ class Session(
             inOrder {
                 // Signed out while the server was being asked: that sign-out wins.
                 if (generation.get() != asked) return@inOrder
+                // The settings name the account first, and the password is saved only once
+                // they're on disk: a failure between the two never leaves a new account's
+                // password beside settings that name the old one. Without the password the
+                // next start simply asks for it.
                 settings.update { it.copy(server = client.server, username = name) }
+                if (!settings.flush()) {
+                    signingIn.value = SignInState(settingsNotSaved = true)
+                    return@inOrder
+                }
                 val kept = withContext(io) { vault.save(client.server, name, password) }
                 if (!kept) notices.post(Notice.PasswordNotSaved)
                 if (unencryptedBeyondHome(client.server)) notices.post(Notice.SignedInWithoutEncryption)

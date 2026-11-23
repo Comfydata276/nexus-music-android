@@ -19,6 +19,9 @@ sealed interface Notice {
 
     /** Signing out didn't happen: the saved password couldn't be removed from the phone. */
     data object SignOutFailed : Notice
+
+    /** The settings couldn't be written; they're tried again at the next change. */
+    data object SettingsNotSaved : Notice
 }
 
 /** The notices waiting to be seen, oldest first. */

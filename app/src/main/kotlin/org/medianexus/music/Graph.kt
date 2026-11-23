@@ -47,6 +47,12 @@ class Graph(context: Context) {
 
     init {
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }
+        // Said once when writing starts to fail, and taken back once a write succeeds.
+        scope.launch {
+            settings.saveFailed.collect { failed ->
+                if (failed) notices.post(Notice.SettingsNotSaved) else notices.dismiss(Notice.SettingsNotSaved)
+            }
+        }
         // The switch in Settings and the one every request checks are the same.
         scope.launch {
             settings.state.map { it.offline }.distinctUntilChanged().collect { offline.on = it }

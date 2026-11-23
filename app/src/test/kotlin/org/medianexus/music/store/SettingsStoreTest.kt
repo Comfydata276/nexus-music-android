@@ -116,6 +116,80 @@ class SettingsStoreTest {
         scope.cancel()
     }
 
+    /** Puts a folder, with something in it, where a file should be: nothing can be written
+     *  in its place. */
+    private fun block(path: File) {
+        path.delete()
+        File(path, "in-the-way").apply { parentFile!!.mkdirs() }.writeText("x")
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun aFailedWriteIsReportedAndTriedAgainAtTheNextChange() = runTest {
+        val path = File(folder.newFolder(), "settings.json")
+        val io = StandardTestDispatcher(testScheduler)
+        val scope = TestScope(io)
+        val store = SettingsStore.open(path, scope, io)
+        block(path)
+        store.update { it.copy(theme = "Ember") }
+        scope.advanceUntilIdle()
+        // Not on disk, and flush says so instead of returning as if it were.
+        assertFalse(store.flush())
+        assertTrue(store.saveFailed.value)
+        assertEquals("Ember", store.value.theme)
+        // The way clears; the next change writes everything so far.
+        path.deleteRecursively()
+        store.update { it.copy(scrobble = false) }
+        scope.advanceUntilIdle()
+        assertTrue(store.flush())
+        assertFalse(store.saveFailed.value)
+        val saved = SettingsStore.read(path)!!
+        assertEquals("Ember", saved.theme)
+        assertFalse(saved.scrobble)
+        scope.cancel()
+    }
+
+    @Test
+    fun saveSaysWhetherItWorked() {
+        val path = File(folder.newFolder(), "settings.json")
+        assertTrue(SettingsStore.save(path, Settings(theme = "Ocean")))
+        block(path)
+        assertFalse(SettingsStore.save(path, Settings(theme = "Ember")))
+    }
+
+    @Test
+    fun aDamagedFileIsOnlySaidToBeKeptIfItWas() {
+        val dir = folder.newFolder()
+        val path = File(dir, "settings.json")
+        path.writeText("not settings at all")
+        // Somewhere it can't be put aside.
+        block(File(dir, "settings.damaged.json"))
+        val (settings, damage) = SettingsStore.loadChecked(path)
+        assertEquals(Settings(), settings)
+        assertEquals(SettingsDamage.StartedAfresh(null), damage)
+    }
+
+    @Test
+    fun theBackupIsReplacedWholeAndTheRepairLeavesNoTemporaryFile() {
+        val dir = folder.newFolder()
+        val path = File(dir, "settings.json")
+        SettingsStore.save(path, Settings(theme = "Ocean"))
+        SettingsStore.loadChecked(path)
+        val backup = SettingsStore.backupOf(path)
+        assertEquals("Ocean", SettingsStore.read(backup)!!.theme)
+        // A backup that can't be replaced leaves the good file and its reading alone.
+        block(backup)
+        assertEquals("Ocean" to null, SettingsStore.loadChecked(path).let { it.first.theme to it.second })
+        backup.deleteRecursively()
+        SettingsStore.loadChecked(path)
+        // Mended from the backup, by a whole new file.
+        path.writeText("{")
+        assertEquals(SettingsDamage.UsedBackup, SettingsStore.loadChecked(path).second)
+        assertEquals("Ocean", SettingsStore.read(path)!!.theme)
+        assertFalse(File(dir, "settings.tmp").exists())
+        assertFalse(File(dir, "settings.backup.tmp").exists())
+    }
+
     /** Ported from `names_the_equaliser_curve_and_works_out_the_preamp` in src/config.rs. */
     @Test
     fun namesTheEqualiserCurveAndWorksOutThePreamp() {

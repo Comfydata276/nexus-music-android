@@ -170,8 +170,9 @@ fun SignInScreen(session: Session, savedServer: String, savedUsername: String) {
                     enabled = !state.busy,
                 )
 
-                state.error?.let { error ->
-                    val shown = if (state.suggestHttp) "$error ${stringResource(R.string.sign_in_try_http)}" else error
+                val error = state.error ?: if (state.settingsNotSaved) stringResource(R.string.sign_in_not_saved) else null
+                error?.let {
+                    val shown = if (state.suggestHttp) "$it ${stringResource(R.string.sign_in_try_http)}" else it
                     BasicText(
                         shown,
                         Modifier.semantics { liveRegion = LiveRegionMode.Polite },

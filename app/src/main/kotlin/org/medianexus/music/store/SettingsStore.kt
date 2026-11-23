@@ -2,6 +2,8 @@ package org.medianexus.music.store
 
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -21,9 +23,9 @@ sealed interface SettingsDamage {
     /** The copy from the last good start was used. */
     data object UsedBackup : SettingsDamage
 
-    /** There was no copy either: the damaged file was put aside under this name and the app
-     *  started with its default settings. */
-    data class StartedAfresh(val keptAs: String) : SettingsDamage
+    /** There was no copy either, and the app started with its default settings. The damaged
+     *  file was put aside under `keptAs`; null if even that failed, so it wasn't kept. */
+    data class StartedAfresh(val keptAs: String?) : SettingsDamage
 }
 
 /**
@@ -42,17 +44,28 @@ class SettingsStore private constructor(
     val state: StateFlow<Settings> = current.asStateFlow()
     val value: Settings get() = current.value
 
-    // Each change gets a number; the writer writes whatever is newest and notes its number.
+    // Each change gets a number; the writer writes whatever is newest and notes its number:
+    // as written if the file was saved, as failed if not.
     private val changes = AtomicLong(0)
-    private val written = MutableStateFlow(0L)
+    private data class Outcome(val written: Long = 0, val failed: Long = -1)
+    private val outcome = MutableStateFlow(Outcome())
     private val wake = Channel<Unit>(Channel.CONFLATED)
+
+    private val failing = MutableStateFlow(false)
+
+    /** Whether the last write failed. A failed write leaves the last good file in place (as
+     *  on Windows) and is tried again at the next change; the app tells the person. */
+    val saveFailed: StateFlow<Boolean> = failing.asStateFlow()
 
     init {
         scope.launch(io) {
             for (signal in wake) {
+                // The number first, then the settings: what's written is never older than
+                // the number it's noted under.
                 val number = changes.get()
-                save(file, current.value)
-                written.value = number
+                val saved = save(file, current.value)
+                outcome.value = if (saved) Outcome(written = number) else outcome.value.copy(failed = number)
+                failing.value = !saved
             }
         }
     }
@@ -75,10 +88,11 @@ class SettingsStore private constructor(
         }
     }
 
-    /** Waits until every change so far is on disk. */
-    suspend fun flush() {
+    /** Waits until every change so far has been written, or the writing failed. True if
+     *  they are on disk. */
+    suspend fun flush(): Boolean {
         val wanted = changes.get()
-        written.first { it >= wanted }
+        return outcome.first { it.written >= wanted || it.failed >= wanted }.written >= wanted
     }
 
     companion object {
@@ -99,14 +113,28 @@ class SettingsStore private constructor(
         /** Where the copy of the settings from the last good start is kept. */
         fun backupOf(file: File): File = siblingWithExtension(file, "backup.json")
 
-        internal fun read(file: File): Settings? = try {
-            json.decodeFromString(Settings.serializer(), file.readText())
+        internal fun read(file: File): Settings? = decode(bytesOf(file))
+
+        private fun bytesOf(file: File): ByteArray? = try {
+            file.readBytes()
         } catch (_: IOException) {
             null
+        }
+
+        private fun decode(bytes: ByteArray?): Settings? = try {
+            bytes?.let { json.decodeFromString(Settings.serializer(), it.decodeToString()) }
         } catch (_: SerializationException) {
             null
         } catch (_: IllegalArgumentException) {
             null
+        }
+
+        /** Writes the bytes whole or not at all; false if they couldn't be. */
+        private fun tryWrite(file: File, bytes: ByteArray): Boolean = try {
+            writeAtomically(file, bytes)
+            true
+        } catch (_: IOException) {
+            false
         }
 
         /**
@@ -114,7 +142,8 @@ class SettingsStore private constructor(
          * the phone died, edited by hand into something else) is never quietly replaced by a
          * fresh one: the copy kept from the last good start is used, and failing that the
          * damaged file is put aside under another name. The second value says when either
-         * happened.
+         * happened. Copies are written beside their place and then moved into it, so one cut
+         * short part-way never spoils the copy it was replacing.
          */
         fun loadChecked(file: File): Pair<Settings, SettingsDamage?> {
             val backup = backupOf(file)
@@ -122,28 +151,33 @@ class SettingsStore private constructor(
                 // A first run, or the file was deleted to start afresh.
                 return Settings() to null
             }
-            read(file)?.let { settings ->
-                // Good: this is the copy to fall back on next time.
-                runCatching { file.copyTo(backup, overwrite = true) }
+            val bytes = bytesOf(file)
+            decode(bytes)?.let { settings ->
+                // Good: this is the copy to fall back on next time. If it can't be written,
+                // the copy from an earlier start stays.
+                tryWrite(backup, bytes!!)
                 return settings to null
             }
-            read(backup)?.let { settings ->
-                runCatching { backup.copyTo(file, overwrite = true) }
+            val backupBytes = bytesOf(backup)
+            decode(backupBytes)?.let { settings ->
+                // Mended from the copy. If even that fails, the next change writes it anyway.
+                tryWrite(file, backupBytes!!)
                 return settings to SettingsDamage.UsedBackup
             }
             val aside = siblingWithExtension(file, "damaged.json")
-            aside.delete()
-            file.renameTo(aside)
-            return Settings() to SettingsDamage.StartedAfresh(aside.name)
+            val kept = try {
+                Files.move(file.toPath(), aside.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                true
+            } catch (_: IOException) {
+                // Can't be moved: a copy of it will do, if it could be read.
+                bytes != null && tryWrite(aside, bytes)
+            }
+            return Settings() to SettingsDamage.StartedAfresh(if (kept) aside.name else null)
         }
 
-        fun save(file: File, settings: Settings) {
-            try {
-                writeAtomically(file, json.encodeToString(Settings.serializer(), settings).toByteArray())
-            } catch (_: IOException) {
-                // As on Windows: a failed write leaves the last good file in place, and the
-                // next change tries again.
-            }
-        }
+        /** Writes the settings; false if they couldn't be. As on Windows, a failed write
+         *  leaves the last good file in place. */
+        fun save(file: File, settings: Settings): Boolean =
+            tryWrite(file, json.encodeToString(Settings.serializer(), settings).toByteArray())
     }
 }
