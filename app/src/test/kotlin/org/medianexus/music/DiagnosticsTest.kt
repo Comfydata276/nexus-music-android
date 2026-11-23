@@ -2,12 +2,11 @@ package org.medianexus.music
 
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,22 +15,32 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
+/**
+ * The record itself. Its reading and writing run on a dispatcher the test holds, so nothing
+ * here waits for a file to turn up: what was asked to be written is written when the test
+ * lets it, at once or after the record's own short delay, on a clock that is the test's.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
 class DiagnosticsTest {
     @get:Rule val folder = TemporaryFolder()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scheduler = TestCoroutineScheduler()
+    private val io = StandardTestDispatcher(scheduler)
+    private val scope = CoroutineScope(SupervisorJob() + io)
     private var now = 1_800_000_000_000L
 
     @After
     fun stop() = scope.cancel()
 
-    private fun open(most: Int = Diagnostics.MOST) = Diagnostics(File(folder.root, "diagnostics.txt"), scope, Dispatchers.IO, clock = { now }, most = most)
+    private fun open(most: Int = Diagnostics.MOST) = Diagnostics(File(folder.root, "diagnostics.txt"), scope, io, clock = { now }, most = most)
 
     private fun written(): List<String> = File(folder.root, "diagnostics.txt").takeIf { it.isFile }?.readLines().orEmpty()
 
-    private suspend fun until(what: () -> Boolean) = withTimeout(10_000) { while (!what()) delay(10) }
+    /** Lets everything that was asked for be done: the file read, and whatever is waiting
+     *  to be written, its delay included. */
+    private fun settle() = scheduler.advanceUntilIdle()
 
     @Test
-    fun theSameThingAgainIsCountedNotWrittenAgain() = runBlocking {
+    fun theSameThingAgainIsCountedNotWrittenAgain() {
         val log = open()
         log.note("connection from an.app: refused")
         now += 5_000
@@ -48,28 +57,49 @@ class DiagnosticsTest {
     }
 
     @Test
-    fun itIsBoundedInMemoryAndOnThePhone() = runBlocking {
+    fun itIsBoundedInMemoryAndOnThePhone() {
         val log = open(most = 50)
         for (i in 1..500) log.note("thing number $i " + "x".repeat(1_000), now = true)
         assertEquals(50, log.entries().size)
         assertEquals("thing number 500", log.entries().last().text.substringBefore(" x"))
         assertTrue(log.entries().all { it.text.length <= Diagnostics.MOST_CHARS })
-        until { written().size == 50 && written().last().contains("thing number 500") }
+        settle()
+        assertEquals(50, written().size)
+        assertTrue(written().last().contains("thing number 500"))
         assertTrue(File(folder.root, "diagnostics.txt").length() < 64 * 1024)
     }
 
     @Test
-    fun whatWasNotedIsThereAfterTheAppStops() = runBlocking {
+    fun whatIsNotedIsWrittenInAMomentAndAtOnceWhenItMayBeTheLastThing() {
+        val log = open()
+        settle()
+        log.note("playback error: ERROR_CODE_IO_NETWORK_CONNECTION_FAILED")
+        // Not at once: something noted again and again is written once.
+        scheduler.runCurrent()
+        assertTrue(written().isEmpty())
+        scheduler.advanceTimeBy(2_000)
+        assertEquals(1, written().size)
+        // What may be the last thing the app does is written without the wait.
+        log.note("foreground: Android refused it", now = true)
+        scheduler.runCurrent()
+        assertEquals(2, written().size)
+    }
+
+    @Test
+    fun whatWasNotedIsThereAfterTheAppStops() {
         val first = open()
         first.note("player started by a media button")
         first.note("foreground: entered after 180 ms", now = true)
-        until { written().size == 2 }
+        settle()
+        assertEquals(2, written().size)
         // The app is stopped and starts again; something is noted before the file is read.
         val second = open()
         second.note("player started by a media button")
-        until { second.entries().size == 2 && second.entries().last().count == 2 }
+        assertEquals(1, second.entries().size)
+        settle()
         assertEquals(listOf("foreground: entered after 180 ms", "player started by a media button"), second.entries().map { it.text })
-        until { written().any { it.endsWith("\t2\tplayer started by a media button") } }
+        assertEquals(2, second.entries().last().count)
+        assertTrue(written().any { it.endsWith("\t2\tplayer started by a media button") })
     }
 
     @Test

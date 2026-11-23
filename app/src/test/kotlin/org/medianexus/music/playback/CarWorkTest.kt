@@ -4,7 +4,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.runBlocking
+import java.util.concurrent.CountDownLatch
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -45,30 +46,34 @@ class CarWorkTest {
     // ---- Work for the car, off the main thread ----------------------------------------------------
 
     @Test
-    fun workThatNeverPausesIsStillGivenUpOnAndRunsOnAnotherThread() = runBlocking {
+    fun workThatNeverPausesIsStillGivenUpOnAndRunsOnAnotherThread() = runTest {
         val scope = CoroutineScope(SupervisorJob())
         val asking = Thread.currentThread()
         var worked: Thread? = null
-        val began = System.nanoTime()
+        // Laying out a very long list: it does not pause anywhere a time limit could reach
+        // it. Here it is work that has begun and is held at a gate, on its own thread, for
+        // as long as the test likes. Wrapped in a limit on the thread that asked, such work
+        // held that thread (the main thread) until it had finished, limit or no limit.
+        val begun = CountDownLatch(1)
+        val gate = CountDownLatch(1)
         try {
-            // Laying out a very long list: it does not pause anywhere a time limit could
-            // reach it. Wrapped in a limit on the thread that asked, it held that thread
-            // (the main thread) until it had finished, limit or no limit.
-            OffMain.within(scope, limitMs = 200) {
+            // (The limit runs on this test's clock, which moves on by itself when nothing
+            // else can: no real time is waited, however long the limit is.)
+            OffMain.within(scope, limitMs = 7_000) {
                 worked = Thread.currentThread()
-                val until = System.nanoTime() + 3_000_000_000L
-                @Suppress("ControlFlowWithEmptyBody")
-                while (System.nanoTime() < until) { }
+                begun.countDown()
+                gate.await()
                 "too late"
             }
             fail("the answer was waited for")
         } catch (_: TimeoutCancellationException) {
-            // Given up on at the limit, not when the work chose to finish. (Generously
-            // judged: this machine is shared.)
-            val waited = (System.nanoTime() - began) / 1_000_000
-            assertTrue("gave up after $waited ms", waited < 2_000)
+            // Given up on at the limit, with the work still where it was: not when the
+            // work chose to finish, which it has not.
+            assertEquals("the work finished before it was given up on", 1L, gate.count)
         }
+        begun.await()
         assertNotEquals(asking, worked)
+        gate.countDown()
         // And an answer in time is the answer.
         assertEquals("the songs", OffMain.within(scope, limitMs = 5_000) { "the songs" })
         scope.cancel()
