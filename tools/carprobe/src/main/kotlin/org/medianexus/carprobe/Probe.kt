@@ -235,6 +235,32 @@ class Probe : Instrumentation() {
         return Triple(answer.first, answer.second, SystemClock.elapsedRealtime() - t0)
     }
 
+    /** How many children a folder has when asked for a page at a time. */
+    private fun pagedCount(parent: String, pageSize: Int = 100): Int {
+        var total = 0
+        var page = 0
+        while (page < 400) {
+            val done = CompletableFuture<Int>()
+            val options = Bundle().apply {
+                putInt(MediaBrowserCompat.EXTRA_PAGE, page)
+                putInt(MediaBrowserCompat.EXTRA_PAGE_SIZE, pageSize)
+            }
+            val callback = object : MediaBrowserCompat.SubscriptionCallback() {
+                override fun onChildrenLoaded(parentId: String, children: MutableList<MediaItem>, options: Bundle) { done.complete(children.size) }
+                override fun onChildrenLoaded(parentId: String, children: MutableList<MediaItem>) { done.complete(children.size) }
+                override fun onError(parentId: String, options: Bundle) { done.complete(0) }
+                override fun onError(parentId: String) { done.complete(0) }
+            }
+            onMain { browser!!.subscribe(parent, options, callback) }
+            val got = runCatching { done.get(limitMs, TimeUnit.MILLISECONDS) }.getOrDefault(0)
+            onMain { browser!!.unsubscribe(parent, callback) }
+            total += got
+            if (got < pageSize) break
+            page++
+        }
+        return total
+    }
+
     private fun browse(root: String): List<Node> {
         val maxDepth = args.getString("depth")?.toInt() ?: 4
         val maxNodes = args.getString("nodes")?.toInt() ?: 80
@@ -295,6 +321,19 @@ class Probe : Instrumentation() {
         val empty = nodes.filter { it.error == null && it.children.isNullOrEmpty() }
         record("browse.empty", if (empty.isEmpty()) "PASS" else "WARN", "No folder is empty",
             if (empty.isEmpty()) "" else "empty (the car says \"No items\"): " + empty.joinToString { "\"${it.path}\"" })
+
+        // What arrives whole. A car asks for a folder in one go, and what is sent back has
+        // a size limit (Media3 cuts the list to fit, silently): a folder that is longer when
+        // asked for a page at a time than when asked for whole has lost its tail.
+        val long = nodes.filter { (it.children?.size ?: 0) >= 40 }
+        val cut = long.mapNotNull { n ->
+            val whole = n.children!!.size
+            val paged = pagedCount(n.id)
+            if (paged > whole) "\"${n.path}\" shows $whole of $paged" else null
+        }
+        check("browse.complete", "Every folder arrives whole when asked for in one go", cut.isEmpty(),
+            "cut short, with no way to the rest: " + cut.joinToString("; "),
+            "${long.size} folders of 40 or more items checked; the longest has ${nodes.maxOfOrNull { it.children?.size ?: 0 }}")
 
         // How the car is asked to lay things out.
         val styled = nodes.filter { n ->
@@ -389,8 +428,19 @@ class Probe : Instrumentation() {
 
     /** A word to search for when the caller gave none: one from a song the tree showed. */
     private fun aWord(tree: List<Node>): String? =
-        tree.flatMap { it.children.orEmpty() }.filter { it.isPlayable }
+        tree.flatMap { songs(tree, it) }
             .flatMap { it.description.title.toString().split(" ") }.firstOrNull { it.length >= 4 && it.all(Char::isLetter) }
+
+    /**
+     * The songs in a folder: its playable items, less any that are an action rather than a
+     * song. An app may head every list with a "Shuffle" or "Play all" item; one is told from
+     * a song by its title heading three or more folders.
+     */
+    private fun songs(tree: List<Node>, node: Node): List<MediaItem> {
+        val heads = tree.mapNotNull { n -> n.children.orEmpty().firstOrNull()?.takeIf { it.isPlayable }?.description?.title?.toString() }
+            .groupingBy { it }.eachCount().filterValues { it >= 3 }.keys
+        return node.children.orEmpty().filter { it.isPlayable && it.description.title?.toString() !in heads }
+    }
 
     private fun search(tree: List<Node>) {
         val query = args.getString("query") ?: aWord(tree)
@@ -449,9 +499,9 @@ class Probe : Instrumentation() {
 
     private fun playback(tree: List<Node>) {
         // A song that sits among others, so there is a queue to look at afterwards.
-        val folder = tree.filter { n -> n.children.orEmpty().count { it.isPlayable } >= 3 }.maxByOrNull { it.depth }
-            ?: tree.firstOrNull { n -> n.children.orEmpty().any { it.isPlayable } }
-        val pick = folder?.children?.firstOrNull { it.isPlayable }
+        val folder = tree.filter { n -> songs(tree, n).size >= 3 }.maxByOrNull { it.depth }
+            ?: tree.firstOrNull { n -> songs(tree, n).isNotEmpty() }
+        val pick = folder?.let { songs(tree, it).firstOrNull() }
         if (pick == null) {
             record("play.item", "SKIP", "Choosing a song plays it", "nothing playable was found while browsing")
             return
@@ -588,6 +638,35 @@ class Probe : Instrumentation() {
             ms = waitFor(9000) { (title() to mediaId()) != before && playing() }
             check("queue.runs_on", "When a song ends the next one starts", ms >= 0, "2.5s from the end of ${nowPlaying()}, nothing followed within 9s (${stateName(state?.state)})", "now ${nowPlaying()}", ms)
         } else record("queue.runs_on", "SKIP", "When a song ends the next one starts", "needs a song longer than 8s that is not the last in the queue")
+
+        // "Shuffle" at the head of a list of songs, where the design promises one.
+        args.getString("expect_shuffle")?.let { name ->
+            val lists = tree.filter { n -> songs(tree, n).size >= 2 }
+            fun headed(n: Node) = n.children.orEmpty().firstOrNull()?.let { it.isPlayable && it.description.title?.toString() == name } == true
+            // A list too long for one folder is shown in parts: the head is on the list, not
+            // on each part of it.
+            fun partOfHeaded(n: Node) = tree.any { p -> p.depth == n.depth - 1 && n.path.startsWith(p.path + "/") && headed(p) }
+            val without = lists.filter { !headed(it) && !partOfHeaded(it) }
+            check("browse.shuffle", "Every list of songs is headed by \"$name\"", lists.isNotEmpty() && without.isEmpty(),
+                if (lists.isEmpty()) "no list of songs was found" else "not headed by it: " + without.take(5).joinToString { "\"${it.path}\"" },
+                "${lists.size} lists of songs")
+            // The deepest such list of a few songs: an album or a playlist, which nothing
+            // done earlier in this run (pressing "like") has changed.
+            val list = lists.filter { headed(it) && songs(tree, it).size in 4..150 }.maxByOrNull { it.depth } ?: lists.firstOrNull { headed(it) }
+            if (list != null) {
+                onMain { controls.playFromMediaId(list.children!!.first().mediaId, null) }
+                val started = waitFor { playing() && controller!!.shuffleMode == PlaybackStateCompat.SHUFFLE_MODE_ALL }
+                waitFor(3000) { (queue?.size ?: 0) == songs(tree, list).size }
+                val titles = songs(tree, list).map { it.description.title.toString() }
+                check("play.shuffle", "Choosing \"$name\" plays the whole list, shuffled", started >= 0 && queue.orEmpty().size == titles.size &&
+                    queue.orEmpty().map { it.description.title.toString() }.sorted() == titles.sorted(),
+                    "${whyNotPlaying()}, shuffle mode ${controller!!.shuffleMode}, queue of ${queue?.size} for a list of ${titles.size}",
+                    "\"${list.path}\": ${titles.size} songs, shuffled; now ${nowPlaying()}", started)
+                // Leave the list as it was found: not shuffled.
+                onMain { controls.setShuffleMode(PlaybackStateCompat.SHUFFLE_MODE_NONE) }
+                waitFor(3000) { controller!!.shuffleMode == PlaybackStateCompat.SHUFFLE_MODE_NONE }
+            }
+        }
     }
 
     private fun nowPlayingArt() {

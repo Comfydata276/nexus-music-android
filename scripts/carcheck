@@ -11,7 +11,8 @@ usage: scripts/carcheck <package> [options]     check an installed app
        scripts/carcheck --selftest              prove the checks fail when they should
 
   --nexus               hold the app to what docs/DESIGN.md promises the car
-                        (the four tabs by name; like, shuffle and repeat buttons)
+                        (the tabs by name; like, shuffle and repeat buttons; "Shuffle" at
+                        the head of every list of songs)
   --query "<words>"     what to search for (default: a word from a song the app lists)
   --voice "<requests>"  spoken requests, separated by ';', each
                           kind:words[|field=value...][=>words expected in what plays]
@@ -74,7 +75,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --standin) target=org.medianexus.standin ;;
     --selftest) selftest=1; target=org.medianexus.standin ;;
-    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library,Downloads" -e expect_buttons "like,shuffle,repeat" -e forge "$nexus_forge") ;;
+    # Three tabs until there are downloads (M2), when Downloads makes four.
+    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library" -e expect_buttons "like,shuffle,repeat" -e expect_shuffle "Shuffle" -e forge "$nexus_forge") ;;
     --query) extra+=(-e query "${2:?}"); shift ;;
     --voice) extra+=(-e voice "${2:?}"); shift ;;
     --tabs) extra+=(-e expect_tabs "${2:?}"); shift ;;

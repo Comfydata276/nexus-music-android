@@ -143,6 +143,9 @@ class PlaybackService : MediaLibraryService() {
             recentlyAdded = getString(R.string.recently_added),
             songs = getString(R.string.songs),
             others = getString(R.string.others),
+            shuffle = getString(R.string.shuffle),
+            mostPlayed = getString(R.string.most_played),
+            aToZ = getString(R.string.sort_a_to_z),
             songCount = { resources.getQuantityString(R.plurals.song_count, it, it) },
             albumCount = { resources.getQuantityString(R.plurals.album_count, it, it) },
         )
@@ -816,9 +819,12 @@ class PlaybackService : MediaLibraryService() {
                 val words = asked.requestMetadata.searchQuery
                 try {
                     if (words != null) return@answer inTime { voice(era, controller, words, asked.requestMetadata.extras) }
-                    val track = CarIds.parse(asked.mediaId) as? CarNode.Track
-                        ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
-                    val list = inTime { tree.play(track) } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play, asked.mediaMetadata.title ?: "")))
+                    val list = when (val chosen = CarIds.parse(asked.mediaId)) {
+                        is CarNode.Track -> inTime { tree.play(chosen) }
+                        // "Shuffle", at the top of a list: the whole list, shuffled.
+                        is CarNode.Shuffle -> inTime { tree.shuffled(chosen.list) }
+                        else -> throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
+                    } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play, asked.mediaMetadata.title ?: "")))
                     staged(list)
                 } catch (e: ApiError) {
                     throw refuse(controller, trouble(controller, e))

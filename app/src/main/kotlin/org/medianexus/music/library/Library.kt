@@ -36,6 +36,10 @@ class Library(private val api: Subsonic, val pages: PageCache, val search: Searc
 
     suspend fun <T> fresh(spec: PageSpec<T>): T = pages.fresh(spec)
 
+    /** What is kept of a page, without waiting for the server, which is asked afterwards
+     *  (see [PageCache.later]). */
+    suspend fun <T> later(spec: PageSpec<T>, freshFor: Long, changed: ((T) -> Unit)? = null): T? = pages.later(spec, freshFor, changed)
+
     // ---- Playlists ------------------------------------------------------------------------
 
     fun playlists() = PageSpec("playlists", ListSerializer(Playlist.serializer())) { api.playlists() }

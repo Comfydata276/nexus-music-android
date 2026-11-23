@@ -170,6 +170,30 @@ class PageCache(
         return kept
     }
 
+    /**
+     * What is kept of a page, at once and without waiting on the server: null if nothing is.
+     * Either way the page is asked for in the background, unless it was fetched within
+     * `freshFor`, and `changed` is told if the server's answer differs from what was given
+     * (or is the first there has been). For a page that is slow to fetch (every album in the
+     * library) and worth showing a little out of date rather than not at all.
+     */
+    suspend fun <T> later(spec: PageSpec<T>, freshFor: Long = FRESH_FOR_MILLIS, changed: ((T) -> Unit)? = null): T? {
+        recent(spec.key, freshFor)?.let {
+            @Suppress("UNCHECKED_CAST")
+            return it.value as T
+        }
+        val kept = kept(spec)
+        scope.launch {
+            val now = try {
+                fresh(spec)
+            } catch (_: ApiError) {
+                return@launch
+            }
+            if (now != kept) changed?.invoke(now)
+        }
+        return kept
+    }
+
     /** Replaces the kept copy, as when a change made here (a like, say) is known to have
      *  reached the server. */
     suspend fun <T> put(spec: PageSpec<T>, value: T) {
