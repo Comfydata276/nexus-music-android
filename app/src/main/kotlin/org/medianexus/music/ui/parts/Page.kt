@@ -132,7 +132,7 @@ fun PageStatus(
             PageState.Loading -> BasicText(
                 stringResource(R.string.loading),
                 centred,
-                style = Theme.type.body.copy(color = colors.faint, textAlign = TextAlign.Center),
+                style = Theme.type.body.copy(color = colors.muted, textAlign = TextAlign.Center),
             )
             is PageState.Empty -> {
                 if (state.icon != null) Icon(state.icon, size = 40.dp, tint = colors.faint)

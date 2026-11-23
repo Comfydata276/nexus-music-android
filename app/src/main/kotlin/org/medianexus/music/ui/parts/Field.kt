@@ -70,7 +70,9 @@ fun Field(
             contentAlignment = Alignment.CenterStart,
         ) {
             if (state.text.isEmpty() && placeholder.isNotEmpty()) {
-                BasicText(placeholder, style = style.copy(color = colors.faint), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // It says what to type (the server's address takes the form shown), so it has
+                // to be readable: muted meets 4.5:1 on the field, faint doesn't.
+                BasicText(placeholder, style = style.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             inner()
         }

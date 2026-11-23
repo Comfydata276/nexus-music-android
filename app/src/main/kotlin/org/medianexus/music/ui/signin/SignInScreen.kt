@@ -187,7 +187,7 @@ fun SignInScreen(session: Session, savedServer: String, savedUsername: String) {
                     primary = true,
                     enabled = ready,
                 )
-                BasicText(stringResource(R.string.password_kept), style = Theme.type.caption.copy(color = colors.faint))
+                BasicText(stringResource(R.string.password_kept), style = Theme.type.caption.copy(color = colors.muted))
             }
         }
     }
