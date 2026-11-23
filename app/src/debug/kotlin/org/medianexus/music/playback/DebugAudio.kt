@@ -71,14 +71,15 @@ object DebugAudio {
             // Called at every reset of the chain (a seek, a new format). Only a new format
             // needs a new file: a WAV holds one.
             val changed = sampleRateHz != rate || channelCount != channels || encoding != this.encoding
+            // The file being written is finished in the format it was written in, before the
+            // new one is noted: its header is filled in as it closes, and used to be given
+            // the sample rate of whatever came next.
+            if (changed) close()
             rate = sampleRateHz
             channels = channelCount
             this.encoding = encoding
             Log.d(TAG, "audio chain reset: $sampleRateHz Hz, $channelCount channels, encoding $encoding")
-            if (dir != null && (changed || out == null)) {
-                close()
-                open()
-            }
+            if (dir != null && out == null) open()
         }
 
         @Synchronized

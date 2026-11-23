@@ -284,6 +284,22 @@ class PlaybackService : MediaLibraryService() {
      * `DefaultRenderersFactory.buildAudioSink` with them in its chain.
      */
     private fun renderers() = object : DefaultRenderersFactory(this) {
+        override fun buildAudioRenderers(
+            context: android.content.Context,
+            extensionRendererMode: Int,
+            mediaCodecSelector: androidx.media3.exoplayer.mediacodec.MediaCodecSelector,
+            enableDecoderFallback: Boolean,
+            audioSink: androidx.media3.exoplayer.audio.AudioSink,
+            eventHandler: Handler,
+            eventListener: androidx.media3.exoplayer.audio.AudioRendererEventListener,
+            out: ArrayList<androidx.media3.exoplayer.Renderer>,
+        ) {
+            super.buildAudioRenderers(context, extensionRendererMode, mediaCodecSelector, enableDecoderFallback, audioSink, eventHandler, eventListener, out)
+            // Media3's renderer, with the trim for MP3 put right (see Mp3Trim).
+            val at = out.indexOfFirst { it is androidx.media3.exoplayer.audio.MediaCodecAudioRenderer }
+            if (at >= 0) out[at] = GaplessAudioRenderer(context, codecAdapterFactory, mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener, audioSink)
+        }
+
         override fun buildAudioSink(context: android.content.Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean) =
             androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                 .setEnableFloatOutput(enableFloatOutput)

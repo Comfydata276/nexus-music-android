@@ -9,6 +9,9 @@
 #   scripts/server logs [-f]  the server's log
 #   scripts/server sweepcheck <recording>
 #                             find gaps in a recording of the "Continuous Sweep" album
+#   scripts/server joincheck <recording>[,<recording-2>...] <song file>...
+#                             where each song starts and ends in a recording, to the sample,
+#                             against ffmpeg's decode of the files that were played
 #   scripts/server api <method> [name=value...]
 #                             call the Subsonic API as the test account, e.g.
 #                             scripts/server api search3 query=lantern
@@ -87,6 +90,27 @@ case "${1:-}" in
     # Look for gaps in a recording of the "Continuous Sweep" album (tools/library/sweepcheck.py).
     file="${2:?sweepcheck: which recording?}"; [ -f "$file" ] || die "sweepcheck: no such file: $file"
     rig_run sh -c 'cat > /tmp/recording && python3 /work/tools/library/sweepcheck.py /tmp/recording' < "$file"
+    ;;
+  joincheck)
+    # Line a recording up against ffmpeg's decode of the songs that were played, in order
+    # (tools/library/joincheck.py): where each starts and ends, to the sample.
+    shift
+    recording="${1:?joincheck: which recording? (several files, in order, separated by commas)}"; shift
+    [ $# -ge 1 ] || die "joincheck: which song files were played, in order?"
+    # Copied into the cache, which the rig's container can see, under names without spaces.
+    work="$cache/tmp/joincheck.$$"; mkdir -p "$work"; trap 'rm -rf "$work"' EXIT
+    inside=""; n=0
+    IFS=',' read -ra parts <<< "$recording"
+    for f in "${parts[@]}"; do
+      [ -f "$f" ] || die "joincheck: no such file: $f"
+      n=$((n + 1)); cp "$f" "$work/recording-$n.wav"; inside+="${inside:+,}/cache/tmp/joincheck.$$/recording-$n.wav"
+    done
+    songs=(); n=0
+    for f in "$@"; do
+      [ -f "$f" ] || die "joincheck: no such file: $f"
+      n=$((n + 1)); name="$(printf '%02d' "$n")-$(printf '%s' "$(basename "$f")" | tr -c 'A-Za-z0-9._-' '_')"; cp "$f" "$work/$name"; songs+=("/cache/tmp/joincheck.$$/$name")
+    done
+    rig_run python3 /work/tools/library/joincheck.py "$inside" "${songs[@]}"
     ;;
   api)
     shift; method="${1:?api: which method? e.g. scripts/server api getArtists}"; shift
