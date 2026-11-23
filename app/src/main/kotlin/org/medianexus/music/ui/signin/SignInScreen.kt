@@ -22,10 +22,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
@@ -63,7 +67,17 @@ fun SignInScreen(session: Session, savedServer: String, savedUsername: String) {
     val state by session.signIn.collectAsStateWithLifecycle()
     val server = rememberTextFieldState(savedServer)
     val username = rememberTextFieldState(savedUsername)
-    val password = rememberTextFieldState()
+    // Not `rememberTextFieldState`: that is saved with the activity's state, which Android
+    // may write out, so the password would sit there in plain text. Kept in memory only, it
+    // is simply empty if the app is killed and brought back; and it is wiped, with its undo
+    // history, when the screen goes away (signing in is one way it does).
+    val password = remember { TextFieldState() }
+    DisposableEffect(password) {
+        onDispose {
+            password.clearText()
+            password.undoState.clearHistory()
+        }
+    }
     val keyboard = LocalSoftwareKeyboardController.current
     val ready = !state.busy && server.text.isNotBlank() && username.text.isNotBlank() && password.text.isNotEmpty()
     val connect = {

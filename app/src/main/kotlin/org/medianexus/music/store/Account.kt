@@ -50,9 +50,15 @@ interface SecretBox {
  * Windows app checks on platforms without a credential store).
  */
 class PasswordVault(private val file: File, private val box: SecretBox) {
+    // The plain bytes are wiped once used, so the password isn't left lying in memory in more
+    // copies than it has to be (the String it arrives as can't be wiped).
     fun save(server: String, username: String, password: String): Boolean = try {
         val plain = "${accountKey(server, username)}\n$password".toByteArray(Charsets.UTF_8)
-        writeAtomically(file, box.seal(plain))
+        try {
+            writeAtomically(file, box.seal(plain))
+        } finally {
+            plain.fill(0)
+        }
         true
     } catch (_: IOException) {
         false
@@ -69,9 +75,17 @@ class PasswordVault(private val file: File, private val box: SecretBox) {
         } catch (_: IOException) {
             return null
         }
-        val text = box.open(sealed)?.toString(Charsets.UTF_8) ?: return null
-        val who = text.substringBefore('\n', missingDelimiterValue = "")
-        return if (who == accountKey(server, username)) text.substringAfter('\n') else null
+        val plain = box.open(sealed) ?: return null
+        try {
+            // The account's key, a newline, then the password: only the password becomes text.
+            val newline = plain.indexOf('\n'.code.toByte())
+            if (newline < 0) return null
+            val who = String(plain, 0, newline, Charsets.UTF_8)
+            if (who != accountKey(server, username)) return null
+            return String(plain, newline + 1, plain.size - newline - 1, Charsets.UTF_8)
+        } finally {
+            plain.fill(0)
+        }
     }
 
     fun delete() {
