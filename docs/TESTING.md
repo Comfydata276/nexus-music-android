@@ -117,7 +117,11 @@ The full list, with every song's length, format and loudness values, is written 
 
 **A long playlist.** `scripts/server longlist` adds "Long list (5,000 songs)", the 100 songs
 over and over, for measuring opening, scrolling and starting a long list (`longlist 20000`
-for a longer one; `longlist --remove`, or `scripts/server reset`, takes it away).
+for a longer one; `longlist --remove`, or `scripts/server reset`, takes it away). Each time
+round starts one song later than the last, so the song a hundred places on is never the
+same song (the player's window of a queue moves a hundred at a time, and a queue that is a
+window out would otherwise look right). It is added a few thousand songs at a time: the
+server refuses 20,000 in one request.
 
 One thing learned making it, in case a real library shows the same: Navidrome files an
 album's songs as two albums when only some of them carry a release date, and it reads an
@@ -186,6 +190,8 @@ screen. So there are two questions, and they need different checks:
 scripts/carcheck org.medianexus.music --nexus
 scripts/carcheck org.medianexus.music --nexus --query "lantern" \
     --voice "artist:Paper Lanterns=>Paper Lanterns;album:Slow Rivers=>Slow Rivers;song:Lantern Season|artist=Paper Lanterns=>Lantern Season;playlist:Morning mix=>Morning mix;any:nordlys=>Nordlys"
+scripts/carcheck org.medianexus.music --nexus --known-host         # let in by certificate, not by trust
+scripts/carcheck org.medianexus.music --nexus --mode queue_slide   # a tap as the queue moves (needs a long playlist)
 scripts/carcheck --standin          # the stand-in fixture, to check the rig itself
 scripts/carcheck --selftest         # prove the checks fail when they should
 ```
@@ -217,11 +223,22 @@ failed. The full report is saved as JSON under `reports/` in the cache.
 | `voice.unnamed`, `voice.no_match` | "Play music" with nothing named plays something; a request for something that does not exist either falls back or tells the car why in words |
 | `focus.*` | When another app takes the sound for a moment (a navigation prompt, a call) playback gives way, and comes back afterwards |
 | `resume.*` | After the app is removed from memory, the car can connect again and "play" with nothing chosen picks up |
-| `--mode signed_out` | With nobody signed in, the session carries a standing error in words for the car to show, and nothing plays. `signed_out.unasked`: the error is there on connecting, before anything has browsed (a car that only shows the player never browses). `signed_out.search`: a search is answered at once, not left spinning |
-| `--mode outsider` | What an app that is not the car may do. With `--untrusted`, nothing: no connection by either protocol. Without it (trusted, as Android Auto is): it connects, but none of the app's own commands are granted or carried out, and intents forged to the exported service (the notification's own actions, Media3's built-in player commands) can do no more than the notification's buttons can |
-| `--mode play` | Only press play and say what plays; with `--media-id "<id>"`, choose that item instead. For scripted checks of one thing |
+| `--mode signed_out` | With nobody signed in, the session carries a standing error in words for the car to show, and nothing plays. `signed_out.unasked`: the error is there on connecting, before anything has browsed (a car that only shows the player never browses). `signed_out.search`: a search is answered at once, not left spinning. To be signed out without signing in again afterwards, on a debug build: `run-as org.medianexus.music mv no_backup/password.sealed no_backup/password.keep` with the app stopped, and back again after. (That is also the quick case: with no saved password the sign-in is read at once, before Media3's notification controller has connected, which is when `signed_out.unasked` used to fail) |
+| `--mode outsider` | What an app that is not the car may do. With `--untrusted`, nothing: no connection by either protocol, and (with `--nexus`) no covers from the cover provider either. Without it (trusted, as Android Auto is): it connects, but none of the app's own commands are granted or carried out, and intents forged to the exported service (the notification's own actions, Media3's built-in player commands) can do no more than the notification's buttons can |
+| `--known-host` | The probe with **no** notification access, so Android does not trust it, let in only because the app knows it by package name and signing certificate, as it knows Android Auto from Google's list. On a debug build the rig tells the app the probe's certificate first (`DebugControl --es host`, kept in a file of the app's; nothing is added to the list in the repository) and the whole check must then pass: `known_host.admitted`, and every browse, cover and playback item after it. On a release build there is no way to tell it, so the probe must be refused (the `outsider.*` items): that the release list is Google's and nothing else is part of what passing proves |
+| `--mode queue_slide` | A tap on the car's queue made just as the player's part of a long queue moves along. The probe starts a long playlist (`scripts/server longlist 600`; open the app's Library once afterwards so the phone has it), keeps the queue as it was first shown, goes down it until what it is shown starts somewhere else, and at once taps an entry of the queue it kept: `queue.slide` passes if the song that entry showed is what plays. `queue.settled`: a moment later an entry of the queue as it now is plays that entry |
+| `--mode long_pause` | What a car does after a long stop: play, pause, stay connected for eleven minutes (`--pause-s N` for another wait), and press Play. Past ten minutes paused the app's service has left the foreground (it is alive only because the probe is bound to it), and `long_pause.resume` and `long_pause.foreground` pass if Play brings the music, and the foreground, back |
+| `--mode play` | Only press play and say what plays; with `--media-id "<id>"`, choose that item instead. For scripted checks of one thing. `--warm` (any mode) leaves the app in memory rather than starting it cold |
 
-**Trusted and untrusted.** Media3 gives full control only to callers it trusts: the app
+**Trusted, known and untrusted.** The app lets in three kinds of caller (`docs/DESIGN.md`,
+"Who may connect"): itself; callers Android trusts with media; and the known hosts of
+media apps by package name and signing certificate (Google's list). The probe can stand as
+the second (given notification access: the default), as the third (`--known-host`, debug
+builds), or as none (`--untrusted`). What it can never be is Android Auto itself: whether
+the real one is let in on a real phone, and by which of the two routes, is the first thing
+the Diagnostics page says after a drive.
+
+Media3 gives full control only to callers it trusts: the app
 itself, the system, and anything allowed to read notifications. Android Auto is one. By
 Media3's default an ordinary app gets to look (browse, search, see what is playing) but
 not to touch. The probe is given notification access so that it stands where Android
@@ -247,9 +264,11 @@ must be found. It takes two minutes.
   will show, which artwork sizes it asks for, how long it waits before giving up (the
   check allows ten seconds, from Google's quality guidelines), what it does with an
   empty folder or an error.
-- Anything the app decides from the caller's name. Media3 can tell Android Auto from
-  other callers by its package name, and an app can use that; the probe has a different
-  name, so code written only for Android Auto does not run under it.
+- Anything the app decides from the caller's name. The app now does decide one thing from
+  it: a caller on Google's list of known hosts, signed as the list says, is let in whatever
+  Android has granted it. The probe has another name and another signature, so that entry
+  of the list is never the one exercised here; `--known-host` exercises the same code with
+  the probe's own name and certificate.
 - The cable, Bluetooth, the car's buttons and its sound system.
 - Sound quality. It knows that sound is being produced, not what it sounds like.
 
@@ -374,6 +393,21 @@ the app's service will meet:
 - `sendError` on the session is likewise shown for a moment and withdrawn. The check for
   a spoken request with no match accepts that and says so.
 
+Four more, met by the app's own service since (all Media3 1.11.1):
+
+- A standing error set with `MediaSession.setPlaybackException` reaches the platform's
+  session, which is what a car reads, only through Media3's own notification controller,
+  and only if that controller is connected at the moment the error is set. Set earlier, it
+  is on the session and the car is never told. The app sets it again in `onPostConnect`.
+- `MediaSessionService.isPlaybackOngoing()` says whether the service has ever been started
+  in the foreground. It stays true after Media3 has left the foreground. Whether the
+  service is in the foreground now is `Service.getForegroundServiceType()`.
+- A queue item's id, to a car, is its place in the player's playlist, and a tap comes back
+  as that place (`MediaSessionLegacyStub.onSkipToQueueItem`).
+- A new stream is tried against each kind of file before it is read (`sniff`), and the MP3
+  extractor's sniff leaves the input past the ID3 tag. Anything that reads beside an
+  extractor must not expect the first read to begin at byte 0.
+
 ## Measurements: `scripts/measure`
 
 ```sh
@@ -479,13 +513,49 @@ Results on the Android 17 emulator:
 - **Ogg Vorbis** runs 156 to 224 samples (3.5 to 5 ms) past its end. Not fixed.
 - **A song the server converts** has no gapless information; expect a join of about 50 ms.
 
-The MP3 cure is tied to the decoder by name (Android's own software decoder). Every build
-logs once which decoder it met: `adb logcat -s NexusPlayback | grep "MP3 is decoded by"`.
+The MP3 cure is tied to the decoder by name (Android's own software decoder), and to the
+file's own header (written by LAME or ffmpeg; see `docs/DESIGN.md`). Every build says which
+decoder it met and what it trimmed, in the log (`adb logcat -s NexusPlayback | grep "MP3 is
+decoded by"`) and on the Diagnostics page: "trimming 576 and 1008 samples (the file's own
+header: …)" is the cure applied; "(as Media3 has them)" is a file or a decoder it was not
+applied to. Recorded again after the second round of hardening, on the Android 17
+emulator: the MP3 sweep album joins as before (no silence at any join; the two small jumps
+that are in the files).
 On a phone whose maker supplies another, the numbers are left as Media3 gives them and
 only a recording of that phone can say whether they are right.
 
 None of this can show what Android or the phone's hardware does after the player (a mixer
 that glitches, Bluetooth); that still needs ears, or a recording of a real phone's output.
+
+## Tests that run Media3 itself
+
+Most of the app's tests are plain JVM tests of plain Kotlin. Where a fault is about what
+Media3 does (when its cache writes, how its media source retries, how its session numbers a
+queue, when its service enters the foreground), a stand-in for Media3 can agree with the
+code and both be wrong, which is how the first round of hardening passed with faults
+standing. Those tests run Media3's real classes on Robolectric (Android on the JVM), with
+Media3's own test kit for a clock the player can be run against. They are part of
+`scripts/check` like the rest.
+
+| Test | What is real in it |
+|---|---|
+| `KeptConversionTest` | `SimpleCache`, `CacheDataSource`, `CacheDataSink` under the player's data source: which conversions are kept |
+| `ConvertedPlaybackTest` | ExoPlayer, the progressive media source and the MP3 extractor, against a stand-in server shaped like Navidrome; a renderer reads back from each frame the time in the song it belongs to |
+| `QueueTapTest`, `StartsTest` | ExoPlayer under the queue's player, driven the way Media3's session drives it |
+| `ColdStartTest` | The playback service itself on Media3's session service, started by a Play button |
+| `Mp3TrimTest` | Media3's MP3 extractor reading made-up files with and without a LAME header, sniffed first and then read, as Media3 does a new stream |
+| `KnownHostsTest` | The app's own copy of Google's list, read from its resources |
+
+What Robolectric cannot be: Android's rules about foreground services and audio, another
+app's process, a real `MediaControllerCompat` across a binder, Android's own answer about a
+package's signing certificate. Those are the emulator's (below) or the car's.
+
+And a test that runs Media3 can still run it differently from the way the player does. The
+MP3 header reader passed its tests and did nothing on the emulator: the test handed the
+extractor a file to read, where Media3 first tries each kind of file on a stream and only
+then reads, and that first step moves past the tag. It was the app's own Diagnostics line
+on the emulator ("trimming … (as Media3 has them)") that showed it. After a change to how
+songs are read, record the MP3 sweep album again (below) and read that line.
 
 ## The playback service's hard cases
 
@@ -499,17 +569,56 @@ screens have (`scripts/emu shell am broadcast -n org.medianexus.music/.playback.
 | `--es say state` | Answers with the state, the song, the position, the place in the queue and its length |
 | `--es stalls start` (`stop`) | Logs, under the tag `NexusStall`, every time the main thread is held for more than two frames (33 ms), and by what |
 | `--es capture start --es name x` (`stop`) | The recording above; `scripts/emu capture` does these |
+| `--es host "<package> <sha256>"` (`--es host ""`) | Adds a caller to be let in as a known host, by its package name and the SHA-256 of its signing certificate (or forgets them all); `scripts/carcheck --known-host` does this for the probe |
 
 **A Play button with the app not running.** The system gives a service started this way
-a few seconds to show itself as playing, and kills the app if it doesn't. Kill the process
-(`scripts/emu shell am kill org.medianexus.music`, or `kill -9` as root), clear the log,
-send the button (`scripts/emu shell input keyevent 126`), wait 40 seconds, and read the
+a few seconds to show itself as playing, and kills the app if it doesn't. End the process,
+clear the log, send the button (`scripts/emu shell input keyevent 126`), wait, and read the
 log for `ForegroundServiceDidNotStartInTimeException` and for the service's own account
-of what it did (tag `NexusPlayback`). The cases: signed out; signed in with no saved
-queue; a saved queue; a saved queue with the server stopped; a saved queue file with
-rubbish in it. None may end in that exception, and only the saved-queue cases may start
-the service at all. After installing a build over one whose button receiver had another
-name, open the app once first: the system remembers the old name until then.
+of what it did (tag `NexusPlayback` in a debug build; the Diagnostics file in any:
+`run-as org.medianexus.music cat files/diagnostics.txt` on a debug build, Settings, About
+on any). The cases: signed out (move `no_backup/password.sealed` aside with `run-as`);
+signed in with no saved queue; a saved queue; a saved queue with the server stopped and
+the song not kept (remove `cache/accounts/*/songs`: kept, it plays without the server);
+a saved queue file with rubbish in it. None may end in that exception, and only the
+saved-queue cases may start the service at all.
+
+Two ways of ending the process, which are not the same thing:
+
+- `am kill` is what Android does when it wants the memory. It only ends an app that is in
+  the background with nothing running: open the app, press Home, then `am kill` (it does
+  nothing to an app whose service is started, which this one's is after playing).
+- `am force-stop` (`scripts/emu kill`) also puts the app in Android's "stopped" state and
+  throws away its saved state and pending intents. On the Android 17 emulator a media
+  button still starts a force-stopped app. For the rubbish-file case use this one: opened
+  first, the app finds the file damaged and clears it away.
+
+What to expect in a saved-queue case, from the Diagnostics file: "a media button with the
+player not running: starting it", "player started by a media button (MEDIA_PLAY), with the
+app not running", "foreground: entered at once for a media button, N ms after the player
+was made" (about 0.1 s on the emulator), then "foreground: playing in it N ms after…"
+(about 0.5 s).
+
+**Android 17's rules for sound from the background** can be forced on the emulator, whatever
+the app targets: `scripts/emu shell cmd audio set-hardening throw` (or `enable`;
+`clear-hardening` to put it back). `throw` makes a refused request for the sound an
+exception rather than silence, so a start that Android would have muted shows as a crash.
+The cold-start cases were run both ways.
+
+**Paused for more than ten minutes, then Play.** Media3 keeps the service in the foreground
+for ten minutes after playback stops; after that the service is an ordinary background one,
+and a Play button reaches it through the session, not through a start command. Play, pause,
+press Home, wait eleven minutes, see `isForeground=false` in `dumpsys activity services
+org.medianexus.music`, send the button, and see PLAYING and `isForeground=true` again.
+
+**Android 9.** A Play button with the app not running never reaches the app there (see
+`docs/DESIGN.md`, "Starting playback"): `MediaSessionService: Sending KeyEvent … to the
+restored intent ComponentInfo{…PlaybackService}` in the log, and nothing after it. What can
+be checked on Android 9 is the service's own start: `am start-foreground-service -n
+org.medianexus.music/.playback.PlaybackService -a android.intent.action.MEDIA_BUTTON`
+(adb cannot attach the key, so there is nothing to do): in the foreground within a second,
+out of it and stopped seven seconds later, nothing in the log about a foreground service
+that did not start.
 
 **Swiped away.** Play something, swipe the app out of the recent-apps list, and look ten
 seconds later: `dumpsys media_session` says PLAYING and `dumpsys activity services
@@ -526,6 +635,13 @@ measured: starting it from the car, one stall of 35 ms; Next, none over 33 ms; a
 away 54 ms; the app's Java heap about 55 MB. Before, the same playlist ran the app out of
 memory.
 
+`scripts/carcheck … --warm` leaves the app in memory (the stall log is switched on in the
+process, and the check's cold start would otherwise end it). In a debug build as it is
+(several times slower), `--mode queue_slide --warm` on the 20,000-song playlist, the phone's
+copy already kept: before the car's folders were worked out off the main thread, stalls of
+145 ms and 97 ms laying the list out; after, none from the list, and up to about 80 ms from
+the player moving its own window when the probe jumps a hundred songs down the queue.
+
 **A song the server converts.** Set a quality in Settings, turn on debug logging, play a
 long song and seek: the log line "a conversion opened part-way, at byte N: asked of the
 server from second S" shows what was asked. To see where a seek really landed, record the
@@ -534,10 +650,28 @@ sweep album converted and read the pitch at the landing (`sweepcheck` prints it)
 only whole conversions are kept: play one to its end and another only part-way, stop the
 server, and play both again.
 
+There is no setting for the quality yet: on a debug build, with the app stopped,
+`run-as org.medianexus.music sed -i 's/"bitrate": 0,/"bitrate": 128,/' files/settings.json`
+(and back to 0 afterwards). Checked that way against the test server after the second round
+of hardening: a five-minute Opus song converted at 128, seeks to 200 s and to 20 s land
+(203.6 s and 23.7 s four seconds later; "asked of the server from second 199", "from second
+19"); an MP3 of 73 kbps, which the server sends as it is whatever is asked, is not asked for
+as a conversion at all, and a seek in it lands (before, it began again from its start with
+the new time on the clock). What this rig cannot do is drop a conversion part-way: stopping
+the server does not break a stream the emulator's own tunnel has already taken whole. That
+case is `ConvertedPlaybackTest`'s, and a real network's.
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
   (above).
+- **Whether the real Android Auto is let in, and whether Android lets it start the
+  music.** The probe is not Android Auto: it is trusted because the rig says so, or known
+  because the rig says so. On the phone, Android Auto is whatever Samsung and Google made
+  it: it may or may not hold notification access or the system's media permission, its
+  signing certificate may or may not be one of those on Google's 2022 list, and Android 17
+  may or may not count its Play as something the person did. See "What only the phone and
+  the car can say" below.
 - **Speech**, the car's buttons, the cable, wireless, reconnection: only a car.
 - **Sound after the player.** `scripts/emu capture` records what the player sends to
   Android (gapless joins can be measured; crossfade, levelling and the equaliser can be
@@ -595,6 +729,11 @@ the car has it)
 | Take a phone call | The music pauses and comes back |
 | Switch the car off and on (or pull the cable and plug it back) | The app is still there; play carries on from where it was |
 | Force-stop the app, then press play on the steering wheel or a Bluetooth headset | The saved queue carries on; with nothing saved, nothing happens (and nothing crashes) |
+| Pause in the car, leave it paused for a quarter of an hour (phone screen off), then press Play on the car's screen, and another time on the steering wheel | It plays. (After ten minutes paused the player is no longer a foreground service; this is the start Android 15 and 17 have rules about) |
+| With a long playlist playing (over 300 songs), open the car's queue and tap entries well down it, several times | Each tap plays the song that was tapped |
+| Turn on a streaming limit if the build has the setting; seek about in a long song; drive through a spot with no signal for under a minute | Seeks land where asked; the song carries on from where it was, not from its start |
+| Drive out of reach of the server for more than ten minutes | "Reconnecting…", then paused with "Can't reach your music server"; Play, once back in reach, carries on from where the song stopped |
+| Afterwards, on the phone: Settings, About, Show diagnostics | A page of text; Share sends it. Bring it back whatever happened |
 | Play, swipe the app away on the phone | The music carries on |
 | Drive out of reach of the server (or switch Wi-Fi and data off) for a minute, then back | "Reconnecting…" on the car's screen, the song stays where it was, and it carries on by itself |
 | Sign in on the phone while the car shows "Sign in" | The car's lists appear without leaving and re-entering the app |
@@ -604,8 +743,38 @@ the car has it)
 | Sign out on the phone, look at the car | A message in words, not a blank or a spinner |
 | The "Continuous Sweep" album, loud | One smooth rising note, no clicks at the joins |
 
-**Bring back** a photo of anything wrong, what you did just before, and the phone's log:
-with the phone on a cable afterwards, `adb logcat -d > car.log`.
+**Bring back** a photo of anything wrong, what you did just before, the **Diagnostics**
+(Settings, About, "Show diagnostics", then "Share": it is text, and names no server, account
+or song), and the phone's log: with the phone on a cable afterwards, `adb logcat -d > car.log`.
+
+### What only the phone and the car can say, and where the answer will be
+
+Each of these was decided as well as it can be from Google's documentation, Android's
+source and the emulators, and none of them can be settled there. The Diagnostics page was
+built to settle them on the first drive.
+
+| The question | What to look for in Diagnostics |
+|---|---|
+| Does the real Android Auto get a connection, and by which route? | `connection from com.google.android.projection.gearhead by Android's own media session and browser: let in. Android trusts it: yes/no; known host: yes/no`. "Refused" with both "no" means its certificate is not on Google's list (the list is from December 2022): the car lists the app and cannot open it, and the list needs that certificate added |
+| Which other apps connect on a Samsung phone (its own media controls, its watch app, Bixby), and are any refused that should not be? | One `connection from <package>` line each, with the outcome |
+| Does Android Auto get the covers? | `covers asked for by com.google.android.projection.gearhead: given` (or "refused"); and the same for `com.android.systemui` and anything Samsung's |
+| What starts the player in the car, and with the app not running? | `player started by a media browser connecting (a car, or the system), with the app not running` (or "a media button (…)", "a Media3 controller connecting") |
+| Does Android 17 let it into the foreground when the car presses Play, and how soon? | `foreground: entered at once to play` or `…for a media button, N ms after the player was made`, then `foreground: playing in it N ms…`. `foreground: Android refused it …` or `…would not allow it when playback began; paused` is Android saying no |
+| Does Android 17 let it be heard (the "while-in-use" question for a Play that came from the car)? | Silence with everything else normal is what a refusal looks like; `audio focus: refused or taken away at once after Play` is the app noticing it. `adb shell dumpsys audio` afterwards has lines beginning `AudioHardening` with the app's name if Android muted it |
+| Which decoder plays MP3 on this phone, and is the trim right for it? | `MP3 is decoded by <name>; trimming N and M samples (the file's own header…)` or `(as Media3 has them)`. A name other than `c2.android.mp3.decoder` means Samsung's own, which is left with Media3's numbers: then the "Continuous Sweep (MP3)" album, by ear, says whether there is a gap |
+| What goes wrong on a real network? | `playback error: <kind>` lines with counts, `the server was out of reach for ten minutes: paused` |
+
+And these nothing on the phone records, so they are for eyes and ears:
+
+- how Android Auto lays out the tabs, grids, ranges and "Shuffle"; what it does with a
+  folder of 200; whether it shows the queue, and how long it takes to redraw it when the
+  queue moves (the one-second rule in `docs/DESIGN.md` assumes under a second);
+- whether the Assistant knows the app by name and what it sends;
+- steering-wheel buttons, the cable, wireless, reconnecting after the car is switched off;
+- a Play button after the phone has been restarted and the app not opened since;
+- One UI's own battery rules: whether it stops the app in the background mid-drive (put
+  the app on "Unrestricted" under Battery if it does, and say so);
+- the sound itself: gaps at joins, the level, a click after a dropped connection picks up.
 
 ## Where things are
 

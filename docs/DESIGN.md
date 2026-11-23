@@ -32,6 +32,7 @@ When two of these pull against each other, the higher one wins.
 | Images | Coil 3, fed by our own cover store |
 | Background work | Coroutines; Media3's `DownloadService` for downloads |
 | Build | Gradle with the version catalogue in `gradle/libs.versions.toml`, inside Docker (`scripts/dx`) |
+| Tests | JUnit on the JVM; where a test is about what Media3 does (its cache, its media source, its player and session service), Media3's own classes on Robolectric with Media3's test kit. Test only: none of it is in the app |
 
 Versions are fixed in the catalogue and raised on purpose. Before using an API from
 memory, check it against the version in the catalogue: these libraries have moved on.
@@ -117,13 +118,29 @@ How it is built (M1a):
   to the model. It reports our shuffle and repeat, and a timeline whose shuffled order is
   its playing order, so no controller looks for a shuffle underneath.
 - **The player holds a window of the queue, not the queue** (`QueueSync`): 25 songs before
-  the one playing and at least 200 after, moved along in steps of 50. Everything ExoPlayer's
-  playlist holds is paid for on the main thread at every event, and copied to the system,
-  the notification and the car at every change, so a 20,000-song playlist must not be in
-  it. The model holds everything. The session, the car and the app's screens see the
-  window; the screens are told the total as well (`UpNext.total`). Next, Previous,
-  repeat-all and the end of the queue are therefore the model's to decide: Next on the last
-  song goes round to the top and plays on only if repeat is on, as on Windows.
+  the one playing and at least 200 after, moved along in steps of 100, always at the same
+  songs of a queue (its 125th, its 225th, …). Everything ExoPlayer's playlist holds is paid
+  for on the main thread at every event, and copied to the system, the notification and the
+  car at every change, so a 20,000-song playlist must not be in it. The model holds
+  everything, and what the window has passed is let go. The session, the car and the app's
+  screens see the window; the screens are told the total as well (`UpNext.total`). Next,
+  Previous, repeat-all and the end of the queue are therefore the model's to decide: Next on
+  the last song goes round to the top and plays on only if repeat is on, as on Windows (on
+  a queue of one song that is the song started again). With repeat-all on and the end of a
+  long queue in the window, the first three songs are held after the last, so the player
+  runs from the last song into the first without a gap.
+- **A tap on the car's queue.** Media3 numbers a car's queue items with their place in the
+  player's playlist, and a tap comes back as that place and nothing else. Whenever the
+  places move (the window slides, the queue is reordered, something is added or removed)
+  every place the car is still showing means another song until its screen has caught up.
+  The player remembers the places as they were before each change of the last second
+  (`QueuePlayer.entryMeant`), and a place sent in that second by anyone but the app's own
+  screens is read as it was shown: the song that was on the screen plays, wherever it is
+  now; if it has left the queue, nothing does. **What remains:** nothing in a tap says which
+  queue its sender was looking at, so this is a rule about time. A car that takes longer
+  than a second to redraw its queue, and is tapped after that second on an entry it has not
+  yet redrawn, plays the song now at that place. It can only happen at the moments the
+  places move: every hundredth song, and when the queue is edited from the phone.
 - **Starting a list** is building a queue (`QueuePlayer.prepare`), which for a long list
   is done off the main thread, and taking it over (`Queue.adopt`, which copies nothing).
   **The car's** start goes through the session, which asks for media items: the service
@@ -131,18 +148,38 @@ How it is built (M1a):
   them by their numbers when they arrive. **The app's screens** name a long list that is a
   page the phone keeps (an album, a playlist, Liked songs; over 200 songs) and its place,
   and the service reads the songs from the library's kept copy; a short or ad hoc list is
-  sent as it is. Starts are counted: one that had to look something up and is ready after
-  a newer choice has been made is dropped.
+  sent as it is. **Starts are numbered** by the player (`QueuePlayer.beginStart`): one that
+  has to look something up takes its number as it begins, and is asked whether it is still
+  the newest twice, when its queue is handed to the session and again when the session's
+  items reach the player, because a choice can be made in either wait. A start that has
+  been overtaken hands over nothing and disturbs nothing; a change of account overtakes
+  them all; "carry on" (a Play button) is not a start and gives way to any. A page started
+  by name names the song tapped and the songs around it: if the phone's copy has changed by
+  the time it is read, the list starts at that song wherever it is now, else at its nearest
+  neighbour still there, and an empty list starts nothing and says so.
 - **The app's screens** use `PlayerConnection`: a `MediaController` with `StateFlow`s and
   commands. What only the app asks for (play a list with its source, the "Next in queue"
   edits) goes as custom session commands. An edit names the entry it means by the entry's
   own number, never by its place on the screen, so a song ending between the tap and the
   command can't shift it onto another. The length of "Next in queue" and the total to
   come are in the session's extras.
-- **Who may connect** (`Access`). A caller Media3 doesn't trust (not the system, not this
-  app, no notification access, no permission to control media) gets no connection, by
-  either protocol: the library is private. Trusted callers (Android Auto, the Assistant, a
-  car's own screens, Bluetooth, the system's media controls) browse, search and play. The
+- **Who may connect** (`Access`, `Callers`). The library is private: a caller gets a
+  connection, by either protocol, only if it is one of three things. This app. A caller
+  Android trusts with media, which is Media3's "trusted": the system itself, an app holding
+  the system's permission to control media, or an app the person has given notification
+  access (a car's own screens, Bluetooth, the system's media controls, a watch, and on most
+  phones Android Auto and the Assistant). Or one of the **known hosts** of media apps, by
+  package name and signing certificate both: Android Auto, the Google app and its
+  Assistant, Wear OS, the Android Auto simulator and the Assistant on Android Automotive,
+  from the list Google publishes for this in its Universal Android Music Player sample
+  (`res/xml/allowed_media_browser_callers.xml`, which says where and when it was fetched).
+  The third is there so that the real Android Auto is never turned away on a phone where it
+  happens to hold neither of the second. The certificate is asked of the system
+  (`hasSigningCertificate`) for the package the system says the calling uid is; a name
+  alone is never enough, and a release build has no way to be told of any other caller (a
+  debug build can be told the rig's probe, at run time). Everyone admitted browses,
+  searches and plays; anyone else gets no connection. The cover provider gives covers to
+  exactly the same callers. The
   app's own commands are granted only to a Media3 controller with this app's uid that is
   not the notification controller, and are checked again as each is carried out. What
   arrives under the notification controller's name (which Media3 also uses for intents sent
@@ -150,14 +187,22 @@ How it is built (M1a):
   like, shuffle, repeat. `VoiceActivity`, which must be open to the Assistant, accepts the
   play-from-search action and reads only its words and fields, as text of bounded length.
 - **Each sign-in is a generation** (`Era` in the service). What the session is asked runs
-  in that generation's scope and is answered "not signed in" if the account goes meanwhile;
-  search results live in it; a data source belongs to the generation it was made in and is
-  refused under another; the kept-songs cache is released only when its last reader has
-  closed.
+  in that generation's scope, and what was found for an account that has gone is never
+  handed on: the question is answered "not signed in" if nobody is signed in by then, and
+  asked again of whoever is (`ForAccount`; "not signed in" to a car is a standing error,
+  which must not land after a new sign-in has cleared it). Search results live in the
+  generation, and so does everything learnt about its server's songs by id (what a
+  conversion was found to be, which songs need converting): two servers can use the same
+  ids. A data source belongs to the generation it was made in and is refused under
+  another; a cover fetched for the car is handed over only if its account is still the one
+  signed in; the kept-songs cache is released only when its last reader has closed.
 - **Each list remembers its shuffle**, as on Windows: a list with no choice made yet plays
   in order; shuffle and repeat are also kept in Settings.
 - **Quality**: the original file if the phone plays it and no limit is set, else MP3 at the
-  limit (320 kbps for a file the phone can't play), as Windows' `stream_form`. A file that
+  limit (320 kbps for a file the phone can't play), as Windows' `stream_form`, with one
+  difference: an MP3 already at or under the limit is asked for as the file it is. Navidrome
+  sends the file for it whatever is asked (it converts nothing, and takes no notice of a
+  time to start from), so asking for a conversion only made seeking wrong. A file that
   turns out not to decode is converted from then on.
 - **Songs the server converts** (`SongReader`). Navidrome streams a fresh conversion with
   no length and ignores byte ranges (once it has a whole conversion in its own cache it
@@ -169,14 +214,27 @@ How it is built (M1a):
   range. The time for a byte is worked out from where the audio starts and its real bit
   rate, both read from the stream as its start goes by: the same two numbers Media3's
   constant bit rate seeker uses to choose the byte. The player doesn't know such a song's
-  length, so the timeline the session sees gives it the library's.
+  length, so the timeline the session sees gives it the library's. A stream that comes
+  with a length and the server's word that it takes byte ranges is not a fresh conversion
+  (it is the file itself, or a conversion the server holds whole): a place in it is asked
+  for as a byte. **A drop part-way** is put right by the reader, not the player: Media3
+  takes a stream of unknown length for a broadcast and loads a failed one again from its
+  start, so the reader asks for the song again from the time it had reached (after 1, 2, 4
+  and 8 seconds) and carries on, and only after the last of those is the failure passed to
+  the player, as final. A place at or past the end is the end of the song, not an error.
 - **Kept songs.** A file as it is goes through the cache like anything else. A conversion
   is kept only if read from its first byte to a clean end and at least as long as Windows
-  requires (`least_bytes`); a kept copy is used only if whole, and then nothing is asked of
-  the server. Part of one is never kept and never pieced together with the server's bytes.
-  The limit in Settings applies the moment it is changed, down to nothing. In offline mode
-  the player asks the server for nothing: a song kept whole plays, any other is passed
-  over. Fetching ahead is M2.
+  requires (`least_bytes`), and that is judged once the read has closed: Media3's cache
+  writes the last of a song as its writer closes, and takes a conversion's length from
+  wherever the stream stopped, so it cannot be asked whether a conversion is whole. A copy
+  that passes is given a mark of our own in the cache's record of it (`WholeMark`, with a
+  version); a conversion without the mark is never played from the kept songs and is
+  cleared away. One read at a time keeps a conversion; another meanwhile gets the server's
+  bytes alone. Part of one is never kept and never pieced together with the server's bytes.
+  The limit in Settings applies the moment it is changed, down to nothing, and when an
+  account is next taken on if it was changed while signed out. In offline mode the player
+  asks the server for nothing, from the moment the switch is turned, streams already open
+  included: a song kept whole plays, any other is passed over. Fetching ahead is M2.
 - **Nothing private leaves the data source**: it reports the song's own address
   (`nexus://…`), the cache is never told where a redirect led, and a failure is thrown as
   its kind alone, with no cause. A playback error reaches every app with a controller.
@@ -184,30 +242,108 @@ How it is built (M1a):
   stream is asked for again after 1, 2, 4 and 8 seconds; then the song stays where it is,
   the car and notification say "Reconnecting…" (the phone, "Lost the connection to the server…"), and it is tried every
   15 seconds (a try that belongs to that account and that song, dropped if either has
-  changed) and carries on when the server is back. Passing over a song that can't be played
+  changed) and carries on when the server is back. After ten minutes of that it stops
+  trying and pauses, saying the server can't be reached: ten minutes is how long Media3
+  keeps the service in the foreground with nothing playing, and past it the service has no
+  standing with Android to bring the music back; the next Play tries again from where the
+  song stopped. Passing over a song that can't be played
   leaves "playing or paused" as it was. Swiped away, playback carries on unless the person
   had paused it. The Windows check of whether the server is there at all (to pass over a
   song that is the problem) is not ported yet.
 - **The saved queue** has one writer for the whole app (`QueueSaver`), which does reads and
-  writes in the order asked and writes only the newest of what is waiting; nothing is saved
-  until the saved queue has been read (`KeptQueue`); while the queue only plays, only the
-  place is written. A play order that isn't every song once is damaged, and not put back.
+  writes in the order asked and writes only the newest of what is waiting. Nothing is saved
+  until the queue that was read is in the player (`KeptQueue.settle`, which belongs to one
+  life of the service and one account's turn at it, not to the account): the player is
+  empty while a long queue is read and made ready, and that emptiness must not be saved.
+  While the queue only plays, only the place is written, and only beside the queue it was
+  handed over with: each hand-over of the queue has a name, the writer says whether it was
+  written, and one that failed is handed over whole again. A play order that isn't every
+  song once is damaged, and not put back.
 - **A Play button with the app not running** starts the service only if there is a saved
-  sign-in and a saved queue (`PlayButtonReceiver`). Resuming reads only the phone, waits a
-  few seconds at most, and never looks for something else to play; if there turns out to
-  be nothing, the service ends as Media3's own does (a notification the system never shows,
-  then stop) rather than be killed for a promise it didn't keep.
+  sign-in and a saved queue (`PlayButtonReceiver`). The service enters the foreground at
+  once, before anything is read, with a notification that is Media3's in number and channel
+  (Media3's replaces it in place when playback begins; from Android 12 it is never seen).
+  Resuming reads only the phone, waits a few seconds at most, and never looks for something
+  else to play; if there turns out to be nothing, or nothing has begun seven seconds after
+  the first button, the service leaves the foreground and stops. The receiver's first name
+  (Media3's own class) is still declared, closed to other apps, for a system that remembers
+  it from an earlier build.
+- **In the foreground before the player asks for the sound.** Media3 enters the foreground
+  a moment after playback has begun, which is after the player has asked Android for audio
+  focus. So the player tells the service just before any play, whoever asked
+  (`QueuePlayer.aboutToPlay`), and the service enters the foreground then if it isn't in
+  it (whether it is, is asked of Android: Media3's `isPlaybackOngoing` says whether the
+  service has ever been in the foreground, not whether it is now). A start Android refuses
+  is handled through Media3's own hook (`MediaSessionService.Listener`): noted, the player
+  paused, never an uncaught exception.
+  See "Starting playback: what Android allows" below.
 - **Gapless MP3.** Media3 1.11.1 allows for an MP3 decoder's 529-sample delay in the trim
-  it works out from a LAME header; Android's own decoder allows for it too. With both,
-  every song lost its first 12 ms and gained 12 ms of silence. For that decoder, by name,
-  the file's own numbers are used (`Mp3Trim`). FLAC, AAC and Opus join exactly. Ogg Vorbis
+  it works out from a header written by LAME or ffmpeg; Android's own decoder allows for it
+  too. With both, every song lost its first 12 ms and gained 12 ms of silence. For that
+  decoder, by name, the file's own numbers are used (`Mp3Trim`), and they are read from
+  the file's own header beside Media3's extractor (`Mp3HeaderReader`), not worked back from
+  Media3's result: the correction is made only for a header from one of the encoders Media3
+  adjusts for, whose numbers are the ones Media3 started from. Another encoder, no header,
+  numbers from an iTunes comment, another decoder, or anything that doesn't add up, is left
+  as Media3 has it: never trimming music comes before closing a gap. FLAC, AAC and Opus join
+  exactly. Ogg Vorbis
   runs a few milliseconds past its stated end (Media3's Ogg reader doesn't trim the last
   packet); not fixed. A conversion has no gapless information at all.
 - **Plays** are counted against a clock as well as the position, with a last sample at
   every pause, seek and change of song, and a fresh count for a repeat or a queue started
   again from the top (`PlayReporter`).
+- **Diagnostics** (`Diagnostics`; Settings, About). A bounded record, in memory and in one
+  small file, of what only the phone can say after a drive: each connection to the player
+  (which app, by which protocol, whether Android trusts it, whether it is a known host, let
+  in or refused), who read covers, what started the player and whether and how soon
+  Android let it into the foreground, audio focus refused straight after Play, which
+  decoder plays MP3 and what is trimmed for it, playback errors by kind, and the times the
+  server was given up on. The same thing again is counted, not written again. No server
+  address, account or song name goes into it; it stays on the phone unless the person
+  shares it (as text, through Android's share sheet).
 - Debug builds log the player's events (tag `NexusPlayer`) and have `DebugControl`, a
   receiver the rig can drive the player with from adb.
+
+### Starting playback: what Android allows
+
+Playing in the background needs a foreground service of the media-playback kind, and each
+version of Android since 12 has added a rule about when one may start or be heard. What the
+rules are, by Google's documentation (read 24 November 2026) and Android's source:
+
+| Android | The rule |
+|---|---|
+| 9 to 11 (API 28–30) | A service started with `startForegroundService` must enter the foreground within a few seconds or the app is killed. No limit on starting one from the background. |
+| 12, 13 (31–33) | An app in the background may not start a foreground service, with exceptions. The ones that matter here: the person acted on the app's notification; and, by the source rather than the documentation, a few seconds after the system has delivered the app a media button, or a media-session command from an app that could itself start one. |
+| 14 (34) | The service's kind must be declared, with its permission (`FOREGROUND_SERVICE_MEDIA_PLAYBACK`). Declared. |
+| 15, 16 (35–36) | An app targeting 15 is given audio focus only while it is the app in front or is running a foreground service. So the service must be in the foreground before the player asks. |
+| 17 (37) | "Background audio hardening": an app in the background is heard, and given focus, only while it runs a foreground service; for an app targeting 17 (this one) that service must also have been started while the app was visible or by something the person did: Google names a tap on a notification, a widget, and a media key from an outside device. Otherwise playback is silent, with no error. |
+
+And each way playback can start, against them:
+
+| Playback is started by | 9–11 | 12–14 | 15–16 | 17 | Checked here |
+|---|---|---|---|---|---|
+| The app's own screens | allowed | allowed (the app is in front) | allowed | allowed | emulator, 17 |
+| The notification or lock screen | allowed | allowed (acting on a notification) | allowed; the service enters the foreground first | allowed (a notification tap is named) | not run: needs the ten-minute wait and a tap on the system's screen |
+| A headset or car button, the service running | allowed | allowed for a few seconds after the button | allowed; the service enters the foreground first | allowed (a media key is named) | emulator, 17: the car's Play after eleven minutes paused (below); a button then finds the service gone and starts it as in the next row |
+| The same, the app not running | **Android 9: the button never arrives** (below). 10, 11: allowed, by the source | allowed; in the foreground 0.1 s after the service is made | allowed | allowed (a media key is named) | emulator, 9 and 17, six cases each way of ending the app |
+| The car (Android Auto) choosing a song or pressing Play | allowed | allowed for a few seconds after the command, if Android Auto could itself start one | the same; the service enters the foreground first | **not known**: Google's page doesn't say whether a command from Android Auto counts as something the person did | the rig's probe, 9, 15 (car) and 17, and on 17 after eleven minutes paused with the probe still connected (`--mode long_pause`), with the hardening forced on; the probe is not Android Auto |
+| The system's resume control | allowed | allowed (the system asks) | allowed; foreground first | **not known**, as the car | not run here |
+| The Assistant, on the phone | allowed | allowed (it opens the app: `VoiceActivity`) | allowed | allowed (the app is visible) | the activity, by adb, in the first round; never the Assistant |
+| The Assistant, in the car | allowed | as the car | as the car | **not known**, as the car | the request, by the probe; not the Assistant |
+
+"Not known" is what the first drive is for; the Diagnostics page records which of these
+happened and what Android said. If Android 17 does refuse a Play that comes from the car,
+there is nothing more the app can do from inside the service: it is already in the
+foreground before it asks for the sound, which is all Android lets it arrange. What to do
+then would be decided from what the Diagnostics page says happened.
+
+**Android 9 and a button with the app not running.** Android 9 sends a button, when no
+session is live, as a broadcast to the component the app's session last named; Media3
+1.11.1 names the playback service on Android 11 and below, and a service is not a broadcast
+receiver, so the button goes nowhere. Seen on the Android 9 emulator; not fixable from the
+app without replacing Media3's session. Android 10 and 11 start a named service properly by
+their source, and were not run here. The car's own controls (the probe's) work on Android 9;
+whether a headset button reaches a session that is live there was not checked.
 
 ### Android Auto
 
@@ -247,11 +383,18 @@ How it is built (M1a):
 - **No folder is longer than reaches the car whole** (`CarFolders`). A car asks for a
   folder in one go, and Media3 cuts the answer to what fits in 256 KiB, silently. So a
   folder holds at most 200 items and at most 190,000 bytes as reckoned here (which errs
-  large). A longer list is shown as numbered ranges ("1–200", with the first and last
+  large), counting what heads it ("Shuffle") and counting the folders that only list
+  ranges too. A longer list is shown as numbered ranges ("1–200", with the first and last
   titles), ranges of ranges if need be; a song in a range still plays the whole list from
-  its place. A host that does page is given that page of the same folder.
+  its place. A host that does page is given that page of the same folder. A range is named
+  by places in its list, so when the list changes, the list's folder and every range of it
+  the car has asked for lately are told to load again.
+- **Worked out off the main thread.** A folder, a search and the list a chosen song plays
+  are laid out, sorted and weighed on another thread (`OffMain`), and given up on after
+  seven seconds whatever they are doing; a time limit around the work itself only takes
+  effect where the work pauses, and this work doesn't.
 - **"Shuffle"** heads every album, playlist and Liked songs: it plays the whole list
-  shuffled, and the list remembers.
+  shuffled, and the list remembers (its own choice, whatever shuffle was set to before).
 - **Everything comes from kept pages** first and is checked with the server afterwards; a
   changed page is announced to the car. With the server out of reach the whole tree still
   opens. Anything the car waits on is given up after seven seconds. A folder never fetched,
@@ -261,7 +404,11 @@ How it is built (M1a):
   the session (a car's player has one line for it); the phone says it in full.
 - **Not signed in** is a standing error with a "Sign in" button that opens the app,
   published as soon as the saved sign-in has been read, whether or not anything has
-  browsed; browse errors of that kind stay on the car's screen
+  browsed, and again when Media3's own notification controller connects: Media3 copies a
+  standing error to the platform's session, which is what a car reads, only through that
+  controller and only if it is connected when the error is set, and with nobody signed in
+  the saved sign-in is read before it has connected. Browse errors of that kind stay on the
+  car's screen
   (`LIBRARY_ERROR_REPLICATION_MODE_FATAL`). A search made while signed out is answered
   ("nothing") at once. When who is signed in changes, the car is told to load again the
   folders it has asked for lately. For that to reach it, a subscription to a folder stands
