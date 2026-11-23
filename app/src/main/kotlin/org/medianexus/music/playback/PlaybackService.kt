@@ -842,6 +842,7 @@ class PlaybackService : MediaLibraryService() {
             val era = current
             if (era == null || era.number != generation) throw IOException("The account this song was for has signed out")
             val cache = if (graph.settings.value.cacheLimitMb > 0) era.kept.acquire() else null
+            if (BuildConfig.DEBUG && cache == null) android.util.Log.d(TAG, "a read without the kept songs (limit ${graph.settings.value.cacheLimitMb} MB)")
             return object : SongLease {
                 override val cache = cache
                 // The same switch the API client obeys: offline mode stops the player
@@ -1130,6 +1131,10 @@ class PlaybackService : MediaLibraryService() {
                 }
                 offline(error) -> passOver()
                 network(error) -> {
+                    // Is the server there at all? (Windows asks it, as here: a ping.) Out of
+                    // reach, the app is offline until it is back: what plays, plays from the
+                    // phone, and changes are held.
+                    graph.watch.check()
                     // Not the song's fault: the player has already tried a few times. Wait
                     // where it is for the server to come back, trying now and then (with no
                     // permission to reach the home network, until it is given). But not for

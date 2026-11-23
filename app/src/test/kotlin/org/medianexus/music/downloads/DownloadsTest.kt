@@ -283,5 +283,14 @@ class DownloadsTest {
         until("three") { engine.state.value.downloaded.containsKey("s3") }
         assertEquals(listOf("s3", "s2", "s1"), catalogue.collection("playlist:p1")!!.songs)
         assertEquals(listOf("s3", "s2", "s1"), DownloadedViews.playlist(engine.state.value, "playlist:p1")!!.songs.map { it.id })
+        // One of its songs removed by hand: the list is no longer downloaded whole, so the
+        // next look at it doesn't fetch the song straight back.
+        engine.remove(listOf("s2"))
+        until("forgotten") { catalogue.collection("playlist:p1") == null }
+        run { engine.follow(DownloadedList("playlist:p1", "Mix"), now) }
+        idle()
+        assertFalse(engine.state.value.busy)
+        assertFalse(catalogue.has("s2"))
+        assertTrue(catalogue.has("s1") && catalogue.has("s3"))
     }
 }

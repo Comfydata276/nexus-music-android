@@ -200,6 +200,7 @@ class SongDataSource(
             val local = androidx.media3.datasource.FileDataSource().also { made -> listeners.forEach(made::addTransferListener) }
             try {
                 val length = local.open(dataSpec.buildUpon().setUri(Uri.fromFile(file)).build())
+                if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened from its download, at byte ${dataSpec.position}")
                 plain = local
                 headers = emptyMap()
                 return length
@@ -208,6 +209,7 @@ class SongDataSource(
             }
         }
         this.where = where
+        if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened ${if (lease.cache == null) "without" else "through"} the kept songs, at byte ${dataSpec.position}")
         val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
         return guarded { reader.open(where, dataSpec.position) { lease.offline } }
     }
@@ -436,6 +438,10 @@ class RideOut : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolic
     override fun getRetryDelayMsFor(loadErrorInfo: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val error = loadErrorInfo.exception
         if (error is StreamFailure && (error.refused || error.offline || error.spent)) return C.TIME_UNSET
+        // A file that can't be read as audio (a damaged download, say) reads the same the
+        // next time: not a connection to ride out. (Media3's own policy doesn't retry these;
+        // as an IOException it was being asked for four more times, 15 seconds of silence.)
+        if (error is androidx.media3.common.ParserException) return C.TIME_UNSET
         if (error !is IOException) return super.getRetryDelayMsFor(loadErrorInfo)
         return RETRY_WAITS.getOrElse(loadErrorInfo.errorCount - 1) { RETRY_WAITS.last() }
     }

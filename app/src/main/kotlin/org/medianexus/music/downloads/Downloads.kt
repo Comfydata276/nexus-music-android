@@ -162,9 +162,10 @@ class Downloads(
 
     /** Songs on their way, by id, as they were asked for. */
     private val songs = HashMap<String, Song>()
-    private var batchTotal = 0
-    private var batchDone = 0
-    private var batchFailed = 0
+    /** The songs of this batch (Windows' `batch_total` counts them): what has become of
+     *  each is read from the catalogue, not counted from Media3's events, which a song asked
+     *  for again, or removed meanwhile, would throw out. */
+    private val batch = LinkedHashSet<String>()
     private var ticking: Job? = null
     private var initialized = false
 
@@ -232,11 +233,9 @@ class Downloads(
         if (list != null) catalogue.keep(list.copy(at = list.at.takeIf { it > 0 } ?: (System.currentTimeMillis() / 1000)))
         if (fresh.isEmpty()) return Asked.AlreadyDownloaded
         if (now.value.active.isEmpty()) {
-            batchTotal = 0
-            batchDone = 0
-            batchFailed = 0
+            batch.clear()
         }
-        batchTotal += fresh.size
+        fresh.mapTo(batch) { it.id }
         catalogue.clearFailures(fresh.map { it.id })
         for (song in fresh) {
             val form = savedForm(song, quality)
@@ -286,14 +285,11 @@ class Downloads(
     /** Stops these songs' downloads, waiting or part-way. */
     fun cancel(ids: Collection<String>) = onMain {
         if (!::manager.isInitialized) return@onMain
-        val active = now.value.active.mapTo(HashSet()) { it.song.id }
-        var cancelled = 0
         for (id in ids) {
-            if (id in active) cancelled++
             manager.removeDownload(id)
             songs.remove(id)
         }
-        batchTotal = (batchTotal - cancelled).coerceAtLeast(0)
+        batch.removeAll(ids.filter { !catalogue.has(it) }.toSet())
         publish()
     }
 
@@ -307,8 +303,14 @@ class Downloads(
         return download(failed.map { it.song })
     }
 
-    /** Deletes these songs' downloaded copies, and stops any still on their way. */
+    /**
+     * Deletes these songs' downloaded copies, and stops any still on their way. A list
+     * downloaded whole that one of them belongs to is no longer kept whole (its other songs
+     * stay downloaded): otherwise the next look at it would fetch the song straight back.
+     */
     fun remove(ids: Collection<String>) = onMain {
+        val asked = ids.toSet()
+        for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) catalogue.forget(list.key)
         val gone = ids.mapNotNull { catalogue.entry(it)?.song?.coverArt }
         catalogue.remove(ids)
         if (::manager.isInitialized) for (id in ids) manager.removeDownload(id)
@@ -370,7 +372,7 @@ class Downloads(
             // for with. And what a download cut short left in the folder (part files with no
             // download waiting) is cleared away.
             for (download in downloadManager.currentDownloads) ask(download)?.let { songs[it.song.id] = it.song }
-            if (batchTotal == 0) batchTotal = songs.size
+            if (batch.isEmpty()) batch += songs.keys
             val busy = songs.keys.toSet()
             scope.launch(Dispatchers.IO) { catalogue.sweep(busy) }
             initialized = true
@@ -381,7 +383,7 @@ class Downloads(
             val id = download.request.id
             when (download.state) {
                 Download.STATE_COMPLETED -> {
-                    if (songs.remove(id) != null) batchDone++
+                    songs.remove(id)
                     catalogue.entry(id)?.song?.coverArt?.takeIf { it.isNotEmpty() }?.let { cover ->
                         // Have the artwork kept too, for when the server can't be reached.
                         scope.launch { covers.pin(cover) }
@@ -390,7 +392,6 @@ class Downloads(
                 Download.STATE_FAILED -> {
                     val song = songs.remove(id) ?: ask(download)?.song
                     if (song != null) {
-                        batchFailed++
                         val failure = finalException?.let { generateSequence<Throwable>(it) { e -> e.cause }.firstNotNullOfOrNull { e -> e as? DownloadFailure } }
                         catalogue.failed(Failed(song, failure?.reason ?: "It couldn't be downloaded.", failure?.network ?: true))
                         note("downloads: one failed (${if (failure?.network == true) "the server out of reach" else "see the Downloads list"})")
@@ -433,7 +434,8 @@ class Downloads(
             }
             Active(song, state)
         }.sortedBy { if (it.state is SongState.Fetching) 0 else 1 }
-        if (active.isEmpty()) batchTotal = batchDone + batchFailed
+        // (The batch is counted afresh when downloads are next asked for with nothing on its
+        // way: not here, where a song just asked for may not be in Media3's list yet.)
         val held = when {
             active.isEmpty() -> Held.NOTHING
             reach.value.manual -> Held.OFFLINE
@@ -448,9 +450,9 @@ class Downloads(
             failed = snapshot.failed.values.toList().asReversed(),
             collections = snapshot.collections,
             held = held,
-            batchTotal = batchTotal,
-            batchDone = batchDone,
-            batchFailed = batchFailed,
+            batchTotal = batch.size,
+            batchDone = batch.count { it in snapshot.songs },
+            batchFailed = batch.count { it in snapshot.failed },
             settled = initialized,
         )
         now.value = next

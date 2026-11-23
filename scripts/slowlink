@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# A slow link between an emulator and the test server, for seeing downloads part-way (see
+# docs/TESTING.md, "Downloads"). The emulator reaches the server at 127.0.0.1:4533 through
+# adb's tunnel, which nothing on the emulator's side can slow; this puts a relay in it that
+# passes the server's answers on at most N kilobytes a second.
+#
+#   scripts/slowlink start [KB/s]   (default 200)   scripts/slowlink stop
+#   scripts/slowlink cut     the server gone: every connection dropped, new ones refused
+#                            (start again to bring it back). Removing adb's reverse rule
+#                            is not enough: connections already open carry on through it.
+#
+# Uses the phone emulator; NEXUS_DEVICE=phone36 (and so on) for another.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+port="${NEXUS_TEST_PORT:-4533}"
+relay=$((port + 1))
+name=nexus-slowlink
+case "${1:-}" in
+  start)
+    rate="${2:-200}"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    need_rig_image
+    docker run -d --rm --name "$name" --network host -v "$root/tools/library":/tools:ro "$rig_image" \
+      python3 /tools/slowlink.py "$relay" "$port" "$rate" >/dev/null
+    "$root/scripts/emu" adb reverse "tcp:$port" "tcp:$relay" >/dev/null
+    say "the emulator now reaches the server at ${rate} KB/s (scripts/slowlink stop to undo)"
+    ;;
+  cut)
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    "$root/scripts/emu" adb reverse "tcp:$port" "tcp:$relay" >/dev/null
+    say "the server is out of reach of the emulator (scripts/slowlink start to bring it back)"
+    ;;
+  stop)
+    "$root/scripts/emu" adb reverse "tcp:$port" "tcp:$port" >/dev/null || true
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    say "the emulator reaches the server directly again"
+    ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

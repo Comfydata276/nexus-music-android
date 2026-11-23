@@ -53,6 +53,7 @@ import androidx.media3.session.SessionToken
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es download "album:<id>"
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es downloads say
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es downloads retry|cancel|remove
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es downloads "remove <id>,<id>"
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es spare 999999
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es offline on|off
  */
@@ -92,6 +93,7 @@ class DebugControl : BroadcastReceiver() {
                         downloads == "retry" -> engine.retryFailed()?.let { org.medianexus.music.downloads.DownloadPages.said(context, it) } ?: "nothing failed"
                         downloads == "cancel" -> { engine.cancelAll(); "cancelled" }
                         downloads == "remove" -> { engine.removeAll(); "removed" }
+                        downloads?.startsWith("remove ") == true -> { engine.remove(downloads.removePrefix("remove ").split(',').map { it.trim() }); "removed those" }
                         else -> engine.state.value.let { state ->
                             "downloaded ${state.downloaded.size} (${state.bytes} bytes), on the way ${state.active.size} " +
                                 "(fetching ${state.active.count { it.state is org.medianexus.music.downloads.SongState.Fetching }}), failed ${state.failed.size}" +
