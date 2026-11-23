@@ -1,0 +1,52 @@
+package org.medianexus.music.net
+
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
+import okhttp3.Response
+
+/**
+ * The one HTTP client: API calls, artwork and audio all go through it, so they share warm
+ * connections (setting one up is the expensive part of a request).
+ */
+object Http {
+    /** Longest an API call may take from start to finish. Audio has no such limit. */
+    const val API_TIMEOUT_SECONDS = 45L
+
+    fun client(userAgent: String): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        // Between one piece of an answer and the next. Nothing overall here: a stream runs as
+        // long as the song does. API calls set their own overall limit (see `Subsonic`).
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(0, TimeUnit.SECONDS)
+        // Plenty of connections, kept for minutes rather than seconds: enough for artwork to
+        // load many at a time without opening new ones.
+        .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 24 })
+        .addNetworkInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder().header("User-Agent", userAgent).build())
+        }
+        .build()
+}
+
+/** Runs the call without holding a thread while it waits, and cancels it if the caller is
+ *  cancelled. The response's body still has to be read off the main thread. */
+internal suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+    enqueue(object : Callback {
+        override fun onResponse(call: Call, response: Response) {
+            continuation.resume(response) { _, value, _ -> value.close() }
+        }
+
+        override fun onFailure(call: Call, e: IOException) {
+            continuation.resumeWithException(e)
+        }
+    })
+}

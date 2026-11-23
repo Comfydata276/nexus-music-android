@@ -37,6 +37,17 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        // The JVM tests cover code that doesn't touch Android; this keeps a stray call into
+        // the framework (a log line, say) from failing them.
+        unitTests.isReturnDefaultValues = true
+    }
+
+    lint {
+        abortOnError = true
+        checkDependencies = false
+    }
 }
 
 dependencies {
@@ -55,5 +66,10 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.coroutines.guava)
     implementation(libs.coil.compose)
+    // The app's own back stack: Navigation 3 draws it and runs predictive back.
+    implementation(libs.navigation3.runtime)
+    implementation(libs.navigation3.ui)
     testImplementation(libs.junit)
+    testImplementation(libs.mockwebserver)
+    testImplementation(libs.coroutines.test)
 }
