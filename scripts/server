@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# The test music server: Navidrome in Docker with a made-up library. See docs/TESTING.md.
+#
+#   scripts/server start      make the library if it isn't there, start the server, set it up
+#   scripts/server stop       stop it (the library, likes and playlists are kept)
+#   scripts/server reset      wipe the server's database and set it up afresh (same library)
+#   scripts/server status     is it up, where, and what is in it
+#   scripts/server generate   make the library now (--force: again from nothing)
+#   scripts/server logs [-f]  the server's log
+#   scripts/server api <method> [name=value...]
+#                             call the Subsonic API as the test account, e.g.
+#                             scripts/server api search3 query=lantern
+#
+# It listens on this machine only (127.0.0.1). The emulator reaches it at http://10.0.2.2:4533.
+# Account: tester / tester-pass-1 (made up; it exists nowhere else).
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+name=nexus-test-navidrome
+port="${NEXUS_TEST_PORT:-4533}"
+image="${NEXUS_NAVIDROME_IMAGE:-deluan/navidrome:latest}"
+library="$cache/library"
+data="$cache/navidrome"
+base="http://127.0.0.1:$port"
+
+generate() {
+  mkdir -p "$library"
+  rig_run python3 /work/tools/library/generate.py /cache/library "$@"
+}
+
+start() {
+  [ -f "$library/manifest.json" ] || generate
+  if container_running "$name"; then
+    say "the test server is already running"
+  else
+    if ss -ltn 2>/dev/null | grep -q -E "[:.]$port\s"; then
+      die "port $port is taken by something else. Free it, or choose another: NEXUS_TEST_PORT=4534 scripts/server start"
+    fi
+    mkdir -p "$data"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    # No look-ups of any kind leave this server: no Last.fm, no cover or biography
+    # fetching, no usage reports. What the app shows comes only from the files.
+    docker run -d --name "$name" --rm \
+      -u "$(id -u):$(id -g)" -p "127.0.0.1:$port:4533" \
+      -v "$library/music":/music:ro -v "$data":/data \
+      -e ND_MUSICFOLDER=/music -e ND_DATAFOLDER=/data -e ND_LOGLEVEL=info \
+      -e ND_SCANNER_SCHEDULE=0 -e ND_SCANNER_SCANONSTARTUP=true \
+      -e ND_ENABLEINSIGHTSCOLLECTOR=false -e ND_ENABLEEXTERNALSERVICES=false \
+      -e ND_LASTFM_ENABLED=false -e ND_LISTENBRAINZ_ENABLED=false \
+      -e ND_ENABLESHARING=false -e ND_ENABLEDOWNLOADS=true \
+      "$image" >/dev/null || die "docker could not start the server"
+  fi
+  rig_run python3 /work/tools/library/setup.py "$base" /cache/library \
+    || { say "--- last lines from the server ---"; docker logs --tail 20 "$name" >&2 || true; die "setting up the test server failed"; }
+}
+
+stop() {
+  if container_running "$name"; then
+    docker stop "$name" >/dev/null && say "stopped the test server"
+  else
+    say "the test server is not running"
+  fi
+}
+
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  reset)
+    stop
+    # The database only; the library is kept (scripts/server generate --force remakes it).
+    rm -rf "$data"
+    start
+    ;;
+  status)
+    if container_running "$name"; then
+      rig_run python3 /work/tools/library/setup.py "$base" /cache/library --status
+      echo "  memory held: $(docker stats --no-stream --format '{{.MemUsage}}' "$name" | cut -d/ -f1)"
+    else
+      echo "test server: not running (start with: scripts/server start)"
+    fi
+    ;;
+  generate) shift; generate "$@" ;;
+  logs) shift; docker logs "$@" "$name" ;;
+  api)
+    shift; method="${1:?api: which method? e.g. scripts/server api getArtists}"; shift
+    container_running "$name" || die "the test server is not running. Start it with: scripts/server start"
+    args=()
+    for kv in "$@"; do args+=(--data-urlencode "$kv"); done
+    rig_run curl -sS -G "$base/rest/$method" -d u=tester -d p=tester-pass-1 -d v=1.16.1 -d c=rig -d f=json "${args[@]}"
+    echo
+    ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

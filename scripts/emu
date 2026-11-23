@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# The headless emulator: create it, start it, and drive it from the command line.
+# See docs/TESTING.md. `scripts/emu help` lists the commands.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/emu [-d phone|car|phone28] <command> [arguments]
+
+  -d phone     the phone, Android 17 (default)        -d car   Android Automotive OS
+  -d phone28   the phone on Android 9, the oldest version supported
+
+Running it
+  start [--wipe] [--audio]  create if needed, start, wait until it is ready to use
+                            (--wipe: factory reset; --audio: keep what it plays, see `record`)
+  stop                      shut it down
+  status                    is it running, how much memory it holds, what is installed
+  wait                      wait until it is ready (start does this already)
+
+Apps
+  install <apk>...          install or replace (keeps the app's data)
+  uninstall <package>
+  launch <package>          open the app's main screen (or <package>/<activity>)
+  kill <package>            force-stop it
+  clear <package>           wipe its data
+  grant <package> <perm>    grant a permission, e.g. POST_NOTIFICATIONS
+
+Driving it
+  tap <x> <y>               tap a point, in pixels
+  tap "<words>"             tap the first thing on screen with that text or description
+  hold "<words>" | <x> <y>  long press
+  text "<words>"            type into the focused field
+  key <name>                back, home, enter, tab, del, search, menu, play, pause, next,
+                            previous, up, down, left, right, or any KEYCODE_ name
+  swipe <x1> <y1> <x2> <y2> [ms]
+  scroll up|down [times]    fling the middle of the screen
+
+Seeing it
+  shot [file.png]           screenshot (default: a dated file under the cache; prints the path)
+  ui [--xml]                what is on screen: text, description, id, bounds, one thing per line
+  waitfor "<words>" [secs]  wait until something with that text or description is on screen
+  logs [package] [-f]       the log (only that app's lines if a package is given)
+  crashes                   crashes and "not responding" reports since the emulator started
+  record <secs> <file.wav>  record what the emulator plays (needs `start --audio`)
+
+Fitting checks from the design
+  look [--width <dp>] [--font <scale>] [--reset]
+                            e.g. `look --width 360 --font 1.3` for the narrow, large-type case
+
+Anything else
+  shell <command...>        run a command on the device
+  adb <arguments...>        raw adb against this emulator
+  root                      restart adb's side on the device as root
+EOF
+  exit "${1:-2}"
+}
+
+dev=""
+if [ "${1:-}" = "-d" ]; then dev="${2:-}"; shift 2 || usage; fi
+device_setup "$dev"
+cmd="${1:-help}"; shift || true
+
+avd_home="$cache/home/.android/avd"
+flag=""; [ "$device" = phone ] || flag=" -d $device"
+
+# The AVD is written by hand rather than through a wizard so that every setting that
+# matters is in this file, in the open.
+create_avd() {
+  local sysdir="$cache/sdk/$image"
+  if [ ! -f "$sysdir/system.img" ]; then
+    say "downloading $image (once, 1.5 to 2 GB)..."
+    rig_run bash -c "yes | android sdk install '$image' >/dev/null 2>&1" || true
+    [ -f "$sysdir/system.img" ] || die "could not download $image; try: scripts/dx android sdk install $image"
+  fi
+  if [ ! -x "$cache/sdk/emulator/emulator" ]; then
+    say "downloading the emulator (once)..."
+    rig_run bash -c "yes | android sdk install emulator >/dev/null 2>&1" || true
+    [ -x "$cache/sdk/emulator/emulator" ] || die "could not download the emulator; try: scripts/dx android sdk install emulator"
+  fi
+  local dir="$avd_home/$avd.avd" tag width height density
+  tag="$(echo "$image" | cut -d/ -f3)"
+  case "$device" in
+    # 1080 x 2340 at 450 dpi is 384dp wide: a Galaxy S Ultra at its default display
+    # setting. The panel's full 1440 x 3120 would cost the software renderer nearly twice
+    # the work per frame and tell us nothing more about layout.
+    phone|phone28) width=1080; height=2340; density=450 ;;
+    # The size of Google's reference landscape car screen.
+    car) width=1408; height=792; density=160 ;;
+  esac
+  mkdir -p "$dir"
+  cat > "$avd_home/$avd.ini" <<EOF
+avd.ini.encoding=UTF-8
+path=/home/dev/.android/avd/$avd.avd
+path.rel=avd/$avd.avd
+EOF
+  cat > "$dir/config.ini" <<EOF
+AvdId=$avd
+avd.ini.displayname=$avd
+avd.ini.encoding=UTF-8
+PlayStore.enabled=false
+abi.type=x86_64
+hw.cpu.arch=x86_64
+hw.cpu.ncore=2
+hw.ramSize=$ram
+vm.heapSize=256
+disk.dataPartition.size=6G
+image.sysdir.1=$image/
+tag.id=$tag
+hw.lcd.width=$width
+hw.lcd.height=$height
+hw.lcd.density=$density
+hw.gpu.enabled=yes
+hw.gpu.mode=swiftshader_indirect
+hw.keyboard=yes
+hw.mainKeys=no
+hw.dPad=no
+hw.sdCard=no
+hw.battery=yes
+hw.accelerometer=yes
+hw.gps=yes
+hw.audioInput=no
+hw.audioOutput=yes
+hw.camera.back=none
+hw.camera.front=none
+fastboot.forceColdBoot=yes
+showDeviceFrame=no
+EOF
+  say "created $avd ($image, ${width}x${height}, ${ram} MB)"
+}
+
+wait_ready() {
+  local limit="${1:-420}" t=0
+  docker exec "$container" adb start-server >/dev/null 2>&1 || true
+  while :; do
+    container_running "$container" || {
+      say "--- last lines from the emulator ---"
+      tail -n 25 "$cache/logs/$container.log" >&2 2>/dev/null || true
+      die "the emulator stopped while starting (full log: $cache/logs/$container.log)"
+    }
+    if [ "$(adb_sh getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')" = "1" ] \
+       && adb_sh pm path android >/dev/null 2>&1; then
+      break
+    fi
+    t=$((t + 3)); [ "$t" -lt "$limit" ] || die "the emulator did not finish starting in ${limit}s (log: $cache/logs/$container.log)"
+    sleep 3
+  done
+  # Settle it for scripted use: no animations to race against, screen always on, no lock.
+  adb_sh 'settings put global window_animation_scale 0; settings put global transition_animation_scale 0;
+          settings put global animator_duration_scale 0; svc power stayon true;
+          settings put secure show_ime_with_hard_keyboard 0;
+          locksettings set-disabled true; wm dismiss-keyguard; input keyevent KEYCODE_WAKEUP' >/dev/null 2>&1 || true
+}
+
+start() {
+  local wipe="" audio=0
+  for a in "$@"; do
+    case "$a" in
+      --wipe) wipe="-wipe-data" ;;
+      --audio) audio=1 ;;
+      *) die "start: unknown option $a" ;;
+    esac
+  done
+  if container_running "$container"; then
+    say "the $device emulator is already running"; wait_ready; return
+  fi
+  [ -e /dev/kvm ] || die "/dev/kvm is missing: the emulator needs KVM"
+  [ -f "$avd_home/$avd.avd/config.ini" ] || create_avd
+  need_rig_image
+  # Leave room for the others on this machine: refuse to start into too little memory.
+  local free_mb; free_mb=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
+  [ "$free_mb" -gt $((ram + 1200)) ] \
+    || die "only ${free_mb} MB of memory is free; the $device emulator needs about $((ram + 1000)) MB. Stop another emulator or a build first."
+  mkdir -p "$cache/logs" "$cache/shots"
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  # Memory: the emulator raises whatever the AVD asks for to 4096 MB on recent images
+  # ("Increasing RAM size to 4096MB"), and then holds 5 GB of this machine's 12. The
+  # kernel setting mem= (passed at the end of the command) is what actually limits the
+  # guest; the emulator itself needs close to another gigabyte on top.
+  # With --audio the emulator plays into a sound server that throws the sound away but
+  # lets `record` listen in. Without it, sound goes nowhere (playback still runs in time).
+  local audio_env=() sound="-no-audio"
+  if [ "$audio" = 1 ]; then audio_env=(-e NEXUS_AUDIO=1); sound=""; fi
+  docker run -d --name "$container" --rm \
+    --device /dev/kvm --group-add "$(stat -c %g /dev/kvm)" \
+    -u "$(id -u):$(id -g)" --network host \
+    -e HOME=/home/dev "${audio_env[@]}" \
+    -v "$root":/work:ro -v "$cache/home":/home/dev -v "$cache/sdk":/sdk \
+    -v "$cache/logs":/logs \
+    "$rig_image" bash -c "
+      if [ \"\${NEXUS_AUDIO:-}\" = 1 ]; then
+        export XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p \$XDG_RUNTIME_DIR
+        pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:/logs/$container-pulse.log \
+          --load='module-null-sink sink_name=rig rate=48000' --load='module-native-protocol-unix' || exit 3
+        export QEMU_AUDIO_DRV=pa
+      fi
+      exec /sdk/emulator/emulator -avd $avd -port $port $wipe \
+        -no-window $sound -no-boot-anim -no-snapshot -no-metrics \
+        -gpu swiftshader_indirect -memory $ram -cores 2 \
+        -netdelay none -netspeed full -camera-back none -camera-front none \
+        -qemu -append mem=${ram}M \
+        > /logs/$container.log 2>&1" >/dev/null \
+    || die "docker could not start the emulator container"
+  say "starting the $device emulator (about a minute)..."
+  local t0=$SECONDS
+  wait_ready
+  say "ready after $((SECONDS - t0))s: $serial"
+}
+
+stop() {
+  if container_running "$container"; then
+    adb_ emu kill >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do container_running "$container" || break; sleep 1; done
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    say "stopped the $device emulator"
+  else
+    say "the $device emulator is not running"
+  fi
+}
+
+# Where on screen is the first thing whose text or description matches? Prints "x y".
+find_on_screen() {
+  adb_ exec-out uiautomator dump /dev/tty 2>/dev/null \
+    | docker exec -i "$container" python3 /work/scripts/uitree.py --find "$1"
+}
+
+keycode() {
+  case "$1" in
+    back) echo KEYCODE_BACK ;; home) echo KEYCODE_HOME ;; enter) echo KEYCODE_ENTER ;;
+    tab) echo KEYCODE_TAB ;; del|delete|backspace) echo KEYCODE_DEL ;; search) echo KEYCODE_SEARCH ;;
+    menu) echo KEYCODE_MENU ;; recents) echo KEYCODE_APP_SWITCH ;; escape) echo KEYCODE_ESCAPE ;;
+    play) echo KEYCODE_MEDIA_PLAY ;; pause) echo KEYCODE_MEDIA_PAUSE ;; playpause) echo KEYCODE_MEDIA_PLAY_PAUSE ;;
+    next) echo KEYCODE_MEDIA_NEXT ;; previous|prev) echo KEYCODE_MEDIA_PREVIOUS ;; stop) echo KEYCODE_MEDIA_STOP ;;
+    up) echo KEYCODE_DPAD_UP ;; down) echo KEYCODE_DPAD_DOWN ;; left) echo KEYCODE_DPAD_LEFT ;;
+    right) echo KEYCODE_DPAD_RIGHT ;; volup) echo KEYCODE_VOLUME_UP ;; voldown) echo KEYCODE_VOLUME_DOWN ;;
+    KEYCODE_*) echo "$1" ;;
+    *) die "unknown key '$1' (see scripts/emu help, or give a KEYCODE_ name)" ;;
+  esac
+}
+
+case "$cmd" in
+  help|-h|--help) usage 0 ;;
+  create) create_avd ;;
+  start) start "$@" ;;
+  stop) stop ;;
+  wait) need_emulator; wait_ready; say "ready: $serial" ;;
+  status)
+    if container_running "$container"; then
+      mem=$(docker stats --no-stream --format '{{.MemUsage}}' "$container" 2>/dev/null | cut -d/ -f1)
+      booted=$(adb_sh getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')
+      rel=$(adb_sh getprop ro.build.version.release 2>/dev/null | tr -d '\r\n')
+      sdk=$(adb_sh getprop ro.build.version.sdk 2>/dev/null | tr -d '\r\n')
+      echo "$device: running ($serial), Android $rel (API $sdk), ready: $([ "$booted" = 1 ] && echo yes || echo no), memory held: $mem"
+      echo "installed (not part of the system):"
+      adb_sh pm list packages -3 2>/dev/null | tr -d '\r' | sed 's/^package:/  /' | sort
+    else
+      echo "$device: not running (start with: scripts/emu$flag start)"
+    fi
+    ;;
+  install)
+    need_emulator; [ $# -ge 1 ] || die "install: which APK?"
+    for apk in "$@"; do
+      [ -f "$apk" ] || die "install: no such file: $apk"
+      tmp="/tmp/install-$$.apk"
+      docker exec -i "$container" sh -c "cat > $tmp" < "$apk"
+      # -r replace, -t allow test-only builds, -g grant the permissions it declares
+      if out=$(adb_ install -r -t -g "$tmp" 2>&1); then
+        say "installed $(basename "$apk")"
+      else
+        docker exec "$container" rm -f "$tmp"
+        die "could not install $apk: $(echo "$out" | tail -n 3)"
+      fi
+      docker exec "$container" rm -f "$tmp"
+    done
+    ;;
+  uninstall) need_emulator; adb_ uninstall "${1:?uninstall: which package?}" ;;
+  launch)
+    need_emulator; target="${1:?launch: which package?}"
+    if [[ "$target" == */* ]]; then
+      out=$(adb_sh am start -W -n "$target" 2>&1) || true
+    else
+      adb_sh pm path "$target" >/dev/null 2>&1 || die "launch: $target is not installed (scripts/emu$flag install <apk>)"
+      act=$(adb_sh cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$target" | tr -d '\r' | tail -n 1)
+      [[ "$act" == */* ]] || die "launch: $target has no screen that can be opened from the launcher"
+      out=$(adb_sh am start -W -n "$act" 2>&1) || true
+    fi
+    echo "$out" | grep -q -E "^Status: ok|Warning: Activity not started" \
+      || die "launch failed: $(echo "$out" | tr -d '\r' | tail -n 4)"
+    echo "$out" | tr -d '\r' | grep -E "^(Activity|LaunchState|TotalTime|WaitTime)" || true
+    ;;
+  kill) need_emulator; adb_sh am force-stop "${1:?kill: which package?}" ;;
+  clear) need_emulator; adb_sh pm clear "${1:?clear: which package?}" ;;
+  grant)
+    need_emulator; p="${2:?grant: <package> <permission>}"
+    [[ "$p" == *.* ]] || p="android.permission.$p"
+    adb_sh pm grant "$1" "$p"
+    ;;
+  tap|hold)
+    need_emulator
+    if [ $# -eq 2 ] && [[ "$1" =~ ^[0-9]+$ ]]; then x=$1; y=$2
+    elif [ $# -eq 1 ]; then
+      xy=$(find_on_screen "$1") || die "$cmd: nothing on screen with the text or description \"$1\" (scripts/emu$flag ui shows what is there)"
+      read -r x y <<<"$xy"
+    else die "$cmd: give <x> <y> or \"<words>\""; fi
+    if [ "$cmd" = hold ]; then adb_sh input swipe "$x" "$y" "$x" "$y" 800
+    else adb_sh input tap "$x" "$y"; fi
+    ;;
+  text)
+    need_emulator; [ $# -eq 1 ] || die 'text: give one argument, in quotes'
+    # `input text` splits on spaces and trips on shell characters; %s is its space.
+    esc=$(printf '%s' "$1" | sed -e 's/[\\"`$&|;<>()*?#~'"'"']/\\&/g' -e 's/ /%s/g')
+    adb_sh "input text \"$esc\""
+    ;;
+  key) need_emulator; adb_sh input keyevent "$(keycode "${1:?key: which key?}")" ;;
+  swipe)
+    need_emulator; [ $# -ge 4 ] || die "swipe: <x1> <y1> <x2> <y2> [ms]"
+    adb_sh input swipe "$1" "$2" "$3" "$4" "${5:-250}"
+    ;;
+  scroll)
+    need_emulator; dir="${1:?scroll: up or down}"; times="${2:-1}"
+    size=$(adb_sh wm size | tr -d '\r' | tail -n 1 | grep -o '[0-9]*x[0-9]*'); w=${size%x*}; h=${size#*x}
+    for _ in $(seq "$times"); do
+      case "$dir" in
+        down) adb_sh input swipe $((w / 2)) $((h * 7 / 10)) $((w / 2)) $((h * 3 / 10)) 200 ;;
+        up) adb_sh input swipe $((w / 2)) $((h * 3 / 10)) $((w / 2)) $((h * 7 / 10)) 200 ;;
+        *) die "scroll: up or down" ;;
+      esac
+    done
+    ;;
+  shot)
+    need_emulator
+    out="${1:-$cache/shots/$device-$(date +%Y%m%d-%H%M%S).png}"
+    mkdir -p "$(dirname "$out")"
+    adb_ exec-out screencap -p > "$out"
+    [ "$(head -c 4 "$out" | tail -c 3)" = "PNG" ] || die "shot: the device did not return a picture"
+    echo "$out"
+    ;;
+  ui)
+    need_emulator
+    if [ "${1:-}" = "--xml" ]; then
+      adb_ exec-out uiautomator dump /dev/tty | sed 's/UI hierchary dumped to: \/dev\/tty$//'
+    else
+      adb_ exec-out uiautomator dump /dev/tty | docker exec -i "$container" python3 /work/scripts/uitree.py
+    fi
+    ;;
+  waitfor)
+    need_emulator; words="${1:?waitfor: what words?}"; limit="${2:-20}"; t0=$SECONDS
+    until find_on_screen "$words" >/dev/null 2>&1; do
+      [ $((SECONDS - t0)) -lt "$limit" ] || die "waitfor: \"$words\" did not appear within ${limit}s"
+      sleep 1
+    done
+    ;;
+  logs)
+    need_emulator
+    follow="-d"; pkg=""
+    for a in "$@"; do case "$a" in -f) follow="" ;; *) pkg="$a" ;; esac; done
+    if [ -n "$pkg" ]; then
+      pid=$(adb_sh pidof "$pkg" | tr -d '\r' | awk '{print $1}')
+      [ -n "$pid" ] || die "logs: $pkg is not running (give no package for the whole log)"
+      # shellcheck disable=SC2086
+      adb_ logcat $follow -v time --pid="$pid"
+    else
+      # shellcheck disable=SC2086
+      adb_ logcat $follow -v time
+    fi
+    ;;
+  crashes)
+    need_emulator
+    adb_ logcat -d -b crash -v time
+    adb_ logcat -d -v time -s ActivityManager:E | grep -E "ANR in" || true
+    ;;
+  record)
+    need_emulator; secs="${1:?record: <seconds> <file.wav>}"; out="${2:?record: <seconds> <file.wav>}"
+    docker exec "$container" sh -c 'XDG_RUNTIME_DIR=/tmp/xdg pactl info >/dev/null 2>&1' \
+      || die "record: this emulator was started without sound. Restart it: scripts/emu$flag stop && scripts/emu$flag start --audio"
+    docker exec "$container" sh -c "XDG_RUNTIME_DIR=/tmp/xdg timeout $secs parec -d rig.monitor --rate=48000 --channels=2 --format=s16le --file-format=wav /tmp/record-$$.wav; true"
+    docker exec "$container" cat "/tmp/record-$$.wav" > "$out"
+    docker exec "$container" rm -f "/tmp/record-$$.wav"
+    echo "$out"
+    ;;
+  look)
+    need_emulator
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --reset) adb_sh 'wm density reset; wm size reset; settings put system font_scale 1.0' ;;
+        --width)
+          px=$(adb_sh wm size | tr -d '\r' | head -n 1 | grep -o '[0-9]*x' | tr -d x)
+          adb_sh wm density $((px * 160 / ${2:?look --width <dp>})); shift ;;
+        --font) adb_sh settings put system font_scale "${2:?look --font <scale>}"; shift ;;
+        *) die "look: unknown option $1" ;;
+      esac
+      shift
+    done
+    px=$(adb_sh wm size | tr -d '\r' | tail -n 1 | grep -o '[0-9]*x' | tr -d x)
+    dpi=$(adb_sh wm density | tr -d '\r' | tail -n 1 | grep -o '[0-9]*$')
+    echo "width $((px * 160 / dpi))dp ($px px at $dpi dpi), font scale $(adb_sh settings get system font_scale | tr -d '\r')"
+    ;;
+  shell) need_emulator; adb_sh "$@" ;;
+  adb) need_emulator; adb_ "$@" ;;
+  root) need_emulator; adb_ root >/dev/null; sleep 2; adb_ wait-for-device; adb_sh id -un ;;
+  *) say "unknown command: $cmd"; usage ;;
+esac
