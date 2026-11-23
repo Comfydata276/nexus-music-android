@@ -24,6 +24,7 @@ import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /** Offline mode: while it's on, every request fails at once instead of going out. One switch
@@ -121,11 +122,14 @@ class Subsonic private constructor(
         } else {
             buildRequest(url) { get() }
         }
-        val (status, text) = send(request, Http.API_TIMEOUT_SECONDS * 1000)
-        val root = try {
-            json.parseToJsonElement(text)
-        } catch (_: IllegalArgumentException) {
-            null
+        // Read and parsed together, off the caller's thread: an answer can be megabytes.
+        val (status, root) = send(request, Http.API_TIMEOUT_SECONDS * 1000) { response ->
+            val tree = try {
+                json.parseToJsonElement(response.body.string())
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+            response.code to tree
         }
         val body = (root as? JsonObject)?.get("subsonic-response") as? JsonObject
             ?: throw ApiError.NotSubsonic("Check the address (HTTP status $status).")
@@ -166,14 +170,14 @@ class Subsonic private constructor(
         throw ApiError.Network("(${e.message})")
     }
 
-    /** Sends a request, giving up after `limitMillis` overall (none if null), and returns its
-     *  status and body. */
-    private suspend fun send(request: Request, limitMillis: Long?): Pair<Int, String> {
+    /** Sends a request, giving up after `limitMillis` overall (none if null), and returns
+     *  what `read` makes of the answer; `read` runs off the caller's thread. */
+    private suspend fun <T> send(request: Request, limitMillis: Long?, read: (Response) -> T): T {
         checkOnline()
         val call = http.newCall(request)
         if (limitMillis != null) call.timeout().timeout(limitMillis, TimeUnit.MILLISECONDS)
         return try {
-            call.fetch(io) { it.code to it.body.string() }
+            call.fetch(io, read)
         } catch (e: IOException) {
             throw ApiError.Network(networkHint(e))
         }
@@ -200,7 +204,8 @@ class Subsonic private constructor(
     /** Whether anything at all answers at this address within `limitMillis`. For trying an
      *  address that's only a guess without waiting long on it. */
     suspend fun answersWithin(limitMillis: Long): Boolean = try {
-        send(buildRequest(url("ping", emptyList())) { get() }, limitMillis)
+        // Read to the end, so the connection can be used again.
+        send(buildRequest(url("ping", emptyList())) { get() }, limitMillis) { it.body.source().readAll(okio.blackholeSink()) }
         true
     } catch (_: ApiError) {
         false
