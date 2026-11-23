@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# The checks every piece of work must pass: the debug build, the unit tests and lint, inside
+# Docker (see scripts/dx). One Gradle run, so one JVM's worth of memory; --continue runs every
+# check even after one fails, so a single run reports all of them, and the exit status is
+# non-zero if any failed.
+#
+#   scripts/check            the three checks
+#   scripts/check --release  also the shrunk release build, and its size
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+tasks=(:app:assembleDebug :app:testDebugUnitTest :app:lintDebug)
+release=false
+for arg in "$@"; do
+  case "$arg" in
+    --release) release=true; tasks+=(:app:assembleRelease) ;;
+    *) echo "scripts/check: unknown option $arg" >&2; exit 2 ;;
+  esac
+done
+
+status=0
+scripts/dx ./gradlew --no-daemon --continue "${tasks[@]}" || status=$?
+
+# What the tests found, in brief.
+python3 - "$root/app/build/test-results/testDebugUnitTest" <<'PY' || true
+import glob, re, sys
+tests = failed = skipped = 0
+for path in glob.glob(sys.argv[1] + "/*.xml"):
+    head = open(path, encoding="utf-8").read(4096)
+    m = re.search(r'tests="(\d+)" skipped="(\d+)" failures="(\d+)" errors="(\d+)"', head)
+    if m:
+        t, s, f, e = map(int, m.groups())
+        tests, skipped, failed = tests + t, skipped + s, failed + f + e
+if tests:
+    print(f"Unit tests: {tests} run, {failed} failed, {skipped} skipped")
+PY
+
+if $release && [ -f app/build/outputs/apk/release/app-release.apk ]; then
+  size=$(stat -c %s app/build/outputs/apk/release/app-release.apk)
+  echo "Release APK: $size bytes ($(( (size + 524288) / 1048576 )) MB)"
+fi
+
+if [ "$status" -ne 0 ]; then
+  echo "scripts/check: FAILED (see above)" >&2
+else
+  echo "scripts/check: all passed"
+fi
+exit "$status"
