@@ -107,6 +107,27 @@ class HttpTest {
     }
 
     @Test
+    fun aStalledSongIsGivenUpOnSoonerThanAStalledRequest() {
+        val streams = Http.forStreams(http)
+        assertEquals(30_000, http.readTimeoutMillis)
+        assertEquals(10_000, streams.readTimeoutMillis)
+        // The same connections, so a song starts on one that is already open.
+        assertTrue(streams.connectionPool === http.connectionPool)
+        assertTrue(streams.dispatcher === http.dispatcher)
+        // And it is the limit that is felt: a server that sends the start of a song and then
+        // nothing is given up on by the stall limit, not the app's 30 seconds.
+        plain.enqueue(MockResponse.Builder().body("start of a song").bodyDelay(1, java.util.concurrent.TimeUnit.SECONDS).build())
+        val quick = streams.newBuilder().readTimeout(200, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+        val began = System.nanoTime()
+        try {
+            quick.newCall(Request.Builder().url(plain.named("/rest/stream")).build()).execute().use { it.body.string() }
+            fail("the stalled read was waited out")
+        } catch (e: java.io.IOException) {
+            assertTrue((System.nanoTime() - began) / 1_000_000 < 900)
+        }
+    }
+
+    @Test
     fun theClientSaysWhyItStopped() = runBlocking {
         val leak = plain.named("/rest/ping")
         secure.enqueue(MockResponse.Builder().code(307).setHeader("Location", leak.toString()).build())

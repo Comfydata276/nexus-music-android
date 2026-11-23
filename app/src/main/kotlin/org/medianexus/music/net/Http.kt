@@ -43,6 +43,17 @@ object Http {
         .build()
 
     /**
+     * The client for audio: the same connections and settings, but a read that gets nothing
+     * for [STREAM_STALL_SECONDS] is given up on. The app's 30 seconds between pieces of an
+     * answer suits a server working on a slow request; for a song that has stalled it is 30
+     * seconds of silence before the player even tries again. (The limit runs only while a
+     * read is waiting for bytes, not while the player, with enough buffered, isn't reading.)
+     */
+    fun forStreams(client: OkHttpClient): OkHttpClient = client.newBuilder().readTimeout(STREAM_STALL_SECONDS, TimeUnit.SECONDS).build()
+
+    const val STREAM_STALL_SECONDS = 10L
+
+    /**
      * Refuses the redirects that would give the sign-in away. Every request carries a
      * sign-in token in its address, which a redirect carries on with it:
      *

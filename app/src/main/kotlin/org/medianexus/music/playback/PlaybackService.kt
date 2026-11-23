@@ -46,7 +46,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -65,6 +67,7 @@ import org.medianexus.music.R
 import org.medianexus.music.SessionState
 import org.medianexus.music.graph
 import org.medianexus.music.net.ApiError
+import org.medianexus.music.net.Http
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.KeptSongs
 import org.medianexus.music.store.ListPrefs
@@ -116,7 +119,11 @@ class PlaybackService : MediaLibraryService() {
     /** What the server is told about listening: "now playing", and each play that counts. */
     private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::scrobble)
     private var failures = 0
-    private var waitingForServer = false
+
+    /** The try at the server that has been put off (see [Recovery.Retry]); null when the
+     *  player isn't waiting for the server. */
+    private var waitingFor: Recovery.Retry? = null
+    private var retry: Job? = null
 
     /** The player is being emptied because the account is going: nothing to save. */
     private var leaving = false
@@ -146,8 +153,9 @@ class PlaybackService : MediaLibraryService() {
             albumCount = { resources.getQuantityString(R.plurals.album_count, it, it) },
         )
 
-        // One HTTP client for everything, so audio shares the warm connections.
-        val http = OkHttpDataSource.Factory(graph.http)
+        // One HTTP client for everything, so audio shares the warm connections; for audio,
+        // with a shorter limit on a read that has stalled.
+        val http = OkHttpDataSource.Factory(Http.forStreams(graph.http))
         val sources = SongDataSource.Factory(Leases(), http)
         // Conversions are MP3 at a constant bit rate with no index: allow seeking in them by
         // bit rate, even before their length is known (see SongDataSource).
@@ -191,6 +199,17 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
+
+    /**
+     * The app was swiped away from the recent apps. Media3 stops the service unless a song
+     * is sounding at that very moment, which ends the music for good if it was only
+     * buffering, or had given way to a navigation prompt. Only a pause by the person ends it
+     * here (see [Recovery.carriesOnWhenSwipedAway]).
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (Recovery.carriesOnWhenSwipedAway(exo.playWhenReady, exo.playbackState, waitingFor != null)) return
+        pauseAllPlayersAndStopSelf()
+    }
 
     // ---- Started by a button, with the app not running --------------------------------------
 
@@ -368,6 +387,7 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun leave() {
         val old = era ?: return
+        stopWaiting()
         current = null
         era = null
         old.scope.cancel()
@@ -576,7 +596,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
                 failures = 0
-                waitingForServer = false
+                stopWaiting()
                 countPlaying()
             } else {
                 // A last sample: what was heard up to the pause counts.
@@ -586,6 +606,8 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // Another song: a try at the server put off for the last one is no longer wanted.
+            if (waitingFor?.uid != player.queue.currentUid()) stopWaiting()
             // Rolled into the next song while playing (the song before it has had its last
             // sample, in onPositionDiscontinuity, which comes first).
             if (exo.isPlaying) countPlaying()
@@ -630,7 +652,6 @@ class PlaybackService : MediaLibraryService() {
                     // Not the song's fault: the player has already tried a few times. Wait
                     // where it is for the server to come back, trying now and then (with no
                     // permission to reach the home network, until it is given).
-                    waitingForServer = true
                     retryLater(SERVER_WAIT_MILLIS)
                 }
                 else -> passOver()
@@ -638,20 +659,42 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    /** Asks for the song again later, from where it stopped. If that fails too, the player's
-     *  error brings this round again. */
+    /**
+     * Asks for the song again later, from where it stopped. If that fails too, the player's
+     * error brings this round again. The try belongs to this account's turn and this entry
+     * of the queue: if either has changed by the time it is due, it is dropped.
+     */
     private fun retryLater(delayMs: Long) {
-        main.postDelayed({ if (waitingForServer && exo.playerError != null) exo.prepare() }, delayMs)
+        val era = era ?: return
+        val uid = player.queue.currentUid() ?: return
+        val wanted = Recovery.Retry(era.number, uid)
+        retry?.cancel()
+        waitingFor = wanted
+        retry = era.scope.launch {
+            delay(delayMs)
+            if (waitingFor != wanted) return@launch
+            waitingFor = null
+            if (wanted.stillStands(this@PlaybackService.era?.number, player.queue.currentUid(), exo.playerError != null)) exo.prepare()
+        }
     }
 
-    /** Gives up on the song that's playing and goes to the next, unless three in a row have
-     *  failed or there is no next, as Windows does. */
+    private fun stopWaiting() {
+        retry?.cancel()
+        retry = null
+        waitingFor = null
+    }
+
+    /**
+     * Gives up on the song that's playing and goes to the next, unless three in a row have
+     * failed or there is no next, as Windows does. Whether it then plays is as it was: a
+     * song that failed while paused, or while only being made ready, leaves the next one
+     * paused too.
+     */
     private fun passOver() {
         failures++
         if (failures < 3 && exo.hasNextMediaItem()) {
             exo.seekToNextMediaItem()
             exo.prepare()
-            exo.play()
         }
     }
 

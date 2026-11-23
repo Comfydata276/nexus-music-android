@@ -84,6 +84,40 @@ class AccessTest {
         assertFalse(Access.staleQueueTap(screens, jump, 10))
     }
 
+    // ---- Carrying on ---------------------------------------------------------------------------
+
+    @Test
+    fun swipingTheAppAwayOnlyStopsMusicThatWasPaused() {
+        fun carriesOn(playWhenReady: Boolean, state: Int, waiting: Boolean = false) = Recovery.carriesOnWhenSwipedAway(playWhenReady, state, waiting)
+        assertTrue(carriesOn(true, Player.STATE_READY))
+        // Buffering, and silent for a navigation prompt or a call (still READY, still meaning
+        // to play): Media3 asks "is it sounding right now?" and would stop both for good.
+        assertTrue(carriesOn(true, Player.STATE_BUFFERING))
+        // Waiting for the server to come back.
+        assertTrue(carriesOn(true, Player.STATE_IDLE, waiting = true))
+        // Paused by the person, at whatever stage.
+        assertFalse(carriesOn(false, Player.STATE_READY))
+        assertFalse(carriesOn(false, Player.STATE_BUFFERING))
+        assertFalse(carriesOn(false, Player.STATE_IDLE, waiting = true))
+        // Nothing going on at all.
+        assertFalse(carriesOn(true, Player.STATE_IDLE))
+        assertFalse(carriesOn(true, Player.STATE_ENDED))
+    }
+
+    @Test
+    fun aRetryPutOffIsOnlyForTheAccountAndSongItWasPutOffFor() {
+        val retry = Recovery.Retry(generation = 3, uid = 42)
+        assertTrue(retry.stillStands(3, 42, failed = true))
+        // The person skipped to another song meanwhile.
+        assertFalse(retry.stillStands(3, 43, failed = true))
+        // They signed out, or someone else signed in.
+        assertFalse(retry.stillStands(null, 42, failed = true))
+        assertFalse(retry.stillStands(4, 42, failed = true))
+        // It came right by itself.
+        assertFalse(retry.stillStands(3, 42, failed = false))
+        assertFalse(retry.stillStands(3, null, failed = true))
+    }
+
     // ---- The phone's Assistant ----------------------------------------------------------------
 
     private fun ask(action: String?, vararg extras: Pair<String, String>) = VoiceAsk.read(action) { key -> extras.toMap()[key] }
