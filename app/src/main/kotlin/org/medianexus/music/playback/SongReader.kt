@@ -279,6 +279,8 @@ class SongReader(
     private var fromKept = false
     private var ended = false
     private var offline = false
+    /** Whether offline mode is on now: it can be switched on while a song is being read. */
+    private var offlineNow: () -> Boolean = { false }
     /** The place the stream ends at, when the server said how long it is; -1 when it didn't. */
     private var endsAt = -1L
     private var sniffer: HeadSniffer? = null
@@ -295,7 +297,18 @@ class SongReader(
      * phone plays from there; any other is refused ([NotKeptOffline]).
      */
     @Throws(IOException::class)
-    fun open(where: SongWhere, at: Long, offline: Boolean = false): Long {
+    fun open(where: SongWhere, at: Long, offline: Boolean = false): Long = open(where, at) { offline }
+
+    /**
+     * As above, with offline mode as it is from moment to moment: switched on while the song
+     * is being read, nothing more is asked of the server for it. If the song is kept whole it
+     * carries on from the phone's copy; if not, the read ends there ([NotKeptOffline]), and
+     * what the player already holds of the song is all it gets.
+     */
+    @Throws(IOException::class)
+    fun open(where: SongWhere, at: Long, offlineNow: () -> Boolean): Long {
+        val offline = offlineNow()
+        this.offlineNow = offlineNow
         this.where = where
         position = at
         ended = false
@@ -412,6 +425,7 @@ class SongReader(
         if (ended) return -1
         if (length == 0) return 0
         while (true) {
+            if (!offline && !fromKept && offlineNow()) wentOffline(where)
             val got = try {
                 next(where, buffer, offset, length)
             } catch (e: IOException) {
@@ -441,9 +455,37 @@ class SongReader(
         }
     }
 
+    /**
+     * Offline mode was switched on while this song was being read from the server. The
+     * stream is let go. A song kept whole carries on from the phone's copy, at the place
+     * reached; any other can't.
+     */
+    private fun wentOffline(where: SongWhere) {
+        offline = true
+        runCatching { source?.close() }
+        source = null
+        // Whatever was being kept of a conversion is only part of one.
+        if (keeping) runCatching { streams.drop(where.key) }
+        keeping = false
+        unclaim()
+        sniffer = null
+        toSkip = 0
+        tagToSkip = false
+        val whole = streams.wholeLength(where.key, where.form.converted)
+        if (whole < 0) throw NotKeptOffline()
+        fromKept = true
+        if (position >= whole) {
+            ended = true
+            return
+        }
+        source = streams.keptOnly(where.key, position).source
+        endsAt = whole
+    }
+
     /** The next bytes of the stream as it is open now, once whatever comes before the place
      *  has been passed over; -1 at its end. */
     private fun next(where: SongWhere, buffer: ByteArray, offset: Int, length: Int): Int {
+        if (ended) return -1
         if (tagToSkip) {
             tagToSkip = false
             toSkip += tagLength(source ?: throw IOException("Not open"))

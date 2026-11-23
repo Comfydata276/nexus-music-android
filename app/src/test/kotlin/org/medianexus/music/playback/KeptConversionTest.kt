@@ -48,8 +48,11 @@ class KeptConversionTest {
     fun start() {
         dir = Files.createTempDirectory("kept").toFile()
         database = StandaloneDatabaseProvider(RuntimeEnvironment.getApplication())
-        kept = KeptSongs(dir, database) { 1L shl 30 }
+        kept = KeptSongs(dir, database) { limit }
     }
+
+    /** The limit on kept songs, as Settings has it. */
+    private var limit = 1L shl 30
 
     @After
     fun stop() {
@@ -101,7 +104,7 @@ class KeptConversionTest {
             val cache: Cache? = kept.acquire()
             return object : SongLease {
                 override val cache = cache
-                override val offline = this@KeptConversionTest.offline
+                override val offline: Boolean get() = this@KeptConversionTest.offline
                 override val conversions = this@KeptConversionTest.conversions
                 override fun resolve(songId: String) = SongWhere(form, cacheKey(songId, form), least) { "http://server.invalid/stream?id=$songId&timeOffset=$it" }
                 override fun release() {
@@ -197,7 +200,7 @@ class KeptConversionTest {
         answers += conversion(150_000)
         play()
         kept.close()
-        kept = KeptSongs(dir, database) { 1L shl 30 }
+        kept = KeptSongs(dir, database) { limit }
         assertArrayEquals(conversion(150_000), playsOffline())
     }
 
@@ -223,6 +226,53 @@ class KeptConversionTest {
     }
 
     @Test
+    fun offlineModeSwitchedOnPartWayStopsTheStreamThatIsOpen() {
+        answers += conversion(150_000)
+        val source = open()
+        assertEquals(60_000, read(source, 60_000).size)
+        // The switch in Settings is turned while the song is being fetched. It used to be
+        // looked at only as a song was opened: this one went on being fetched to its end.
+        offline = true
+        try {
+            read(source)
+            fail("the stream went on being read from the server in offline mode")
+        } catch (e: StreamFailure) {
+            assertTrue(e.offline)
+        } finally {
+            source.close()
+            offline = false
+        }
+        // And the part that was fetched is not kept as if it were the song.
+        assertEquals(null, playsOffline())
+    }
+
+    @Test
+    fun aLimitLoweredWhileSignedOutAppliesWhenTheAccountIsTakenOnAgain() {
+        answers += conversion(150_000)
+        play()
+        assertArrayEquals(conversion(150_000), playsOffline())
+        // Signed out; and in Settings the limit on kept songs is turned down to nothing.
+        kept.close()
+        limit = 0
+        // Signed in again. With no limit the kept songs are never opened to play from, so
+        // nothing used to clear them: they stayed on the phone, uncounted, for good.
+        kept = KeptSongs(dir, database) { limit }
+        kept.enforceIfOver()
+        kept.close()
+        val left = dir.walkTopDown().filter { it.isFile && it.name.endsWith(".exo") }.toList()
+        assertTrue("still on the phone: $left", left.isEmpty())
+        // Under the limit, nothing is touched (or even opened).
+        limit = 1L shl 30
+        kept = KeptSongs(dir, database) { limit }
+        answers += conversion(150_000)
+        play()
+        kept.close()
+        kept = KeptSongs(dir, database) { limit }
+        kept.enforceIfOver()
+        assertArrayEquals(conversion(150_000), playsOffline())
+    }
+
+    @Test
     fun aConversionWithoutTheMarkIsNeverPlayedAndIsClearedAway() {
         // Every byte of it in the cache, and the cache sure of its length: what an older
         // build left for a conversion that ended early, or a read that was never closed
@@ -239,7 +289,7 @@ class KeptConversionTest {
         assertEquals(null, playsOffline())
         // The next time the kept songs are opened, it is gone.
         kept.close()
-        kept = KeptSongs(dir, database) { 1L shl 30 }
+        kept = KeptSongs(dir, database) { limit }
         val again = kept.acquire()!!
         assertTrue(key !in again.keys)
         kept.release()

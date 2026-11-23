@@ -243,7 +243,7 @@ class QueuePlayer(
         val songs = queue.playingOrder().toMutableList()
         val replaced = mediaItems.map { songOf(it) }
         val from = (base + fromIndex).coerceIn(0, songs.size)
-        repeat((toIndex - fromIndex).coerceAtMost(songs.size - from)) { songs.removeAt(from) }
+        songs.subList(from, from + (toIndex - fromIndex).coerceIn(0, songs.size - from)).clear()
         songs.addAll(from, replaced)
         queue.replace(songs, queue.cursor.coerceAtMost(songs.size - 1), queue.context, shuffle = false)
         anotherQueue()

@@ -215,7 +215,8 @@ class PlaybackService : MediaLibraryService() {
                 .distinctUntilChanged()
                 .collect { (state, account) -> signedIn(state, account) }
         }
-        // The limit on kept songs applies the moment it is changed in Settings.
+        // The limit on kept songs applies the moment it is changed in Settings. (Changed
+        // while nobody is signed in, it applies when someone next is: see signedIn.)
         scope.launch {
             graph.settings.state.map { it.cacheLimitMb }.distinctUntilChanged().drop(1).collect {
                 val kept = era?.kept ?: return@collect
@@ -505,6 +506,12 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         next.scope.launch { restore(next) }
+        // The limit on kept songs may have been lowered, or turned off, while this account
+        // was signed out (or the app not running): what is over it goes now. With a limit of
+        // nothing the kept songs are never opened to play from, so nothing else would ever
+        // clear them. A look at the folder's size, off the main thread; nothing is opened
+        // unless there is something to remove.
+        graph.scope.launch(Dispatchers.IO) { next.kept.enforceIfOver() }
     }
 
     /**
@@ -581,8 +588,9 @@ class PlaybackService : MediaLibraryService() {
             return object : SongLease {
                 override val cache = cache
                 // The same switch the API client obeys: offline mode stops the player
-                // fetching too, not only the pages.
-                override val offline = graph.offline.on
+                // fetching too, not only the pages. As it stands at each read: turned on
+                // while a stream is open, it stops that stream as well.
+                override val offline: Boolean get() = graph.offline.on
                 override val conversions = era.conversions
                 override fun resolve(songId: String): SongWhere = resolve(era, songId)
                 override fun release() {

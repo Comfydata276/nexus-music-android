@@ -27,12 +27,16 @@ object Repeat {
  * Every entry also has a number of its own (`uids`), never reused, so the player that plays
  * the queue can tell its entries apart even when one song is in it twice.
  */
-class Queue {
+class Queue internal constructor(order: MutableList<Int>) {
+    constructor() : this(mutableListOf())
+
     var songs = mutableListOf<Song>()
         private set
     var uids = mutableListOf<Long>()
         private set
-    var order = mutableListOf<Int>()
+
+    /** (Given from outside only by a test, which counts what is done to it.) */
+    var order: MutableList<Int> = order
         private set
     var cursor = 0
     /** What's playing, in words ("Slow Rivers", "Liked songs"): the queue's title. */
@@ -237,7 +241,9 @@ class Queue {
         val queued = ahead.toHashSet()
         order.removeAll { it in queued }
         cursor = order.indexOf(current).coerceAtLeast(0)
-        for ((place, entry) in ahead.withIndex()) order.add(cursor + 1 + place, entry)
+        // In one go: put back one at a time, each made room for itself among everything
+        // after it, and a long run queued by hand took the square of its length.
+        order.addAll(cursor + 1, ahead)
     }
 
     /**
@@ -293,13 +299,14 @@ class Queue {
             return
         }
         revision++
-        var at = cursor + 1 + if (playNext) 0 else queuedAhead()
+        val at = cursor + 1 + if (playNext) 0 else queuedAhead()
+        val first = songs.size
         for (song in list) {
             songs += song.copy(queued = true)
             uids += newUid()
-            order.add(at, songs.size - 1)
-            at++
         }
+        // All of them into the playing order at once (see rearrangeKeepingQueued).
+        order.addAll(at, (first until songs.size).toList())
         while (origins.size < songs.size) origins += null
     }
 
@@ -322,7 +329,7 @@ class Queue {
         revision++
         val current = order.getOrNull(cursor)
         val moving = order.subList(from, to).toList()
-        repeat(to - from) { order.removeAt(from) }
+        order.subList(from, to).clear()
         order.addAll(newIndex.coerceAtMost(order.size), moving)
         cursor = order.indexOf(current).coerceAtLeast(0)
     }
@@ -398,9 +405,9 @@ class Queue {
             order.add(cursor, entry)
         } else {
             val waiting = order.subList(cursor + 1, cursor + 1 + ahead).toList()
-            repeat(ahead) { order.removeAt(cursor + 1) }
+            order.subList(cursor + 1, cursor + 1 + ahead).clear()
             cursor = at - ahead
-            for ((place, entry) in waiting.withIndex()) order.add(cursor + 1 + place, entry)
+            order.addAll(cursor + 1, waiting)
         }
         trackChanged()
         return true

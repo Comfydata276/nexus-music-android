@@ -50,6 +50,16 @@ class KeptSongs(private val dir: File, private val database: DatabaseProvider, p
         }
     }
 
+    /**
+     * As [enforce], if what is kept on disk is more than the limit allows. For when an account
+     * is taken on: the limit may have been lowered, or set to nothing, while it was away.
+     * (Told from the size of the folder, without opening anything.)
+     */
+    fun enforceIfOver() {
+        val onDisk = dir.listFiles()?.sumOf { file -> if (file.isDirectory) file.listFiles()?.sumOf { it.length() } ?: 0L else file.length() } ?: 0L
+        if (onDisk > limitBytes()) enforce()
+    }
+
     /** The cache, for one read, which must call [release] when it closes. Null if the
      *  account has gone, or the folder isn't free yet: then the read does without. */
     fun acquire(): Cache? = shared.acquire()

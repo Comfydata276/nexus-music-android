@@ -708,6 +708,39 @@ class SongReaderTest {
     }
 
     @Test
+    fun offlineModeTurnedOnPartWayCarriesOnOnlyWithWhatIsKeptWhole() {
+        var offline = false
+        // A song being converted and fetched: it stops there.
+        val streams = Streams()
+        val reader = SongReader(streams, heads, pause = { waits += it })
+        val where = converted()
+        reader.open(where, 0) { offline }
+        assertEquals(30_000, reader.take(30_000).size)
+        offline = true
+        try {
+            reader.take()
+            fail("went on fetching in offline mode")
+        } catch (_: NotKeptOffline) {
+        }
+        reader.close()
+        assertEquals(1, asked.size)
+        assertEquals(-1L, streams.wholeLength(where.key))
+        // A file as it is, being read through the kept songs, every byte of which is kept:
+        // it carries on from the phone's copy, at the place it had reached.
+        offline = false
+        val file = asItIs()
+        SongReader(streams, heads, pause = { waits += it }).apply { open(file, 0); take(); close() }
+        assertEquals(original.size.toLong(), streams.wholeLength(file.key, converted = false))
+        val again = SongReader(streams, heads, pause = { waits += it })
+        again.open(file, 0) { offline }
+        val first = again.take(100_000)
+        offline = true
+        val rest = again.take()
+        again.close()
+        assertArrayEquals(original, first + rest)
+    }
+
+    @Test
     fun anMp3AlreadyWithinTheLimitIsAskedForAsTheFileItIs() {
         // Navidrome converts nothing when the file is already an MP3 at or under the rate
         // asked for: it sends the file. So it is asked for as the file, and read as one.

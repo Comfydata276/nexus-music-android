@@ -92,7 +92,8 @@ interface SongLease {
     /** The account's kept songs, or null to go straight to the server. */
     val cache: Cache?
 
-    /** Offline mode is on: nothing may be asked of the server. */
+    /** Offline mode is on: nothing may be asked of the server. Asked again as the song is
+     *  read, not only as it is opened: the switch can be turned while a stream is open. */
     val offline: Boolean
 
     /**
@@ -176,7 +177,7 @@ class SongDataSource(
         val lease = leases.lease(generation).also { this.lease = it }
         val where = lease.resolve(id)
         val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
-        return guarded { reader.open(where, dataSpec.position, lease.offline) }
+        return guarded { reader.open(where, dataSpec.position) { lease.offline } }
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int = guarded {
