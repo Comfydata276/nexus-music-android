@@ -29,6 +29,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -147,7 +148,7 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
 fun ToastHost(toasts: SharedFlow<String>, modifier: Modifier = Modifier) {
     var text by remember { mutableStateOf("") }
     var shown by remember { mutableStateOf(false) }
-    var said by remember { mutableStateOf(0) }
+    var said by remember { mutableIntStateOf(0) }
     LaunchedEffect(toasts) {
         toasts.collect {
             text = it

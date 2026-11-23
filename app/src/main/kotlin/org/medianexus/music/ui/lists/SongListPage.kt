@@ -87,7 +87,10 @@ fun SongListPage(
     val playingHere = from.isList(key) && !from.paused
 
     Column(Modifier.fillMaxSize()) {
-        TitleBar(if (scrolled) hero.title else "", onBack = ui.navigator::back)
+        // The name goes up into the bar once the header has scrolled away, or when there's
+        // no header to show (nothing kept, and the server out of reach).
+        val bare = songs == null && feed.page.error != null
+        TitleBar(if (scrolled || bare) hero.title else "", onBack = ui.navigator::back)
         Refreshable(feed.refreshing, feed::refresh) {
             val error = feed.page.error
             if (songs == null && error != null) {

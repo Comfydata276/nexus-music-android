@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,7 +82,7 @@ val ALBUM_SORTS: List<Pair<Int, AlbumList>> = listOf(
 @Composable
 fun LibraryPage() {
     val ui = LocalUi.current
-    var part by rememberSaveable { mutableStateOf(0) }
+    var part by rememberSaveable { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.tab_library)) {
             IconButton(R.drawable.ic_settings, stringResource(R.string.settings), { ui.open(Route.Settings) }, tint = Theme.colors.text)
@@ -93,7 +94,7 @@ fun LibraryPage() {
         )
         when (part) {
             0 -> Playlists()
-            1 -> AlbumsPart(rememberSaveable { mutableStateOf(0) }.let { sort -> sort.value to { it: Int -> sort.value = it } })
+            1 -> AlbumsPart(rememberSaveable { mutableIntStateOf(0) }.let { sort -> sort.intValue to { it: Int -> sort.intValue = it } })
             2 -> Artists()
             else -> Genres()
         }
@@ -104,7 +105,7 @@ fun LibraryPage() {
 @Composable
 fun AlbumsPage(route: Route.Albums) {
     val ui = LocalUi.current
-    var sort by rememberSaveable { mutableStateOf(route.sort.coerceIn(0, ALBUM_SORTS.lastIndex)) }
+    var sort by rememberSaveable { mutableIntStateOf(route.sort.coerceIn(0, ALBUM_SORTS.lastIndex)) }
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.albums), onBack = ui.navigator::back)
         AlbumsPart(sort to { it: Int -> sort = it })
@@ -192,7 +193,7 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
     var asking by remember(sort, ui.account, feed.asked()) { mutableStateOf(false) }
     val first = feed.value
     val albums = remember(first, more.size) { first?.let { it + more } }
-    var later by remember(sort) { mutableStateOf(0) }
+    var later by remember(sort) { mutableIntStateOf(0) }
     LaunchedEffect(later) {
         if (later == 0 || asking || end || first == null || first.size < Library.GRID_PAGE) return@LaunchedEffect
         val library = ui.account?.library ?: return@LaunchedEffect

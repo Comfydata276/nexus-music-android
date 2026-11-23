@@ -68,7 +68,7 @@ fun Hero(hero: HeroData, modifier: Modifier = Modifier, onSubtitle: (() -> Unit)
     BoxWithConstraints(modifier.fillMaxWidth()) {
         // Large, but not so large that a list's first songs can't be seen under it.
         // (Turned on its side, the screen's height limits it too.)
-        val tall = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
+        val tall = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.height.toDp() }
         val side = (maxWidth * 0.56f).coerceAtMost(tall * 0.42f).coerceIn(120.dp, 260.dp)
         Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Spacer(Modifier.height(8.dp))

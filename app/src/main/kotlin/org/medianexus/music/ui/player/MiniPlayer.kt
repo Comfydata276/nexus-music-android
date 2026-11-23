@@ -62,7 +62,11 @@ fun MiniPlayer(modifier: Modifier = Modifier) {
     val playing by player.playing.collectAsStateWithLifecycle()
     val liked by player.liked.collectAsStateWithLifecycle()
     val buffering by player.buffering.collectAsStateWithLifecycle()
-    val error by player.error.collectAsStateWithLifecycle()
+    val reported by player.error.collectAsStateWithLifecycle()
+    // The service words it for the car ("When it's safe, open Nexus Music…"); on the phone
+    // itself, it's said plainly.
+    val blocked by ui.graph.localAccess.blocked.collectAsStateWithLifecycle()
+    val error = if (reported != null && blocked) stringResource(R.string.local_network_short) else reported
     // Read only while drawing the line, so it moving redraws the line and nothing else.
     val position = player.position.collectAsStateWithLifecycle()
     val duration = player.duration.collectAsStateWithLifecycle()

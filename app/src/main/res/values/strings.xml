@@ -187,6 +187,7 @@
     <string name="local_network_refused">Nexus Music isn\'t allowed to reach devices on your home network, so it can\'t connect to a server there. Allow it, then connect again.</string>
     <string name="local_network_blocked">Nexus Music isn\'t allowed to reach your home network, where your server is, so nothing can be played from it.</string>
     <string name="car_local_network">When it\'s safe, open Nexus Music on your phone and allow it to reach your home network</string>
+    <string name="local_network_short">Nexus Music isn\'t allowed to reach your home network</string>
     <string name="open_app">Open Nexus Music</string>
     <string name="allow">Allow</string>
     <string name="continue_on">Continue</string>

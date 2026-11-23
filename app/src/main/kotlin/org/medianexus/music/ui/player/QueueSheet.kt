@@ -271,7 +271,8 @@ private fun Heading(text: String, action: String? = null, onAction: () -> Unit =
 }
 
 /** One song in the queue: cover, title (in the accent if it's playing), artist, length, its
- *  menu, and for songs to come a handle to drag it by. */
+ *  menu, and for songs to come a handle to drag it by (`handle` is what makes it one). */
+@Suppress("ModifierParameter")
 @Composable
 private fun SongLine(
     song: Song,
@@ -308,7 +309,7 @@ private fun SongLine(
         }
         // On a narrow screen the length gives way to the name, as Windows' gives way to the
         // menu button.
-        if (song.duration > 0 && androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 400) {
+        if (song.duration > 0 && with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() } >= 400.dp) {
             BasicText(clock(song.duration), style = Theme.type.rowDetail.copy(color = colors.muted))
         }
         IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, song.title), onMenu, iconSize = 20.dp)

@@ -13,7 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.app.ActivityCompat
@@ -32,7 +32,7 @@ fun Context.holds(permission: String): Boolean = ContextCompat.checkSelfPermissi
 @Composable
 fun rememberAsker(permission: String, then: (Boolean) -> Unit = {}): () -> Unit {
     val activity = LocalActivity.current
-    var askedAt by remember { mutableStateOf(0L) }
+    var askedAt by remember { mutableLongStateOf(0L) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         // An answer within a moment, with no reason to give, is the system answering by
         // itself: it was refused for good, and the settings page is the only place left to
