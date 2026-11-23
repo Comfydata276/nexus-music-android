@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
@@ -42,6 +44,9 @@ data class Page<out T>(
     val checking: Boolean get() = !fresh && error == null
 }
 
+/** A page as the server gave it, and when it was asked for. */
+class Heard(val key: String, val value: Any?, val askedAt: Long)
+
 /** One page that can be asked for: what it's kept under, how it's written down, and how it's
  *  fetched. `key` is what was asked for, so the same question always finds the same copy. */
 class PageSpec<T>(val key: String, val serializer: KSerializer<T>, val fetch: suspend () -> T)
@@ -52,21 +57,45 @@ class PageSpec<T>(val key: String, val serializer: KSerializer<T>, val fetch: su
  *
  * Each page is a JSON file under the account's cache folder, named after a hash of its key.
  * The pages used lately are also held in memory, already read, so going back to one costs
- * nothing. Two requests for the same page at once share one trip to the server.
+ * nothing; how many is set by their size (see [weigh]), not their number, so one playlist of
+ * thousands of songs can't hold dozens of pages' worth. Two requests for the same page at
+ * once share one trip to the server.
+ *
+ * **Each page has one order of events.** Every change to a page (a fetch kept, a change made
+ * here such as a like) takes the next number in that page's own count. Whatever was begun
+ * before a change and finishes after it (a slow refresh, a read from disk) is dropped rather
+ * than put over it: the change is newer. Writes of one page to disk happen one at a time, in
+ * that order, each through a temporary file of its own, and one that a newer write has
+ * already overtaken is not made at all.
  */
 class PageCache(
     private val dir: File,
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val held: Int = 64,
+    /** What the pages held in memory may weigh in all (see [weigh]). */
+    private val budget: Long = MEMORY_BUDGET,
 ) {
-    private class Entry(val value: Any?, val at: Long, val fresh: Boolean)
+    private class Entry(val value: Any?, val at: Long, val fresh: Boolean, val weight: Long)
 
-    /** The pages in memory, least lately used first. */
-    private val memory = object : LinkedHashMap<String, Entry>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?) = size > held
+    /** One page's place in the order of events, and the lock its writes take turns on. */
+    private class Slot {
+        /** Changes made to it so far. */
+        var version = 0L
+        /** The newest of them written to disk. */
+        var written = 0L
+        val disk = Mutex()
+        /** Read-then-change edits ([update]) take turns, so none is lost. */
+        val edits = Mutex()
     }
+
+    /** Guards `memory`, `held` and every slot's `version`. */
+    private val state = Any()
+    private val slots = HashMap<String, Slot>()
+
+    /** The pages in memory, least lately used first, and what they weigh together. */
+    private val memory = LinkedHashMap<String, Entry>(32, 0.75f, true)
+    private var held = 0L
 
     private val inFlight = ConcurrentHashMap<String, Deferred<Any?>>()
 
@@ -75,29 +104,65 @@ class PageCache(
     private val keptNow = MutableSharedFlow<Pair<String, Any?>>(extraBufferCapacity = 32)
     val changes: SharedFlow<Pair<String, Any?>> = keptNow.asSharedFlow()
 
+    /** Every answer from the server that was kept, with when it was asked for (by `clock`):
+     *  for whatever follows what the server says about things that are on many pages
+     *  (likes), and must know whether an answer is older than a change it made since. */
+    private val heardNow = MutableSharedFlow<Heard>(extraBufferCapacity = 32)
+    val heard: SharedFlow<Heard> = heardNow.asSharedFlow()
+
+    private fun slotFor(key: String): Slot = synchronized(state) { slots.getOrPut(key) { Slot() } }
+
+    private fun versionOf(key: String): Long = synchronized(state) { slots[key]?.version ?: 0L }
+
     /** The kept copy of a page, from memory or disk; null if there isn't one (or it can no
      *  longer be read, as when the app has changed how pages are written). */
     suspend fun <T> kept(spec: PageSpec<T>): T? {
-        synchronized(memory) { memory[spec.key] }?.let {
-            @Suppress("UNCHECKED_CAST")
-            return it.value as T
+        repeat(3) {
+            val before = synchronized(state) {
+                memory[spec.key]?.let {
+                    @Suppress("UNCHECKED_CAST")
+                    return it.value as T
+                }
+                versionOf(spec.key)
+            }
+            val read = withContext(io) { readFile(spec) }
+            synchronized(state) {
+                memory[spec.key]?.let {
+                    @Suppress("UNCHECKED_CAST")
+                    return it.value as T
+                }
+                // Nothing changed it while the file was read: this is the page as it stands.
+                if (versionOf(spec.key) == before) {
+                    if (read != null) remember(spec.key, read, fresh = false)
+                    return read
+                }
+            }
+            // It was changed while being read, and has since left memory: read it again,
+            // after the newer write.
+            slotFor(spec.key).disk.withLock { }
         }
-        val read = withContext(io) { readFile(spec) } ?: return null
-        remember(spec.key, read, fresh = false)
-        return read
+        return withContext(io) { readFile(spec) }
     }
 
     /** Asks the server for the page now (or joins a request for it already on its way) and
-     *  keeps the answer. Throws `ApiError` if the server can't be asked. */
+     *  keeps the answer. Throws `ApiError` if the server can't be asked. If the page was
+     *  changed here while the server was being asked, that change stands, and is what is
+     *  given back. */
     suspend fun <T> fresh(spec: PageSpec<T>): T {
         val shared = inFlight.computeIfAbsent(spec.key) {
             // On the cache's own scope: a caller that gives up (a screen closed, the car moved
             // on) doesn't cancel the request for anyone else, and the answer is kept anyway.
             scope.async(io, start = CoroutineStart.LAZY) {
                 try {
+                    val since = versionOf(spec.key)
+                    val askedAt = clock()
                     val value = spec.fetch()
-                    put(spec, value)
-                    value
+                    if (store(spec, value, since)) {
+                        heardNow.emit(Heard(spec.key, value, askedAt))
+                        value
+                    } else {
+                        kept(spec) ?: value
+                    }
                 } finally {
                     inFlight.remove(spec.key)
                 }
@@ -110,7 +175,7 @@ class PageCache(
 
     /** The page as the server sent it within the last `withinMillis`, without asking again. */
     private fun recent(key: String, withinMillis: Long): Entry? {
-        val entry = synchronized(memory) { memory[key] } ?: return null
+        val entry = synchronized(state) { memory[key] } ?: return null
         return if (entry.fresh && clock() - entry.at <= withinMillis) entry else null
     }
 
@@ -199,27 +264,73 @@ class PageCache(
     /** Replaces the kept copy, as when a change made here (a like, say) is known to have
      *  reached the server. */
     suspend fun <T> put(spec: PageSpec<T>, value: T) {
-        remember(spec.key, value, fresh = true)
-        keptNow.tryEmit(spec.key to value)
-        withContext(io) { writeFile(spec, value) }
+        store(spec, value, since = null)
     }
 
-    /** Changes the kept copy, if there is one. */
+    /**
+     * Keeps `value` as the page, as the newest change to it, and writes it to disk. With
+     * `since`, only if the page hasn't changed since it stood at that number (what was begun
+     * then is older than what has happened since): false if it has, and nothing is kept.
+     */
+    private suspend fun <T> store(spec: PageSpec<T>, value: T, since: Long?): Boolean {
+        val slot = slotFor(spec.key)
+        val mine = synchronized(state) {
+            if (since != null && slot.version != since) return false
+            slot.version++
+            remember(spec.key, value, fresh = true)
+            slot.version
+        }
+        keptNow.tryEmit(spec.key to value)
+        slot.disk.withLock {
+            // A newer write that got here first has made this one pointless.
+            if (slot.written < mine) {
+                withContext(io) { writeFile(spec, value) }
+                slot.written = mine
+            }
+        }
+        return true
+    }
+
+    /** Changes the kept copy, if there is one. Edits of one page take turns, and one that
+     *  crosses a fetch is made again on what the fetch brought. */
     suspend fun <T> update(spec: PageSpec<T>, change: (T) -> T) {
-        val kept = kept(spec) ?: return
-        val changed = change(kept)
-        if (changed != kept) put(spec, changed)
+        slotFor(spec.key).edits.withLock {
+            repeat(5) {
+                val since = versionOf(spec.key)
+                val kept = kept(spec) ?: return
+                val changed = change(kept)
+                if (changed == kept || store(spec, changed, since)) return
+            }
+        }
     }
 
     /** Forgets a kept page, so the next request for it goes to the server. */
     suspend fun forget(key: String) {
-        synchronized(memory) { memory.remove(key) }
-        withContext(io) { fileFor(key).delete() }
+        val slot = slotFor(key)
+        synchronized(state) {
+            slot.version++
+            memory.remove(key)?.let { held -= it.weight }
+        }
+        slot.disk.withLock { withContext(io) { fileFor(key).delete() } }
     }
 
     private fun remember(key: String, value: Any?, fresh: Boolean) {
-        synchronized(memory) { memory[key] = Entry(value, clock(), fresh) }
+        val weight = weigh(value)
+        memory.put(key, Entry(value, clock(), fresh, weight))?.let { held -= it.weight }
+        held += weight
+        // The least lately used go until it all fits, but the newest stays whatever its size:
+        // it is the page someone is looking at.
+        val each = memory.entries.iterator()
+        while (held > budget && memory.size > 1 && each.hasNext()) {
+            val eldest = each.next()
+            if (eldest.key == key) continue
+            held -= eldest.value.weight
+            each.remove()
+        }
     }
+
+    /** What is held in memory now, by [weigh]'s measure. */
+    internal fun heldWeight(): Long = synchronized(state) { held }
 
     internal fun fileFor(key: String): File = File(dir, "${nameFor(key)}.json")
 
@@ -253,6 +364,29 @@ class PageCache(
     }
 
     companion object {
+        /**
+         * What the pages held in memory may weigh in all: about a song's worth of memory each
+         * (a kilobyte or so), so twelve thousand is around 12 MB. A long playlist and the
+         * pages around it fit; a 20,000-song one is held on its own.
+         */
+        const val MEMORY_BUDGET = 12_000L
+
+        /**
+         * Roughly how much memory a page takes, in songs: each song, album, artist, playlist
+         * or genre in it counts one. Close enough to share out the memory by; exactness
+         * would cost more than it saves.
+         */
+        fun weigh(value: Any?): Long = when (value) {
+            null -> 0
+            is org.medianexus.music.net.Song -> 1
+            is org.medianexus.music.net.Album -> 1L + value.songs.size
+            is org.medianexus.music.net.Playlist -> 1L + value.songs.size
+            is org.medianexus.music.net.Artist -> 1L + value.albums.size
+            is org.medianexus.music.net.Found -> 1L + value.songs.size + value.albums.size + value.artists.size
+            is Collection<*> -> 1L + value.sumOf { weigh(it) }
+            else -> 1
+        }
+
         /** A page fetched within this long is shown as it is, without asking again. */
         const val FRESH_FOR_MILLIS = 15_000L
 

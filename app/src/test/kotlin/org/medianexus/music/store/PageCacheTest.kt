@@ -149,4 +149,64 @@ class PageCacheTest {
         assertEquals(Page(listOf("a")), seen.first())
         assertEquals(listOf("a", "b"), seen.last().value)
     }
+
+    @Test
+    fun aSlowRefreshThatCrossesAChangeDoesNotUndoIt() = runBlocking {
+        val cache = cache()
+        cache.put(spec { emptyList() }, listOf("a", "b"))
+        // The server is asked, and is slow; meanwhile "b" is unliked here.
+        val gate = CompletableDeferred<Unit>()
+        val asked = CompletableDeferred<Unit>()
+        val slow = spec { asked.complete(Unit); gate.await(); listOf("a", "b") }
+        val refresh = scope.async { cache.fresh(slow) }
+        withTimeout(5_000) { asked.await() }
+        cache.update(slow) { it - "b" }
+        gate.complete(Unit)
+        // The answer began before the unlike, so the unlike stands: in memory, on disk, and
+        // in what the refresh gives back.
+        assertEquals(listOf("a"), refresh.await())
+        assertEquals(listOf("a"), cache.kept(slow))
+        assertEquals(listOf("a"), cache().kept(slow))
+        // The next refresh, begun after it, is the server's word.
+        assertEquals(listOf("a", "b"), cache.fresh(spec { listOf("a", "b") }))
+    }
+
+    @Test
+    fun aReadFromDiskThatCrossesAWriteDoesNotPutTheOldCopyBack() = runBlocking {
+        cache().put(spec { emptyList() }, listOf("old"))
+        val cache = cache()
+        val reads = (1..50).map { scope.async { cache.kept(spec { emptyList() }) } }
+        cache.put(spec { emptyList() }, listOf("new"))
+        reads.forEach { it.await() }
+        assertEquals(listOf("new"), cache.kept(spec { emptyList() }))
+        assertEquals(listOf("new"), cache().kept(spec { emptyList() }))
+    }
+
+    @Test
+    fun writesOfOnePageTakeTurnsAndTheLastStays() = runBlocking {
+        val cache = cache()
+        val writes = (1..60).map { n -> scope.async { cache.put(spec { emptyList() }, List(200) { "v$n" }) } }
+        writes.forEach { it.await() }
+        val last = cache.kept(spec { emptyList() })!!
+        // Whatever finished last in memory is what is on disk, whole.
+        assertEquals(last, cache().kept(spec { emptyList() }))
+        assertTrue(folder.root.list()!!.none { it.endsWith(".tmp") })
+        // Edits made at once all land.
+        cache.put(spec { emptyList() }, emptyList())
+        (1..40).map { n -> scope.async { cache.update(spec { emptyList() }) { it + "e$n" } } }.forEach { it.await() }
+        assertEquals(40, cache.kept(spec { emptyList() })!!.size)
+    }
+
+    @Test
+    fun memoryHoldsPagesBySizeNotNumber() = runBlocking {
+        val cache = PageCache(folder.root, scope, Dispatchers.IO, clock = { now }, budget = 1_000)
+        cache.put(spec("big") { emptyList() }, List(900) { "s" })
+        cache.put(spec("small") { emptyList() }, List(50) { "s" })
+        assertTrue(cache.heldWeight() <= 1_000)
+        // A page bigger than everything allowed is still held while it's the newest.
+        cache.put(spec("huge") { emptyList() }, List(5_000) { "s" })
+        assertEquals(5_001L, cache.heldWeight())
+        // The others are still on disk.
+        assertEquals(900, cache.kept(spec("big") { emptyList() })!!.size)
+    }
 }
