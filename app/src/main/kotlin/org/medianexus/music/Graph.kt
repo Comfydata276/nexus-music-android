@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.medianexus.music.net.Http
 import org.medianexus.music.net.OfflineSwitch
+import org.medianexus.music.playback.Callers
+import org.medianexus.music.playback.DebugHosts
+import org.medianexus.music.playback.KnownHosts
 import org.medianexus.music.playback.PlayerConnection
 import org.medianexus.music.playback.QueueSaver
 import org.medianexus.music.store.KeystoreBox
@@ -30,6 +33,17 @@ class Graph(context: Context) {
     val http = Http.client(userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)")
 
     val notices = Notices()
+
+    /** What the player has met, for Settings to show and share (see [Diagnostics]). */
+    val diagnostics = Diagnostics(File(context.filesDir, "diagnostics.txt"), scope, Dispatchers.IO)
+
+    /** Who may connect to the player and read covers: this app, callers Android trusts with
+     *  media, and the known hosts of media apps (Google's list; see `KnownHosts`). Made when
+     *  first asked: the screens never need it. */
+    val callers: Callers by lazy {
+        val listed = context.resources.getXml(R.xml.allowed_media_browser_callers).use { KnownHosts.parse(it) }
+        Callers(context, listed, DebugHosts::listed)
+    }
 
     /** Read here, at start-up, because the first frame needs the theme. The file is small. */
     val settings: SettingsStore = SettingsStore.open(File(context.filesDir, "settings.json"), scope, Dispatchers.IO)
@@ -105,6 +119,7 @@ class Graph(context: Context) {
     }
 
     init {
+        DebugHosts.load(context)
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }
         // Said once when writing starts to fail, and taken back once a write succeeds.
         scope.launch {

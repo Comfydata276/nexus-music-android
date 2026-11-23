@@ -73,6 +73,8 @@ class GaplessAudioRenderer(
     handler: Handler?,
     listener: AudioRendererEventListener?,
     sink: AudioSink,
+    /** Told, once for each decoder met, which one plays MP3 and what is trimmed for it. */
+    private val note: (String) -> Unit = {},
 ) : MediaCodecAudioRenderer(context, codecs, selector, decoderFallback, handler, listener, sink) {
     private var said: String? = null
 
@@ -87,8 +89,10 @@ class GaplessAudioRenderer(
             // thing about gapless playback that can't be known from here.
             if (decoder != said) {
                 said = decoder
-                android.util.Log.i("NexusPlayback", "MP3 is decoded by $decoder; trimming ${given.encoderDelay} and ${given.encoderPadding} samples" +
-                    if (given !== format) " (the file's own numbers: this decoder allows for its own delay)" else " (as Media3 has them)")
+                val what = "MP3 is decoded by $decoder; trimming ${given.encoderDelay} and ${given.encoderPadding} samples" +
+                    if (given !== format) " (the file's own numbers: this decoder allows for its own delay)" else " (as Media3 has them)"
+                android.util.Log.i("NexusPlayback", what)
+                note(what)
             }
         }
         super.onOutputFormatChanged(given, mediaFormat)

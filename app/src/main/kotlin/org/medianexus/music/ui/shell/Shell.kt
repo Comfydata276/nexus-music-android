@@ -79,6 +79,7 @@ import org.medianexus.music.ui.player.MiniPlayer
 import org.medianexus.music.ui.player.NowPlaying
 import org.medianexus.music.ui.player.QueueSheet
 import org.medianexus.music.ui.search.SearchPage
+import org.medianexus.music.ui.settings.DiagnosticsPage
 import org.medianexus.music.ui.settings.SettingsPage
 import org.medianexus.music.ui.theme.Theme
 
@@ -184,7 +185,8 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         Route.Home -> HomePage()
         Route.Search -> SearchPage()
         Route.Library -> LibraryPage()
-        Route.Settings -> SettingsPage(graph, onBack = navigator::back)
+        Route.Settings -> SettingsPage(graph, onBack = navigator::back, onDiagnostics = { navigator.open(Route.Diagnostics) })
+        Route.Diagnostics -> DiagnosticsPage(graph, onBack = navigator::back)
         is Route.Album -> AlbumPage(route)
         is Route.Artist -> ArtistPage(route)
         is Route.Playlist -> PlaylistPage(route)

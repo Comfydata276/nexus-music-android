@@ -20,15 +20,24 @@ import org.medianexus.music.graph
  * It gives away nothing but covers: it is read-only, answers no queries, and an address
  * names a cover id, never a file, so nothing else on the phone can be reached through it
  * (an id that isn't one the server would give is refused before any file is looked at).
+ *
+ * And it gives covers only to those the player itself lets connect (`Callers`): this app,
+ * callers Android trusts with media (the system's own media controls, a car's screens,
+ * anything allowed to read notifications) and the known hosts of media apps, by package
+ * name and signing certificate. A person's album covers are as much theirs as the list of
+ * their albums; any other app on the phone is refused.
  */
 class CoverProvider : ContentProvider() {
     override fun onCreate() = true
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
         if (mode != "r") throw SecurityException("Covers are read-only")
+        val context = context ?: throw FileNotFoundException("Not ready")
+        // Who is asking, before what for: a caller that isn't let in learns nothing here,
+        // not even which ids are covers.
+        admit(context)
         val id = idOf(uri) ?: throw FileNotFoundException("Not a cover")
         if (CoverStore.fileName(id) == null) throw FileNotFoundException("Not a cover")
-        val context = context ?: throw FileNotFoundException("Not ready")
         // A cover already on the phone, for an account already known: no waiting at all.
         val known = try {
             context.graph.accounts.state.value?.covers
@@ -54,6 +63,31 @@ class CoverProvider : ContentProvider() {
         } ?: throw FileNotFoundException("No cover $id")
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
     }
+
+    /**
+     * Lets the caller through, or throws: only this app and callers the player would let
+     * connect may read covers. Who is calling is the system's word (the uid, and a package
+     * name it has checked against it), never anything in the request.
+     */
+    private fun admit(context: android.content.Context) {
+        val uid = android.os.Binder.getCallingUid()
+        if (uid == android.os.Process.myUid()) return
+        val name = runCatching { callingPackage }.getOrNull()
+        val graph = try {
+            context.graph
+        } catch (_: UninitializedPropertyAccessException) {
+            // Asked before the app has started: not yet. (The caller asks again; a car does.)
+            throw FileNotFoundException("Not ready")
+        }
+        val standing = graph.callers.standing(name, android.os.Binder.getCallingPid(), uid)
+        graph.diagnostics.note(
+            "covers asked for by ${name ?: "an app that gave no name"}: ${if (standing.admitted) "given" else "refused"}. " +
+                "Android trusts it: ${yes(standing.trusted)}; known host: ${yes(standing.knownHost)}",
+        )
+        if (!standing.admitted) throw SecurityException("Covers are for the player's own callers")
+    }
+
+    private fun yes(on: Boolean) = if (on) "yes" else "no"
 
     /** The app's objects. A provider can be asked for something while the app is still
      *  starting, before they're made: wait for them. */

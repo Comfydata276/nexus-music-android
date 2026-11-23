@@ -14,6 +14,17 @@
          for when signing in to one; see LocalAccess. Earlier versions don't have it. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
+    <!-- The known hosts of media apps (res/xml/allowed_media_browser_callers.xml), so that
+         one that connects can be looked up by name and its signing certificate checked,
+         whatever Android's rules on which apps may see which. -->
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+        <package android:name="com.google.android.wearable.app" />
+        <package android:name="com.google.android.autosimulator" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.carassistant" />
+    </queries>
+
     <!-- No backups: the password is sealed with a key that can't leave this phone, and a
          restored copy of the rest without it would only confuse. Plain HTTP is allowed
          because home servers are often reached by an address like http://192.168.1.10:4533;
@@ -67,8 +78,9 @@
         </activity>
 
         <!-- The player: the app's screens, the notification, headsets and the car all use it.
-             Open to every app, as the car must be able to find it; the session itself lets
-             only trusted callers (the system, the car, this app) do more than look. -->
+             Open to every app, as the car must be able to find it; the session itself gives
+             a connection only to this app, callers Android trusts with media, and the
+             known hosts of media apps (see playback/Access.kt). -->
         <service
             android:name=".playback.PlaybackService"
             android:exported="true"
@@ -93,7 +105,8 @@
         </receiver>
 
         <!-- Cover art for the car and the system's media controls, which can't fetch it from
-             the server. Read-only, and it serves nothing but covers. -->
+             the server. Read-only, it serves nothing but covers, and only to this app and
+             the callers the player itself lets connect (see store/CoverProvider.kt). -->
         <provider
             android:name=".store.CoverProvider"
             android:authorities="${applicationId}.covers"

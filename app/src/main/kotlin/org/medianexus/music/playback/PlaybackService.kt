@@ -34,6 +34,7 @@ import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaConstants
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
 import androidx.media3.session.MediaSession.MediaItemsWithStartPosition
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionCommands
@@ -214,6 +215,52 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
 
+    // ---- What started the player, and whether Android let it into the foreground ------------
+    //
+    // Noted for Settings' Diagnostics page (see org.medianexus.music.Diagnostics): on a real
+    // phone, started cold by a car or a headset, this is all there is to go on afterwards.
+
+    /** When this service was made, and what first asked for it. */
+    private val madeAt = android.os.SystemClock.elapsedRealtime()
+    private var startedBy: String? = null
+    private var foregroundNoted = false
+
+    private fun noteStartedBy(what: String) {
+        if (startedBy != null) return
+        startedBy = what
+        val cold = madeAt - android.os.Process.getStartElapsedRealtime() < COLD_START_MILLIS
+        graph.diagnostics.note("player started by $what, with the app ${if (cold) "not running" else "already running"}", now = true)
+    }
+
+    override fun onBind(intent: Intent?): android.os.IBinder? {
+        noteStartedBy(
+            when (intent?.action) {
+                SERVICE_INTERFACE, MediaSessionService.SERVICE_INTERFACE -> "a Media3 controller connecting"
+                "android.media.browse.MediaBrowserService" -> "a media browser connecting (a car, or the system)"
+                else -> "something binding to it"
+            },
+        )
+        return super.onBind(intent)
+    }
+
+    override fun onUpdateNotificationAsync(session: MediaSession, startInForegroundRequired: Boolean): ListenableFuture<Void?> {
+        val updated = super.onUpdateNotificationAsync(session, startInForegroundRequired)
+        if (startInForegroundRequired) {
+            updated.addListener({
+                val failure = runCatching { updated.get() }.exceptionOrNull()?.let { it.cause ?: it }
+                if (failure != null) {
+                    // (Media3 has caught it; if it is Android refusing the foreground, its
+                    // listener is told too: see onCreate.)
+                    graph.diagnostics.note("foreground: Android refused it (${failure.javaClass.simpleName})", now = true)
+                } else if (!foregroundNoted) {
+                    foregroundNoted = true
+                    graph.diagnostics.note("foreground: entered ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made")
+                }
+            }, androidx.core.content.ContextCompat.getMainExecutor(this))
+        }
+        return updated
+    }
+
     /**
      * The app was swiped away from the recent apps. Media3 stops the service unless a song
      * is sounding at that very moment, which ends the music for good if it was only
@@ -238,6 +285,13 @@ class PlaybackService : MediaLibraryService() {
     private val promiseCheck = Runnable { if (promised) standDown() }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        noteStartedBy(
+            when {
+                intent?.action == Intent.ACTION_MEDIA_BUTTON -> "a media button" + (keyOf(intent)?.let { " ($it)" } ?: "")
+                intent?.action == null -> "a start request"
+                else -> "a start request (${intent.action?.substringAfterLast('.')?.take(40)})"
+            },
+        )
         if (intent?.action == Intent.ACTION_MEDIA_BUTTON && !isPlaybackOngoing) {
             promised = true
             // Whatever happens to the request (a reply that never comes, a command Media3
@@ -247,6 +301,12 @@ class PlaybackService : MediaLibraryService() {
         }
         return super.onStartCommand(intent, flags, startId)
     }
+
+    /** The button a media button intent carries, by its key's name. */
+    private fun keyOf(intent: Intent): String? = runCatching {
+        @Suppress("DEPRECATION")
+        (intent.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT))?.keyCode?.let { android.view.KeyEvent.keyCodeToString(it).removePrefix("KEYCODE_") }
+    }.getOrNull()
 
     /**
      * Ends a start that has nothing to play, the way Media3's own service does when it has
@@ -280,6 +340,7 @@ class PlaybackService : MediaLibraryService() {
         } catch (_: IllegalStateException) {
             // Not allowed into the foreground at all: then nothing was promised either.
         }
+        graph.diagnostics.note("started by a button with nothing to play: stopped cleanly", now = true)
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "started by a button with nothing to play: stopped cleanly")
         pauseAllPlayersAndStopSelf()
     }
@@ -314,7 +375,7 @@ class PlaybackService : MediaLibraryService() {
             super.buildAudioRenderers(context, extensionRendererMode, mediaCodecSelector, enableDecoderFallback, audioSink, eventHandler, eventListener, out)
             // Media3's renderer, with the trim for MP3 put right (see Mp3Trim).
             val at = out.indexOfFirst { it is androidx.media3.exoplayer.audio.MediaCodecAudioRenderer }
-            if (at >= 0) out[at] = GaplessAudioRenderer(context, codecAdapterFactory, mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener, audioSink)
+            if (at >= 0) out[at] = GaplessAudioRenderer(context, codecAdapterFactory, mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener, audioSink) { graph.diagnostics.note(it) }
         }
 
         override fun buildAudioSink(context: android.content.Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean) =
@@ -694,6 +755,9 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // By kind only: an error's own message can name the server.
+            val status = (error.cause as? StreamFailure)?.status?.takeIf { it > 0 }
+            graph.diagnostics.note("playback error: ${error.errorCodeName}" + (status?.let { " (the server answered $it)" } ?: ""))
             val song = player.queue.current() ?: return
             when {
                 undecodable(error) && needsConverting.mark(song.id) -> {
@@ -832,10 +896,14 @@ class PlaybackService : MediaLibraryService() {
     private inner class Callback : MediaLibrarySession.Callback {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             // Media3 sorts callers into trusted (this app, the system, and anything allowed to
-            // read notifications or control media, which is what Android Auto, the Assistant
-            // and a car's own screens are) and the rest. The rest get no connection: a private
-            // library is not for any app on the phone to browse. See [Access].
+            // read notifications or control media, which is what a car's own screens are, and
+            // on most phones Android Auto and the Assistant) and the rest. Of the rest, the
+            // known hosts of media apps are let in by package name and signing certificate, so
+            // that Android Auto is never turned away for what one phone didn't grant it. Any
+            // other app gets no connection: a private library is not for it to browse. See
+            // [Access] and [KnownHosts].
             val caller = callerOf(session, controller)
+            noteConnection(controller, caller)
             if (caller == Caller.REFUSED) return MediaSession.ConnectionResult.reject()
             val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 .add(LIKE).add(SHUFFLE).add(REPEAT)
@@ -876,6 +944,7 @@ class PlaybackService : MediaLibraryService() {
                 putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_BROWSABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM)
                 putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM)
             }
+            graph.diagnostics.note("library opened by ${browser.packageName}" + (params?.let { " (recent: ${yes(it.isRecent)}; offline: ${yes(it.isOffline)}; suggested: ${yes(it.isSuggested)})" } ?: ""))
             val root = CarMedia.item(CarEntry(CarIds.ROOT, getString(R.string.app_name), browsable = true))
             return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(root, LibraryParams.Builder().setExtras(extras).build()))
         }
@@ -1146,13 +1215,41 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** Who a controller is (see [Access]). */
-    private fun callerOf(session: MediaSession, controller: MediaSession.ControllerInfo): Caller = Access.caller(
-        trusted = controller.isTrusted,
-        sameUid = controller.uid == android.os.Process.myUid(),
-        ownPackage = controller.isPackageNameVerified && controller.packageName == packageName,
-        legacy = controller.controllerVersion == MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION,
-        notification = session.isMediaNotificationController(controller),
-    )
+    private fun callerOf(session: MediaSession, controller: MediaSession.ControllerInfo): Caller {
+        val own = controller.uid == android.os.Process.myUid()
+        return Access.caller(
+            trusted = controller.isTrusted,
+            // Asked of the system only for a caller that has no other standing: its package
+            // name and its signing certificate, against Google's list (see KnownHosts).
+            knownHost = !own && !controller.isTrusted && graph.callers.knownHost(controller.packageName, controller.uid),
+            sameUid = own,
+            ownPackage = controller.isPackageNameVerified && controller.packageName == packageName,
+            legacy = controller.controllerVersion == MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION,
+            notification = session.isMediaNotificationController(controller),
+        )
+    }
+
+    /** Notes who asked to connect and what became of it (see [org.medianexus.music.Diagnostics]):
+     *  on a real phone in a real car this is the only account there is of whether Android
+     *  Auto was let in, and why. */
+    private fun noteConnection(controller: MediaSession.ControllerInfo, caller: Caller) {
+        val legacy = controller.controllerVersion == MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION
+        val own = controller.uid == android.os.Process.myUid()
+        val known = !own && graph.callers.knownHost(controller.packageName, controller.uid)
+        val how = if (legacy) "Android's own media session and browser" else "Media3 (version ${controller.controllerVersion})"
+        val outcome = when (caller) {
+            Caller.REFUSED -> "refused"
+            Caller.TRUSTED -> "let in"
+            Caller.NOTIFICATION -> "let in as the notification's own"
+            Caller.OWN_INTERFACE -> "let in as the app's own screens"
+        }
+        graph.diagnostics.note(
+            "connection from ${controller.packageName} by $how: $outcome. Android trusts it: ${yes(controller.isTrusted)}; known host: ${yes(known)}",
+            now = caller == Caller.REFUSED,
+        )
+    }
+
+    private fun yes(on: Boolean) = if (on) "yes" else "no"
 
     /** The account signed in, once the saved sign-in has been read; null if nobody is. */
     private suspend fun eraOrNull(): Era? {
@@ -1346,6 +1443,9 @@ class PlaybackService : MediaLibraryService() {
          *  versions; this is well inside both. */
         private const val PROMISE_MILLIS = 7_000L
         private const val STAND_DOWN_NOTIFICATION = 20_001
+
+        /** A service made this soon after its process began was what the process began for. */
+        private const val COLD_START_MILLIS = 3_000L
         private const val CHECKPOINT_MILLIS = 20_000L
     }
 }

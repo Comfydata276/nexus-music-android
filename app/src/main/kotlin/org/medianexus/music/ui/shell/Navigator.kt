@@ -26,6 +26,7 @@ sealed interface Route {
     @Serializable data object Search : Route
     @Serializable data object Library : Route
     @Serializable data object Settings : Route
+    @Serializable data object Diagnostics : Route
     @Serializable data class Album(val id: String, val title: String = "", val artist: String = "", val cover: String = "") : Route
     @Serializable data class Artist(val id: String, val name: String = "", val cover: String = "") : Route
     @Serializable data class Playlist(val id: String, val name: String = "", val cover: String = "") : Route

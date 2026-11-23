@@ -30,6 +30,7 @@ class PlayButtonReceiver : MediaButtonReceiver() {
         }
         val dirs = accountDirs(context.filesDir, context.cacheDir, accountKey(settings.server, settings.username))
         val worth = Resumption.possible(settings.server, settings.username, Graph.passwordFile(context), QueueFiles.queueFile(dirs.data))
+        context.graph.diagnostics.note("a media button with the player not running: ${if (worth) "starting it" else "nothing to resume, so not started"}", now = true)
         if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "play button with the app not running: ${if (worth) "starting the player" else "nothing to resume, not started"}")
         return worth
     }

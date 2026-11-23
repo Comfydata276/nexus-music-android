@@ -31,6 +31,13 @@ import androidx.media3.session.SessionToken
  *     adb exec-out run-as org.medianexus.music cat files/capture/sweep.wav > sweep.wav
  *
  * (`scripts/emu capture start|stop|pull` does these.)
+ *
+ * And naming a caller to be let in as a known host, by its package name and the SHA-256 of
+ * its signing certificate (see [DebugHosts]; `scripts/carcheck --known-host` does this for
+ * the car probe), or with nothing, forgetting them:
+ *
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es host "org.medianexus.carprobe <sha256>"
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es host ""
  */
 class DebugControl : BroadcastReceiver() {
     private companion object {
@@ -39,6 +46,10 @@ class DebugControl : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        intent.getStringExtra("host")?.let { entry ->
+            resultData = DebugHosts.set(context.applicationContext, entry)
+            return
+        }
         when (intent.getStringExtra("capture")) {
             "start" -> {
                 val name = intent.getStringExtra("name")?.filter { it.isLetterOrDigit() || it in "-_" }?.ifEmpty { null } ?: "capture"

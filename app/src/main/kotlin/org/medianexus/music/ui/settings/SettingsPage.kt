@@ -47,7 +47,7 @@ import org.medianexus.music.ui.theme.ThemeColors
 /** Settings, so far: the theme and the account. The rest of the Windows app's settings come
  *  with the features they belong to. */
 @Composable
-fun SettingsPage(graph: Graph, onBack: () -> Unit) {
+fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {}) {
     val colors = Theme.colors
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     val session by graph.session.state.collectAsStateWithLifecycle()
@@ -82,6 +82,12 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit) {
                 }
             }
             Box(Modifier.height(1.dp).fillMaxWidth().background(colors.line))
+
+            Heading(stringResource(R.string.about))
+            // As Windows has it under Settings, About ("Save diagnostics"): here it is shown,
+            // and shared from there.
+            Setting(stringResource(R.string.diagnostics), stringResource(R.string.diagnostics_detail))
+            TextButton(stringResource(R.string.show_diagnostics), onClick = onDiagnostics, modifier = Modifier.padding(vertical = 8.dp))
         }
     }
 }

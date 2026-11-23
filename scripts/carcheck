@@ -36,6 +36,11 @@ usage: scripts/carcheck <package> [options]     check an installed app
   --json <file>         where to write the full report (default: under the cache)
   --untrusted           connect as an ordinary app instead of a trusted one like Android
                         Auto, to see what any app on the phone is allowed to do
+  --known-host          connect as a caller Android does NOT trust (no notification access)
+                        that the app knows by its signing certificate, as it knows Android
+                        Auto from Google's list. A debug build is told the probe's
+                        certificate first and must then pass the whole check; a release
+                        build knows only Google's entries and must refuse it
 
 Uses the phone emulator; set NEXUS_DEVICE=car to run it on the car emulator instead.
 Exit status is 0 when nothing failed.
@@ -72,13 +77,13 @@ device_setup ""
 # The commands only the app's own screens may send (AppActions in the app), each with what
 # it would do if it were let through: for --mode outsider.
 nexus_forge="org.medianexus.music.app.CLEAR|queued=false;org.medianexus.music.app.REMOVE|offset=0;org.medianexus.music.app.REMOVE|uid=1;org.medianexus.music.app.MOVE|from=0|to=1|queued=true;org.medianexus.music.app.JUMP|offset=1"
-target=""; extra=(); json=""; selftest=0; trusted=1
+target=""; extra=(); json=""; selftest=0; trusted=1; known=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --standin) target=org.medianexus.standin ;;
     --selftest) selftest=1; target=org.medianexus.standin ;;
     # Three tabs until there are downloads (M2), when Downloads makes four.
-    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library" -e expect_buttons "like,shuffle,repeat" -e expect_shuffle "Shuffle" -e forge "$nexus_forge") ;;
+    --nexus) extra+=(-e expect_tabs "Home,Playlists,Library" -e expect_buttons "like,shuffle,repeat" -e expect_shuffle "Shuffle" -e forge "$nexus_forge" -e covers "COVERS_OF_TARGET") ;;
     --query) extra+=(-e query "${2:?}"); shift ;;
     --voice) extra+=(-e voice "${2:?}"); shift ;;
     --tabs) extra+=(-e expect_tabs "${2:?}"); shift ;;
@@ -91,6 +96,7 @@ while [ $# -gt 0 ]; do
     --limit-ms) extra+=(-e limit_ms "${2:?}"); shift ;;
     --json) json="${2:?}"; shift ;;
     --untrusted) trusted=0 ;;
+    --known-host) trusted=0; known=1 ;;
     -h|--help) usage ;;
     -*) say "unknown option: $1"; usage ;;
     *) target="$1" ;;
@@ -98,6 +104,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$target" ] || usage
+# The cover provider's name follows the app's.
+for i in "${!extra[@]}"; do [ "${extra[$i]}" = COVERS_OF_TARGET ] && extra[$i]="$target.covers"; done
 need_emulator
 build_tools
 ensure_installed "$probe_apk" org.medianexus.carprobe
@@ -114,6 +122,30 @@ else
   adb_sh pm path "$target" >/dev/null 2>&1 || die "$target is not installed on the $device emulator (scripts/emu install <apk>)"
 fi
 reports="$cache/reports"
+
+# --known-host. Android Auto may reach a phone's media apps holding neither notification
+# access nor the system's permission to control media; the app lets it in all the same, by
+# its package name and signing certificate, from Google's list. The probe stands in for
+# that: no notification access (taken away above), and a debug build of the app told the
+# probe's certificate, exactly as the list tells it Android Auto's. A release build has no
+# way to be told, so there the probe must be refused, as any stranger is.
+forget_host() { :; }
+if [ "$known" = 1 ]; then
+  user="$(current_user)"
+  if adb_sh dumpsys package "$target" | grep -q 'DEBUGGABLE'; then
+    cert="$(adb_sh "am instrument --user $user -w -e target '$target' -e mode whoami org.medianexus.carprobe/.Probe" 2>&1 | tr -d '\r' | sed -n 's/^PROBE_CERT://p' | head -n 1)"
+    [ "${#cert}" = 64 ] || die "could not read the probe's signing certificate"
+    told="$(adb_sh "am broadcast --user $user --include-stopped-packages -n $target/.playback.DebugControl --es host 'org.medianexus.carprobe $cert'" | tr -d '\r')"
+    echo "$told" | grep -q 'org.medianexus.carprobe' || die "the app's debug build would not take the probe as a test host: $told"
+    say "the app's debug build has been told the probe's certificate (${cert:0:16}…); the probe has no notification access"
+    forget_host() { adb_sh "am broadcast --user $user --include-stopped-packages -n $target/.playback.DebugControl --es host ''" >/dev/null 2>&1 || true; }
+    trap forget_host EXIT
+    extra+=(-e known_host true)
+  else
+    say "$target is a release build: its list of known hosts is Google's alone, so the probe must be refused"
+    extra+=(-e mode outsider)
+  fi
+fi
 
 if [ "$selftest" = 0 ]; then
   [ -n "$json" ] || json="$reports/carcheck-$target-$(date +%Y%m%d-%H%M%S).json"

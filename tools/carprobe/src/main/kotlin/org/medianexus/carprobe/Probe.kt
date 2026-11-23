@@ -88,10 +88,34 @@ class Probe : Instrumentation() {
         say("Car probe against $target (mode: $mode)")
         val trusted = android.provider.Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
             ?.contains(context.packageName) == true
+        val knownHost = args.getString("known_host") == "true"
         record("probe.trusted", "INFO", "Connecting as",
-            if (trusted) "a trusted caller, as Android Auto is (this probe has notification access)"
-            else "an untrusted caller: an ordinary app with no special access. Android Auto is not one of these.")
+            when {
+                trusted -> "a trusted caller, as Android Auto is (this probe has notification access)"
+                knownHost -> "a caller Android does not trust, which the app has been told to know by its signing certificate: as Android Auto is known, on a phone where it holds no notification access"
+                else -> "an untrusted caller: an ordinary app with no special access. Android Auto is not one of these."
+            })
+        if (mode == "whoami") {
+            // For scripts/carcheck --known-host: the certificate this probe is signed with, as
+            // the system has it, for a debug build of the app to be told.
+            say("PROBE_CERT:${certificate()}")
+            return
+        }
         val service = discover() ?: return
+        if (knownHost) {
+            if (trusted) {
+                record("known_host.untrusted", "FAIL", "Connects without Android's trust", "the probe still has notification access, so being let in proves nothing about the list")
+                return
+            }
+            // Cold, as a car asks first: the app must know its list before anything is running.
+            shell("am force-stop $target")
+            SystemClock.sleep(500)
+            val connected = connect(service, "known_host.admitted", "A caller Android doesn't trust is let in as a known host, by package name and signing certificate")
+            if (!connected) return
+            onMain { browser?.disconnect() }
+            browser = null
+            controller = null
+        }
         if (mode == "play" || mode == "pause") {
             // For scripts/measure: start (or stop) whatever the app would resume, nothing else.
             if (!connect(service, "connect", "Connects")) return
@@ -815,6 +839,13 @@ class Probe : Instrumentation() {
             check("outsider.controller", "An app with no standing can't connect a controller either", controller == null,
                 "a Media3 controller connected", why)
             controller?.let { c -> onMain { c.release() } }
+            // "-e covers <authority>": the app's cover provider, which must turn away whoever
+            // the player turns away. (Any id will do: who is asking comes before what for.)
+            args.getString("covers")?.let { authority ->
+                val problem = unreadable(Uri.parse("content://$authority/al-outsider"))
+                check("outsider.covers", "An app with no standing can't read covers", problem?.startsWith("SecurityException") == true,
+                    if (problem == null) "it was given a cover" else "it was turned away, but not as someone not allowed: $problem", problem.orEmpty())
+            }
             return
         }
         if (!connect(service, "outsider.connect", "Connects as a trusted caller, as a car does")) return
@@ -947,6 +978,13 @@ class Probe : Instrumentation() {
     }
 
     // --- plumbing --------------------------------------------------------------------------
+
+    /** The SHA-256 of the certificate this probe is signed with, as 64 hex digits. */
+    private fun certificate(): String {
+        val info = context.packageManager.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+        val signer = info.signingInfo!!.apkContentsSigners.first().toByteArray()
+        return java.security.MessageDigest.getInstance("SHA-256").digest(signer).joinToString("") { "%02x".format(it) }
+    }
 
     private fun <T> onMain(block: () -> T): T {
         var value: Result<T>? = null

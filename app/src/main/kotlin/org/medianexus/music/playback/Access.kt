@@ -9,10 +9,13 @@ enum class Caller {
      *  browse. */
     REFUSED,
 
-    /** Someone the system vouches for: the system itself, or an app the person has given
-     *  notification access or the right to control media. Android Auto, the Assistant, a
-     *  car's own media screens, Bluetooth and a watch are all these. They browse, search and
-     *  play as a car needs to. */
+    /** Someone vouched for. Either by the system: the system itself, or an app the person
+     *  has given notification access or the right to control media (a car's own media
+     *  screens, Bluetooth, a watch, and on most phones Android Auto and the Assistant). Or
+     *  by being one of the known hosts of media apps, by package name and signing
+     *  certificate both ([KnownHosts]): Android Auto and the Google app are let in for who
+     *  they are, whatever a particular phone has or hasn't granted them. They browse, search
+     *  and play as a car needs to. */
     TRUSTED,
 
     /** Media3's own controller inside this app, which draws the notification and stands for
@@ -35,15 +38,17 @@ enum class Caller {
 object Access {
     /**
      * `trusted` is Media3's word for it (the system, this app's own uid, notification access,
-     * or permission to control media). `sameUid` and `ownPackage` say the controller really
-     * is this app: the uid is the system's word, and the package name is checked against it.
-     * `legacy` is a platform controller rather than a Media3 one. `notification` is Media3's
-     * media notification controller.
+     * or permission to control media). `knownHost` says the caller is one of the known hosts,
+     * by package name and signing certificate both (never by name alone: see [KnownHosts]).
+     * `sameUid` and `ownPackage` say the controller really is this app: the uid is the
+     * system's word, and the package name is checked against it. `legacy` is a platform
+     * controller rather than a Media3 one. `notification` is Media3's media notification
+     * controller.
      */
-    fun caller(trusted: Boolean, sameUid: Boolean, ownPackage: Boolean, legacy: Boolean, notification: Boolean): Caller = when {
+    fun caller(trusted: Boolean, knownHost: Boolean, sameUid: Boolean, ownPackage: Boolean, legacy: Boolean, notification: Boolean): Caller = when {
         sameUid && notification -> Caller.NOTIFICATION
         sameUid && ownPackage && !legacy -> Caller.OWN_INTERFACE
-        trusted -> Caller.TRUSTED
+        trusted || knownHost -> Caller.TRUSTED
         else -> Caller.REFUSED
     }
 

@@ -8,11 +8,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AccessTest {
-    private val untrustedApp = Access.caller(trusted = false, sameUid = false, ownPackage = false, legacy = false, notification = false)
-    private val untrustedBrowser = Access.caller(trusted = false, sameUid = false, ownPackage = false, legacy = true, notification = false)
-    private val car = Access.caller(trusted = true, sameUid = false, ownPackage = false, legacy = true, notification = false)
-    private val notification = Access.caller(trusted = true, sameUid = true, ownPackage = true, legacy = false, notification = true)
-    private val screens = Access.caller(trusted = true, sameUid = true, ownPackage = true, legacy = false, notification = false)
+    private val untrustedApp = Access.caller(trusted = false, knownHost = false, sameUid = false, ownPackage = false, legacy = false, notification = false)
+    private val untrustedBrowser = Access.caller(trusted = false, knownHost = false, sameUid = false, ownPackage = false, legacy = true, notification = false)
+    private val car = Access.caller(trusted = true, knownHost = false, sameUid = false, ownPackage = false, legacy = true, notification = false)
+    private val notification = Access.caller(trusted = true, knownHost = false, sameUid = true, ownPackage = true, legacy = false, notification = true)
+    private val screens = Access.caller(trusted = true, knownHost = false, sameUid = true, ownPackage = true, legacy = false, notification = false)
 
     private val queueEdits = AppActions.all
 
@@ -59,11 +59,11 @@ class AccessTest {
         for (action in queueEdits + Access.BUTTONS) assertTrue(action, Access.mayCustom(screens, action))
         // The same uid speaking the platform's older protocol (a media button passed on
         // inside the app) is trusted, but is not the app's interface.
-        val passedOn = Access.caller(trusted = true, sameUid = true, ownPackage = true, legacy = true, notification = false)
+        val passedOn = Access.caller(trusted = true, knownHost = false, sameUid = true, ownPackage = true, legacy = true, notification = false)
         assertEquals(Caller.TRUSTED, passedOn)
         // Another app claiming to be the notification controller isn't one.
-        assertEquals(Caller.TRUSTED, Access.caller(trusted = true, sameUid = false, ownPackage = false, legacy = false, notification = true))
-        assertEquals(Caller.REFUSED, Access.caller(trusted = false, sameUid = false, ownPackage = false, legacy = false, notification = true))
+        assertEquals(Caller.TRUSTED, Access.caller(trusted = true, knownHost = false, sameUid = false, ownPackage = false, legacy = false, notification = true))
+        assertEquals(Caller.REFUSED, Access.caller(trusted = false, knownHost = false, sameUid = false, ownPackage = false, legacy = false, notification = true))
         // Nothing unknown is let through as a custom command.
         assertFalse(Access.mayCustom(screens, "org.medianexus.music.app.SOMETHING_ELSE"))
     }
