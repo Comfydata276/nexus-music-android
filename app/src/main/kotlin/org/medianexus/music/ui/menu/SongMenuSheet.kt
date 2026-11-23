@@ -117,7 +117,7 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
             }
             menu.upcoming?.let { uid ->
                 Rule()
-                Entry(R.drawable.ic_x, stringResource(R.string.remove_from_queue)) { choose { ui.player.remove(uid) } }
+                Entry(R.drawable.ic_x, stringResource(R.string.remove_from_queue)) { choose { menu.remove?.invoke() ?: ui.player.remove(uid) } }
             }
         }
     }

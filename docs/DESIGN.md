@@ -572,9 +572,14 @@ How it is built (M1b):
   a song by its queue entry's own number, as the person saw it): "Now playing", then "Next in queue" with
   "Clear queue", then "Next from <list>" with "Clear". Songs move by a drag handle (Lucide's
   grip-vertical, which Windows doesn't need), across the heading into "Next in queue" or out
-  of it, by the same arithmetic as Windows (`QueueRows.move`). A cancelled drag sends nothing; a move
-  that changes nothing shows the player's order again. A sideways swipe or "Remove from
-  queue" takes one out; screen readers get Move up and Move down where they do something,
+  of it, by the same arithmetic as Windows (`QueueRows.move`). The sheet keeps one list, the
+  rows as shown (`QueueDrag`): every edit (a drag, a swipe, Move up or down, the menu's
+  Remove) is worked out against it, shows at once, and names the entry moved and the one it
+  is to follow. The player's reports decide what stays: one that is on the way to what is
+  shown (the first of two quick drags done, the second not yet) changes nothing; any other
+  replaces it, so an edit refused, or a swipe the player didn't take, is put right by the
+  player's next word. No timer puts anything back. A cancelled drag sends nothing. A
+  sideways swipe or "Remove from queue" takes one out; screen readers get Move up and Move down where they do something,
   and Remove. Below 400dp the songs' lengths are left out so their names have room. The
   sheet comes up to the foot of Now Playing's top bar, no further.
 - **A song's menu** has what works so far: Play next, Add to queue, like, Go to album, Go to

@@ -92,8 +92,9 @@ class QueueRowsTest {
         // "d" was dropped at the top of what the person saw: it goes straight after the song
         // playing, named by its own number.
         assertEquals(EntryMove(4, null, false), drag.drop())
-        // Shown as left until the player answers; then the player's order.
-        assertEquals(listOf("u4", "u1", "u2", "u3"), drag.rows.map { it.key })
+        // Once let go, the player's word that came meanwhile (the song that ended has gone),
+        // with the move on top of it; the move's own report then changes nothing.
+        assertEquals(listOf("u4", "u2", "u3"), drag.rows.map { it.key })
         drag.show(upNext(listOf("d", "b", "c"), listOf(4, 2, 3)))
         assertEquals(listOf("u4", "u2", "u3"), drag.rows.map { it.key })
     }
@@ -107,7 +108,6 @@ class QueueRowsTest {
         assertEquals(listOf("u1", "u3", "u2"), drag.rows.map { it.key })
         drag.cancel()
         assertEquals(listOf("u1", "u2", "u3"), drag.rows.map { it.key })
-        assertNull(drag.awaiting)
         // Dropped where it started: nothing to send either.
         drag.start("u2")
         assertNull(drag.drop())
@@ -115,17 +115,25 @@ class QueueRowsTest {
     }
 
     @Test
-    fun aMoveThatChangesNothingShowsThePlayersOrderAgain() {
+    fun stepsAndRemovalsAreWorkedOutOnTheRowsAsShown() {
         val drag = QueueDrag()
-        val queue = upNext(listOf("a", "b", "c"), listOf(1, 2, 3))
-        drag.show(queue)
-        drag.start("u1")
-        drag.over("u2")
-        assertEquals(EntryMove(1, 2, false), drag.drop())
-        assertEquals(listOf("u2", "u1", "u3"), drag.rows.map { it.key })
-        // The player refused it: no new queue comes, and the sheet settles back.
-        drag.settle()
-        assertEquals(listOf("u1", "u2", "u3"), drag.rows.map { it.key })
+        drag.show(upNext(listOf("q1", "a", "b", "c"), listOf(5, 1, 2, 3), queued = 1))
+        // [q1 | a b c]: "a" stepped up, over the heading, joins "Next in queue" after q1.
+        assertEquals(EntryMove(1, 5, true), drag.step("u1", -1))
+        assertEquals(listOf("u5", "u1", "gap", "u2", "u3"), drag.rows.map { it.key })
+        // Before the player has answered: "b" stepped up is now just under the heading, and
+        // joins "Next in queue" after "a".
+        assertEquals(EntryMove(2, 1, true), drag.step("u2", -1))
+        assertEquals(listOf("u5", "u1", "u2", "gap", "u3"), drag.rows.map { it.key })
+        // Taken out: shown gone at once.
+        drag.removeNow("u5")
+        assertEquals(listOf("u1", "u2", "gap", "u3"), drag.rows.map { it.key })
+        // The reports come one by one, each on the way: nothing jumps.
+        drag.show(upNext(listOf("q1", "a", "b", "c"), listOf(5, 1, 2, 3), queued = 2))
+        drag.show(upNext(listOf("q1", "a", "b", "c"), listOf(5, 1, 2, 3), queued = 3))
+        assertEquals(listOf("u1", "u2", "gap", "u3"), drag.rows.map { it.key })
+        drag.show(upNext(listOf("a", "b", "c"), listOf(1, 2, 3), queued = 2))
+        assertEquals(listOf("u1", "u2", "gap", "u3"), drag.rows.map { it.key })
     }
 
     @Test
@@ -135,5 +143,56 @@ class QueueRowsTest {
         assertEquals(EntryMove(8, 5, true), QueueRows.entryMove(queue, 4, 1))
         // q1 below r1: leaves it, after r1.
         assertEquals(EntryMove(5, 7, false), QueueRows.entryMove(queue, 0, 3))
+    }
+    // ---- Two edits before the player has answered the first --------------------------------
+
+    @Test
+    fun aSecondDragBeforeTheFirstReportMovesTheSongItWasMadeOn() {
+        val drag = QueueDrag()
+        drag.show(upNext(listOf("a", "b", "c", "d"), listOf(1, 2, 3, 4)))
+        // "a" below "b".
+        drag.start("u1")
+        drag.over("u2")
+        assertEquals(EntryMove(1, 2, false), drag.drop())
+        assertEquals(listOf("u2", "u1", "u3", "u4"), drag.rows.map { it.key })
+        // The player hasn't said anything yet (its report is held). "a" is grabbed again
+        // where it now shows, second, and brought below "c".
+        drag.start("u1")
+        drag.over("u3")
+        // The command names "a", to follow "c": not "b", which was second in the player's
+        // last report.
+        assertEquals(EntryMove(1, 3, false), drag.drop())
+        assertEquals(listOf("u2", "u3", "u1", "u4"), drag.rows.map { it.key })
+        // The first move's report arrives late: it is on the way to what is shown, and moves
+        // nothing back.
+        drag.show(upNext(listOf("b", "a", "c", "d"), listOf(2, 1, 3, 4)))
+        assertEquals(listOf("u2", "u3", "u1", "u4"), drag.rows.map { it.key })
+        // Then the second's.
+        drag.show(upNext(listOf("b", "c", "a", "d"), listOf(2, 3, 1, 4)))
+        assertEquals(listOf("u2", "u3", "u1", "u4"), drag.rows.map { it.key })
+    }
+
+    @Test
+    fun aReportThatDiffersFromWhatIsShownReplacesIt() {
+        val drag = QueueDrag()
+        drag.show(upNext(listOf("a", "b", "c"), listOf(1, 2, 3)))
+        drag.start("u1")
+        drag.over("u2")
+        drag.drop()
+        assertEquals(listOf("u2", "u1", "u3"), drag.rows.map { it.key })
+        // The player refused it, and the song then changed: what it says is what is shown.
+        drag.show(upNext(listOf("b", "c"), listOf(2, 3)))
+        assertEquals(listOf("u2", "u3"), drag.rows.map { it.key })
+    }
+
+    @Test
+    fun aSwipeTheReportDoesNotConfirmComesBack() {
+        val drag = QueueDrag()
+        drag.show(upNext(listOf("a", "b", "c"), listOf(1, 2, 3)))
+        drag.removeNow("u2")
+        assertEquals(listOf("u1", "u3"), drag.rows.map { it.key })
+        // The next report still has it (the removal was refused): it is back.
+        drag.show(upNext(listOf("a", "b", "c", "e"), listOf(1, 2, 3, 5)))
+        assertEquals(listOf("u1", "u2", "u3", "u5"), drag.rows.map { it.key })
     }
 }

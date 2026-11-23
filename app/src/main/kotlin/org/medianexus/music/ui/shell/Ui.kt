@@ -20,8 +20,9 @@ import org.medianexus.music.store.PageSpec
 
 /** A song whose menu is open, and where it was opened from: `upcoming` is its queue entry's
  *  own number when it was opened from the queue (it can then be taken out, and that entry,
- *  not whatever is in its place by the time the menu is used, is what goes). */
-data class SongMenu(val song: Song, val upcoming: Long? = null)
+ *  not whatever is in its place by the time the menu is used, is what goes). `remove` is the
+ *  queue sheet's own way to take it out, so the sheet shows it gone at once. */
+data class SongMenu(val song: Song, val upcoming: Long? = null, val remove: (() -> Unit)? = null)
 
 /**
  * What every screen shares while someone is signed in: the app's objects, the account's,

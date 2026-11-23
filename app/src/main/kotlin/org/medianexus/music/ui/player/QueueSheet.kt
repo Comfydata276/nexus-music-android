@@ -56,7 +56,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.abs
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.medianexus.music.R
 import org.medianexus.music.net.Song
 import org.medianexus.music.ui.parts.Cover
@@ -119,22 +121,20 @@ private fun QueueList() {
     val scope = rememberCoroutineScope()
     val edge = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
 
-    // The rows as shown: the queue's, except while a song is being dragged (see QueueDrag).
+    // The rows as shown, and every edit made on them (see QueueDrag): worked out against what
+    // is on screen, named by entry, and put right by whatever the player reports next.
     val drag = remember { QueueDrag() }
     var dragOffset by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(upNext) { drag.show(upNext) }
-    // A move that brings no new queue within a moment was refused or changed nothing: the
-    // player's order is shown again.
-    val awaiting = drag.awaiting
-    LaunchedEffect(awaiting) {
-        if (awaiting == null) return@LaunchedEffect
-        kotlinx.coroutines.delay(SETTLE_MILLIS)
-        drag.settle()
-    }
     val rows = drag.rows
 
     fun send(move: org.medianexus.music.ui.player.EntryMove?) {
         if (move != null) player.move(move.uid, move.after, move.queued)
+    }
+
+    fun removeRow(row: QueueRow.Entry) {
+        drag.removeNow(row.key)
+        player.remove(row.uid)
     }
 
     fun dragBy(amount: Float) {
@@ -181,16 +181,19 @@ private fun QueueList() {
             SongLine(now, current = true, playing = playing, onClick = player::playPause, onMenu = { ui.menu = SongMenu(now) })
         }
         item(key = "next-heading", contentType = "heading") {
+            // As the rows show it, edits not yet answered included.
             when {
-                upNext.songs.isEmpty() -> Heading(stringResource(R.string.nothing_queued))
-                upNext.queuedAhead > 0 -> Heading(nextInQueue, stringResource(R.string.clear_queue)) { player.clear(queued = true) }
+                rows.isEmpty() -> Heading(stringResource(R.string.nothing_queued))
+                (rows.first() as? QueueRow.Entry)?.queued == true -> Heading(nextInQueue, stringResource(R.string.clear_queue)) { player.clear(queued = true) }
                 else -> Heading(nextFrom, stringResource(R.string.clear)) { player.clear(queued = false) }
             }
         }
         itemsIndexed(rows, key = { _, row -> row.key }, contentType = { _, row -> if (row is QueueRow.Gap) "gap" else "song" }) { index, row ->
             val lifted = row.key == drag.dragging
+            // A row taken out goes at once, not faded out: if the player then turns the removal
+            // down, it comes back as a row of its own, not one still swiped off to the side.
             val place = Modifier
-                .then(if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = dragOffset } else Modifier.animateItem())
+                .then(if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = dragOffset } else Modifier.animateItem(fadeOutSpec = null))
             when (row) {
                 QueueRow.Gap -> Box(place.height(ROW), contentAlignment = Alignment.BottomStart) {
                     Heading(nextFrom, stringResource(R.string.clear)) { player.clear(queued = false) }
@@ -198,28 +201,19 @@ private fun QueueList() {
                 is QueueRow.Entry -> {
                     // For screen readers: a step up or down, against the rows as shown. Only
                     // offered where it does something.
-                    val stepTo = { target: Int ->
-                        val snapshot = upNext
-                        val rowsNow = QueueRows.of(snapshot.songs, snapshot.queuedAhead, snapshot.uids)
-                        val at = rowsNow.indexOfFirst { it.key == row.key }
-                        if (at >= 0 && target in rowsNow.indices) send(QueueRows.entryMove(snapshot, at, target))
-                    }
                     val actions = buildList {
-                        if (index > 0) add(CustomAccessibilityAction(moveUp) { stepTo(index - 1); true })
-                        if (index < rows.lastIndex) add(CustomAccessibilityAction(moveDown) { stepTo(index + 1); true })
-                        add(CustomAccessibilityAction(removeWord) { player.remove(row.uid); true })
+                        if (index > 0) add(CustomAccessibilityAction(moveUp) { send(drag.step(row.key, -1)); true })
+                        if (index < rows.lastIndex) add(CustomAccessibilityAction(moveDown) { send(drag.step(row.key, 1)); true })
+                        add(CustomAccessibilityAction(removeWord) { removeRow(row); true })
                     }
-                    SwipeAway(row.key, onGone = {
-                        drag.removeNow(row.key)
-                        player.remove(row.uid)
-                    }, modifier = place) {
+                    SwipeAway(row.key, onGone = { removeRow(row) }, modifier = place) {
                         SongLine(
                             row.song,
                             current = false,
                             playing = false,
                             lifted = lifted,
                             onClick = { player.jump(row.uid) },
-                            onMenu = { ui.menu = SongMenu(row.song, upcoming = row.uid) },
+                            onMenu = { ui.menu = SongMenu(row.song, upcoming = row.uid, remove = { removeRow(row) }) },
                             handle = Modifier.pointerInput(row.key) {
                                 detectDragGestures(
                                     onDragStart = {
@@ -251,10 +245,6 @@ private fun QueueList() {
 
 /** Whether a list key is one of the queue's own rows. */
 private fun isRowKey(key: Any): Boolean = key is String && (key == "gap" || (key.length > 1 && key[0] == 'u'))
-
-/** How long a move sent may take to come back as a new queue before the sheet takes it that
- *  nothing changed. */
-private const val SETTLE_MILLIS = 1_000L
 
 @Composable
 private fun Heading(text: String, action: String? = null, onAction: () -> Unit = {}) {
@@ -346,8 +336,14 @@ private fun SwipeAway(key: String, onGone: () -> Unit, modifier: Modifier = Modi
                         onDragEnd = {
                             if (abs(shift.value) > size.width * 0.4f) {
                                 scope.launch {
-                                    shift.animateTo(if (shift.value > 0) size.width.toFloat() else -size.width.toFloat(), tween(160))
-                                    onGone()
+                                    try {
+                                        shift.animateTo(if (shift.value > 0) size.width.toFloat() else -size.width.toFloat(), tween(160))
+                                        onGone()
+                                    } finally {
+                                        // Gone from the list now (or, interrupted, never sent):
+                                        // either way, if this row is shown again it is whole.
+                                        withContext(NonCancellable) { shift.snapTo(0f) }
+                                    }
                                 }
                             } else {
                                 scope.launch { shift.animateTo(0f, tween(180)) }
