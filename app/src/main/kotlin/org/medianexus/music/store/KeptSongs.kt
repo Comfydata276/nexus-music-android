@@ -7,6 +7,8 @@ import androidx.media3.database.DatabaseProvider
 import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheEvictor
 import androidx.media3.datasource.cache.CacheSpan
+import androidx.media3.datasource.cache.ContentMetadata
+import androidx.media3.datasource.cache.ContentMetadataMutations
 import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
 import java.util.TreeSet
@@ -26,7 +28,9 @@ class KeptSongs(private val dir: File, private val database: DatabaseProvider, p
     private val shared = SharedResource<SimpleCache>(
         // Only one may be open on a folder at a time. If the one before is still closing
         // (the same account signed out and straight back in), this read goes without.
-        open = { if (SimpleCache.isCacheFolderLocked(dir)) null else SimpleCache(dir, evictor, database) },
+        // Opened, it is cleared of conversions that were never marked whole: what a read left
+        // behind when the app was stopped part-way through one.
+        open = { if (SimpleCache.isCacheFolderLocked(dir)) null else SimpleCache(dir, evictor, database).also(WholeMark::sweep) },
         close = { it.release() },
     )
 
@@ -54,6 +58,81 @@ class KeptSongs(private val dir: File, private val database: DatabaseProvider, p
 
     /** No more reads; the cache is released when the ones under way have closed. */
     fun close() = shared.close()
+}
+
+/**
+ * The mark of our own on a conversion that was kept whole.
+ *
+ * Media3's cache knows which bytes of a song it has and how long it believes the song is,
+ * and for a file as it is on the server that is enough: the server says how long it is. A
+ * conversion comes with no length, so the cache takes the length from wherever the stream
+ * stopped, and a conversion that stopped early (cleanly: no error, just an end) then looks
+ * exactly like a whole one, every byte present up to its "length". It also writes the last
+ * of a song only as its writer closes, after the read has ended. So "this conversion is the
+ * whole song" is not something the cache can be asked: it is noted here, in the cache's own
+ * record of the song, once the write has closed and the result has been checked
+ * (`SongReader.close`). A conversion without the mark is never played from the kept songs,
+ * and is cleared away.
+ *
+ * The mark carries a version: raise [VERSION] and every conversion kept until now stops
+ * counting, and is fetched afresh.
+ */
+@OptIn(UnstableApi::class)
+object WholeMark {
+    const val VERSION = 1
+    private const val KEY = ContentMetadata.KEY_CUSTOM_PREFIX + "nexus_whole"
+
+    /** The length of the song kept under `key` if every byte of it is there; -1 otherwise.
+     *  For a file as it is on the server, whose length the server gave. */
+    fun cached(cache: Cache, key: String): Long {
+        val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
+        return if (length > 0 && cache.isCached(key, 0, length)) length else -1
+    }
+
+    /** The length of the conversion kept under `key`, if it is marked whole (by this
+     *  version) and is all still there; -1 otherwise. */
+    fun length(cache: Cache, key: String): Long {
+        val marked = cache.getContentMetadata(key).get(KEY, null as String?) ?: return -1
+        val length = marked.substringAfter(':', "").toLongOrNull() ?: return -1
+        if (marked.substringBefore(':') != VERSION.toString()) return -1
+        return if (length > 0 && cached(cache, key) == length) length else -1
+    }
+
+    /** Marks the conversion kept under `key` whole, if exactly `length` bytes of it are kept.
+     *  Returns whether it was marked. */
+    fun put(cache: Cache, key: String, length: Long): Boolean {
+        if (length <= 0 || cached(cache, key) != length) return false
+        return try {
+            cache.applyContentMetadataMutations(key, ContentMetadataMutations().set(KEY, "$VERSION:$length"))
+            true
+        } catch (_: Cache.CacheException) {
+            false
+        }
+    }
+
+    /** Forgets what is kept under `key`, mark and all. */
+    fun drop(cache: Cache, key: String) {
+        cache.removeResource(key)
+        // The cache's record of a song goes with its last byte, unless something still has
+        // it open: then the mark is taken off by hand.
+        if (cache.getContentMetadata(key).get(KEY, null as String?) != null) {
+            try {
+                cache.applyContentMetadataMutations(key, ContentMetadataMutations().remove(KEY))
+            } catch (_: Cache.CacheException) {
+                // Without all its bytes it doesn't count as whole anyway.
+            }
+        }
+    }
+
+    /** Whether a kept-song key is a conversion's (see `cacheKey`: the song's id, then the
+     *  bit rate asked for, which is 0 for a file as it is). */
+    fun isConversion(key: String): Boolean = key.startsWith("song:") && (key.substringAfterLast(':').toIntOrNull() ?: 0) > 0
+
+    /** Clears away every conversion that isn't marked whole. For when the cache is opened:
+     *  nothing is reading or writing it yet. */
+    fun sweep(cache: Cache) {
+        for (key in cache.keys.toList()) if (isConversion(key) && length(cache, key) < 0) drop(cache, key)
+    }
 }
 
 /**

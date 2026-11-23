@@ -120,7 +120,7 @@ class SongReaderTest {
     /** The kept songs: what the cache data source does, in a map. It keeps what goes by,
      *  from the start, and knows a copy's length once it has been read to its end. */
     private inner class Streams(private val keeps: Boolean = true) : SongStreams {
-        inner class Kept(val bytes: ByteArrayOutputStream = ByteArrayOutputStream(), var length: Long = -1)
+        inner class Kept(val bytes: ByteArrayOutputStream = ByteArrayOutputStream(), var length: Long = -1, var marked: Boolean = false)
         val kept = HashMap<String, Kept>()
         /** A kept copy that fails after this many bytes are read from it (-1: never). */
         var keptFailsAfter = -1L
@@ -202,7 +202,14 @@ class SongReaderTest {
             )
         }
 
-        override fun wholeLength(key: String): Long = kept[key]?.takeIf { it.length >= 0 && it.bytes.size().toLong() == it.length }?.length ?: -1
+        override fun wholeLength(key: String, converted: Boolean): Long =
+            kept[key]?.takeIf { it.length >= 0 && it.bytes.size().toLong() == it.length && (it.marked || !converted) }?.length ?: -1
+
+        override fun keep(key: String, length: Long): Boolean {
+            val entry = kept[key]?.takeIf { it.length == length && it.bytes.size().toLong() == length } ?: return false
+            entry.marked = true
+            return true
+        }
 
         override fun drop(key: String) {
             kept.remove(key)

@@ -40,11 +40,40 @@ interface SongStreams {
     fun keptOnly(key: String, position: Long): Opened
 
     /** How long the kept copy under `key` is, if it is whole (every byte from the first to
-     *  a known end); -1 if there is none, or only part of one. */
-    fun wholeLength(key: String): Long
+     *  a known end); -1 if there is none, or only part of one. A conversion (`converted`) is
+     *  whole only if it was marked so when it was kept ([keep]): that its bytes are all there
+     *  up to the length the cache has for it says nothing, as a conversion that ended early
+     *  has all its bytes too. */
+    fun wholeLength(key: String, converted: Boolean = true): Long
+
+    /**
+     * Marks the conversion kept under `key` as whole, `length` bytes long. Only to be called
+     * once the read that kept it has closed (the cache writes the last of a song as its
+     * writer closes) and the conversion has been judged whole. False, and nothing marked, if
+     * what is kept is not exactly those bytes.
+     */
+    fun keep(key: String, length: Long): Boolean
 
     /** Forgets whatever is kept under `key`. */
     fun drop(key: String)
+}
+
+/**
+ * The conversions being kept right now, by kept-song key. Only one read at a time writes a
+ * conversion into the kept songs: a second read of the same one, while the first is still
+ * going, is given the server's bytes alone and keeps nothing. Two at once would each be
+ * handed parts of the other's (Media3's cache switches a read over to whatever has been kept
+ * so far, and back to the server, asking it for a byte range a conversion ignores).
+ */
+class ConversionWriters {
+    private val writing = ConcurrentHashMap.newKeySet<String>()
+
+    /** Whether this read is now the one keeping `key`; it must [release] it when it closes. */
+    fun claim(key: String): Boolean = writing.add(key)
+
+    fun release(key: String) {
+        writing.remove(key)
+    }
 }
 
 /**
@@ -197,11 +226,15 @@ class HeadSniffer {
  * - **It is kept only whole**: read from the first byte to a clean end, and at least as long
  *   as Windows requires of one (`least`, from `least_bytes` in src/playback.rs: four fifths
  *   of what the song's length comes to at the lower of the rate asked for and the file's
- *   own). Anything less is forgotten the moment the read closes. A kept copy is used only
- *   if it is whole, and then nothing is asked of the server at all; part of one is never
- *   pieced together with the server's bytes.
+ *   own). That is judged when the read has closed, not when it ends: Media3's cache writes
+ *   the last of what it was given as its writer closes, so anything decided before then is
+ *   decided about a copy that isn't finished. A copy that passes is marked whole
+ *   ([SongStreams.keep]); one that doesn't is forgotten. A kept copy is used only if it
+ *   carries the mark, and then nothing is asked of the server at all; part of one is never
+ *   pieced together with the server's bytes, and one read at a time keeps a conversion
+ *   ([ConversionWriters]).
  */
-class SongReader(private val streams: SongStreams, private val heads: ConversionHeads) {
+class SongReader(private val streams: SongStreams, private val heads: ConversionHeads, private val writers: ConversionWriters = ConversionWriters()) {
     private var where: SongWhere? = null
     private var source: ByteSource? = null
     /** The place in the whole stream of the next byte to be given. */
@@ -214,6 +247,8 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
     /** Reading a conversion from its start, by way of the kept songs: it is kept if this
      *  read reaches a clean end and is long enough. */
     private var keeping = false
+    /** The kept-song key this read holds as its writer (see [ConversionWriters]), if any. */
+    private var claimed: String? = null
     private var fromKept = false
     private var ended = false
     private var offline = false
@@ -241,7 +276,7 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         endsAt = -1
         this.offline = offline
         if (offline) {
-            val whole = streams.wholeLength(where.key)
+            val whole = streams.wholeLength(where.key, where.form.converted)
             if (whole < 0) throw NotKeptOffline()
             source = streams.keptOnly(where.key, at).source
             fromKept = true
@@ -272,9 +307,22 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
     private fun fresh(where: SongWhere, at: Long): Long {
         fromKept = false
         if (at == 0L) {
-            // Whatever is kept is not whole (or it would have been used): start it again.
-            streams.drop(where.key)
-            val kept = streams.kept(where.stream(0), where.key, 0)
+            // Kept as it goes by, unless another read is keeping this same conversion right
+            // now: then this one is the server's bytes alone, and touches nothing kept.
+            val kept = if (writers.claim(where.key)) {
+                claimed = where.key
+                try {
+                    // Whatever is kept is not whole (or it would have been used): start it again.
+                    streams.drop(where.key)
+                    streams.kept(where.stream(0), where.key, 0)
+                } catch (e: IOException) {
+                    unclaim()
+                    throw e
+                }
+            } else {
+                null
+            }
+            if (kept == null) unclaim()
             keeping = kept != null
             val opened = kept ?: streams.server(where.stream(0), 0)
             source = opened.source
@@ -338,14 +386,17 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         return got
     }
 
-    /** The source has ended. */
+    /** The source has ended. Whether what was kept of it is worth keeping is decided when
+     *  the read closes (see [close]). */
+    @Suppress("UNUSED_PARAMETER")
     private fun finish(where: SongWhere): Int {
         ended = true
-        // A conversion kept as it was read: only if it is as long as a whole one must be.
-        // A server (or something between) that ends one early ends it cleanly, and that
-        // must not be taken for the whole song ever after.
-        if (keeping && position < where.least) streams.drop(where.key)
         return -1
+    }
+
+    private fun unclaim() {
+        claimed?.let(writers::release)
+        claimed = null
     }
 
     fun close() {
@@ -353,9 +404,18 @@ class SongReader(private val streams: SongStreams, private val heads: Conversion
         try {
             source?.close()
         } finally {
-            // Closed before its end (a seek, the next song, a dropped connection): what was
-            // kept of it is only part, and isn't kept.
-            if (where != null && keeping && !ended) streams.drop(where.key)
+            if (where != null && keeping) {
+                // Only now is everything that went by in the kept songs: the cache wrote the
+                // last of it as its writer closed, just above. A conversion is kept if it was
+                // read to a clean end and is as long as a whole one must be: a server (or
+                // something between) that ends one early ends it cleanly, and that must not be
+                // taken for the whole song ever after. Closed before its end (a seek, the next
+                // song, a dropped connection), what was kept is only part. Anything but a
+                // whole one is forgotten.
+                val whole = ended && position >= where.least && runCatching { streams.keep(where.key, position) }.getOrDefault(false)
+                if (!whole) runCatching { streams.drop(where.key) }
+            }
+            unclaim()
             source = null
             this.where = null
             keeping = false

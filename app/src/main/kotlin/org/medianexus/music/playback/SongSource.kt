@@ -12,9 +12,9 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.ContentMetadata
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import org.medianexus.music.store.WholeMark
 
 /** The form a song's audio is fetched in: the bit rate asked of the server (0 for the file
  *  as it is) and the kind of file that comes back. */
@@ -127,6 +127,7 @@ class SongDataSource(
     private val generation: Long,
     private val upstream: DataSource.Factory,
     private val heads: ConversionHeads,
+    private val writers: ConversionWriters,
 ) : DataSource {
     private val listeners = mutableListOf<TransferListener>()
     private var lease: SongLease? = null
@@ -151,7 +152,7 @@ class SongDataSource(
         // Refused here if the account this was made for has gone.
         val lease = leases.lease(generation).also { this.lease = it }
         val where = lease.resolve(id)
-        val reader = SongReader(Streams(lease.cache, dataSpec), heads).also { this.reader = it }
+        val reader = SongReader(Streams(lease.cache, dataSpec), heads, writers).also { this.reader = it }
         return guarded { reader.open(where, dataSpec.position, lease.offline) }
     }
 
@@ -227,14 +228,15 @@ class SongDataSource(
             return open(only, DataSpec.Builder().setUri(Uri.EMPTY).setKey(key).setPosition(position).build())
         }
 
-        override fun wholeLength(key: String): Long {
+        override fun wholeLength(key: String, converted: Boolean): Long {
             val cache = cache ?: return -1
-            val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
-            return if (length > 0 && cache.isCached(key, 0, length)) length else -1
+            return if (converted) WholeMark.length(cache, key) else WholeMark.cached(cache, key)
         }
 
+        override fun keep(key: String, length: Long): Boolean = cache?.let { WholeMark.put(it, key, length) } ?: false
+
         override fun drop(key: String) {
-            cache?.removeResource(key)
+            cache?.let { WholeMark.drop(it, key) }
         }
 
         private fun http(): DataSource = upstream.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }
@@ -279,8 +281,9 @@ class SongDataSource(
     /** Makes one for each read the player starts, for the account signed in at that moment. */
     class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory) : DataSource.Factory {
         private val heads = ConversionHeads()
+        private val writers = ConversionWriters()
 
-        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream, heads)
+        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream, heads, writers)
     }
 }
 
