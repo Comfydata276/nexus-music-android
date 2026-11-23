@@ -86,7 +86,7 @@ class SettingsStoreTest {
         SettingsStore.save(path, Settings(username = "first"))
         SettingsStore.save(path, Settings(username = "second"))
         assertEquals("second", SettingsStore.read(path)!!.username)
-        assertFalse(File(dir, "settings.tmp").exists())
+        assertTrue(dir.list()!!.none { it.endsWith(".tmp") })
         // Written with the Windows app's field names.
         assertTrue(path.readText().contains("\"cache_limit_mb\": 2048"))
     }
@@ -216,8 +216,7 @@ class SettingsStoreTest {
         path.writeText("{")
         assertEquals(SettingsDamage.UsedBackup, SettingsStore.loadChecked(path).second)
         assertEquals("Ocean", SettingsStore.read(path)!!.theme)
-        assertFalse(File(dir, "settings.tmp").exists())
-        assertFalse(File(dir, "settings.backup.tmp").exists())
+        assertTrue(dir.list()!!.none { it.endsWith(".tmp") })
     }
 
     @Test

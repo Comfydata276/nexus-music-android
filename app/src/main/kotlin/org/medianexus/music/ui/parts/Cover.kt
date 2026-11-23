@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,19 +56,41 @@ fun Cover(
         contentAlignment = Alignment.Center,
     ) {
         var shown by remember(cover) { mutableStateOf(false) }
+        // Now Playing's large copy, once it has drawn: the usual one was only standing in
+        // for it, and leaves, so the two aren't both decoded and held for one place.
+        var largeShown by remember(cover) { mutableStateOf(false) }
+        // Asked for again when the server can be reached again, if it failed.
+        var failed by remember(cover) { mutableStateOf(false) }
+        val tries by CoverRetry.tries.collectAsState()
+        val attempt = if (failed) tries else 0
         if (!shown) Icon(placeholder, Modifier.glyphSize(), tint = Theme.colors.faint)
         if (cover.isNotEmpty()) {
-            val art = remember(cover) { CoverArt(cover) }
-            AsyncImage(
-                art,
-                contentDescription = null,
-                modifier = Modifier.matchParentSize(),
-                contentScale = ContentScale.Crop,
-                onSuccess = { shown = true },
-            )
+            if (!largeShown) {
+                val art = remember(cover, attempt) { CoverArt(cover, attempt = attempt) }
+                AsyncImage(
+                    art,
+                    contentDescription = null,
+                    modifier = Modifier.matchParentSize(),
+                    contentScale = ContentScale.Crop,
+                    onSuccess = {
+                        shown = true
+                        failed = false
+                    },
+                    onError = { failed = true },
+                )
+            }
             if (large) {
                 val big = remember(cover) { CoverArt(cover, large = true) }
-                AsyncImage(big, contentDescription = null, modifier = Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+                AsyncImage(
+                    big,
+                    contentDescription = null,
+                    modifier = Modifier.matchParentSize(),
+                    contentScale = ContentScale.Crop,
+                    onSuccess = {
+                        shown = true
+                        largeShown = true
+                    },
+                )
             }
         }
     }

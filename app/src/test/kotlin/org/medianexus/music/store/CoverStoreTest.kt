@@ -182,4 +182,61 @@ class CoverStoreTest {
         // Down to three quarters of the budget: the newest six stay.
         assertEquals((5..10).map { "c$it.${CoverStore.SIZE}" }.toSet(), folder.root.list()!!.toSet())
     }
+
+    @Test
+    fun bothSizesWrittenAtOnceEachKeepTheirOwnBytes() = runBlocking {
+        // Straight through the shared helper, many times over: before, both wrote "al-7.tmp".
+        val small = ByteArray(200_000) { 1 }
+        val big = ByteArray(300_000) { 2 }
+        repeat(40) {
+            val a = scope.async { writeAtomically(java.io.File(folder.root, "al-7.640"), small) }
+            val b = scope.async { writeAtomically(java.io.File(folder.root, "al-7.1200"), big) }
+            a.await()
+            b.await()
+            assertArrayEquals(small, java.io.File(folder.root, "al-7.640").readBytes())
+            assertArrayEquals(big, java.io.File(folder.root, "al-7.1200").readBytes())
+        }
+        // And through the store, the server answering both at once.
+        val gate = CompletableDeferred<Unit>()
+        val smallJpeg = jpeg + ByteArray(5000) { 3 }
+        val bigJpeg = jpeg + ByteArray(9000) { 4 }
+        val covers = store { _, size -> gate.await(); if (size == CoverStore.LARGE) bigJpeg else smallJpeg }
+        val one = scope.async { covers.file("al-8") }
+        val two = scope.async { covers.file("al-8", CoverStore.LARGE) }
+        gate.complete(Unit)
+        assertArrayEquals(smallJpeg, one.await()!!.readBytes())
+        assertArrayEquals(bigJpeg, two.await()!!.readBytes())
+        assertTrue(folder.root.list()!!.none { it.endsWith(".tmp") })
+    }
+
+    @Test
+    fun aFetchNobodyWaitsForAnyMoreIsDroppedBeforeItsTurn() = runBlocking {
+        val gate = CompletableDeferred<Unit>()
+        val asked = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val covers = store { id, _ -> asked += id; gate.await(); jpeg }
+        // Every turn taken by a cover still wanted...
+        val wanted = (1..CoverStore.FETCHES_AT_ONCE).map { scope.async { covers.file("on-$it") } }
+        withTimeout(5_000) { while (asked.size < CoverStore.FETCHES_AT_ONCE) delay(5) }
+        // ...and one more waits for a turn, then scrolls away.
+        val gone = scope.async { covers.file("gone-1") }
+        delay(50)
+        gone.cancel()
+        delay(50)
+        gate.complete(Unit)
+        wanted.forEach { assertNotNull(it.await()) }
+        delay(100)
+        assertTrue(asked.toString(), "gone-1" !in asked)
+        // Asked for again later, it is fetched as usual.
+        assertNotNull(covers.file("gone-1"))
+    }
+
+    @Test
+    fun aCoverIsNeverFetchedTwice() = runBlocking {
+        val fetches = AtomicInteger()
+        val covers = store { _, _ -> fetches.incrementAndGet(); delay(20); jpeg }
+        val all = (1..20).map { scope.async { covers.file("al-once") } }
+        all.forEach { assertNotNull(it.await()) }
+        (1..5).map { scope.async { covers.file("al-once") } }.forEach { it.await() }
+        assertEquals(1, fetches.get())
+    }
 }

@@ -9,6 +9,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -39,8 +41,6 @@ class CoverStore(
     /** Covers kept at most, on disk. */
     private val budget: Long = DISK_BUDGET,
 ) {
-    private val inFlight = ConcurrentHashMap<String, Deferred<File?>>()
-
     /** When each cover that couldn't be fetched last failed, oldest first. Never more than
      *  [MOST_FAILURES]: a car asking for covers that don't exist can't make it grow. */
     private val failedAt = object : LinkedHashMap<String, Long>() {
@@ -70,7 +70,14 @@ class CoverStore(
     suspend fun file(id: String, size: Int = SIZE): File? {
         val file = fileFor(id, size) ?: return null
         if (withContext(io) { file.isFile && file.length() > 0 }) return file
-        return start(id, size, file)?.await()
+        val entry = start(id, size, file) ?: return null
+        return try {
+            await(file.name, entry)
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // Dropped because nobody else was waiting; this caller is being cancelled anyway.
+            currentCoroutineContext().ensureActive()
+            null
+        }
     }
 
     /**
@@ -88,7 +95,7 @@ class CoverStore(
             outside.decrementAndGet()
             return null
         }
-        val fetch = start(id, SIZE, file)
+        val fetch = start(id, SIZE, file, kept = true)?.job
         if (fetch == null) {
             outside.decrementAndGet()
             return null
@@ -97,22 +104,64 @@ class CoverStore(
         return withTimeoutOrNull(waitMillis) { fetch.await() }
     }
 
-    /** The fetch of this cover: the one under way, or a new one. Null if it failed lately. */
-    private fun start(id: String, size: Int, file: File): Deferred<File?>? {
+    /** A fetch shared by everyone waiting on one cover. `waiting` counts the screens that
+     *  still want it; `begun` is set once it has a turn to fetch. */
+    private class Shared(val job: Deferred<File?>) {
+        var waiting = 0
+        var begun = false
+        /** Started for another app, which doesn't say when it stops waiting: never dropped. */
+        var kept = false
+    }
+
+    private val shared = ConcurrentHashMap<String, Shared>()
+
+    /**
+     * The fetch of this cover: the one under way, or a new one. Null if it failed lately.
+     * A screen waiting on it is counted in, and out again if it stops waiting (the row
+     * scrolled away): a fetch that every screen has stopped waiting for, and that hasn't had
+     * its turn yet, is dropped, so a fling through a grid doesn't leave dozens queued behind
+     * the covers now on screen.
+     */
+    private fun start(id: String, size: Int, file: File, kept: Boolean = false): Shared? {
         val key = file.name
         if (failedLately(key)) return null
-        val shared = inFlight.computeIfAbsent(key) {
-            // On the store's scope, so a caller giving up doesn't stop the fetch for another.
-            scope.async(io, start = CoroutineStart.LAZY) {
-                try {
-                    fetching.withPermit { download(id, size, file) }
-                } finally {
-                    inFlight.remove(key)
+        val entry = synchronized(shared) {
+            shared.getOrPut(key) {
+                lateinit var made: Shared
+                // On the store's scope, so a caller giving up doesn't stop the fetch for another.
+                val job = scope.async(io, start = CoroutineStart.LAZY) {
+                    try {
+                        fetching.withPermit {
+                            synchronized(shared) { made.begun = true }
+                            // Fetched meanwhile by a fetch that has just ended (the two can
+                            // pass in the moment between its end and this one's start).
+                            if (file.isFile && file.length() > 0) file else download(id, size, file)
+                        }
+                    } finally {
+                        synchronized(shared) { if (shared[key] === made) shared.remove(key) }
+                    }
                 }
+                made = Shared(job)
+                made
+            }.also {
+                it.waiting++
+                if (kept) it.kept = true
             }
         }
-        shared.start()
-        return shared
+        entry.job.start()
+        return entry
+    }
+
+    /** Waits for a shared fetch; if this was the last one waiting and it hasn't begun, it is
+     *  dropped. */
+    private suspend fun await(key: String, entry: Shared): File? = try {
+        entry.job.await()
+    } finally {
+        val drop = synchronized(shared) {
+            entry.waiting--
+            (entry.waiting <= 0 && !entry.begun && !entry.kept).also { if (it && shared[key] === entry) shared.remove(key) }
+        }
+        if (drop) entry.job.cancel()
     }
 
     private fun failedLately(key: String): Boolean = synchronized(failedAt) {
@@ -169,6 +218,9 @@ class CoverStore(
      *  to three quarters of it, as Windows does. */
     suspend fun trim(budget: Long = this.budget) = withContext(io) {
         folder.withLock {
+            // What a write cut short by the app being stopped left behind; never a write under
+            // way, as those happen under this lock too.
+            sweepTemporaries(dir)
             val files = dir.listFiles()?.filter { it.isFile } ?: return@withLock
             var kept = files.sumOf { it.length() }
             if (kept > budget) {

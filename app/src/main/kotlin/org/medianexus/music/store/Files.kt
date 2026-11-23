@@ -12,15 +12,7 @@ import java.nio.file.StandardCopyOption
  * each: the bytes go to a file beside it, reach the disk, and then take its place.
  */
 @Throws(IOException::class)
-fun writeAtomically(file: File, bytes: ByteArray) {
-    file.parentFile?.mkdirs()
-    val temp = siblingWithExtension(file, "tmp")
-    FileOutputStream(temp).use { out ->
-        out.write(bytes)
-        out.fd.sync()
-    }
-    Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-}
+fun writeAtomically(file: File, bytes: ByteArray) = writeAtomically(file) { it.write(bytes) }
 
 /**
  * As above, for something too big to hold in memory twice over: `write` puts it straight
@@ -30,7 +22,7 @@ fun writeAtomically(file: File, bytes: ByteArray) {
 @Throws(IOException::class)
 fun writeAtomically(file: File, write: (java.io.OutputStream) -> Unit) {
     file.parentFile?.mkdirs()
-    val temp = siblingWithExtension(file, "tmp")
+    val temp = temporaryFor(file)
     try {
         FileOutputStream(temp).use { out ->
             val buffered = out.buffered(64 * 1024)
@@ -42,11 +34,34 @@ fun writeAtomically(file: File, write: (java.io.OutputStream) -> Unit) {
         temp.delete()
         throw e
     }
-    Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+    try {
+        Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+    } catch (e: IOException) {
+        temp.delete()
+        throw e
+    }
+}
+
+/**
+ * A file beside `file` for one write to go to first, that no other write uses: two writes at
+ * once (a cover's two sizes, say, or two saves of one page) each have their own, so neither
+ * can write into the other's or move the other's half-written bytes into place. Named after
+ * the whole name ("al-1.640", not "al-1"), and starting with a dot, so nothing that lists a
+ * folder's files mistakes it for one of them for long, and a sweep can find what an
+ * interrupted write left ([sweepTemporaries]).
+ */
+internal fun temporaryFor(file: File): File =
+    File(file.parentFile, ".${file.name}.${java.lang.Long.toHexString(serial.incrementAndGet())}-${java.lang.Long.toHexString(System.nanoTime())}.tmp")
+
+private val serial = java.util.concurrent.atomic.AtomicLong()
+
+/** Deletes what writes cut short (the app killed part-way) left in `dir`. */
+fun sweepTemporaries(dir: File) {
+    dir.listFiles()?.forEach { if (it.isFile && it.name.startsWith('.') && it.name.endsWith(".tmp")) it.delete() }
 }
 
 /** `settings.json` with its extension changed, as Rust's `with_extension` does it:
- *  `settings.backup.json`, `settings.tmp`. */
+ *  `settings.backup.json`, `settings.damaged.json`. */
 fun siblingWithExtension(file: File, extension: String): File {
     val name = file.name
     val dot = name.lastIndexOf('.')
