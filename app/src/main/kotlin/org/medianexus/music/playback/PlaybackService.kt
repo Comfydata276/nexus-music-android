@@ -585,14 +585,6 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- The queue changing -----------------------------------------------------------------
 
-    /**
-     * Counts the times something was asked to start playing. A start that has to look
-     * something up first (the car choosing a song, a spoken request) takes the number as it
-     * begins and is dropped if another start has begun by the time it is ready: a slow answer
-     * to the car must not replace what was chosen on the phone meanwhile.
-     */
-    private var starts = 0L
-
     private fun queueChanged() {
         val queue = player.queue
         // Shuffle and repeat are settings, and the list being played remembers its shuffle.
@@ -1070,7 +1062,10 @@ class PlaybackService : MediaLibraryService() {
                 tryAgainNow(target)
                 return com.google.common.util.concurrent.Futures.immediateFailedFuture(UnsupportedOperationException("Not something to play"))
             }
-            val mine = ++starts
+            // A start: it takes its number now, before anything is looked up (see
+            // QueuePlayer.beginStart), and is dropped if a newer one has begun by the time it
+            // is ready.
+            val mine = player.beginStart()
             return setMediaItems(mine, controller, mediaItems, startIndex, startPositionMs)
         }
 
@@ -1084,20 +1079,14 @@ class PlaybackService : MediaLibraryService() {
                 val asked = mediaItems.singleOrNull() ?: throw refuse(controller, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.nothing_to_play)))
                 val words = asked.requestMetadata.searchQuery
                 try {
-                    if (words != null) {
-                        val spoken = inTime { voice(era, controller, words, asked.requestMetadata.extras) }
-                        if (mine != starts) throw UnsupportedOperationException("Overtaken by a newer choice")
-                        return@answer spoken
-                    }
+                    if (words != null) return@answer inTime { voice(mine, era, controller, words, asked.requestMetadata.extras) }
                     val list = when (val chosen = CarIds.parse(asked.mediaId)) {
                         is CarNode.Track -> inTime { tree.play(chosen) }
                         // "Shuffle", at the top of a list: the whole list, shuffled.
                         is CarNode.Shuffle -> inTime { tree.shuffled(chosen.list) }
                         else -> throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
                     } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play, asked.mediaMetadata.title ?: "")))
-                    // Something else was chosen while this was being looked up: that stands.
-                    if (mine != starts) throw UnsupportedOperationException("Overtaken by a newer choice")
-                    staged(list)
+                    staged(mine, era, list)
                 } catch (e: ApiError) {
                     throw refuse(controller, trouble(controller, e))
                 }
@@ -1169,8 +1158,7 @@ class PlaybackService : MediaLibraryService() {
                 AppActions.PLAY -> {
                     // A choice made on the phone: anything still being looked up for the car
                     // has been overtaken.
-                    val mine = ++starts
-                    if (AppCommands.byPage(args)) playPage(mine, args) else AppCommands.handle(player, customCommand, args, ::shuffleFor)
+                    if (AppCommands.byPage(args)) playPage(player.beginStart(), args) else AppCommands.handle(player, customCommand, args, ::shuffleFor)
                 }
                 else -> AppCommands.handle(player, customCommand, args, ::shuffleFor)
             }
@@ -1194,14 +1182,19 @@ class PlaybackService : MediaLibraryService() {
             val next = withContext(Dispatchers.Default) {
                 era.account.library.keptSongs(source)?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle) }
             }
-            if (mine != starts || era !== this@PlaybackService.era) return@launch
+            // Something else has been chosen while this was being read (or the account has
+            // gone, which overtakes every start): that stands.
+            if (!player.stands(mine) || era !== this@PlaybackService.era) return@launch
             if (next == null) {
-                // The phone has cleared its copy away since the screen drew it. Nothing to
-                // start with; the screen's next refresh fetches it again.
+                // The list has nothing in it any more (emptied since the screen drew it, or
+                // the phone has cleared its copy away). Nothing is started, what was playing
+                // carries on, and the person is told why their tap did nothing.
+                graph.toasts.show(getString(R.string.list_is_empty_now))
                 if (BuildConfig.DEBUG) android.util.Log.w(TAG, "nothing kept to start $source from")
                 return@launch
             }
-            player.play(next)
+            // (Asks once more, at the moment of playing.)
+            player.playFor(mine, next)
         }
         return true
     }
@@ -1333,7 +1326,14 @@ class PlaybackService : MediaLibraryService() {
     private fun shuffleFor(source: String): Boolean =
         if (source.isEmpty()) player.queue.shuffle else graph.settings.value.lists[source]?.shuffle ?: false
 
-    private suspend fun staged(list: PlayList): MediaItemsWithStartPosition {
+    /**
+     * Makes a list into a queue and hands it to the session, for the start numbered `mine`
+     * and the account it began under. Whether that start still stands is asked here, at the
+     * moment of handing over, after the queue has been made (which, off the main thread, is
+     * when something else can be chosen): one that has been overtaken hands over nothing and
+     * disturbs nothing that a newer start has handed over.
+     */
+    private suspend fun staged(mine: Long, era: Era, list: PlayList): MediaItemsWithStartPosition {
         val shuffle = list.shuffle ?: shuffleFor(list.source)
         // Made into a queue off the main thread: a list can be thousands of songs.
         val next = withContext(Dispatchers.Default) {
@@ -1341,26 +1341,29 @@ class PlaybackService : MediaLibraryService() {
             val origins = if (list.source.isNotEmpty()) list.songs.indices.toList() else null
             player.prepare(list.songs, list.start, list.context, list.source, origins, list.songs.map { it.id }, shuffle, list.anyStart)
         }
-        val (items, start) = player.stage(next)
+        val (items, start) = (if (era === this.era) player.stage(next, mine) else null)
+            ?: throw UnsupportedOperationException("Overtaken by a newer choice")
         return MediaItemsWithStartPosition(items, start, 0)
     }
 
-    private suspend fun resume(era: Era, controller: MediaSession.ControllerInfo): MediaItemsWithStartPosition {
+    private suspend fun resume(mine: Long, era: Era, controller: MediaSession.ControllerInfo): MediaItemsWithStartPosition {
         val tree = era.tree
         // The saved queue is put back when the account is taken on; wait for that rather
         // than read the file a second time.
         era.restoring.await()
+        // ("Carry on" from a request that something newer has overtaken carries nothing on.)
+        if (!player.stands(mine)) throw UnsupportedOperationException("Overtaken by a newer choice")
         player.stageCurrent()?.let { (items, start) -> return MediaItemsWithStartPosition(items, start, exo.currentPosition) }
         val liked = try {
             inTime { tree.shuffledLiked() }
         } catch (e: ApiError) {
             throw refuse(controller, trouble(controller, e))
         }
-        return staged(liked ?: throw refuse(controller, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.nothing_to_play))))
+        return staged(mine, era, liked ?: throw refuse(controller, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.nothing_to_play))))
     }
 
     /** A spoken request: "play X on Nexus Music". */
-    private suspend fun voice(era: Era, controller: MediaSession.ControllerInfo, words: String, extras: Bundle?): MediaItemsWithStartPosition {
+    private suspend fun voice(mine: Long, era: Era, controller: MediaSession.ControllerInfo, words: String, extras: Bundle?): MediaItemsWithStartPosition {
         val tree = era.tree
         // Each is what a person said, however it got here: text, and no longer than a name.
         fun said(key: String) = runCatching { extras?.getString(key) }.getOrNull()?.let(VoiceAsk::tidy).orEmpty()
@@ -1373,11 +1376,11 @@ class PlaybackService : MediaLibraryService() {
             playlist = said(EXTRA_MEDIA_PLAYLIST),
             genre = said(EXTRA_MEDIA_GENRE),
         )
-        if (request.unnamed) return resume(era, controller)
+        if (request.unnamed) return resume(mine, era, controller)
         val list = tree.forVoice(request)
             ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find, request.searchWords())))
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "voice: $request -> ${list.context} (${list.songs.size} songs)")
-        return staged(list)
+        return staged(mine, era, list)
     }
 
     private fun <T> slice(all: List<T>, page: Int, pageSize: Int): List<T> {

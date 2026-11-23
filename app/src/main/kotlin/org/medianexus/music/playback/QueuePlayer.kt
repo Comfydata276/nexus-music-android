@@ -68,10 +68,33 @@ class QueuePlayer(
     fun songFor(id: String): Song? = held[id]
     private val main = Handler(Looper.getMainLooper())
 
-    /** A queue made ready for the session to hand to the player (see [stage]), and the
-     *  entry numbers of the items that were handed over for it. */
-    private var staged: Queue? = null
-    private var stagedUids: List<Long> = emptyList()
+    // ---- Starts, and which of them still stands -----------------------------------------------
+    //
+    // Something asked to start playing may have to look things up first (the car choosing a
+    // song, a spoken request, a long page named by a screen), and by the time it is ready
+    // something else may have been chosen. Each start takes a number as it begins
+    // ([beginStart]); only the newest stands. Whether one still stands is asked twice: when
+    // its queue is handed to the session ([stage]), and again when the session's items reach
+    // this player ([handleSetMediaItems]), because the session delivers them later and a
+    // choice can be made in between. A change of account overtakes every start ([clear]).
+
+    private var starts = 0L
+
+    /** Something has been asked to start playing: its number. Every start before it has
+     *  been overtaken. */
+    fun beginStart(): Long = ++starts
+
+    /** Whether the start with this number is still the newest. */
+    fun stands(ticket: Long): Boolean = ticket == starts
+
+    /** A queue handed to the session and not yet come back as media items: the entry numbers
+     *  of the items handed over, which start it was for (null: not a start, but the queue as
+     *  it stood, handed over to be carried on with), and the queue's revision then. */
+    private class Staged(val queue: Queue, val uids: List<Long>, val ticket: Long?, val revision: Long)
+
+    /** Those still on their way, oldest first. Each is told from the others by its items;
+     *  none can spoil another by being handed over after it. */
+    private val staged = ArrayList<Staged>()
 
     /** ExoPlayer's playlist, as [QueueSync] sees it. */
     private val playlist = object : QueueSync.Playlist {
@@ -154,25 +177,35 @@ class QueuePlayer(
     }
 
     override fun handleSetMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
-        val ready = staged
-        val handed = stagedUids
-        staged = null
-        stagedUids = emptyList()
         val given = mediaItems.map(::uidOf)
-        if (ready != null && given == handed) {
-            // A queue this player made ready itself (the car chose a song, or asked for one
-            // aloud): take it with everything known about it. (Unless it is this very queue,
-            // handed over to be started again where it is.)
-            if (ready !== queue) {
-                queue.adopt(ready)
+        val at = staged.indexOfLast { it.uids == given }
+        if (at >= 0) {
+            // A queue this player handed to the session itself. It, and anything handed
+            // over before it, is no longer on its way.
+            val ready = staged[at]
+            repeat(at + 1) { staged.removeAt(0) }
+            if (ready.ticket == null) {
+                // This very queue, handed over to be carried on with where it is: only if it
+                // is still the queue it was. (A newer choice has since replaced it otherwise,
+                // and starting that at the old one's place is nobody's wish.)
+                if (ready.queue !== queue || ready.revision != queue.revision) return Futures.immediateVoidFuture()
+            } else {
+                // A start (the car chose a song, or asked for one aloud): asked once more, now
+                // that it is here, whether it is still the newest. The session delivers these
+                // a moment after they were handed over, and a choice made on the phone in that
+                // moment stands.
+                if (!stands(ready.ticket)) return Futures.immediateVoidFuture()
+                queue.adopt(ready.queue)
                 anotherQueue()
             }
         } else if (given.isNotEmpty() && given.all { it != null }) {
-            // Items this player made ready, but not the ones ready now: a start that was
-            // overtaken by a newer choice while it was on its way here. Dropped.
+            // Items this player made ready, but for nothing that is still on its way: a start
+            // that was overtaken by a newer choice. Dropped.
             return Futures.immediateVoidFuture()
         } else {
-            // Someone else's list of songs, which plays as it is.
+            // Someone else's list of songs, which plays as it is: a start like any other.
+            beginStart()
+            staged.clear()
             val songs = mediaItems.map { songOf(it) }
             queue.replace(songs, if (startIndex == C.INDEX_UNSET) 0 else startIndex, context = "", shuffle = false)
             anotherQueue()
@@ -382,12 +415,21 @@ class QueuePlayer(
         play(prepare(songs, start, context, source, origins, sourceList, shuffle, anyStart), startPositionMs, playNow)
     }
 
-    /** Plays a queue made ready by [prepare]. */
+    /** Plays a queue made ready by [prepare], now: a start of its own, the newest. */
     fun play(next: Queue, startPositionMs: Long = 0, playNow: Boolean = true) {
         if (next.isEmpty) return
-        // A queue made ready earlier and not yet handed over has been overtaken.
-        staged = null
-        stagedUids = emptyList()
+        playFor(beginStart(), next, startPositionMs, playNow)
+    }
+
+    /**
+     * Plays a queue made ready by [prepare] for the start numbered `ticket`, if that start
+     * still stands; if something newer has been chosen since it began, nothing. Returns
+     * whether it was played.
+     */
+    fun playFor(ticket: Long, next: Queue, startPositionMs: Long = 0, playNow: Boolean = true): Boolean {
+        if (next.isEmpty || !stands(ticket)) return false
+        // Whatever was handed to the session earlier and has not come back has been overtaken.
+        staged.clear()
         queue.adopt(next)
         anotherQueue()
         load(startPositionMs)
@@ -395,24 +437,29 @@ class QueuePlayer(
             exo.prepare()
             exo.play()
         }
+        return true
     }
 
     /**
      * Hands a queue made ready by [prepare] to the session to start, for the times the
      * session asks for media items rather than letting this player be told directly (a car
-     * choosing a song). What is handed back is the part of it the player will hold (see
-     * [QueueSync]), and which of those to start at; the items come back to
-     * [handleSetMediaItems], which recognises them.
+     * choosing a song), on behalf of the start numbered `ticket`. Null, and nothing handed
+     * over or disturbed, if that start has been overtaken while the queue was being made.
+     * What is handed back is the part of it the player will hold (see [QueueSync]), and
+     * which of those to start at; the items come back to [handleSetMediaItems], which
+     * recognises them and asks again whether the start still stands.
      */
-    fun stage(next: Queue): Pair<List<MediaItem>, Int> = hand(next)
+    fun stage(next: Queue, ticket: Long): Pair<List<MediaItem>, Int>? = if (stands(ticket)) hand(next, ticket) else null
 
-    /** The queue as it stands, for the session to start again where it is. */
-    fun stageCurrent(): Pair<List<MediaItem>, Int>? = if (queue.isEmpty) null else hand(queue)
+    /** The queue as it stands, for the session to start again where it is. Not a start: it
+     *  overtakes nothing, and gives way to any start. */
+    fun stageCurrent(): Pair<List<MediaItem>, Int>? = if (queue.isEmpty) null else hand(queue, null)
 
-    private fun hand(next: Queue): Pair<List<MediaItem>, Int> {
+    private fun hand(next: Queue, ticket: Long?): Pair<List<MediaItem>, Int> {
         val slots = QueueSync.slots(next)
-        staged = next
-        stagedUids = slots.map { it.uid }
+        staged += Staged(next, slots.map { it.uid }, ticket, next.revision)
+        // Never many: each is used, overtaken or forgotten within a moment.
+        while (staged.size > MOST_STAGED) staged.removeAt(0)
         return slots.map { itemOf(next.songs[it.entry], it.uid) } to next.cursor - QueueSync.window(next.cursor, next.order.size).first
     }
 
@@ -438,14 +485,15 @@ class QueuePlayer(
         load(positionMs)
     }
 
-    /** Nothing to play any more (signed out). */
+    /** Nothing to play any more (signed out). Whatever was being started for the account
+     *  that has gone is overtaken. */
     fun clear() {
+        beginStart()
         queue.clear()
         items.clear()
         held.clear()
         anotherQueue()
-        staged = null
-        stagedUids = emptyList()
+        staged.clear()
         exo.stop()
         exo.clearMediaItems()
         changed(this)
@@ -554,15 +602,16 @@ class QueuePlayer(
 
     /** After the playlist has been made to match the queue. */
     private fun settled() {
-        // Only the items the player holds, and any made ready and not yet handed over.
-        val keep = HashSet<Long>(stagedUids)
+        // Only the items the player holds, and any handed to the session and not yet back.
+        val keep = HashSet<Long>()
+        for (waiting in staged) keep += waiting.uids
         for (index in 0 until exo.mediaItemCount) playlist.uidAt(index)?.let { keep += it }
         items.keys.retainAll(keep)
         // Changed in place, never emptied: the player may be opening a song right now.
         val ids = items.values.mapTo(HashSet()) { it.mediaId }
         held.keys.retainAll(ids)
         // Whatever was made ahead and not taken belongs to a queue that never arrived.
-        if (staged == null) made.clear()
+        if (staged.isEmpty()) made.clear()
         placesMayHaveMoved()
         applyRepeat()
         queue.trackChanged()
@@ -626,6 +675,9 @@ class QueuePlayer(
     companion object {
         /** How long after the playlist's places move a place is still read as it was. */
         const val PLACES_SETTLE_MILLIS = 1_000L
+
+        /** Queues handed to the session and not yet back that are remembered at once. */
+        private const val MOST_STAGED = 4
 
         /** In [shown], an item that isn't one of the queue's entries. Entry numbers start at 1. */
         private const val NO_ENTRY = 0L

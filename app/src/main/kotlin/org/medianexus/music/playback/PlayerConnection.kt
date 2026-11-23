@@ -276,7 +276,11 @@ class PlayerConnection(
             // for both. A short list, or one put together on the spot, is sent as it is.
             if (songs.size > AppCommands.MOST_SENT && keptPage(source)) {
                 putBoolean("byPage", true)
+                // The song that was tapped, and the ones around it: if the phone's copy of
+                // the list has changed by the time the service reads it, the song is found
+                // again, or failing that its nearest neighbour.
                 songs.getOrNull(start)?.let { putString("startId", it.id) }
+                putStringArrayList("startNear", StartPlace.neighbours(songs, start))
             } else {
                 putString("songs", AppCommands.songsArg(songs))
             }

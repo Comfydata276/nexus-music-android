@@ -62,10 +62,8 @@ object AppCommands {
     fun queueFor(player: QueuePlayer, args: Bundle, songs: List<Song>, shuffle: Boolean): Queue {
         val source = args.getString("source").orEmpty()
         // Where to start: the place the screen named, unless the kept list has moved on
-        // since the screen drew it, in which case the song that was tapped is found again.
-        var start = args.getInt("start")
-        val tapped = args.getString("startId")
-        if (tapped != null && songs.getOrNull(start)?.id != tapped) songs.indexOfFirst { it.id == tapped }.takeIf { it >= 0 }?.let { start = it }
+        // since the screen drew it (see StartPlace.startIn).
+        val start = StartPlace.startIn(songs, args.getInt("start"), args.getString("startId"), args.getStringArrayList("startNear").orEmpty()) ?: 0
         return player.prepare(
             songs,
             start = start,
@@ -95,5 +93,45 @@ object AppCommands {
             else -> return false
         }
         return true
+    }
+}
+
+/**
+ * Where a list that a screen named, rather than sent, is started (see [AppCommands.queueFor]).
+ * Plain Kotlin, apart from the commands, so it can be tested on its own.
+ */
+object StartPlace {
+    /** How many songs either side of the one tapped a PLAY that names its page also names
+     *  (see [StartPlace.startIn]). */
+    const val NEIGHBOURS = 8
+
+    /** The songs around the one tapped, as the screen showed them: those after it, nearest
+     *  first, then those before it, nearest first. */
+    fun neighbours(songs: List<Song>, start: Int): ArrayList<String> {
+        val near = ArrayList<String>()
+        for (step in 1..NEIGHBOURS) songs.getOrNull(start + step)?.let { near += it.id }
+        for (step in 1..NEIGHBOURS) songs.getOrNull(start - step)?.let { near += it.id }
+        return near
+    }
+
+    /**
+     * Where to start a list that was named rather than sent. `start` and `tapped` are the
+     * place and the song the screen named; `songs` is the list as the phone keeps it now,
+     * which may have moved on since the screen drew it. The song that was tapped, wherever
+     * it is now. If it has gone from the list: the nearest song to it that is still there
+     * (`near`, from [neighbours]), which is the nearest thing to what was meant; never
+     * whatever happens to sit at the old place. With none of those left either, the place
+     * itself, as near as the list now reaches. Null if the list is empty: nothing to start.
+     */
+    fun startIn(songs: List<Song>, start: Int, tapped: String?, near: List<String>): Int? {
+        if (songs.isEmpty()) return null
+        if (tapped == null || songs.getOrNull(start)?.id == tapped) return start.coerceIn(0, songs.size - 1)
+        songs.indexOfFirst { it.id == tapped }.takeIf { it >= 0 }?.let { return it }
+        // Nearest to where it was, among the copies of that neighbour (a list can hold a song twice).
+        for (id in near) {
+            val places = songs.indices.filter { songs[it].id == id }
+            places.minByOrNull { kotlin.math.abs(it - start) }?.let { return it }
+        }
+        return start.coerceIn(0, songs.size - 1)
     }
 }
