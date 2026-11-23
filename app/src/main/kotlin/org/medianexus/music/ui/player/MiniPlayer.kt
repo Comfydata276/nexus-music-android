@@ -155,7 +155,6 @@ fun MiniPlayer(modifier: Modifier = Modifier) {
                 if (playing) R.drawable.ic_pause_fill else R.drawable.ic_play_fill,
                 stringResource(if (playing) R.string.pause else R.string.play),
                 {
-                    if (!playing) ui.beforePlay()
                     player.playPause()
                 },
                 tint = colors.text,

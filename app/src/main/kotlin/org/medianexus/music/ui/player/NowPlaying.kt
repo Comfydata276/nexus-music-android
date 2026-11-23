@@ -5,7 +5,10 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +72,7 @@ import org.medianexus.music.ui.parts.Icon
 import org.medianexus.music.ui.parts.IconButton
 import org.medianexus.music.ui.parts.Slider
 import org.medianexus.music.ui.parts.clock
+import org.medianexus.music.ui.shell.LocalNetworkBar
 import org.medianexus.music.ui.shell.LocalUi
 import org.medianexus.music.ui.shell.Route
 import org.medianexus.music.ui.shell.SongMenu
@@ -90,10 +95,20 @@ fun NowPlaying(onClose: () -> Unit) {
     val drag = remember { Animatable(0f) }
     var backProgress by remember { mutableFloatStateOf(0f) }
 
-    PredictiveBackHandler(enabled = !ui.queueOpen) { progress ->
+    // Only while it's open: while it slides away a second Back is for the page underneath.
+    // (A second Back can arrive before the screen has been redrawn without this handler; it
+    // is passed on to the page from here.)
+    val activity = androidx.activity.compose.LocalActivity.current
+    var closing by remember { mutableStateOf(false) }
+    PredictiveBackHandler(enabled = ui.nowPlaying && !ui.queueOpen) { progress ->
         try {
             progress.collect { backProgress = it.progress }
-            onClose()
+            if (closing) {
+                if (ui.navigator.canGoBack) ui.navigator.back() else activity?.finish()
+            } else {
+                closing = true
+                onClose()
+            }
         } catch (e: CancellationException) {
             backProgress = 0f
             throw e
@@ -126,15 +141,28 @@ fun NowPlaying(onClose: () -> Unit) {
                     scope.launch { drag.snapTo((drag.value + amount).coerceAtLeast(0f)) }
                 }
             }
-            // Nothing pressed here reaches the page underneath.
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+            // Nothing pressed here reaches the page underneath. A plain catch of taps, not a
+            // click: a click would be offered to screen readers as something to do, and would
+            // gather everything on the screen (the seek bar's own actions too) into one.
+            .pointerInput(Unit) { detectTapGestures { } }
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         val now = song
+        val from by player.from.collectAsStateWithLifecycle()
+        // "Playing from" names the album when the queue came from it: then it is the link.
+        val fromAlbum = now != null && now.albumId.isNotEmpty() && from.source == "album:${now.albumId}"
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(R.drawable.ic_chevron_down, stringResource(R.string.close_now_playing), onClose, tint = colors.text, iconSize = 26.dp)
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                val album = now?.takeIf { fromAlbum }
+                val link = if (album != null) {
+                    Modifier.clickable(role = Role.Button, onClickLabel = stringResource(R.string.go_to_album)) {
+                        ui.open(Route.Album(album.albumId, album.album, album.artistLabel, album.coverArt))
+                    }
+                } else {
+                    Modifier
+                }
+                Column(Modifier.weight(1f).heightIn(min = Theme.dimens.touch).then(link), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     if (queue.context.isNotEmpty()) {
                         BasicText(stringResource(R.string.playing_from), style = Theme.type.caption.copy(color = colors.muted), maxLines = 1)
                         BasicText(queue.context, style = Theme.type.label.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -146,6 +174,8 @@ fun NowPlaying(onClose: () -> Unit) {
                     Spacer(Modifier.width(Theme.dimens.touch))
                 }
             }
+            // The same word as every page has, when the home network is out of bounds.
+            LocalNetworkBar(ui.graph)
             if (now == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     BasicText(stringResource(R.string.nothing_playing), style = Theme.type.section.copy(color = colors.muted))
@@ -156,19 +186,24 @@ fun NowPlaying(onClose: () -> Unit) {
                 val wide = maxWidth
                 val tall = maxHeight
                 if (wide > tall) {
-                    // Turned on its side: the cover beside the controls.
+                    // Turned on its side: the cover beside the controls, which scroll if large
+                    // type makes them taller than a short screen.
                     Row(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(32.dp), verticalAlignment = Alignment.CenterVertically) {
                         Art(now.coverArt, (tall - 16.dp).coerceAtMost(wide * 0.45f))
-                        Column(Modifier.weight(1f)) { Controls() }
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { Controls(showAlbum = !fromAlbum) }
                     }
                 } else {
-                    val side = (wide - 48.dp).coerceAtMost(tall - 330.dp).coerceAtLeast(140.dp)
-                    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Spacer(Modifier.weight(1f))
-                        Art(now.coverArt, side)
-                        Spacer(Modifier.weight(1f))
-                        Controls()
+                    // The cover takes what the controls leave; if large type leaves it too
+                    // little, the whole screen scrolls instead of pushing the controls off.
+                    val side = (wide - 48.dp).coerceAtMost(tall - 360.dp).coerceAtLeast(140.dp)
+                    Column(
+                        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = tall).padding(horizontal = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween,
+                    ) {
                         Spacer(Modifier.height(8.dp))
+                        Art(now.coverArt, side)
+                        Column(Modifier.padding(top = 16.dp, bottom = 8.dp)) { Controls(showAlbum = !fromAlbum) }
                     }
                 }
             }
@@ -186,7 +221,7 @@ private fun Art(cover: String, side: Dp) {
 }
 
 @Composable
-private fun ColumnScope.Controls() {
+private fun ColumnScope.Controls(showAlbum: Boolean) {
     val ui = LocalUi.current
     val res = androidx.compose.ui.platform.LocalResources.current
     val player = ui.player
@@ -214,13 +249,25 @@ private fun ColumnScope.Controls() {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            val link = if (now.artistId.isNotEmpty()) {
+            // The artist and (unless "Playing from" above already is) the album, each a link
+            // to its page as on Windows, with a full-size place to tap.
+            val artistLink = if (now.artistId.isNotEmpty()) {
                 Modifier.clickable(role = Role.Button) { ui.open(Route.Artist(now.artistId, now.artist)) }
             } else {
                 Modifier
             }
-            Box(link.heightIn(min = 32.dp), contentAlignment = Alignment.CenterStart) {
+            Box(artistLink.heightIn(min = Theme.dimens.touch), contentAlignment = Alignment.CenterStart) {
                 BasicText(now.artistLabel, style = Theme.type.body.copy(color = colors.muted, fontSize = 16.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (showAlbum && now.album.isNotEmpty()) {
+                val albumLink = if (now.albumId.isNotEmpty()) {
+                    Modifier.clickable(role = Role.Button) { ui.open(Route.Album(now.albumId, now.album, now.artistLabel, now.coverArt)) }
+                } else {
+                    Modifier
+                }
+                Box(albumLink.heightIn(min = Theme.dimens.touch), contentAlignment = Alignment.CenterStart) {
+                    BasicText(now.album, style = Theme.type.body.copy(color = colors.muted, fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
         IconButton(
@@ -265,10 +312,7 @@ private fun ColumnScope.Controls() {
             iconSize = 24.dp,
         )
         IconButton(R.drawable.ic_prev_fill, stringResource(R.string.previous), player::previous, tint = colors.text, iconSize = 30.dp, modifier = Modifier.size(56.dp))
-        BigPlay(playing) {
-            if (!playing) ui.beforePlay()
-            player.playPause()
-        }
+        BigPlay(playing) { player.playPause() }
         IconButton(R.drawable.ic_next_fill, stringResource(R.string.next), player::next, tint = colors.text, iconSize = 30.dp, modifier = Modifier.size(56.dp))
         IconButton(
             if (repeat == Repeat.ONE) R.drawable.ic_repeat_1 else R.drawable.ic_repeat,
@@ -310,33 +354,41 @@ private fun BigPlay(playing: Boolean, onClick: () -> Unit) {
 }
 
 /** The seek bar and the times either side of it. Only this reads the position, so only this
- *  redraws as the song plays. */
+ *  redraws as the song plays. A seek being dragged when the song changes is abandoned: the
+ *  bar starts afresh for the new song, and nothing is sent. */
 @Composable
 private fun SeekBar() {
     val player = LocalUi.current.player
     val colors = Theme.colors
     val position by player.position.collectAsStateWithLifecycle()
     val duration by player.duration.collectAsStateWithLifecycle()
-    var dragging by remember { mutableStateOf<Float?>(null) }
-    val shown = dragging?.let { (it * duration).toLong() } ?: position
-    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        Slider(
-            value = if (duration > 0) position.toFloat() / duration else 0f,
-            label = stringResource(R.string.seek),
-            onMove = { dragging = it },
-            onRelease = {
-                dragging = null
-                if (duration > 0) player.seek((it * duration).toLong())
-            },
-            enabled = duration > 0,
-        )
-        Row(Modifier.fillMaxWidth()) {
-            BasicText(clock((shown / 1000).toInt()), style = Theme.type.caption.copy(color = colors.muted))
-            Spacer(Modifier.weight(1f))
-            BasicText(
-                if (duration > 0) clock((duration / 1000).toInt()) else "",
-                style = Theme.type.caption.copy(color = colors.muted, textAlign = TextAlign.End),
+    val song by player.song.collectAsStateWithLifecycle()
+    val id = song?.id.orEmpty()
+    // Everything about a drag belongs to the song it began on.
+    key(id) {
+        var dragging by remember { mutableStateOf<Float?>(null) }
+        val shown = dragging?.let { (it * duration).toLong() } ?: position
+        Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Slider(
+                value = if (duration > 0) position.toFloat() / duration else 0f,
+                label = stringResource(R.string.seek),
+                onMove = { dragging = it },
+                onRelease = {
+                    dragging = null
+                    // Let go after the song has changed (the old bar is gone, but its gesture's
+                    // end can still arrive): not for this song.
+                    if (duration > 0 && player.song.value?.id.orEmpty() == id) player.seek((it * duration).toLong())
+                },
+                enabled = duration > 0,
             )
+            Row(Modifier.fillMaxWidth()) {
+                BasicText(clock((shown / 1000).toInt()), style = Theme.type.caption.copy(color = colors.muted))
+                Spacer(Modifier.weight(1f))
+                BasicText(
+                    if (duration > 0) clock((duration / 1000).toInt()) else "",
+                    style = Theme.type.caption.copy(color = colors.muted, textAlign = TextAlign.End),
+                )
+            }
         }
     }
 }

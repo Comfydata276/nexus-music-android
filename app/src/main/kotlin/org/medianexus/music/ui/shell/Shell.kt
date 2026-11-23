@@ -17,6 +17,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,14 +37,20 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -81,22 +92,27 @@ import org.medianexus.music.ui.theme.Theme
 @Composable
 fun Shell(graph: Graph) {
     val navigator = rememberNavigator()
-    val ui = remember(graph, navigator) { Ui(graph, navigator) }
+    // Rotating, or coming back after Android stopped the app, keeps Now Playing open if it
+    // was: what was saved is where it starts, before anything else can look at it. It closes
+    // for want of a song only once the player has said there is none: on coming back,
+    // nothing is known until the screens have connected to it again and it has put back
+    // the saved queue.
+    var openSaved by rememberSaveable { mutableStateOf(false) }
+    val ui = remember(graph, navigator) { Ui(graph, navigator).also { it.nowPlaying = openSaved } }
+    LaunchedEffect(ui) { snapshotFlow { ui.nowPlaying }.collect { openSaved = it } }
     val account by graph.accounts.state.collectAsStateWithLifecycle()
     ui.account = account
-    ui.beforePlay = rememberNotificationAsk(graph.settings)
     val colors = Theme.colors
     val keyboard = WindowInsets.isImeVisible
     val song by graph.player.song.collectAsStateWithLifecycle()
-    // Rotating or coming back keeps Now Playing open if it was.
-    val open = rememberSaveable { arrayOf(false) }
-    LaunchedEffect(Unit) { if (open[0]) ui.nowPlaying = true }
-    LaunchedEffect(ui.nowPlaying) { open[0] = ui.nowPlaying }
-    LaunchedEffect(song == null) { if (song == null) ui.nowPlaying = false }
+    val reported by graph.player.reported.collectAsStateWithLifecycle()
+    LaunchedEffect(song == null, reported) { if (song == null && reported) ui.nowPlaying = false }
 
     androidx.compose.runtime.CompositionLocalProvider(LocalUi provides ui) {
         Box(Modifier.fillMaxSize().background(colors.base)) {
-            Column(Modifier.fillMaxSize()) {
+            // On its side, a cut-out or the navigation bar can be at either edge: nothing is
+            // drawn under them. (The page still reaches the screen's top and foot.)
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.union(WindowInsets.navigationBars).only(WindowInsetsSides.Horizontal))) {
                 Box(Modifier.weight(1f).fillMaxWidth().then(if (keyboard) Modifier.imePadding() else Modifier)) {
                     Pages(graph, navigator)
                 }
@@ -118,7 +134,8 @@ fun Shell(graph: Graph) {
                 graph.toasts.shown,
                 Modifier
                     .align(Alignment.BottomCenter)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    // Above the keyboard too, when it's up (searching).
+                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                     // Above the bottom bar and the mini player, unless Now Playing covers them.
                     .padding(bottom = if (ui.nowPlaying || keyboard) 16.dp else 64.dp + Theme.dimens.miniPlayer + 8.dp),
             )
@@ -199,26 +216,33 @@ fun NoticeList(graph: Graph, modifier: Modifier = Modifier) {
 
 /**
  * While the server is on the home network and the app isn't allowed to reach it (Android
- * 17), a bar says so and offers to ask; it goes once allowed.
+ * 17), a bar says so and offers to ask; it goes once allowed. Over every page, and on Now
+ * Playing.
  */
 @Composable
-private fun LocalNetworkBar(graph: Graph) {
+fun LocalNetworkBar(graph: Graph, modifier: Modifier = Modifier) {
     val blocked by graph.localAccess.blocked.collectAsStateWithLifecycle()
     if (!blocked) return
+    val certain by graph.localAccess.certain.collectAsStateWithLifecycle()
     val ask = rememberLocalNetworkAsk(graph.localAccess)
     val colors = Theme.colors
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .padding(horizontal = Theme.dimens.gap, vertical = 4.dp)
             .background(colors.overlay, RoundedCornerShape(Theme.dimens.radius))
-            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)
+            .semantics(mergeDescendants = false) { liveRegion = LiveRegionMode.Polite },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Icon(R.drawable.ic_wifi_off, size = 18.dp, tint = colors.warm)
-        BasicText(stringResource(R.string.local_network_blocked), Modifier.weight(1f), style = Theme.type.rowDetail.copy(color = colors.text))
-        TextButton(stringResource(R.string.allow), ask)
+        BasicText(
+            stringResource(if (certain) R.string.local_network_blocked else R.string.local_network_maybe),
+            Modifier.weight(1f),
+            style = Theme.type.rowDetail.copy(color = colors.text),
+        )
+        TextButton(stringResource(R.string.allow), { ask(null) })
     }
 }
 
