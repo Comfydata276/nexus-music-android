@@ -74,6 +74,11 @@ class LocalAccess(private val context: Context, session: Session, private val se
     private var waiting: ((Boolean) -> Unit)? = null
 
     init {
+        // Allowed in the phone's settings while the app wasn't running: no longer refused.
+        if (granted.value && settings.value.localNetworkRefusedForGood) {
+            settings.update { it.copy(localNetworkRefusedForGood = false) }
+            asked.value = Ask.GRANTED
+        }
         if (APPLIES) {
             scope.launch {
                 session.state.collect { state ->

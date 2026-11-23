@@ -102,6 +102,12 @@ fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String
         mayBeWhy = state.error != null && state.unreachable && localAccess.mayBeWhy(server.text.toString())
     }
     val go = { session.signIn(server.text.toString(), username.text.toString(), password.text.toString()) }
+    // Allowed meanwhile (in the phone's settings, say) after failing for want of it: it
+    // connects again by itself.
+    val allowed by localAccess.allowed.collectAsStateWithLifecycle()
+    LaunchedEffect(allowed) {
+        if (allowed > 0 && state.error != null && state.unreachable && !state.busy && ready) go()
+    }
     val ask = rememberLocalNetworkAsk(localAccess)
     val askThenGo = {
         explaining = false
