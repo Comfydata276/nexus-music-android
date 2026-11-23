@@ -189,6 +189,8 @@ class PlaybackService : MediaLibraryService() {
             exo, queue, CarMedia::metadata, changed = { queueChanged() }, explain = ::explain,
             // Everyone but the app's own screens names a queue entry by its place.
             byPlace = { session.controllerForCurrentRequest?.let { callerOf(session, it) != Caller.OWN_INTERFACE } ?: false },
+            // In the foreground before the player asks for the sound, whoever pressed Play.
+            aboutToPlay = { holdForeground(why = "to play") },
         )
         exo.addListener(Watcher())
         // Debug builds log what the player does (track joins, underruns, errors): how
@@ -304,9 +306,13 @@ class PlaybackService : MediaLibraryService() {
      */
     private var holding = false
 
-    /** Whether the one deadline for a button's start has been set. */
+    /** Whether the one deadline for a start has been set. */
     private var deadlineSet = false
-    private val deadline = Runnable { if (holding) standDown() }
+    private var holdNoted = false
+    private val deadline = Runnable {
+        deadlineSet = false
+        if (holding) standDown()
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         noteStartedBy(
@@ -316,18 +322,24 @@ class PlaybackService : MediaLibraryService() {
                 else -> "a start request (${intent.action?.substringAfterLast('.')?.take(40)})"
             },
         )
-        if (intent?.action == Intent.ACTION_MEDIA_BUTTON && !isPlaybackOngoing) holdForeground()
+        if (intent?.action == Intent.ACTION_MEDIA_BUTTON) holdForeground(why = "for a media button")
         return super.onStartCommand(intent, flags, startId)
     }
 
     /**
-     * Enters the foreground now, before anything is read or looked up: the first thing done
-     * for a Play button that started the service. The promise to the system is kept at once,
-     * however long the saved sign-in and the saved queue take to read; and by the time the
-     * player asks for the sound (audio focus), the service is in the foreground, which
-     * Android 15 requires of an app in the background before it gives focus, and Android 17
-     * before it lets it be heard at all. The order used to be the other way round: up to six
+     * Enters the foreground now, if the service isn't in it already. Done at two moments.
+     *
+     * The first thing for a Play button that started the service, before anything is read or
+     * looked up: the promise to the system is kept at once, however long the saved sign-in
+     * and the saved queue take to read. The order used to be the other way round: up to six
      * seconds of reading first, and the foreground only once the player was buffering.
+     *
+     * And just before the player is asked to play, whoever asked (a car, a headset, the
+     * notification, the app): Media3 enters the foreground a moment after playback has begun,
+     * which is after the player has asked Android for the sound. Android 15 gives audio
+     * focus to an app in the background only if it is running a foreground service, and
+     * Android 17 lets it be heard only then: so a service that had been paused long enough
+     * to have left the foreground has to be back in it first.
      *
      * The notification is Media3's own in all but content (the same number and channel), so
      * that when playback begins Media3's replaces it in place. On Android 12 and later the
@@ -336,7 +348,8 @@ class PlaybackService : MediaLibraryService() {
      * How long the foreground is held with nothing playing is bounded once, from the first
      * button: later buttons don't push the limit back.
      */
-    private fun holdForeground() {
+    private fun holdForeground(why: String) {
+        if (isPlaybackOngoing) return
         if (!holding) {
             try {
                 val manager = getSystemService(NotificationManager::class.java)
@@ -359,13 +372,19 @@ class PlaybackService : MediaLibraryService() {
                 val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
                 ServiceCompat.startForeground(this, DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID, notification, type)
                 holding = true
-                graph.diagnostics.note("foreground: entered at once for a media button, ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made", now = true)
+                // (Said once for each life of the service, with how soon; then only counted.)
+                if (!holdNoted) {
+                    holdNoted = true
+                    graph.diagnostics.note("foreground: entered at once $why, ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made", now = true)
+                } else {
+                    graph.diagnostics.note("foreground: entered at once $why")
+                }
             } catch (e: RuntimeException) {
                 // Android would not have it (not allowed from the background, on Android 12
                 // and later; or a rule this was not written for). Nothing more is promised
                 // than was: Media3 tries again when playback begins, and its failure is
                 // handled too (see foregroundRefused).
-                graph.diagnostics.note("foreground: Android refused it at the start (${e.javaClass.simpleName})", now = true)
+                graph.diagnostics.note("foreground: Android refused it $why (${e.javaClass.simpleName})", now = true)
             }
         }
         if (!deadlineSet) {
@@ -374,9 +393,11 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    /** Playback has begun and Media3's notification holds the foreground now. */
+    /** Playback has begun and Media3's notification holds the foreground now (or the start
+     *  came to nothing). The next start has a limit of its own. */
     private fun heldLongEnough() {
         holding = false
+        deadlineSet = false
         main.removeCallbacks(deadline)
     }
 

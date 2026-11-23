@@ -52,6 +52,13 @@ class QueuePlayer(
     private val byPlace: () -> Boolean = { false },
     /** A clock that only has to run steadily, in milliseconds. */
     private val clock: () -> Long = android.os.SystemClock::elapsedRealtime,
+    /**
+     * Told just before the player is asked to play, whoever asked: the session (a car, a
+     * headset, the notification, the app's screens) or this class itself. The service uses it
+     * to be in the foreground before the player asks Android for the sound (see the
+     * service's `holdForeground`).
+     */
+    private val aboutToPlay: () -> Unit = {},
 ) : ForwardingSimpleBasePlayer(exo) {
     /** The media items of the entries the player holds, by entry number. */
     private val items = HashMap<Long, MediaItem>()
@@ -123,8 +130,7 @@ class QueuePlayer(
                     // off: round to the top by hand.
                     queue.moveTo(0)
                     sync(0)
-                    exo.prepare()
-                    exo.play()
+                    startPlaying()
                 } else if (queue.repeat == Repeat.OFF) {
                     // Park on the first song, ready to go again, as Windows does.
                     exo.pause()
@@ -165,6 +171,18 @@ class QueuePlayer(
     /** How many songs come after the one playing, in the whole queue (the player and the
      *  session hold only the nearest of them). */
     val ahead: Int get() = (queue.order.size - queue.cursor - 1).coerceAtLeast(0)
+
+    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        if (playWhenReady) aboutToPlay()
+        return super.handleSetPlayWhenReady(playWhenReady)
+    }
+
+    /** Starts the player playing what it holds, from this class's own doing. */
+    private fun startPlaying() {
+        aboutToPlay()
+        exo.prepare()
+        exo.play()
+    }
 
     override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {
         setShuffle(shuffleModeEnabled)
@@ -439,10 +457,7 @@ class QueuePlayer(
         queue.adopt(next)
         anotherQueue()
         load(startPositionMs)
-        if (playNow) {
-            exo.prepare()
-            exo.play()
-        }
+        if (playNow) startPlaying()
         return true
     }
 
@@ -576,8 +591,7 @@ class QueuePlayer(
     fun jumpTo(uid: Long) {
         if (!queue.jumpToUid(uid)) return
         sync(0)
-        exo.prepare()
-        exo.play()
+        startPlaying()
     }
 
     fun clearAhead(queued: Boolean) {
@@ -599,8 +613,7 @@ class QueuePlayer(
     fun jumpAhead(offset: Int, positionMs: Long = 0) {
         if (!queue.jumpAhead(offset)) return
         sync(positionMs)
-        exo.prepare()
-        exo.play()
+        startPlaying()
     }
 
     // ---- Keeping ExoPlayer in step ----------------------------------------------------------

@@ -265,4 +265,30 @@ class QueueTapTest {
         settle()
         assertEquals("s599", shown().last())
     }
+
+    @Test
+    fun whoeverAsksToPlayTheServiceIsToldBeforeThePlayerIs() {
+        // What the service does with this is enter the foreground: Android gives the sound to
+        // an app in the background only if it is already running a foreground service, so it
+        // must be told before the player asks, not when playback is seen to have begun.
+        val wasPlaying = mutableListOf<Boolean>()
+        val told = QueuePlayer(exo, Queue(), { MediaMetadata.EMPTY }, changed = {}, aboutToPlay = { wasPlaying += exo.playWhenReady })
+        told.play(songs.take(5), 0, "A list", playNow = false)
+        settle()
+        assertEquals(emptyList<Boolean>(), wasPlaying)
+        // The session's Play (a car, a headset, the notification).
+        told.play()
+        settle()
+        assertEquals(listOf(false), wasPlaying)
+        assertEquals(true, exo.playWhenReady)
+        told.pause()
+        settle()
+        // A list started from the app, and a jump down the queue.
+        told.play(songs.take(5), 2, "A list")
+        told.pause()
+        told.jumpAhead(1)
+        settle()
+        assertEquals(listOf(false, false, false), wasPlaying)
+        told.release()
+    }
 }
