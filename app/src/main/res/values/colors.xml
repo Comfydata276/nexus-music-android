@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Violet's base, for the window before the app draws. -->
+    <color name="base">#FF0B0811</color>
+</resources>
