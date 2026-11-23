@@ -45,9 +45,9 @@ class SettingsStore private constructor(
     val value: Settings get() = current.value
 
     // Each change gets a number; the writer writes whatever is newest and notes its number:
-    // as written if the file was saved, as failed if not.
+    // as written if the file was saved, as failed if not. `tries` counts the writes made.
     private val changes = AtomicLong(0)
-    private data class Outcome(val written: Long = 0, val failed: Long = -1)
+    private data class Outcome(val written: Long = 0, val failed: Long = -1, val tries: Long = 0)
     private val outcome = MutableStateFlow(Outcome())
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
@@ -64,7 +64,8 @@ class SettingsStore private constructor(
                 // the number it's noted under.
                 val number = changes.get()
                 val saved = save(file, current.value)
-                outcome.value = if (saved) Outcome(written = number) else outcome.value.copy(failed = number)
+                val before = outcome.value
+                outcome.value = if (saved) Outcome(written = number, tries = before.tries + 1) else before.copy(failed = number, tries = before.tries + 1)
                 failing.value = !saved
             }
         }
@@ -88,11 +89,21 @@ class SettingsStore private constructor(
         }
     }
 
-    /** Waits until every change so far has been written, or the writing failed. True if
-     *  they are on disk. */
+    /**
+     * Waits until every change so far has been written, or the writing failed. True if they
+     * are on disk.
+     *
+     * If the last write failed and nothing has changed since, this tries it again rather
+     * than report the old failure: asking for the same thing a second time (signing in again
+     * with the same address and name) makes no change, so nothing else would ever tell the
+     * writer to have another go, and the failure would be reported for ever.
+     */
     suspend fun flush(): Boolean {
         val wanted = changes.get()
-        return outcome.first { it.written >= wanted || it.failed >= wanted }.written >= wanted
+        val before = outcome.value
+        if (before.written >= wanted) return true
+        if (before.failed >= wanted) wake.trySend(Unit)
+        return outcome.first { it.written >= wanted || (it.failed >= wanted && it.tries > before.tries) }.written >= wanted
     }
 
     companion object {

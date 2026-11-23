@@ -2,6 +2,7 @@ package org.medianexus.music.store
 
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -146,6 +147,35 @@ class SettingsStoreTest {
         val saved = SettingsStore.read(path)!!
         assertEquals("Ember", saved.theme)
         assertFalse(saved.scrobble)
+        scope.cancel()
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun aFlushAfterAFailureTriesTheWriteAgain() = runTest {
+        // Signing in writes the account's name and waits for it to reach the disk. If that
+        // write failed, signing in again with the same name changes nothing, so no write
+        // was ever tried again and the first failure was reported for good.
+        val path = File(folder.newFolder(), "settings.json")
+        val io = StandardTestDispatcher(testScheduler)
+        val scope = TestScope(io)
+        val store = SettingsStore.open(path, scope, io)
+        block(path)
+        store.update { it.copy(server = "https://music.example", username = "ada") }
+        scope.advanceUntilIdle()
+        assertFalse(store.flush())
+        // Still in the way: another flush tries, and fails, again.
+        val again = scope.async { store.flush() }
+        scope.advanceUntilIdle()
+        assertFalse(again.await())
+        // The way clears. The same sign-in again: no change, but the flush writes it.
+        path.deleteRecursively()
+        store.update { it.copy(server = "https://music.example", username = "ada") }
+        val third = scope.async { store.flush() }
+        scope.advanceUntilIdle()
+        assertTrue(third.await())
+        assertFalse(store.saveFailed.value)
+        assertEquals("ada", SettingsStore.read(path)!!.username)
         scope.cancel()
     }
 
