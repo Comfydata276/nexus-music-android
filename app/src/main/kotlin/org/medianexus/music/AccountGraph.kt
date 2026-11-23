@@ -9,7 +9,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.medianexus.music.library.Library
 import org.medianexus.music.library.Likes
-import org.medianexus.music.net.StarTarget
 import org.medianexus.music.net.Subsonic
 import org.medianexus.music.playback.KeptQueue
 import org.medianexus.music.playback.QueueFiles
@@ -41,7 +40,7 @@ class AccountGraph(
 
     val library = Library(api, pages)
 
-    val likes = Likes(pages, library.liked(), send = { id, liked -> api.setStarred(StarTarget.SONG, id, liked) }, scope)
+    val likes = Likes(pages, library.liked(), send = { target, id, liked -> api.setStarred(target, id, liked) }, scope)
 
     /** The play queue as it was left, kept with the account's own data. */
     val queue = KeptQueue(QueueFiles.of(account.dirs.data), queueSaver)
