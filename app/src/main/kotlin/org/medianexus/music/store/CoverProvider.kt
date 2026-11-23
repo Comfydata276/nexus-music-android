@@ -15,7 +15,7 @@ import org.medianexus.music.graph
  * Hands cover art to other apps: the car and the system's media controls can't fetch
  * pictures from the server, they can only open content addresses. Each address names one
  * cover by its id (`content://<app>.covers/<id>`); the picture comes from the cover store,
- * fetched first if it isn't kept yet.
+ * fetched first if it isn't kept yet, within limits: see `openFile`.
  *
  * It gives away nothing but covers: it is read-only, answers no queries, and an address
  * names a cover id, never a file, so nothing else on the phone can be reached through it
@@ -29,13 +29,28 @@ class CoverProvider : ContentProvider() {
         val id = idOf(uri) ?: throw FileNotFoundException("Not a cover")
         if (CoverStore.fileName(id) == null) throw FileNotFoundException("Not a cover")
         val context = context ?: throw FileNotFoundException("Not ready")
-        // Called on one of the binder's threads, never the app's main one, so waiting here
-        // holds up only whoever asked.
-        val file = runBlocking {
-            withTimeoutOrNull(WAIT_MILLIS) {
-                val covers = graphOf(context).accounts.restored()?.covers ?: return@withTimeoutOrNull null
-                covers.kept(id) ?: covers.file(id)
+        // A cover already on the phone, for an account already known: no waiting at all.
+        val known = try {
+            context.graph.accounts.state.value?.covers
+        } catch (_: UninitializedPropertyAccessException) {
+            null
+        }
+        known?.kept(id)?.let { return ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY) }
+        // Anything else waits: for the app to start, for the saved sign-in, for the server.
+        // This is one of the handful of threads the system gives the app for every call from
+        // outside it, the car's browsing and the player's controls among them, so only a few
+        // may wait here at once and none for long. A cover that isn't had in time is fetched
+        // all the same (see CoverStore.forOutside) and is there the next time it's asked for.
+        if (!waiting.tryAcquire()) throw FileNotFoundException("Busy")
+        val file = try {
+            runBlocking {
+                withTimeoutOrNull(WAIT_MILLIS) {
+                    val covers = graphOf(context).accounts.restored()?.covers ?: return@withTimeoutOrNull null
+                    covers.kept(id) ?: covers.forOutside(id, MISS_WAIT_MILLIS)
+                }
             }
+        } finally {
+            waiting.release()
         } ?: throw FileNotFoundException("No cover $id")
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
     }
@@ -66,8 +81,16 @@ class CoverProvider : ContentProvider() {
     companion object {
         const val AUTHORITY = "${BuildConfig.APPLICATION_ID}.covers"
 
-        /** Long enough to fetch a cover over a slow connection; the car gives up sooner. */
-        private const val WAIT_MILLIS = 15_000L
+        /** The longest a caller is kept, start-up and all; and how long of that a cover not
+         *  yet on the phone is waited for. A car's screen gives up on a picture in a few
+         *  seconds anyway. */
+        private const val WAIT_MILLIS = 6_000L
+        private const val MISS_WAIT_MILLIS = 4_000L
+
+        /** Callers that may be waiting at once. The system gives an app about sixteen
+         *  threads for calls from outside: this leaves most of them for everything else. */
+        private const val MOST_WAITING = 6
+        private val waiting = java.util.concurrent.Semaphore(MOST_WAITING)
 
         /** The address of a cover, for a media item; null for no cover. */
         fun uriFor(coverId: String): Uri? =

@@ -3,20 +3,27 @@ package org.medianexus.music.store
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.medianexus.music.net.ApiError
 
 /**
  * Cover art, as the Windows app keeps it (src/covers.rs): each picture is fetched from the
  * server once at a size and kept on disk for the account; whatever shows it (Coil in the
  * app, the car and the system's media controls through [CoverProvider]) cuts it down to the
- * size it needs. Two requests for the same picture at once share one fetch, and a picture
- * that couldn't be fetched is left alone for a minute before it is asked for again.
+ * size it needs. Two requests for the same picture at once share one fetch, a few are
+ * fetched at a time, and a picture that couldn't be fetched is left alone for a minute
+ * before it is asked for again.
  *
  * Two sizes, as Windows has more than one: [SIZE] for everything (rows, cards, the car), and
  * [LARGE] for Now Playing only, where a whole phone's width of cover would look soft at 640.
@@ -29,9 +36,28 @@ class CoverStore(
     private val io: CoroutineDispatcher,
     private val fetch: suspend (id: String, size: Int) -> ByteArray,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Covers kept at most, on disk. */
+    private val budget: Long = DISK_BUDGET,
 ) {
     private val inFlight = ConcurrentHashMap<String, Deferred<File?>>()
-    private val failedAt = ConcurrentHashMap<String, Long>()
+
+    /** When each cover that couldn't be fetched last failed, oldest first. Never more than
+     *  [MOST_FAILURES]: a car asking for covers that don't exist can't make it grow. */
+    private val failedAt = object : LinkedHashMap<String, Long>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?) = size > MOST_FAILURES
+    }
+
+    /** Fetches from the server at once: a screenful of misses takes turns rather than
+     *  opening a connection each. */
+    private val fetching = Semaphore(FETCHES_AT_ONCE)
+
+    /** Fetches under way that were started for another app (see [forOutside]). */
+    private val outside = AtomicInteger(0)
+
+    /** One at a time on the folder: writing a cover, and trimming. `total` is the bytes
+     *  kept, once the folder has been read (-1 before). */
+    private val folder = Mutex()
+    private var total = -1L
 
     /** The kept file for a cover, if it's on the phone already. Doesn't fetch. */
     fun kept(id: String, size: Int = SIZE): File? = fileFor(id, size)?.takeIf { it.isFile && it.length() > 0 }
@@ -44,57 +70,115 @@ class CoverStore(
     suspend fun file(id: String, size: Int = SIZE): File? {
         val file = fileFor(id, size) ?: return null
         if (withContext(io) { file.isFile && file.length() > 0 }) return file
+        return start(id, size, file)?.await()
+    }
+
+    /**
+     * A cover for another app (the car, the system's media controls), which waits on one of
+     * the few threads the system gives this app for everyone's calls. So it waits no longer
+     * than `waitMillis`, and at most [OUTSIDE_AT_ONCE] fetches started this way are under way
+     * at any time: beyond that the answer is "not now" at once, and nothing is started. A
+     * fetch that outlasts its wait carries on and counts until it ends; the cover is there
+     * the next time it's asked for.
+     */
+    suspend fun forOutside(id: String, waitMillis: Long): File? {
+        val file = fileFor(id, SIZE) ?: return null
+        if (file.isFile && file.length() > 0) return file
+        if (outside.incrementAndGet() > OUTSIDE_AT_ONCE) {
+            outside.decrementAndGet()
+            return null
+        }
+        val fetch = start(id, SIZE, file)
+        if (fetch == null) {
+            outside.decrementAndGet()
+            return null
+        }
+        fetch.invokeOnCompletion { outside.decrementAndGet() }
+        return withTimeoutOrNull(waitMillis) { fetch.await() }
+    }
+
+    /** The fetch of this cover: the one under way, or a new one. Null if it failed lately. */
+    private fun start(id: String, size: Int, file: File): Deferred<File?>? {
         val key = file.name
-        failedAt[key]?.let { at -> if (clock() - at < RETRY_AFTER_MILLIS) return null }
+        if (failedLately(key)) return null
         val shared = inFlight.computeIfAbsent(key) {
             // On the store's scope, so a caller giving up doesn't stop the fetch for another.
             scope.async(io, start = CoroutineStart.LAZY) {
                 try {
-                    download(id, size, file)
+                    fetching.withPermit { download(id, size, file) }
                 } finally {
                     inFlight.remove(key)
                 }
             }
         }
         shared.start()
-        return shared.await()
+        return shared
     }
+
+    private fun failedLately(key: String): Boolean = synchronized(failedAt) {
+        val at = failedAt[key] ?: return false
+        if (clock() - at < RETRY_AFTER_MILLIS) return true
+        failedAt.remove(key)
+        false
+    }
+
+    private fun failed(key: String) = synchronized(failedAt) {
+        // Out and in again, so the list stays oldest first; and whatever has had its minute
+        // goes, so it holds only what is still being left alone.
+        failedAt.remove(key)
+        val now = clock()
+        failedAt.entries.removeAll { now - it.value >= RETRY_AFTER_MILLIS }
+        failedAt[key] = now
+    }
+
+    /** How many covers are being left alone after failing. */
+    internal fun failures(): Int = synchronized(failedAt) { failedAt.size }
 
     private suspend fun download(id: String, size: Int, file: File): File? {
         val key = file.name
         val bytes = try {
             fetch(id, size)
         } catch (_: ApiError) {
-            failedAt[key] = clock()
+            failed(key)
             return null
         }
         if (!looksLikePicture(bytes)) {
             // The server sends a JSON error, or nothing, for a cover it doesn't have.
-            failedAt[key] = clock()
+            failed(key)
             return null
         }
-        return try {
-            writeAtomically(file, bytes)
-            failedAt.remove(key)
-            file
-        } catch (_: IOException) {
-            null
+        val over = folder.withLock {
+            try {
+                writeAtomically(file, bytes)
+            } catch (_: IOException) {
+                return null
+            }
+            synchronized(failedAt) { failedAt.remove(key) }
+            if (total >= 0) total += bytes.size
+            total < 0 || total > budget
         }
+        // The budget holds as covers arrive, not only at the next start.
+        if (over) trim()
+        return file
     }
 
     /** The server can be reached again: try the covers that failed straight away. */
-    fun retryFailed() = failedAt.clear()
+    fun retryFailed() = synchronized(failedAt) { failedAt.clear() }
 
     /** Deletes the least lately written covers once they take more than `budget` bytes, down
      *  to three quarters of it, as Windows does. */
-    suspend fun trim(budget: Long = DISK_BUDGET) = withContext(io) {
-        val files = dir.listFiles()?.filter { it.isFile } ?: return@withContext
-        var total = files.sumOf { it.length() }
-        if (total <= budget) return@withContext
-        for (file in files.sortedBy { it.lastModified() }) {
-            if (total <= budget * 3 / 4) break
-            val size = file.length()
-            if (file.delete()) total -= size
+    suspend fun trim(budget: Long = this.budget) = withContext(io) {
+        folder.withLock {
+            val files = dir.listFiles()?.filter { it.isFile } ?: return@withLock
+            var kept = files.sumOf { it.length() }
+            if (kept > budget) {
+                for (file in files.sortedBy { it.lastModified() }) {
+                    if (kept <= budget * 3 / 4) break
+                    val size = file.length()
+                    if (file.delete()) kept -= size
+                }
+            }
+            total = kept
         }
     }
 
@@ -116,6 +200,15 @@ class CoverStore(
         const val LARGE = 1200
 
         const val RETRY_AFTER_MILLIS = 60_000L
+
+        /** Covers that failed, remembered at most. */
+        const val MOST_FAILURES = 256
+
+        /** Covers fetched from the server at a time. */
+        const val FETCHES_AT_ONCE = 6
+
+        /** Fetches started for other apps that may be under way at a time. */
+        const val OUTSIDE_AT_ONCE = 6
 
         /** Covers kept at most, on disk, per account. */
         const val DISK_BUDGET = 300L * 1024 * 1024

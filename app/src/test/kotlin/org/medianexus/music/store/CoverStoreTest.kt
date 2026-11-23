@@ -94,6 +94,73 @@ class CoverStoreTest {
     }
 
     @Test
+    fun theListOfFailuresIsBoundedAndForgetsWhatHasHadItsMinute() = runBlocking {
+        // A car (or anything else) asking for covers that don't exist used to add to this
+        // list for as long as the app ran.
+        val covers = store { _, _ -> throw ApiError.Network("(down)") }
+        for (i in 1..CoverStore.MOST_FAILURES + 100) assertNull(covers.file("missing-$i"))
+        assertEquals(CoverStore.MOST_FAILURES, covers.failures())
+        // A minute on, one more failure clears out the rest.
+        now += CoverStore.RETRY_AFTER_MILLIS
+        assertNull(covers.file("another"))
+        assertEquals(1, covers.failures())
+    }
+
+    @Test
+    fun theBudgetHoldsAsCoversArrive() = runBlocking {
+        // Room for eight covers. Nothing trims but the arrivals themselves.
+        val covers = CoverStore(folder.root, scope, Dispatchers.IO, { _, _ -> jpeg }, clock = { now }, budget = jpeg.size * 8L)
+        for (i in 1..30) {
+            covers.file("c$i")!!.setLastModified(i * 1000L)
+            val kept = folder.root.listFiles()!!.sumOf { it.length() }
+            assertTrue("$kept bytes kept after cover $i", kept <= jpeg.size * 8L)
+        }
+        // The newest are the ones still there.
+        assertNotNull(covers.kept("c30"))
+        assertNull(covers.kept("c1"))
+    }
+
+    @Test
+    fun onlyAFewMissesAreFetchedAtOnce() = runBlocking {
+        val running = AtomicInteger()
+        val most = AtomicInteger()
+        val covers = store { _, _ ->
+            most.accumulateAndGet(running.incrementAndGet(), ::maxOf)
+            delay(30)
+            running.decrementAndGet()
+            jpeg
+        }
+        List(40) { i -> async { covers.file("burst-$i") } }.forEach { assertNotNull(it.await()) }
+        assertTrue("${most.get()} at once", most.get() <= CoverStore.FETCHES_AT_ONCE)
+    }
+
+    @Test
+    fun anotherAppWaitsBrieflyAndCannotStartFetchesWithoutLimit() = runBlocking {
+        val asked = AtomicInteger()
+        val gate = CompletableDeferred<Unit>()
+        val covers = store { _, _ ->
+            asked.incrementAndGet()
+            gate.await()
+            jpeg
+        }
+        // The server is slow: each caller is let go after its short wait...
+        val started = System.nanoTime()
+        val first = List(CoverStore.OUTSIDE_AT_ONCE) { i -> async { covers.forOutside("slow-$i", 100) } }
+        first.forEach { assertNull(it.await()) }
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 2_000)
+        // ...and while those fetches are still under way, more callers start none: they are
+        // told "not now" at once.
+        for (i in 0 until 50) assertNull(covers.forOutside("more-$i", 5_000))
+        assertTrue("${asked.get()} fetches", asked.get() <= CoverStore.OUTSIDE_AT_ONCE)
+        // The fetches that outlasted their callers finish, and the covers are there next time.
+        gate.complete(Unit)
+        withTimeout(5_000) { while (covers.kept("slow-0") == null) delay(5) }
+        assertNotNull(covers.forOutside("slow-0", 100))
+        // With those done, a new one can be fetched.
+        withTimeout(5_000) { while (covers.forOutside("more-0", 1_000) == null) delay(20) }
+    }
+
+    @Test
     fun onlyIdsAServerWouldGiveNameAFile() {
         assertNotNull(CoverStore.fileName("al-5f3c_6543fa"))
         for (id in listOf("", "../settings.json", "a/b", "..", "a.b", "a b", "é", "x".repeat(161))) {
