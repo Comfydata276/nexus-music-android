@@ -42,6 +42,10 @@ android {
         // The JVM tests cover code that doesn't touch Android; this keeps a stray call into
         // the framework (a log line, say) from failing them.
         unitTests.isReturnDefaultValues = true
+        // The tests that are about Media3's own behaviour (its cache, its media sources, its
+        // player) run its real classes on Robolectric's copy of Android, with the app's
+        // manifest and resources.
+        unitTests.isIncludeAndroidResources = true
     }
 
     lint {
@@ -77,4 +81,10 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
     testImplementation(libs.coroutines.test)
+    // Test only, never in the app: Android itself on the JVM, and Media3's own test kit (a
+    // clock the player can be run against, stand-in decoders), so that what Media3 really
+    // does with our data source and queue is what is tested, not a guess at it.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.media3.test.utils)
+    testImplementation(libs.media3.test.utils.robolectric)
 }
