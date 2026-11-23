@@ -48,6 +48,8 @@ data class SignInState(
     val busy: Boolean = false,
     val error: String? = null,
     val suggestHttp: Boolean = false,
+    /** The server couldn't be reached at all (as against refusing, or not being Navidrome). */
+    val unreachable: Boolean = false,
     /** The server said yes, but the settings naming the account couldn't be written, so
      *  nobody was signed in. */
     val settingsNotSaved: Boolean = false,
@@ -182,7 +184,7 @@ class Session(
                 // HTTPS was the only thing tried, and not because the person said so.
                 val onlyGuessedHttps = addresses.size == 1 && splitScheme(server.trim()).first == null
                 if (generation.get() == asked) {
-                    signingIn.value = SignInState(error = error?.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server)
+                    signingIn.value = SignInState(error = error?.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server, unreachable = error is ApiError.Network)
                 }
                 return@launch
             }

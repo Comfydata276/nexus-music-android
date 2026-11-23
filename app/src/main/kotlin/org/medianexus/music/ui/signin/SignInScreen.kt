@@ -29,7 +29,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
@@ -88,25 +90,31 @@ fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String
     val keyboard = LocalSoftwareKeyboardController.current
     val ready = !state.busy && server.text.isNotBlank() && username.text.isNotBlank() && password.text.isNotEmpty()
     // Android 17: a server on the home network can't be reached without the local-network
-    // permission. Before signing in to one, a sentence says why the question is coming, then
-    // the system asks; the sign-in goes ahead either way.
-    var explaining by remember { mutableStateOf(false) }
-    var refused by remember { mutableStateOf(false) }
-    val go = { session.signIn(server.text.toString(), username.text.toString(), password.text.toString()) }
-    val ask = rememberLocalNetworkAsk(localAccess) { granted ->
-        refused = !granted
-        if (explaining) {
-            explaining = false
-            go()
-        }
+    // permission. Before signing in to one that is certainly there, a sentence says why the
+    // question is coming, then the system asks; the sign-in goes ahead either way, when the
+    // answer comes (kept by LocalAccess, so turning the phone meanwhile loses nothing). One
+    // that only may be there (a name, a VPN's range) is connected to straight away; if that
+    // fails, the screen says the permission may be why.
+    var explaining by rememberSaveable { mutableStateOf(false) }
+    val asked by localAccess.ask.collectAsStateWithLifecycle()
+    var mayBeWhy by remember { mutableStateOf(false) }
+    LaunchedEffect(state.error, state.unreachable, asked) {
+        mayBeWhy = state.error != null && state.unreachable && localAccess.mayBeWhy(server.text.toString())
     }
-    val connect = {
+    val go = { session.signIn(server.text.toString(), username.text.toString(), password.text.toString()) }
+    val ask = rememberLocalNetworkAsk(localAccess)
+    val askThenGo = {
+        explaining = false
+        // Whatever the answer, the sign-in goes ahead with what was typed.
+        val signIn = go
+        ask { signIn() }
+    }
+    val connect: () -> Unit = {
         if (ready) {
             keyboard?.hide()
             scope.launch {
                 if (localAccess.neededFor(server.text.toString())) explaining = true else go()
             }
-            Unit
         }
     }
     val accent = colors.accent
@@ -209,10 +217,11 @@ fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String
                         Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                         style = Theme.type.body.copy(color = colors.text),
                     )
-                    TextButton(stringResource(R.string.continue_on), onClick = ask, modifier = Modifier.fillMaxWidth(), primary = true)
-                } else if (refused && error != null) {
+                    TextButton(stringResource(R.string.continue_on), onClick = askThenGo, modifier = Modifier.fillMaxWidth(), primary = true)
+                } else if (mayBeWhy && !state.busy) {
                     BasicText(stringResource(R.string.local_network_refused), style = Theme.type.rowDetail.copy(color = colors.warm))
-                    TextButton(stringResource(R.string.allow), onClick = ask, modifier = Modifier.fillMaxWidth())
+                    // Allowed, it connects again by itself.
+                    TextButton(stringResource(R.string.allow), onClick = { ask { granted -> if (granted && ready) go() } }, modifier = Modifier.fillMaxWidth())
                 }
                 Spacer(Modifier.height(4.dp))
                 if (!explaining) {

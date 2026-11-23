@@ -105,8 +105,9 @@ data class Settings(
     val themeAt: Long = 0,
 
     // ---- The phone's own ----
-    /** Notifications have been asked for once (the first time something played). */
-    val askedNotifications: Boolean = false,
+    /** Android 17's local-network permission was refused and the system won't ask again:
+     *  "Allow" opens the app's page in the phone's settings instead (see `LocalAccess`). */
+    val localNetworkRefusedForGood: Boolean = false,
 ) {
     /** The name of the preset matching the equaliser curve: one of the app's, one of the
      *  user's own, or neither. */

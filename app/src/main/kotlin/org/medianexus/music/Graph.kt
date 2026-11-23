@@ -57,10 +57,35 @@ class Graph(context: Context) {
     val toasts = Toasts()
 
     /** Whether a server on the home network can be reached (Android 17's permission). */
-    val localAccess = LocalAccess(context.applicationContext, session, scope)
+    val localAccess = LocalAccess(context.applicationContext, session, settings, scope)
+
+    private val reconnectCount = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    /**
+     * Goes up whenever whatever failed for want of a connection is worth trying again: the
+     * server answers again after it couldn't be reached, the phone has a network again, or
+     * it has just been allowed to reach the home network. Pages that failed load again, and
+     * covers that failed are asked for again, without anyone doing anything.
+     */
+    val reconnects: kotlinx.coroutines.flow.StateFlow<Int> = reconnectCount
+
+    @Volatile private var serverDown = false
+
+    private fun reached(ok: Boolean) {
+        localAccess.reached(ok)
+        val wasDown = serverDown
+        serverDown = !ok
+        if (ok && wasDown) reconnected()
+    }
+
+    private fun reconnected() {
+        accounts.state.value?.covers?.retryFailed()
+        org.medianexus.music.ui.parts.CoverRetry.now()
+        reconnectCount.value++
+    }
 
     /** The screens' one way to the player (the playback service's session). */
-    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream))
+    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection))
 
     companion object {
         /** Where the saved password is. Kept out of backups: the key that opens it can't
@@ -81,6 +106,30 @@ class Graph(context: Context) {
             accounts.state.collectLatest { account ->
                 account?.likes?.refused?.collect { toasts.show(context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim()) }
             }
+        }
+        // Whether the server answers, from every request the account's client makes.
+        scope.launch {
+            accounts.state.collect { account ->
+                serverDown = false
+                account?.api?.onReached = ::reached
+            }
+        }
+        // Allowed to reach the home network: what failed tries again.
+        scope.launch { localAccess.allowed.collect { if (it > 0) reconnected() } }
+        // A network again (after none, or another one): the same.
+        runCatching {
+            val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
+            connectivity.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+                private var had = true
+                override fun onAvailable(network: android.net.Network) {
+                    if (!had) reconnected()
+                    had = true
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    had = false
+                }
+            })
         }
         // The switch in Settings and the one every request checks are the same.
         scope.launch {

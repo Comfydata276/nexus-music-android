@@ -20,6 +20,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 import org.medianexus.music.ui.shell.NoticeList
 import org.medianexus.music.ui.shell.Shell
 import org.medianexus.music.ui.signin.SignInScreen
@@ -42,12 +45,14 @@ class MainActivity : ComponentActivity() {
         }
         val graph = graph
         setContent { Root(graph) }
-    }
-
-    // The screens talk to the player only while they can be seen; it plays on either way.
-    override fun onStart() {
-        super.onStart()
-        graph.player.connect()
+        // The screens talk to the player only while they can be seen, and only once someone
+        // is signed in: before that there's nothing it could play, and binding to it would
+        // start the service (and its player) for nothing. It plays on either way.
+        lifecycleScope.launch {
+            repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+                graph.accounts.state.collect { account -> if (account != null) graph.player.connect() else graph.player.release() }
+            }
+        }
     }
 
     override fun onStop() {
