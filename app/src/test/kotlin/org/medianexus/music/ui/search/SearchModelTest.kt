@@ -37,7 +37,7 @@ class SearchModelTest {
         advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
         runCurrent()
         assertEquals(listOf("lant"), asked)
-        assertEquals(SearchState("lant", found("lant")), model.state.value)
+        assertEquals(SearchState("lant", Results("lant", found("lant"))), model.state.value)
     }
 
     @Test
@@ -55,11 +55,11 @@ class SearchModelTest {
         // The old answer arriving late changes nothing.
         slow.complete(found("old"))
         advanceUntilIdle()
-        assertEquals(SearchState("new", found("new")), model.state.value)
+        assertEquals(SearchState("new", Results("new", found("new"))), model.state.value)
     }
 
     @Test
-    fun clearingTheBoxIsShownAtOnceAndAFailureKeepsWhatWasFound() = runTest {
+    fun clearingTheBoxIsShownAtOnceAndResultsNeverShowUnderOtherWords() = runTest {
         var fail = false
         val model = SearchModel(backgroundScope, search = { if (fail) throw ApiError.Network("Gone.") else found(it) })
         runCurrent()
@@ -70,7 +70,8 @@ class SearchModelTest {
         model.type("lanterns")
         advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
         runCurrent()
-        assertEquals(found("lantern"), model.state.value.found)
+        // What "lantern" found isn't shown, or played, under "lanterns".
+        assertNull(model.state.value.found)
         assertFalse(model.state.value.searching)
         assertTrue(model.state.value.error is ApiError.Network)
         model.type("")
@@ -98,5 +99,54 @@ class SearchModelTest {
         assertEquals(6, songs.songs.size)
         assertTrue(songs.artists.isEmpty() && songs.albums.isEmpty())
         assertEquals(listOf("p"), SearchView.of("paper trail", found, listOf(Playlist(id = "p", name = "Paper trail")), SearchKind.PLAYLISTS).playlists.map { it.id })
+    }
+
+    @Test
+    fun whatWasFoundGoesAsSoonAsTheWordsChange() = runTest {
+        val model = SearchModel(backgroundScope, search = { found(it) })
+        runCurrent()
+        model.type("lantern")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(found("lantern"), model.state.value.found)
+        // Typed on, and the next search hasn't even started: nothing is shown for the new
+        // words, rather than the old words' results.
+        model.type("lanterns")
+        assertNull(model.state.value.found)
+        assertTrue(model.state.value.searching)
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(Results("lanterns", found("lanterns")), model.state.value.results)
+    }
+
+    @Test
+    fun aSlowRetryCantOverwriteANewerSearch() = runTest {
+        var fail = true
+        val slowRetry = CompletableDeferred<Found>()
+        var tries = 0
+        val model = SearchModel(backgroundScope, search = { word ->
+            when {
+                word == "old" && fail -> throw ApiError.Network("Gone.")
+                word == "old" -> { tries++; slowRetry.await() }
+                else -> found(word)
+            }
+        })
+        runCurrent()
+        model.type("old")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertTrue(model.state.value.error != null)
+        fail = false
+        model.retry()
+        runCurrent()
+        assertEquals(1, tries)
+        // Newer words while the retry is still out.
+        model.type("new")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        slowRetry.complete(found("old"))
+        advanceUntilIdle()
+        assertEquals(Results("new", found("new")), model.state.value.results)
+        assertEquals("new", model.state.value.query)
     }
 }
