@@ -542,4 +542,24 @@ private class InOrderTimeline(timeline: Timeline) : ForwardingTimeline(timeline)
     override fun getFirstWindowIndex(shuffleModeEnabled: Boolean) = timeline.getFirstWindowIndex(false)
 
     override fun getLastWindowIndex(shuffleModeEnabled: Boolean) = timeline.getLastWindowIndex(false)
+
+    /**
+     * A song whose length the player doesn't know is given the library's. That is a song the
+     * server converts: its stream comes with no length, which the player takes for a live
+     * broadcast with no end and nowhere to seek to, and the car and the phone would show it
+     * that way. It can be sought in all the same (see [SongReader]), it is as long as the
+     * library says to within a second, and it ends when the server ends it.
+     */
+    override fun getWindow(windowIndex: Int, window: Window, defaultPositionProjectionUs: Long): Window {
+        super.getWindow(windowIndex, window, defaultPositionProjectionUs)
+        if (window.durationUs == C.TIME_UNSET) {
+            val seconds = (window.mediaItem.localConfiguration?.tag as? QueuePlayer.SongTag)?.song?.duration ?: 0
+            if (seconds > 0) {
+                window.durationUs = seconds * 1_000_000L
+                window.liveConfiguration = null
+                window.isDynamic = false
+            }
+        }
+        return window
+    }
 }

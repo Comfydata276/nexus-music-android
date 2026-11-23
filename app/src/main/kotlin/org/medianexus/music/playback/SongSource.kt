@@ -3,15 +3,18 @@ package org.medianexus.music.playback
 import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.ContentMetadata
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.floor
 
 /** The form a song's audio is fetched in: the bit rate asked of the server (0 for the file
  *  as it is) and the kind of file that comes back. */
@@ -52,11 +55,22 @@ const val SCHEME = "nexus"
 class SongWhere(
     val form: StreamForm,
     val key: String,
-    /** The song's length in seconds, if known: a conversion's length in bytes is worked out
-     *  from it. */
-    val seconds: Int = 0,
+    /** The fewest bytes a whole conversion of the song can come to (0 for a file as it is,
+     *  whose length the server gives): one that ends short of this was cut off, and isn't
+     *  kept. See [leastBytes]. */
+    val least: Long = 0,
     val stream: (offsetSecs: Int) -> String,
 )
+
+/**
+ * The fewest bytes a whole converted song can come to, as Windows works it out
+ * (`least_bytes` in src/playback.rs): most of what its length comes to at the bit rate asked
+ * for, or the file's own if that is lower (the server doesn't convert up).
+ */
+fun leastBytes(seconds: Int, askedKbps: Int, fileKbps: Int): Long {
+    val rate = if (fileKbps > 0) minOf(askedKbps, fileKbps) else askedKbps
+    return seconds.toLong() * rate * 125 * 4 / 5
+}
 
 /**
  * What one read of a song is given by the account it is for: where the song's bytes come
@@ -91,20 +105,16 @@ interface SongLeases {
  * The data source the player reads every song through. It turns `nexus://song/<id>` into
  * real bytes at the moment the song is opened: this is the one place that decides where a
  * song comes from (the server now; a downloaded copy and fetching ahead come in later
- * versions, in [SongResolver]).
+ * versions, in [SongLease.resolve]).
  *
- * Originals go through the kept songs, and can be read from any byte, as the server
- * honours ranges for them. A song the server converts can't be: Navidrome streams a fresh
- * conversion with no length and ignores ranges, answering any request from the start. So a
- * conversion opened part-way (a seek, or carrying on after the connection dropped) is
- * asked for from the right second instead (`timeOffset`, which Navidrome supports), and the
- * bytes before the exact place are skipped. The player reads MP3 conversions as constant
- * bit rate, so a place in bytes is a place in time.
+ * How a song is read, and a converted one above all, is [SongReader]'s business; this only
+ * stands Media3's HTTP and cache data sources behind it ([SongStreams]).
  *
- * A conversion also comes with no length, which the player takes for a live stream that
- * can't be sought in at all. So its length is given as what the song's length comes to at
- * that bit rate, rounded up by a second ([conversionLength]); a conversion never runs
- * longer, and one that ends sooner simply ends.
+ * Nothing private leaves it. The address it reports is the song's own (`nexus://…`), never
+ * the server's, which carries the sign-in token; the cache is never told where a redirect
+ * led; and what it throws says what kind of failure it was and nothing of where. Media3
+ * hands all three on: to its load diagnostics, to the cache's index on disk, and, inside a
+ * playback error, to every app with a controller.
  */
 @OptIn(UnstableApi::class)
 class SongDataSource(
@@ -112,155 +122,192 @@ class SongDataSource(
     /** The account generation this data source was made for. */
     private val generation: Long,
     private val upstream: DataSource.Factory,
+    private val heads: ConversionHeads,
 ) : DataSource {
-    /** The server, kept out of the kept songs. */
-    private val direct: DataSource = upstream.createDataSource()
     private val listeners = mutableListOf<TransferListener>()
     private var lease: SongLease? = null
-    private var current: DataSource? = null
-    /** Bytes still to throw away before the place asked for, after the tag at the start. */
-    private var toSkip = 0L
-    private var tagChecked = true
-    /** Bytes that may still be given, when a length was promised; -1 otherwise. */
-    private var allowed = -1L
+    private var asked: Uri? = null
+    private var headers: Map<String, List<String>> = emptyMap()
+    private var reader: SongReader? = null
+    /** Something that isn't one of our songs, read as it is. */
+    private var plain: DataSource? = null
 
     override fun addTransferListener(transferListener: TransferListener) {
         listeners += transferListener
-        direct.addTransferListener(transferListener)
-    }
-
-    /** The server through the account's kept songs, or straight to it if none are kept. */
-    private fun through(cache: Cache?): DataSource {
-        if (cache == null) return direct
-        val kept = CacheDataSource.Factory()
-            .setCache(cache)
-            .setUpstreamDataSourceFactory(upstream)
-            // A kept file the system has cleared away is read from the server instead.
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-            .createDataSource()
-        listeners.forEach(kept::addTransferListener)
-        return kept
     }
 
     override fun open(dataSpec: DataSpec): Long {
+        asked = dataSpec.uri
         val id = songIdOf(dataSpec.uri)
         if (id == null) {
-            current = direct
-            return direct.open(dataSpec)
+            val source = upstream.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }
+            plain = source
+            return guarded { source.open(dataSpec) }
         }
         // Refused here if the account this was made for has gone.
         val lease = leases.lease(generation).also { this.lease = it }
         val where = lease.resolve(id)
-        val position = dataSpec.position
-        val cache = lease.cache
-        val kept = through(cache)
-        val held = cache?.isCached(where.key, position, 1) == true
-        val promised = if (where.form.converted) conversionLength(where.seconds, where.form.bitrate) else C.LENGTH_UNSET.toLong()
-        if (!where.form.converted || position == 0L || held) {
-            current = kept
-            val length = kept.open(dataSpec.buildUpon().setUri(where.stream(0)).setKey(where.key).build())
-            if (length != C.LENGTH_UNSET.toLong() || promised == C.LENGTH_UNSET.toLong()) return length
-            allowed = (promised - position).coerceAtLeast(0)
-            return allowed
-        }
-        val start = startFor(position, where.form.bitrate)
-        if (org.medianexus.music.BuildConfig.DEBUG) {
-            android.util.Log.d("NexusPlayback", "conversion of $id opened at byte $position: from second ${start.seconds}, skipping ${start.skip}")
-        }
-        toSkip = start.skip
-        tagChecked = false
-        current = direct
-        direct.open(DataSpec.Builder().setUri(where.stream(start.seconds)).setHttpRequestHeaders(dataSpec.httpRequestHeaders).build())
-        if (promised == C.LENGTH_UNSET.toLong()) return promised
-        allowed = (promised - position).coerceAtLeast(0)
-        return allowed
+        val reader = SongReader(Streams(lease.cache, dataSpec), heads).also { this.reader = it }
+        return guarded { reader.open(where, dataSpec.position) }
     }
 
-    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-        val source = current ?: throw IOException("Not open")
-        if (!tagChecked) {
-            tagChecked = true
-            toSkip += skipTag(source)
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = guarded {
+        val reader = reader
+        when {
+            reader != null -> reader.read(buffer, offset, length).let { if (it < 0) C.RESULT_END_OF_INPUT else it }
+            else -> (plain ?: throw IOException("Not open")).read(buffer, offset, length)
         }
-        while (toSkip > 0) {
-            val scratch = ByteArray(minOf(toSkip, 16_384L).toInt())
-            val got = source.read(scratch, 0, scratch.size)
-            if (got == C.RESULT_END_OF_INPUT) return C.RESULT_END_OF_INPUT
-            toSkip -= got
-        }
-        if (allowed == 0L) return C.RESULT_END_OF_INPUT
-        val wanted = if (allowed > 0) minOf(length.toLong(), allowed).toInt() else length
-        val got = source.read(buffer, offset, wanted)
-        if (got > 0 && allowed > 0) allowed -= got
-        return got
     }
 
-    /** Reads past an ID3 tag at the start of a conversion, if it has one, and returns how
-     *  many of the bytes read were audio after all (none: a tag is always first). */
-    private fun skipTag(source: DataSource): Long {
-        val head = ByteArray(10)
-        var have = 0
-        while (have < head.size) {
-            val got = source.read(head, have, head.size - have)
-            if (got == C.RESULT_END_OF_INPUT) break
-            have += got
-        }
-        if (have < 10 || head[0] != 'I'.code.toByte() || head[1] != 'D'.code.toByte() || head[2] != '3'.code.toByte()) {
-            // No tag: those bytes were audio, and count towards what's skipped. (The player
-            // finds the next whole frame by itself.)
-            return -have.toLong()
-        }
-        val footer = if (head[5].toInt() and 0x10 != 0) 10 else 0
-        return id3Size(head) + footer
-    }
+    /** The song's own address, as it was asked for: never the server's. */
+    override fun getUri(): Uri? = asked
 
-    override fun getUri(): Uri? = current?.uri
-
-    override fun getResponseHeaders(): Map<String, List<String>> = current?.responseHeaders ?: emptyMap()
+    override fun getResponseHeaders(): Map<String, List<String>> = headers
 
     override fun close() {
         try {
-            current?.close()
+            reader?.close()
+            plain?.close()
+        } catch (e: IOException) {
+            throw StreamFailure.of(e)
         } finally {
-            current = null
-            toSkip = 0
-            tagChecked = true
-            allowed = -1
+            reader = null
+            plain = null
+            asked = null
+            headers = emptyMap()
             // Only now may the account's kept songs be closed, if it has gone meanwhile.
             lease?.release()
             lease = null
         }
     }
 
-    /** Makes one for each read the player starts, for the account signed in at that moment. */
-    class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory) : DataSource.Factory {
-        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream)
+    /** Runs a step, and lets nothing out of it but a [StreamFailure]. */
+    private inline fun <T> guarded(step: () -> T): T = try {
+        step()
+    } catch (e: IOException) {
+        throw StreamFailure.of(e)
     }
 
-    companion object {
-        /** The length in bytes to give for a conversion of a song this many seconds long:
-         *  its audio at the bit rate, a second over (the server rounds the length down), and
-         *  room for the tag at the start. Unknown (-1) if the song's length isn't. */
-        fun conversionLength(seconds: Int, bitrate: Int): Long =
-            if (seconds <= 0) C.LENGTH_UNSET.toLong() else (seconds + 1L) * bitrate * 125 + TAG_ROOM
-
-        private const val TAG_ROOM = 4_096L
-
-        /** Where to start a conversion so as to arrive at byte `position` of it: the whole
-         *  second before, and how many bytes of audio after that to throw away. */
-        fun startFor(position: Long, bitrate: Int): Start {
-            val bytesPerSecond = bitrate * 125.0
-            val seconds = position / bytesPerSecond
-            val whole = floor(seconds).toInt()
-            return Start(whole, ((seconds - whole) * bytesPerSecond).toLong())
+    /** Media3's data sources, as [SongReader] asks for them. */
+    private inner class Streams(private val cache: Cache?, private val spec: DataSpec) : SongStreams {
+        override fun server(url: String, position: Long): Opened {
+            if (org.medianexus.music.BuildConfig.DEBUG) {
+                // (Never the address itself: it carries the sign-in token.)
+                val second = url.substringAfter("timeOffset=", "").substringBefore('&')
+                if (second.isNotEmpty()) android.util.Log.d("NexusPlayback", "a conversion opened part-way, at byte ${spec.position}: asked of the server from second $second")
+            }
+            return open(http(), server(url, null, position))
         }
 
-        /** The size of an ID3v2 tag after its 10-byte header ("syncsafe": 7 bits a byte). */
-        fun id3Size(head: ByteArray): Long =
-            (6..9).fold(0L) { size, i -> (size shl 7) or (head[i].toLong() and 0x7f) }
+        override fun kept(url: String, key: String, position: Long): Opened? {
+            val cache = cache ?: return null
+            val through = CacheDataSource.Factory()
+                .setCache(cache)
+                // The cache asks its upstream where it ended up, to note a redirect in its
+                // index: it is only ever told the address it asked for.
+                .setUpstreamDataSourceFactory { Discreet(http()) }
+                // A kept file the system has cleared away is read from the server instead.
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                .createDataSource()
+            // Kept whatever its length, known or not: the player asks for "not kept if the
+            // length isn't known", which is every fresh conversion. Whether one is worth
+            // keeping is decided when it ends (see SongReader).
+            val spec = server(url, key, position)
+            return open(through, spec.buildUpon().setFlags(spec.flags and DataSpec.FLAG_DONT_CACHE_IF_LENGTH_UNKNOWN.inv()).build())
+        }
+
+        override fun keptOnly(key: String, position: Long): Opened {
+            val cache = cache ?: throw IOException("Nothing is kept")
+            // No upstream, and nothing written: a byte that isn't kept is an error.
+            val only = CacheDataSource.Factory().setCache(cache).setUpstreamDataSourceFactory(null).setCacheWriteDataSinkFactory(null).createDataSource()
+            return open(only, DataSpec.Builder().setUri(Uri.EMPTY).setKey(key).setPosition(position).build())
+        }
+
+        override fun wholeLength(key: String): Long {
+            val cache = cache ?: return -1
+            val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
+            return if (length > 0 && cache.isCached(key, 0, length)) length else -1
+        }
+
+        override fun drop(key: String) {
+            cache?.removeResource(key)
+        }
+
+        private fun http(): DataSource = upstream.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }
+
+        private fun server(url: String, key: String?, position: Long): DataSpec =
+            DataSpec.Builder().setUri(url).setKey(key).setPosition(position).setHttpRequestHeaders(spec.httpRequestHeaders).setFlags(spec.flags).build()
+
+        private fun open(source: DataSource, spec: DataSpec): Opened {
+            val length = try {
+                source.open(spec)
+            } catch (e: IOException) {
+                runCatching { source.close() }
+                throw e
+            }
+            // What kind of file it is, for the player to pick how to read it.
+            headers = source.responseHeaders.filterKeys { it.equals("Content-Type", ignoreCase = true) }
+            return Opened(
+                object : ByteSource {
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                        source.read(buffer, offset, length).let { if (it == C.RESULT_END_OF_INPUT) -1 else it }
+
+                    override fun close() = source.close()
+                },
+                length,
+            )
+        }
     }
 
-    data class Start(val seconds: Int, val skip: Long)
+    /** A data source that says it is wherever it was asked to go, whatever redirects it
+     *  followed to get there. */
+    private class Discreet(private val source: DataSource) : DataSource by source {
+        private var asked: Uri? = null
+
+        override fun open(dataSpec: DataSpec): Long {
+            asked = dataSpec.uri
+            return source.open(dataSpec)
+        }
+
+        override fun getUri(): Uri? = asked
+    }
+
+    /** Makes one for each read the player starts, for the account signed in at that moment. */
+    class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory) : DataSource.Factory {
+        private val heads = ConversionHeads()
+
+        override fun createDataSource(): DataSource = SongDataSource(leases, leases.generation(), upstream, heads)
+    }
+}
+
+/**
+ * A read of a song that failed, with everything private taken out: what kind of failure it
+ * was, the server's status if it gave one, and nothing else. The exception it stands for
+ * (which names the server's address, and for an HTTP error carries the whole request, token
+ * and all) is not kept, even as its cause: a playback error travels to every app that holds
+ * a controller, cause and message included.
+ */
+@OptIn(UnstableApi::class)
+class StreamFailure private constructor(message: String, reason: Int, val status: Int) : DataSourceException(message, null, reason) {
+    /** The server answered, and said no: asking again won't help. */
+    val refused: Boolean get() = status in 400..499
+
+    companion object {
+        fun of(error: IOException): StreamFailure {
+            if (error is StreamFailure) return error
+            // Every cause, as the HTTP data source wraps the real one.
+            val chain = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
+            val status = chain.firstNotNullOfOrNull { (it as? HttpDataSource.InvalidResponseCodeException)?.responseCode } ?: 0
+            return when {
+                status != 0 -> StreamFailure("The server answered with status $status", PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, status)
+                chain.any { it is java.net.SocketTimeoutException } ->
+                    StreamFailure("The server took too long to answer", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT, 0)
+                chain.any { it is HttpDataSource.HttpDataSourceException || it is java.net.SocketException || it is java.net.UnknownHostException } ->
+                    StreamFailure("The connection to the server failed", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED, 0)
+                else -> StreamFailure("The song couldn't be read (${error.javaClass.simpleName})", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, 0)
+            }
+        }
+    }
 }
 
 /**

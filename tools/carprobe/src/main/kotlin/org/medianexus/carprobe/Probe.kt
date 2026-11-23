@@ -658,10 +658,13 @@ class Probe : Instrumentation() {
             // done earlier in this run (pressing "like") has changed.
             val list = lists.filter { headed(it) && songs(tree, it).size in 4..150 }.maxByOrNull { it.depth } ?: lists.firstOrNull { headed(it) }
             if (list != null) {
-                onMain { controls.playFromMediaId(list.children!!.first().mediaId, null) }
+                // As the list is now: something done earlier in this run (pressing "like")
+                // may have changed it since it was first read.
+                val now = children(list.id).first.orEmpty()
+                val titles = now.drop(1).filter { it.isPlayable }.map { it.description.title.toString() }
+                onMain { controls.playFromMediaId(now.first().mediaId, null) }
                 val started = waitFor { playing() && controller!!.shuffleMode == PlaybackStateCompat.SHUFFLE_MODE_ALL }
-                waitFor(3000) { (queue?.size ?: 0) == songs(tree, list).size }
-                val titles = songs(tree, list).map { it.description.title.toString() }
+                waitFor(3000) { (queue?.size ?: 0) == titles.size }
                 check("play.shuffle", "Choosing \"$name\" plays the whole list, shuffled", started >= 0 && queue.orEmpty().size == titles.size &&
                     queue.orEmpty().map { it.description.title.toString() }.sorted() == titles.sorted(),
                     "${whyNotPlaying()}, shuffle mode ${controller!!.shuffleMode}, queue of ${queue?.size} for a list of ${titles.size}",

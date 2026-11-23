@@ -165,22 +165,4 @@ class CarTest {
         assertEquals("song:abc:0", cacheKey("abc", StreamForm(0, "flac")))
         assertEquals("song:abc:160", cacheKey("abc", StreamForm(160, "mp3")))
     }
-
-    @Test
-    fun aConversionOpenedPartWayStartsAtTheSecondBefore() {
-        // 128 kbps is 16,000 bytes a second: byte 40,000 is 2.5 seconds in.
-        assertEquals(SongDataSource.Start(2, 8_000), SongDataSource.startFor(40_000, 128))
-        assertEquals(SongDataSource.Start(0, 0), SongDataSource.startFor(0, 320))
-        // An ID3 tag's size is written seven bits to a byte.
-        val head = byteArrayOf('I'.code.toByte(), 'D'.code.toByte(), '3'.code.toByte(), 4, 0, 0, 0, 0, 0x08, 0x34)
-        assertEquals(1076L, SongDataSource.id3Size(head))
-    }
-
-    @Test
-    fun aConversionIsGivenALengthItWillNotRunPast() {
-        // A 20-second song at 128 kbps came to 321,148 bytes from the test server.
-        val given = SongDataSource.conversionLength(20, 128)
-        assertTrue(given in 321_148L..345_000L)
-        assertEquals(-1L, SongDataSource.conversionLength(0, 128))
-    }
 }

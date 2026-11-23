@@ -19,7 +19,6 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
-import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -452,7 +451,8 @@ class PlaybackService : MediaLibraryService() {
         val form = streamForm(native, graph.settings.value.bitrate, suffix)
         // Here, in later versions, a downloaded copy is chosen first, then one kept from
         // fetching ahead; only then the server.
-        return SongWhere(form, cacheKey(songId, form), song?.duration ?: 0) { offset -> api.streamUrl(songId, form.bitrate, offset) }
+        val least = if (form.converted && song != null) leastBytes(song.duration, form.bitrate, song.bitRate) else 0
+        return SongWhere(form, cacheKey(songId, form), least) { offset -> api.streamUrl(songId, form.bitrate, offset) }
     }
 
     /**
@@ -464,7 +464,7 @@ class PlaybackService : MediaLibraryService() {
     private class RideOut : DefaultLoadErrorHandlingPolicy() {
         override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
             val error = loadErrorInfo.exception
-            if (error is HttpDataSource.InvalidResponseCodeException && error.responseCode in 400..499) return C.TIME_UNSET
+            if (error is StreamFailure && error.refused) return C.TIME_UNSET
             if (error !is IOException) return super.getRetryDelayMsFor(loadErrorInfo)
             return RETRY_WAITS.getOrElse(loadErrorInfo.errorCount - 1) { RETRY_WAITS.last() }
         }
@@ -714,16 +714,19 @@ class PlaybackService : MediaLibraryService() {
         PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
         PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
         PlaybackException.ERROR_CODE_TIMEOUT,
-    ) || (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode?.let { it >= 500 } == true
+    ) || (error.cause as? StreamFailure)?.let { it.status >= 500 } == true
 
     /** The words the car, the notification and the app show for a playback error. */
     private fun explain(error: PlaybackException, song: Song?): PlaybackException? = when {
         // Android 17, a server on the home network, and no permission to reach it: waiting
         // for it to come back would be waiting for ever. Say what will put it right.
-        network(error) && graph.localAccess.blocked.value -> PlaybackException(getString(R.string.car_local_network), error, error.errorCode, openAppButton())
-        network(error) -> PlaybackException(getString(R.string.lost_connection), error, error.errorCode)
-        song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play, song.title), error, error.errorCode)
-        else -> null
+        // The player's own error is not passed on as the cause: a playback error goes to
+        // every app with a controller, cause and all.
+        network(error) && graph.localAccess.blocked.value -> PlaybackException(getString(R.string.car_local_network), null, error.errorCode, openAppButton())
+        network(error) -> PlaybackException(getString(R.string.lost_connection), null, error.errorCode)
+        song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play, song.title), null, error.errorCode)
+        // (A file the phone can't decode is about to be asked for again, converted.)
+        else -> PlaybackException(null, null, error.errorCode)
     }
 
     /** Once a second: counts listening, and notes where playback has got to now and then. */
