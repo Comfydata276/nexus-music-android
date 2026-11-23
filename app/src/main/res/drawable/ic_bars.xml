@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- From the Windows app's ui/icons/bars.svg by app/icons/svg_to_vector.py. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M5 10h1.2a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-1.2a1 1 0 0 1 -1 -1v-8a1 1 0 0 1 1 -1z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M11.4 4h1.2a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-1.2a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M17.8 8h1.2a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-1.2a1 1 0 0 1 -1 -1v-10a1 1 0 0 1 1 -1z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

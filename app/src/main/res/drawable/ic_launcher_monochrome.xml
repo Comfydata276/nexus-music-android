@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- The three bars, at their place on the 256-wide tile, scaled so the tile would fill the
+         72 of 108 a launcher shows. -->
+    <group
+        android:scaleX="0.3"
+        android:scaleY="0.3"
+        android:translateX="15.6"
+        android:translateY="15.6">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M79 112a15 15 0 0 1 15 15v54a15 15 0 0 1 -30 0v-54a15 15 0 0 1 15 -15z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M128 60a15 15 0 0 1 15 15v106a15 15 0 0 1 -30 0v-106a15 15 0 0 1 15 -15z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M177 92a15 15 0 0 1 15 15v74a15 15 0 0 1 -30 0v-74a15 15 0 0 1 15 -15z" />
+    </group>
+</vector>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- From the Windows app's ui/icons/play-fill.svg by app/icons/svg_to_vector.py. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <group android:translateX="-1.6" android:translateY="0">
+        <path
+            android:pathData="M 7.2 3.6 a 1.2 1.2 0 0 1 1.83 -1.02 l 12.2 8.4 a 1.2 1.2 0 0 1 0 2.04 l -12.2 8.4 A 1.2 1.2 0 0 1 7.2 20.4 z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>

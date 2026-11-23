@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- The whole of the Windows app's icon set is ported at once (by icons/svg_to_vector.py),
+         ahead of the screens that will use each one. -->
+    <issue id="UnusedResources">
+        <ignore regexp="R\.drawable\.ic_" />
+    </issue>
+</lint>
