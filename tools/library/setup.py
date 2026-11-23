@@ -39,6 +39,40 @@ def http(method, url, body=None, headers=None):
         return e.code, (json.loads(raw) if raw[:1] in (b"{", b"[") else raw)
 
 
+def form(url, encoded):
+    req = urllib.request.Request(url, data=encoded.encode(), method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw[:1] in (b"{", b"[") else raw)
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        return e.code, (json.loads(raw) if raw[:1] in (b"{", b"[") else raw)
+
+
+LONG_PREFIX = "Long list ("
+
+
+def long_list(api, count):
+    """A playlist of `count` songs, the library's 100 over and over, for measuring a long
+    list: opening, scrolling, starting it. Replaces one made before."""
+    remove_long(api)
+    found = api.call("search3", query="", songCount=1000, albumCount=0, artistCount=0)["searchResult3"]["song"]
+    ordered = sorted(found, key=lambda s: (s["album"], s.get("discNumber", 1), s.get("track", 0)))
+    ids = [ordered[n % len(ordered)]["id"] for n in range(count)]
+    name = "%s%s songs)" % (LONG_PREFIX, format(count, ","))
+    made = api.call("createPlaylist", name=name, songId=ids)["playlist"]
+    print("made \"%s\": %d songs (id %s)" % (name, made.get("songCount", 0), made["id"]))
+
+
+def remove_long(api):
+    for playlist in api.call("getPlaylists")["playlists"].get("playlist", []):
+        if playlist["name"].startswith(LONG_PREFIX):
+            api.call("deletePlaylist", id=playlist["id"])
+            print("removed \"%s\"" % playlist["name"])
+
+
 class Subsonic:
     def __init__(self, base, user, password):
         self.base, self.user, self.password = base, user, password
@@ -50,7 +84,12 @@ class Subsonic:
         for key, value in params.items():
             for item in (value if isinstance(value, (list, tuple)) else [value]):
                 query.append((key, str(item)))
-        status, body = http("GET", "%s/rest/%s?%s" % (self.base, method, urllib.parse.urlencode(query)))
+        encoded = urllib.parse.urlencode(query)
+        if len(encoded) > 1800:
+            # A long list of ids goes in the body (the OpenSubsonic "formPost" extension).
+            status, body = form("%s/rest/%s" % (self.base, method), encoded)
+        else:
+            status, body = http("GET", "%s/rest/%s?%s" % (self.base, method, encoded))
         answer = body.get("subsonic-response", {}) if isinstance(body, dict) else {}
         if answer.get("status") != "ok":
             raise SystemExit("server refused %s: %s" % (method, answer.get("error") or body))
@@ -63,6 +102,10 @@ def main():
     base, library = sys.argv[1].rstrip("/"), sys.argv[2]
     if sys.argv[3:] == ["--status"]:
         return summary(Subsonic(base, USER, PASSWORD), base)
+    if sys.argv[3:4] and sys.argv[3].startswith("--long="):
+        value = sys.argv[3].split("=", 1)[1]
+        api = Subsonic(base, USER, PASSWORD)
+        return remove_long(api) if value == "remove" else long_list(api, int(value))
     manifest = json.load(open(os.path.join(library, "manifest.json"), encoding="utf-8"))
     want = len(manifest["songs"])
 

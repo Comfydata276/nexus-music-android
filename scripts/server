@@ -7,6 +7,10 @@
 #   scripts/server status     is it up, where, and what is in it
 #   scripts/server generate   make the library now (--force: again from nothing)
 #   scripts/server logs [-f]  the server's log
+#   scripts/server longlist [N]
+#                             add "Long list (N songs)", the library's songs over and over
+#                             (5,000 unless told), for measuring a long list; --remove takes
+#                             it away again (scripts/server reset does too)
 #   scripts/server sweepcheck <recording>
 #                             find gaps in a recording of the "Continuous Sweep" album
 #   scripts/server joincheck <recording>[,<recording-2>...] <song file>...
@@ -86,6 +90,13 @@ case "${1:-}" in
     ;;
   generate) shift; generate "$@" ;;
   logs) shift; docker logs "$@" "$name" ;;
+  longlist)
+    container_running "$name" || die "the test server isn't running (scripts/server start)"
+    case "${2:-5000}" in
+      --remove) rig_run python3 /work/tools/library/setup.py "$base" /cache/library --long=remove ;;
+      *) rig_run python3 /work/tools/library/setup.py "$base" /cache/library "--long=${2:-5000}" ;;
+    esac
+    ;;
   sweepcheck)
     # Look for gaps in a recording of the "Continuous Sweep" album (tools/library/sweepcheck.py).
     file="${2:?sweepcheck: which recording?}"; [ -f "$file" ] || die "sweepcheck: no such file: $file"
