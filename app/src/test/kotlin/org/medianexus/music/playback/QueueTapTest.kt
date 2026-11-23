@@ -6,6 +6,7 @@ import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -71,86 +72,135 @@ class QueueTapTest {
         now += 60_000
     }
 
+    /** How many times the queue has been published (to the car: the session sends it the
+     *  queue whenever the player says its timeline has changed). */
+    private var published = 0
+
+    private fun watchPublishing() {
+        player.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                published++
+            }
+        })
+    }
+
+    /** A tap that must do nothing but have the queue sent again. */
+    private fun tapIsIgnored(place: Int, stillPlaying: String) {
+        val before = published
+        tap(place)
+        assertEquals("a song the driver did not tap", stillPlaying, playing())
+        assertTrue("the queue was not sent again for the car to redraw", published > before)
+    }
+
     @Test
-    fun aTapAcrossTheWindowSlidingPlaysTheSongThatWasShown() {
+    fun aTapOnARowAsItWasBeforeTheWindowSlidPlaysNothing() {
         play(songs)
-        val before = shown()
-        assertEquals("s0", before.first())
+        watchPublishing()
         // The player has gone along the queue to its 131st song, and the window has slid: the
         // playlist now starts at the 101st, and every place means the song 100 further on.
         tap(130)
         assertEquals("s130", playing())
         assertEquals("s100", shown().first())
         now += 60_000
-        // Past the next step: the car is still showing what it was sent before this slide
+        // Past the next step. The car is still showing what it was sent before this slide
         // when the driver taps the entry twelve below.
         val shownBeforeTheSlide = shown()
         tap(125 + 5)
         assertEquals("s230", playing())
         assertEquals("s200", shown().first())
         now += 300
-        tap(shownBeforeTheSlide.indexOf("s242"))
-        assertEquals("the song at that place on the car's screen", "s242", playing())
-        // A second later the car has redrawn: a place is what it says.
+        // That place meant "s242" on the car's screen and means "s342" now. Which the driver
+        // was looking at can't be known: neither is played, and the car is sent the queue.
+        tapIsIgnored(shownBeforeTheSlide.indexOf("s242"), stillPlaying = "s230")
+        // A second after the places last moved the car has redrawn: a place is what it says.
         now += 2_000
         tap(10)
         assertEquals("s210", playing())
     }
 
     @Test
-    fun aTapAcrossASlideInTheFirstSecondOfANewListIsStillReadRightly() {
-        // A list is started over another, and within the same second the car goes far down
-        // it and then taps an entry of the queue it was first shown. (The places of the list
-        // before this one, replaced a moment ago, must not be what the tap is read against.)
-        play(songs.take(40).map { it.copy(id = "old-" + it.id) })
-        player.play(songs, 0, "A list", playNow = false)
-        settle()
-        now += 150
-        val first = shown()
-        tap(130)
-        assertEquals("s130", playing())
-        assertEquals("s100", shown().first())
-        now += 200
-        tap(first.indexOf("s142"))
-        assertEquals("s142", playing())
-    }
-
-    @Test
-    fun aTapOnASongTheWindowNoLongerHoldsStillFindsIt() {
+    fun aTapOnARowJustRedrawnAfterASlideIsNotReadAsTheRowThatWasThere() {
         play(songs)
+        watchPublishing()
         tap(130)
         now += 60_000
-        val shownBeforeTheSlide = shown()
-        // A long jump forward moves the window far along; the car taps an entry near the
-        // top of what it was showing, which the player no longer holds at all.
-        tap(shownBeforeTheSlide.size - 1)
-        assertEquals("s424", playing())
-        assertEquals("s300", shown().first())
-        now += 200
-        tap(shownBeforeTheSlide.indexOf("s105"))
-        assertEquals("s105", playing())
+        val old = shown()
+        tap(125 + 5)
+        assertEquals("s230", playing())
+        // The car redraws at once this time, and within the second the driver taps a row of
+        // the queue as it now is: "s260". That place used to be read as the car was shown it
+        // before the slide, and played the song that had been there: "s160".
+        val redrawn = shown()
+        val place = redrawn.indexOf("s260")
+        assertEquals("s160", old[place])
+        now += 400
+        tapIsIgnored(place, stillPlaying = "s230")
+        // Tapped again once the second is up, it is the row.
+        now += 1_000
+        tap(place)
+        assertEquals("s260", playing())
     }
 
     @Test
-    fun aTapAcrossAReorderOrAnEditPlaysTheSongThatWasShown() {
+    fun twoChangesInASecondAreThreeQueuesATapCouldHaveBeenMadeOn() {
         play(songs.take(20))
-        var before = shown()
-        // On the phone, the sixth song is dragged to straight after the one playing.
+        watchPublishing()
+        val first = shown()
+        // On the phone, the sixth song is dragged to straight after the one playing...
         player.moveEntry(player.queue.playingUids()[5], after = null, queued = true)
         settle()
-        assertEquals(listOf("s0", "s5", "s1", "s2"), shown().take(4))
-        now += 400
-        tap(before.indexOf("s3"))
-        assertEquals("s3", playing())
-        now += 60_000
+        val second = shown()
+        now += 300
+        // ...and three hundred milliseconds later the tenth, too.
+        player.moveEntry(player.queue.playingUids()[9], after = null, queued = true)
+        settle()
+        val third = shown()
+        now += 300
+        // A place that means three different songs in the three: nothing plays. (Only the
+        // oldest of them used to be considered.)
+        val place = 3
+        assertEquals(3, setOf(first[place], second[place], third[place]).size)
+        tapIsIgnored(place, stillPlaying = "s0")
+        // A place the first change left alone and the second moved: two candidates, nothing.
+        assertEquals(first[7], second[7])
+        assertNotEquals(second[7], third[7])
+        tapIsIgnored(7, stillPlaying = "s0")
+        // A place that means the same song in all three is that song, at once.
+        val same = 15
+        assertEquals(setOf(third[same]), setOf(first[same], second[same], third[same]))
+        tap(same)
+        assertEquals(third[same], playing())
+    }
 
+    @Test
+    fun aTapStraightAfterTheWholeQueueIsReplacedPlaysNothing() {
+        play(songs.take(40).map { it.copy(id = "old-" + it.id) })
+        watchPublishing()
+        // Another list is started over it. The car's queue still shows the old one.
+        player.play(List(10) { Song(id = "n$it") }, 0, "Another", playNow = false)
+        settle()
+        now += 100
+        // The fourth row: "old-s3" on the car's screen, "n3" in the player. It used to be
+        // taken for the new queue's without question, however lately it had been replaced.
+        tapIsIgnored(3, stillPlaying = "n0")
+        now += 1_500
+        tap(3)
+        assertEquals("n3", playing())
+    }
+
+    @Test
+    fun aTapAcrossAnEditPlaysNothingThatWasNotTapped() {
+        play(songs.take(20))
+        watchPublishing()
         // A song ahead is taken out of the queue: everything after it moves up one.
-        before = shown()
-        player.removeEntry(player.queue.playingUids()[player.queue.cursor + 2])
+        var before = shown()
+        player.removeEntry(player.queue.playingUids()[2])
         settle()
         now += 400
-        tap(before.indexOf("s9"))
-        assertEquals("s9", playing())
+        tapIsIgnored(before.indexOf("s9"), stillPlaying = "s0")
+        // What comes before the change has not moved: it is what it says.
+        tap(1)
+        assertEquals("s1", playing())
         now += 60_000
 
         // A song is queued to play next: everything after the one playing moves down one.
@@ -158,21 +208,15 @@ class QueueTapTest {
         player.enqueue(listOf(Song(id = "extra", title = "Extra")), playNext = true)
         settle()
         now += 400
-        tap(before.indexOf("s12"))
-        assertEquals("s12", playing())
-    }
-
-    @Test
-    fun aTapOnASongThatHasLeftTheQueuePlaysNothingElse() {
-        play(songs.take(20))
-        val before = shown()
-        player.removeEntry(player.queue.playingUids()[4])
+        tapIsIgnored(before.indexOf("s12"), stillPlaying = "s1")
+        // The song that has left the queue is not there to play, and the one that now sits
+        // in its place is not what was tapped.
+        now += 60_000
+        before = shown()
+        player.removeEntry(player.queue.playingUids()[player.queue.cursor + 3])
         settle()
         now += 300
-        // The car's screen still shows the fifth song; it is tapped. It isn't there to play,
-        // and the sixth, which now sits in its place, is not what was tapped.
-        tap(before.indexOf("s4"))
-        assertEquals("s0", playing())
+        tapIsIgnored(before.indexOf(before[player.queue.cursor + 3]), stillPlaying = "s1")
     }
 
     @Test
@@ -180,22 +224,16 @@ class QueueTapTest {
         play(songs.take(20))
         tap(7)
         assertEquals("s7", playing())
-        // A new list: the old one's places mean nothing, however lately it was replaced.
-        player.play(List(10) { Song(id = "n$it") }, 0, "Another", playNow = false)
-        settle()
-        now += 100
-        tap(3)
-        assertEquals("n3", playing())
         now += 60_000
         // The app's own controllers: its screens name an entry by its own number, and the
         // rig's debug control means the place it says.
-        player.moveEntry(player.queue.playingUids()[8], after = null, queued = true)
+        player.moveEntry(player.queue.playingUids()[12], after = null, queued = true)
         settle()
         now += 100
         car = false
-        val atFive = shown()[5]
-        tap(5)
-        assertEquals(atFive, playing())
+        val atNine = shown()[9]
+        tap(9)
+        assertEquals(atNine, playing())
     }
 
     // ---- The window as the player moves along the queue ---------------------------------------

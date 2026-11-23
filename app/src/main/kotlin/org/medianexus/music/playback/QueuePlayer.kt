@@ -12,7 +12,6 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.ForwardingTimeline
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlin.random.Random
@@ -47,7 +46,7 @@ class QueuePlayer(
     /**
      * Whether whoever is asking right now names a queue entry by its place on a screen that
      * may be a moment behind: a car, or any controller but the app's own screens (which name
-     * an entry by its own number). See [entryMeant].
+     * an entry by its own number). See [placeIsSure].
      */
     private val byPlace: () -> Boolean = { false },
     /** A clock that only has to run steadily, in milliseconds. */
@@ -177,7 +176,7 @@ class QueuePlayer(
         if (exo.isCommandAvailable(COMMAND_GET_TIMELINE)) {
             // The playlist is already in playing order, whatever shuffle says: nobody should
             // look for a shuffled order underneath it.
-            builder.setPlaylist(InOrderTimeline(exo.currentTimeline), exo.currentTracks, exo.mediaMetadata)
+            builder.setPlaylist(InOrderTimeline(exo.currentTimeline, sent), exo.currentTracks, exo.mediaMetadata)
         }
         val failed = exo.playerError
         if (failed != null) {
@@ -274,7 +273,6 @@ class QueuePlayer(
                 // moment stands.
                 if (!stands(ready.ticket)) return dropped()
                 queue.adopt(ready.queue)
-                anotherQueue()
             }
         } else if (given.isNotEmpty() && given.all { it != null }) {
             // Items this player made ready, but for nothing that is still on its way: a start
@@ -286,7 +284,6 @@ class QueuePlayer(
             staged.clear()
             val songs = mediaItems.map { songOf(it) }
             queue.replace(songs, if (startIndex == C.INDEX_UNSET) 0 else startIndex, context = "", shuffle = false)
-            anotherQueue()
         }
         load(if (startIndex == C.INDEX_UNSET || startPositionMs == C.TIME_UNSET) 0L else startPositionMs)
         return Futures.immediateVoidFuture()
@@ -341,7 +338,6 @@ class QueuePlayer(
         songs.subList(from, from + (toIndex - fromIndex).coerceIn(0, songs.size - from)).clear()
         songs.addAll(from, replaced)
         queue.replace(songs, queue.cursor.coerceAtMost(songs.size - 1), queue.context, shuffle = false)
-        anotherQueue()
         load(exo.currentPosition)
         return Futures.immediateVoidFuture()
     }
@@ -377,11 +373,12 @@ class QueuePlayer(
                 else -> super.handleSeek(here - 1, 0, COMMAND_SEEK_TO_MEDIA_ITEM)
             }
             COMMAND_SEEK_TO_MEDIA_ITEM -> {
-                // "Play that entry of the queue", by its place. If the places have just moved,
-                // the place is read as the sender was shown it (see entryMeant).
-                val meant = if (byPlace()) entryMeant(mediaItemIndex) else null
-                if (meant != null) {
-                    seekToEntry(meant, positionMs)
+                // "Play that entry of the queue", by its place. If the places have just
+                // moved, the place may mean one song to the sender and another here: unless
+                // it means the same either way, nothing is played, and the queue is sent
+                // again (see placeIsSure).
+                if (byPlace() && !placeIsSure(mediaItemIndex)) {
+                    sendAgain()
                     return Futures.immediateVoidFuture()
                 }
                 if (mediaItemIndex > here + 1 && queue.queuedAhead() > 0) {
@@ -401,12 +398,22 @@ class QueuePlayer(
     // Media3 gives a car's queue items their place in the player's playlist as an id, and a
     // tap comes back as that place and nothing more (`MediaSessionLegacyStub.onSkipToQueueItem`).
     // Whenever the places move (the window of the queue slides along, the queue is reordered,
-    // something before the entry is added or removed), every place the car is still showing
-    // means another song for a moment, until its screen has caught up. A tap that arrives in
-    // that moment is read against the places as they were when it was made, not as they are
-    // now: it plays the song that was on the screen. It can't be known which the sender was
-    // looking at; a second ([PLACES_SETTLE_MILLIS]) is longer than a car takes to redraw and
-    // shorter than a person takes to read a list that has just changed and choose from it.
+    // something is added or removed, another queue takes its place), every place the car is
+    // still showing means another song for a moment, until its screen has caught up. Nothing
+    // in a tap says which queue its sender was looking at.
+    //
+    // It used to be guessed: a place sent within a second of a change was read as it was
+    // before the change. That is right for a row the car has not redrawn and wrong for one
+    // it has, and with two changes in the second there are three queues the tap could have
+    // been made on and only the oldest was considered. Either way a song could play that
+    // the driver had not tapped.
+    //
+    // So nothing is guessed. For a second ([PLACES_SETTLE_MILLIS]) after the places move, a
+    // place is acted on only if it means the same entry in every arrangement of that second
+    // and now: then it does not matter which the sender saw. Otherwise the tap is ignored,
+    // and the queue is sent again, so the car draws it as it is and the next tap is on that.
+    // What this costs is a tap that does nothing, in the second after a change, on a row
+    // that moved.
 
     /** The entry numbers of the playlist's items, in order, as last put to the player. */
     private var shown: List<Long> = emptyList()
@@ -414,6 +421,9 @@ class QueuePlayer(
     /** The same as it was before each change of the last second, oldest first, with when it
      *  stopped being so. */
     private val shownBefore = ArrayDeque<Pair<List<Long>, Long>>()
+
+    /** Counts the times the queue has been sent again unchanged (see [sendAgain]). */
+    private var sent = 0
 
     /** Notes the playlist's places, after anything that may have changed them. */
     private fun placesMayHaveMoved() {
@@ -431,41 +441,25 @@ class QueuePlayer(
     }
 
     /**
-     * The entry a place in the playlist meant to someone whose screen showed the places as
-     * they were a moment ago; null if the places haven't moved lately (or that place means
-     * the same entry now), and the place can be taken as it is.
+     * Whether a place in the playlist, sent by someone who names an entry by its place, means
+     * one entry whichever queue the sender was looking at: the places have not moved in the
+     * last second, or that place means the same entry now as in every arrangement of it.
      */
-    private fun entryMeant(index: Int): Long? {
+    private fun placeIsSure(index: Int): Boolean {
         forgetSettled(clock())
-        val before = shownBefore.firstOrNull()?.first ?: return null
-        val uid = before.getOrNull(index) ?: return null
-        return if (uid == NO_ENTRY || uid == shown.getOrNull(index)) null else uid
+        val now = shown.getOrNull(index)
+        return shownBefore.all { (before, _) -> before.getOrNull(index).let { it != null && it != NO_ENTRY && it == now } }
     }
 
-    /** Another queue altogether is about to be loaded (a new list was started): the places
-     *  of the one before mean nothing in it, however lately they were shown. */
-    private fun anotherQueue() {
-        shown = emptyList()
-        shownBefore.clear()
-    }
-
-    /** Goes to the entry with this number, wherever it is now: in the playlist, or in the
-     *  part of the queue the playlist no longer holds. If it has left the queue since it was
-     *  shown, nothing: the song that was tapped is not there to play, and whatever has taken
-     *  its place is not what was tapped. */
-    private fun seekToEntry(uid: Long, positionMs: Long) {
-        val place = queue.placeOf(uid)
-        if (place < 0) return
-        val here = exo.currentMediaItemIndex
-        val index = shown.indexOf(uid)
-        when {
-            index < 0 -> {
-                queue.moveTo(place)
-                sync(positionMs)
-            }
-            index > here + 1 && queue.queuedAhead() > 0 -> jumpAhead(index - here - 1, positionMs)
-            else -> super.handleSeek(index, positionMs, COMMAND_SEEK_TO_MEDIA_ITEM)
-        }
+    /**
+     * Has the session send its queue again, as it stands. The session sends the queue (to a
+     * car, by `MediaSessionCompat.setQueue`) when the player says its timeline has changed;
+     * the timeline carries a count that only this moves, so that it is "changed" with every
+     * song where it was.
+     */
+    private fun sendAgain() {
+        sent++
+        invalidateState()
     }
 
     // ---- Playing --------------------------------------------------------------------------
@@ -532,7 +526,6 @@ class QueuePlayer(
         // Whatever was handed to the session earlier and has not come back has been overtaken.
         staged.clear()
         queue.adopt(next)
-        anotherQueue()
         load(startPositionMs)
         if (playNow) startPlaying()
         return true
@@ -579,7 +572,6 @@ class QueuePlayer(
         // queue doesn't say.
         revived.shuffle = queue.shuffle
         queue.adopt(revived)
-        anotherQueue()
         load(positionMs)
     }
 
@@ -590,7 +582,6 @@ class QueuePlayer(
         queue.clear()
         items.clear()
         held.clear()
-        anotherQueue()
         staged.clear()
         exo.stop()
         exo.clearMediaItems()
@@ -646,7 +637,6 @@ class QueuePlayer(
         val wasEmpty = queue.isEmpty
         queue.queueUp(songs, playNext)
         if (wasEmpty) {
-            anotherQueue()
             load(0)
         } else {
             sync()
@@ -786,7 +776,8 @@ class QueuePlayer(
     }
 
     companion object {
-        /** How long after the playlist's places move a place is still read as it was. */
+        /** How long after the playlist's places move a place is only acted on if it means
+         *  the same entry as before. */
         const val PLACES_SETTLE_MILLIS = 1_000L
 
         /** Queues handed to the session and not yet back that are remembered at once. */
@@ -811,7 +802,27 @@ class QueuePlayer(
 
 /** A timeline that is the same in shuffle mode as out of it: ours is always in playing order. */
 @OptIn(UnstableApi::class)
-private class InOrderTimeline(timeline: Timeline) : ForwardingTimeline(timeline) {
+private class InOrderTimeline(
+    private val timeline: Timeline,
+    /** Part of what makes one of these equal to another, and nothing else: a timeline with
+     *  another count is a changed timeline to Media3, which then sends the queue again
+     *  (see `QueuePlayer.sendAgain`). */
+    private val sent: Int = 0,
+) : Timeline() {
+    override fun equals(other: Any?): Boolean = other is InOrderTimeline && other.sent == sent && super.equals(other)
+
+    override fun hashCode(): Int = 31 * super.hashCode() + sent
+
+    override fun getWindowCount() = timeline.windowCount
+
+    override fun getPeriodCount() = timeline.periodCount
+
+    override fun getPeriod(periodIndex: Int, period: Period, setIds: Boolean): Period = timeline.getPeriod(periodIndex, period, setIds)
+
+    override fun getIndexOfPeriod(uid: Any) = timeline.getIndexOfPeriod(uid)
+
+    override fun getUidOfPeriod(periodIndex: Int): Any = timeline.getUidOfPeriod(periodIndex)
+
     override fun getNextWindowIndex(windowIndex: Int, repeatMode: Int, shuffleModeEnabled: Boolean) =
         timeline.getNextWindowIndex(windowIndex, repeatMode, false)
 
@@ -830,7 +841,7 @@ private class InOrderTimeline(timeline: Timeline) : ForwardingTimeline(timeline)
      * library says to within a second, and it ends when the server ends it.
      */
     override fun getWindow(windowIndex: Int, window: Window, defaultPositionProjectionUs: Long): Window {
-        super.getWindow(windowIndex, window, defaultPositionProjectionUs)
+        timeline.getWindow(windowIndex, window, defaultPositionProjectionUs)
         if (window.durationUs == C.TIME_UNSET) {
             val seconds = (window.mediaItem.localConfiguration?.tag as? QueuePlayer.SongTag)?.song?.duration ?: 0
             if (seconds > 0) {

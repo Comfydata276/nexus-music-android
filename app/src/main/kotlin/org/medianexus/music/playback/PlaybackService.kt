@@ -1296,8 +1296,8 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
             val caller = callerOf(session, controller)
             // ("Play that entry of the queue", by its place, from someone whose screen may
-            // still show the places as they were a moment ago, is the player's to read
-            // rightly: see QueuePlayer.entryMeant.)
+            // still show the places as they were a moment ago, is the player's to act on or
+            // not: see QueuePlayer.placeIsSure.)
             return if (Access.mayPlayer(caller, playerCommand)) SessionResult.RESULT_SUCCESS else SessionError.ERROR_PERMISSION_DENIED
         }
 
