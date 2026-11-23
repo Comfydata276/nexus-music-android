@@ -43,6 +43,12 @@ class Queue {
     var shuffle = false
     var repeat = Repeat.OFF
 
+    /** Moves on whenever the songs or the order they play in change (not when the player
+     *  merely moves along them): two readings of the same number are the same queue, entry
+     *  for entry and place for place. */
+    var revision = 0L
+        private set
+
     val isEmpty: Boolean get() = order.isEmpty()
 
     fun current(): Song? = order.getOrNull(cursor)?.let { songs.getOrNull(it) }
@@ -85,6 +91,7 @@ class Queue {
 
     /** Becomes `other`, which was made ready to take this one's place. */
     fun adopt(other: Queue) {
+        revision++
         songs.clear(); songs.addAll(other.songs)
         uids.clear(); uids.addAll(other.uids)
         order.clear(); order.addAll(other.order)
@@ -115,6 +122,7 @@ class Queue {
         anyStart: Boolean = false,
         random: Random = Random.Default,
     ) {
+        revision++
         songs.clear()
         list.mapTo(songs) { if (it.queued) it.copy(queued = false) else it }
         uids.clear()
@@ -134,6 +142,7 @@ class Queue {
 
     /** Puts back a queue exactly as it was saved: the songs, their order and the place. */
     fun restore(saved: SavedQueue) {
+        revision++
         songs.clear()
         songs.addAll(saved.songs)
         uids.clear()
@@ -152,6 +161,7 @@ class Queue {
     }
 
     fun clear() {
+        revision++
         songs.clear()
         uids.clear()
         order.clear()
@@ -170,6 +180,20 @@ class Queue {
         if (place !in order.indices) return
         cursor = place
         trackChanged()
+    }
+
+    /** What "next" does, and whether playback carries on afterwards. */
+    data class Step(val place: Int, val carriesOn: Boolean)
+
+    /**
+     * Where pressing Next goes, as Windows has it (`next_track` in src/playback.rs): the
+     * following song; from the last one, round to the top, and playing on from there only
+     * if repeat is on (either kind). Null with nothing queued.
+     */
+    fun next(): Step? = when {
+        order.isEmpty() -> null
+        cursor + 1 < order.size -> Step(cursor + 1, true)
+        else -> Step(0, repeat != Repeat.OFF)
     }
 
     /** The song that's playing has had its turn: it's no longer waiting in the queue. */
@@ -215,6 +239,7 @@ class Queue {
     fun setShuffle(on: Boolean, random: Random = Random.Default) {
         if (shuffle == on) return
         shuffle = on
+        revision++
         if (on) {
             rearrangeKeepingQueued { shuffleOrder(random) }
         } else {
@@ -232,6 +257,7 @@ class Queue {
     /** Takes the entry at this place in the playing order out of the queue. */
     fun dropAt(at: Int) {
         if (at !in order.indices) return
+        revision++
         val removed = order.removeAt(at)
         songs.removeAt(removed)
         uids.removeAt(removed)
@@ -257,6 +283,7 @@ class Queue {
             shuffle = keep
             return
         }
+        revision++
         var at = cursor + 1 + if (playNext) 0 else queuedAhead()
         for (song in list) {
             songs += song.copy(queued = true)
@@ -273,6 +300,7 @@ class Queue {
         val base = cursor + 1
         val (f, t) = base + from to base + to
         if (from < 0 || to < 0 || f >= order.size || t >= order.size) return
+        revision++
         val entry = order.removeAt(f)
         order.add(t, entry)
         songs[entry] = songs[entry].copy(queued = queued)
@@ -282,6 +310,7 @@ class Queue {
      *  `newIndex`. Whether each was queued by hand stays as it was. */
     fun move(from: Int, to: Int, newIndex: Int) {
         if (from < 0 || to > order.size || from >= to || newIndex < 0) return
+        revision++
         val current = order.getOrNull(cursor)
         val moving = order.subList(from, to).toList()
         repeat(to - from) { order.removeAt(from) }
@@ -308,6 +337,7 @@ class Queue {
     fun jumpAhead(offset: Int): Boolean {
         val at = cursor + 1 + offset
         if (offset < 0 || at >= order.size) return false
+        revision++
         val ahead = queuedAhead()
         if (offset < ahead) {
             // One of the queued songs: it comes to the front of them.
@@ -324,6 +354,51 @@ class Queue {
         return true
     }
 
+    // ---- Editing by an entry's own number ------------------------------------------------------
+    //
+    // What the phone's queue sheet asks for. It shows the queue as it was a moment ago, and a
+    // song can end between a tap and its command arriving: "the third one down" would then be
+    // a different song. So the sheet names the entry it means, and the place is found here,
+    // now.
+
+    /** How many places after the current song the entry with this number is; -1 if it isn't
+     *  ahead (it has started playing, been played, or left the queue). */
+    fun aheadOf(uid: Long): Int {
+        val place = placeOf(uid)
+        return if (place > cursor) place - cursor - 1 else -1
+    }
+
+    /** Takes this entry out of what's to come. False (and nothing done) if it is no longer
+     *  to come. */
+    fun dropUid(uid: Long): Boolean {
+        val offset = aheadOf(uid)
+        if (offset < 0) return false
+        dropAt(cursor + 1 + offset)
+        return true
+    }
+
+    /**
+     * Moves this entry to straight after the entry `after` (null: straight after the song
+     * playing), into "Next in queue" or out of it as `queued` says. If `after` has already
+     * had its turn, straight after the song playing is the nearest there is to where it was
+     * dropped. False if the entry itself is no longer to come.
+     */
+    fun moveUid(uid: Long, after: Long?, queued: Boolean): Boolean {
+        val from = aheadOf(uid)
+        if (from < 0) return false
+        val anchor = if (after == null || after == uid) -1 else aheadOf(after)
+        // Where the anchor will be once the entry has been lifted out, and the place after it.
+        val to = if (anchor < 0) 0 else anchor - (if (anchor > from) 1 else 0) + 1
+        moveAhead(from, to, queued)
+        return true
+    }
+
+    /** Makes this entry the current one (see [jumpAhead]). False if it is no longer to come. */
+    fun jumpToUid(uid: Long): Boolean {
+        val offset = aheadOf(uid)
+        return offset >= 0 && jumpAhead(offset)
+    }
+
     /**
      * The list the queue was started from now reads `ids` (`songAt` gives its songs): songs
      * that left it leave the queue, songs that joined it join, and the rest take up its new
@@ -332,6 +407,7 @@ class Queue {
      */
     fun follow(ids: List<String>, songAt: (Int) -> Song?, random: Random = Random.Default): Boolean {
         if (isEmpty || sourceList.isEmpty() || sourceList == ids) return false
+        revision++
         val (moved, arrivals) = compareLists(sourceList, ids)
         val lineup = followList(
             Lineup(songs.toList(), origins.toList(), order.toList(), cursor, uids.toList()),

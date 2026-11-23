@@ -454,8 +454,25 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- The queue changing -----------------------------------------------------------------
 
+    /** The queue's revision as last seen, and when its order last changed (for a tap on a
+     *  queue that has not caught up: see [Access.staleQueueTap]). */
+    private var seenRevision = -1L
+    private var reorderedAt = 0L
+
+    /**
+     * Counts the times something was asked to start playing. A start that has to look
+     * something up first (the car choosing a song, a spoken request) takes the number as it
+     * begins and is dropped if another start has begun by the time it is ready: a slow answer
+     * to the car must not replace what was chosen on the phone meanwhile.
+     */
+    private var starts = 0L
+
     private fun queueChanged() {
         val queue = player.queue
+        if (queue.revision != seenRevision) {
+            seenRevision = queue.revision
+            reorderedAt = android.os.SystemClock.elapsedRealtime()
+        }
         // Changed in place, never emptied: the player may be opening a song right now.
         for (song in queue.songs) songsById[song.id] = song
         if (songsById.size > queue.songs.size) songsById.keys.retainAll(queue.songs.mapTo(HashSet()) { it.id })
@@ -731,8 +748,16 @@ class PlaybackService : MediaLibraryService() {
          * intent asked for (Media3 will turn one into "play this item" if allowed).
          */
         @Deprecated("Media3 offers nothing else that is asked per command and per controller")
-        override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int =
-            if (Access.mayPlayer(callerOf(session, controller), playerCommand)) SessionResult.RESULT_SUCCESS else SessionError.ERROR_PERMISSION_DENIED
+        override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
+            val caller = callerOf(session, controller)
+            return when {
+                !Access.mayPlayer(caller, playerCommand) -> SessionError.ERROR_PERMISSION_DENIED
+                // "Play that entry of the queue", by its place, from someone whose screen may
+                // still show the order from before a reorder a moment ago (see Access).
+                Access.staleQueueTap(caller, playerCommand, android.os.SystemClock.elapsedRealtime() - reorderedAt) -> SessionError.ERROR_INVALID_STATE
+                else -> SessionResult.RESULT_SUCCESS
+            }
+        }
 
         override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> {
             // Unless a folder says otherwise: folders in a grid, songs in a list.
@@ -808,7 +833,12 @@ class PlaybackService : MediaLibraryService() {
          * One item asked for: a song chosen in the car, or a spoken request. Either way a
          * whole list is queued: the song's album or playlist from it, or what was asked for.
          */
-        override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> =
+        override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> {
+            val mine = ++starts
+            return setMediaItems(mine, controller, mediaItems, startIndex, startPositionMs)
+        }
+
+        private fun setMediaItems(mine: Long, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> =
             answer({ throw refuse(controller, signedOut()) }) { era ->
                 if (mediaItems.isNotEmpty() && mediaItems.all { it.localConfiguration?.tag is QueuePlayer.SongTag }) {
                     // Our own items, handed back: play them as they are.
@@ -818,13 +848,19 @@ class PlaybackService : MediaLibraryService() {
                 val asked = mediaItems.singleOrNull() ?: throw refuse(controller, SessionError(SessionError.ERROR_NOT_SUPPORTED, getString(R.string.nothing_to_play)))
                 val words = asked.requestMetadata.searchQuery
                 try {
-                    if (words != null) return@answer inTime { voice(era, controller, words, asked.requestMetadata.extras) }
+                    if (words != null) {
+                        val spoken = inTime { voice(era, controller, words, asked.requestMetadata.extras) }
+                        if (mine != starts) throw UnsupportedOperationException("Overtaken by a newer choice")
+                        return@answer spoken
+                    }
                     val list = when (val chosen = CarIds.parse(asked.mediaId)) {
                         is CarNode.Track -> inTime { tree.play(chosen) }
                         // "Shuffle", at the top of a list: the whole list, shuffled.
                         is CarNode.Shuffle -> inTime { tree.shuffled(chosen.list) }
                         else -> throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
                     } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play, asked.mediaMetadata.title ?: "")))
+                    // Something else was chosen while this was being looked up: that stands.
+                    if (mine != starts) throw UnsupportedOperationException("Overtaken by a newer choice")
                     staged(list)
                 } catch (e: ApiError) {
                     throw refuse(controller, trouble(controller, e))
@@ -894,7 +930,12 @@ class PlaybackService : MediaLibraryService() {
                     player.cycleRepeat()
                     true
                 }
-                else -> AppCommands.handle(player, customCommand, args, ::shuffleFor)
+                else -> {
+                    // A choice made on the phone: anything still being looked up for the car
+                    // has been overtaken.
+                    if (customCommand.customAction == AppActions.PLAY) starts++
+                    AppCommands.handle(player, customCommand, args, ::shuffleFor)
+                }
             }
             return com.google.common.util.concurrent.Futures.immediateFuture(
                 SessionResult(if (done) SessionResult.RESULT_SUCCESS else SessionError.ERROR_NOT_SUPPORTED),

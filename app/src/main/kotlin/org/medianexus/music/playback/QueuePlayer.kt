@@ -74,6 +74,12 @@ class QueuePlayer(
         val builder = state.buildUpon()
             // Ours, not ExoPlayer's (which stays off).
             .setShuffleModeEnabled(queue.shuffle)
+        // Next is always there to press while there is a queue: on the last song ExoPlayer
+        // withdraws it, and Windows goes round to the top (see handleSeek).
+        if (!queue.isEmpty) {
+            builder.setAvailableCommands(state.availableCommands.buildUpon().add(COMMAND_SEEK_TO_NEXT).add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM).build())
+        }
+        builder
             .setPlaylistMetadata(MediaMetadata.Builder().setTitle(queue.context.ifEmpty { null }).build())
         if (exo.isCommandAvailable(COMMAND_GET_TIMELINE)) {
             // The playlist is already in playing order, whatever shuffle says: nobody should
@@ -104,6 +110,10 @@ class QueuePlayer(
             // A queue this player made ready itself (the car chose a song, or asked for one
             // aloud): take it with everything known about it.
             queue.adopt(ready)
+        } else if (mediaItems.isNotEmpty() && mediaItems.all { uidOf(it) != null }) {
+            // Items this player made ready, but not the ones ready now: a start that was
+            // overtaken by a newer choice while it was on its way here. Dropped.
+            return Futures.immediateVoidFuture()
         } else {
             // Someone else's list of songs, which plays as it is.
             val songs = mediaItems.map { songOf(it) }
@@ -144,6 +154,16 @@ class QueuePlayer(
     }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
+        if (mediaItemIndex == C.INDEX_UNSET && (seekCommand == COMMAND_SEEK_TO_NEXT || seekCommand == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)) {
+            // Next, with nothing after this song (Media3 passes that on as a seek to nowhere):
+            // round to the top, as Windows does, playing on only if repeat is on.
+            val step = queue.next() ?: return Futures.immediateVoidFuture()
+            if (step.place != queue.cursor + 1) {
+                exo.seekTo(step.place, 0)
+                if (!step.carriesOn) exo.pause()
+                return Futures.immediateVoidFuture()
+            }
+        }
         if (seekCommand == COMMAND_SEEK_TO_MEDIA_ITEM && mediaItemIndex > queue.cursor + 1 && queue.queuedAhead() > 0) {
             // Jumping down the queue past songs queued by hand: they stay next, after it.
             jumpAhead(mediaItemIndex - queue.cursor - 1, positionMs)
@@ -171,6 +191,8 @@ class QueuePlayer(
         playNow: Boolean = true,
     ) {
         if (songs.isEmpty()) return
+        // A queue made ready earlier and not yet handed over has been overtaken.
+        staged = null
         queue.replace(songs, start, context, source, origins, sourceList, shuffle, anyStart, random)
         load(startPositionMs)
         if (playNow) {
@@ -274,19 +296,23 @@ class QueuePlayer(
         if (wasEmpty) load(0) else sync()
     }
 
-    /** Removes the entry `offset` places after the current song. */
-    fun removeAhead(offset: Int) {
-        val at = queue.cursor + 1 + offset
-        if (offset < 0 || at >= queue.order.size) return
-        queue.dropAt(at)
-        sync()
+    /** Takes the entry with this number out of what's to come. */
+    fun removeEntry(uid: Long) {
+        if (queue.dropUid(uid)) sync()
     }
 
-    /** Moves the entry `from` places after the current song to `to` places after it, into
-     *  "Next in queue" or out of it. */
-    fun moveAhead(from: Int, to: Int, queued: Boolean) {
-        queue.moveAhead(from, to, queued)
-        sync()
+    /** Moves the entry with this number to straight after the entry `after` (null: straight
+     *  after the song playing), into "Next in queue" or out of it. */
+    fun moveEntry(uid: Long, after: Long?, queued: Boolean) {
+        if (queue.moveUid(uid, after, queued)) sync()
+    }
+
+    /** Plays the entry with this number now, if it is still to come. */
+    fun jumpTo(uid: Long) {
+        if (!queue.jumpToUid(uid)) return
+        sync(0)
+        exo.prepare()
+        exo.play()
     }
 
     fun clearAhead(queued: Boolean) {

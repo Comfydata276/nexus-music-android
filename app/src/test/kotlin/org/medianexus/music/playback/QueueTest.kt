@@ -276,4 +276,100 @@ class QueueTest {
         assertFalse(q.follow(listOf("a"), { named("a") }))
         assertEquals("a | b", coming(q))
     }
+
+    // ---- Commands that name the entry they mean ------------------------------------------------
+
+    /** The queue's own numbers for what's to come, as the queue sheet has them. */
+    private fun ahead(q: Queue) = q.playingUids().drop(q.cursor + 1)
+
+    @Test
+    fun aSongEndingBetweenTheTapAndTheCommandDoesNotShiftTheTarget() {
+        val q = queueOf("a", "b", "c", "d", "e")
+        // The sheet shows b c d e; the second row down, c, is swiped away...
+        val shown = ahead(q)
+        val tapped = shown[1]
+        // ...but a ends before the command arrives, and b is playing.
+        q.moveTo(1)
+        // "The second one down" is now d. The entry that was tapped is still c.
+        assertTrue(q.dropUid(tapped))
+        assertEquals("b | d e", coming(q))
+        // The same for "play this one now": e was fourth down, and is third now.
+        assertTrue(q.jumpToUid(shown[3]))
+        assertEquals("e | ", coming(q))
+    }
+
+    @Test
+    fun anEntryThatHasStartedPlayingIsNoLongerThereToEdit() {
+        val q = queueOf("a", "b", "c")
+        val b = ahead(q)[0]
+        q.moveTo(1)
+        // b was "next" when it was tapped and is playing now: removing it would stop the song.
+        assertFalse(q.dropUid(b))
+        assertFalse(q.jumpToUid(b))
+        assertFalse(q.moveUid(b, null, queued = true))
+        assertEquals("b | c", coming(q))
+        // And one that has gone altogether.
+        assertFalse(q.dropUid(987_654))
+    }
+
+    @Test
+    fun aMoveNamesTheSongItFollowsNotAPlace() {
+        val q = queueOf("a", "b", "c", "d", "e")
+        val (b, c, d, e) = ahead(q)
+        // e dragged up to sit after b, into "Next in queue".
+        assertTrue(q.moveUid(e, b, queued = true))
+        assertEquals("a | b e* c d", coming(q))
+        // To the very top.
+        assertTrue(q.moveUid(d, null, queued = true))
+        assertEquals("a | d* b e* c", coming(q))
+        // Down again, after c, and out of "Next in queue".
+        assertTrue(q.moveUid(d, c, queued = false))
+        assertEquals("a | b e* c d", coming(q))
+        // The song it was to follow has played by the time the command lands: straight
+        // after the one playing is the nearest there is to where it was dropped.
+        q.moveTo(1)
+        assertTrue(q.moveUid(d, b, queued = true))
+        assertEquals("b | d* e* c", coming(q))
+        // After itself is nowhere new.
+        assertTrue(q.moveUid(c, c, queued = false))
+        assertEquals("b | c d* e*", coming(q))
+    }
+
+    @Test
+    fun nextOnTheLastSongGoesRoundToTheTopAndOnlyPlaysOnWithRepeat() {
+        val q = queueOf("a", "b", "c")
+        assertEquals(Queue.Step(1, true), q.next())
+        q.moveTo(2)
+        // As Windows: the top, and stopped, unless repeat is on (either kind).
+        assertEquals(Queue.Step(0, false), q.next())
+        q.repeat = Repeat.ALL
+        assertEquals(Queue.Step(0, true), q.next())
+        q.repeat = Repeat.ONE
+        assertEquals(Queue.Step(0, true), q.next())
+        // Repeat-one in the middle of a queue: Next still means the next song.
+        q.moveTo(0)
+        assertEquals(Queue.Step(1, true), q.next())
+        // One song: round to itself.
+        val one = queueOf("only")
+        assertEquals(Queue.Step(0, false), one.next())
+    }
+
+    @Test
+    fun theRevisionMovesWhenTheOrderDoesAndNotWhenThePlayerMovesAlong() {
+        val q = queueOf("a", "b", "c", "d")
+        var seen = q.revision
+        fun changed(): Boolean = (q.revision != seen).also { seen = q.revision }
+        q.moveTo(1)
+        q.trackChanged()
+        assertFalse(changed())
+        q.queueUp(listOf(named("x")), playNext = true); assertTrue(changed())
+        q.dropAt(3); assertTrue(changed())
+        q.moveAhead(0, 1, queued = false); assertTrue(changed())
+        q.setShuffle(true, Random(1)); assertTrue(changed())
+        q.setShuffle(true, Random(1)); assertFalse(changed())
+        assertTrue(q.jumpAhead(0)); assertTrue(changed())
+        q.clearAhead(queued = false); assertTrue(changed())
+        q.replace(listOf(named("z")), 0, context = ""); assertTrue(changed())
+        q.clear(); assertTrue(changed())
+    }
 }

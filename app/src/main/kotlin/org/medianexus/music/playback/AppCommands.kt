@@ -29,6 +29,9 @@ object AppCommands {
 
     val all = listOf(PLAY, ENQUEUE, MOVE, REMOVE, CLEAR, JUMP)
 
+    /** No entry: entry numbers start at 1. */
+    const val NONE = -1L
+
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = false }
     private val songs = ListSerializer(Song.serializer())
 
@@ -61,10 +64,12 @@ object AppCommands {
                 )
             }
             ENQUEUE.customAction -> player.enqueue(songsOf(args), args.getBoolean("playNext"))
-            MOVE.customAction -> player.moveAhead(args.getInt("from"), args.getInt("to"), args.getBoolean("queued"))
-            REMOVE.customAction -> player.removeAhead(args.getInt("offset"))
+            // Each of these names the entry it means by the entry's own number (see
+            // Queue.dropUid), not by where it was on the screen when it was tapped.
+            MOVE.customAction -> player.moveEntry(args.getLong("uid", NONE), args.getLong("after", NONE).takeIf { it != NONE }, args.getBoolean("queued"))
+            REMOVE.customAction -> player.removeEntry(args.getLong("uid", NONE))
             CLEAR.customAction -> player.clearAhead(args.getBoolean("queued"))
-            JUMP.customAction -> player.jumpAhead(args.getInt("offset"))
+            JUMP.customAction -> player.jumpTo(args.getLong("uid", NONE))
             else -> return false
         }
         return true

@@ -87,6 +87,10 @@ class PlayerConnection(
     private val fromNow = MutableStateFlow(PlayingFrom())
     private val convertedNow = MutableStateFlow(false)
 
+    /** The queue's own number for each song in `queue`, and for the song playing: what a
+     *  command names its song by. Read together with `queue`, so the two always match. */
+    private var aheadUids: List<Long> = emptyList()
+
     /** The song playing (or paused on); null with an empty queue. */
     val song: StateFlow<Song?> = currentSong.asStateFlow()
     val playing: StateFlow<Boolean> = playingNow.asStateFlow()
@@ -186,7 +190,9 @@ class PlayerConnection(
         val extras = c.sessionExtras
         if (queueToo) {
             val ahead = extras.getInt(PlaybackService.EXTRA_QUEUED_AHEAD)
-            val songs = (index + 1 until c.mediaItemCount).map { songOf(c.getMediaItemAt(it)) }
+            val items = (index + 1 until c.mediaItemCount).map { c.getMediaItemAt(it) }
+            val songs = items.map(::songOf)
+            aheadUids = items.map { (it.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid ?: AppCommands.NONE }
             queueNow.value = UpNext(songs, ahead.coerceAtMost(songs.size), c.playlistMetadata.title?.toString().orEmpty())
         }
         shuffleNow.value = c.shuffleModeEnabled
@@ -234,19 +240,36 @@ class PlayerConnection(
     private fun enqueue(songs: List<Song>, playNext: Boolean) =
         send(AppCommands.ENQUEUE, Bundle().apply { putString("songs", AppCommands.songsArg(songs)); putBoolean("playNext", playNext) })
 
+    // The places below are places in `queue` as it was last published, which is what the
+    // screen that calls them is showing. They are turned here into the queue's own number
+    // for that entry, and the command carries the number: if a song ends while the command
+    // is on its way, it still means the song that was tapped.
+
     /** Moves the song `from` places after the current one to `to` places after it, into
      *  "Next in queue" (`queued`) or out of it. */
-    fun move(from: Int, to: Int, queued: Boolean) =
-        send(AppCommands.MOVE, Bundle().apply { putInt("from", from); putInt("to", to); putBoolean("queued", queued) })
+    fun move(from: Int, to: Int, queued: Boolean) {
+        val uids = aheadUids
+        val uid = uids.getOrNull(from) ?: return
+        // The song it should follow, once it has been lifted out: none for the top.
+        val rest = uids.filterIndexed { place, _ -> place != from }
+        val after = if (to <= 0) AppCommands.NONE else rest.getOrNull(to - 1) ?: rest.lastOrNull() ?: AppCommands.NONE
+        send(AppCommands.MOVE, Bundle().apply { putLong("uid", uid); putLong("after", after); putBoolean("queued", queued) })
+    }
 
     /** Takes out the song `offset` places after the current one. */
-    fun remove(offset: Int) = send(AppCommands.REMOVE, Bundle().apply { putInt("offset", offset) })
+    fun remove(offset: Int) {
+        val uid = aheadUids.getOrNull(offset) ?: return
+        send(AppCommands.REMOVE, Bundle().apply { putLong("uid", uid) })
+    }
 
     /** Empties "Next in queue" (`queued`), or the rest of the list after it. */
     fun clear(queued: Boolean) = send(AppCommands.CLEAR, Bundle().apply { putBoolean("queued", queued) })
 
     /** Plays the song `offset` places after the current one now. */
-    fun jump(offset: Int) = send(AppCommands.JUMP, Bundle().apply { putInt("offset", offset) })
+    fun jump(offset: Int) {
+        val uid = aheadUids.getOrNull(offset) ?: return
+        send(AppCommands.JUMP, Bundle().apply { putLong("uid", uid) })
+    }
 
     fun playPause() = withController { c ->
         if (c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)) {

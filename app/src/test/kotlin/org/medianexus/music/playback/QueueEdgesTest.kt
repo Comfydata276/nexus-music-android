@@ -57,6 +57,11 @@ class QueueEdgesTest {
         q.dropAt(-1)
         q.moveAhead(0, 0, queued = true)
         q.moveAhead(0, 1, queued = false)
+        assertFalse(q.dropUid(7))
+        assertFalse(q.moveUid(7, null, queued = true))
+        assertFalse(q.jumpToUid(7))
+        assertEquals(-1, q.aheadOf(7))
+        assertNull(q.next())
         q.move(0, 1, 0)
         q.move(0, 0, 0)
         q.clearAhead(queued = true)
@@ -99,6 +104,11 @@ class QueueEdgesTest {
         q.clearAhead(queued = true)
         q.clearAhead(queued = false)
         assertFalse(q.jumpAhead(0))
+        // The song playing is not "to come": it can't be taken out, moved or jumped to.
+        val playing = q.currentUid()!!
+        assertFalse(q.dropUid(playing))
+        assertFalse(q.moveUid(playing, null, queued = true))
+        assertFalse(q.jumpToUid(playing))
         assertEquals("a", q.current()?.id)
         assertSound(q)
         // The list it came from changing to the same one song is no change.
