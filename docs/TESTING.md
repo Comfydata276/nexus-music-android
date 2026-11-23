@@ -79,6 +79,9 @@ playlist.
   `scripts/emu shell pm revoke org.medianexus.music android.permission.ACCESS_LOCAL_NETWORK`.
   Refused, signing in at this address times out ("Can't reach the server. The connection
   timed out.") and the app says why; allowed, it signs in.
+  Android remembers a refusal: refused twice, it won't ask again (`USER_FIXED`), and the
+  app sends "Allow" to its settings page. To see the question again from the start, also
+  `scripts/emu shell pm clear-permission-flags org.medianexus.music android.permission.ACCESS_LOCAL_NETWORK user-set user-fixed`.
 
 ### What is in the library
 
@@ -111,6 +114,10 @@ to the second account.
 
 The full list, with every song's length, format and loudness values, is written to
 `~/.cache/nexus-music-android/library/manifest.json`.
+
+**A long playlist.** `scripts/server longlist` adds "Long list (5,000 songs)", the 100 songs
+over and over, for measuring opening, scrolling and starting a long list (`longlist 20000`
+for a longer one; `longlist --remove`, or `scripts/server reset`, takes it away).
 
 One thing learned making it, in case a real library shows the same: Navidrome files an
 album's songs as two albums when only some of them carry a release date, and it reads an
@@ -396,6 +403,26 @@ idle 28.6 MB.
 M1b (the screens; signed in, kept with `--keep`, idle on Home with its covers): APK 5.3 MB,
 installed code 5.5 MB, cold start 471 ms (433 to 511), idle 76.6 MB, playing 82.2 MB (82.5
 in the background); scrolling the 100-song playlist, 5.6% slow frames, 95% under 34 ms.
+M1b fixes, measured beside M1b's build on the same day (the emulator was slower that day:
+M1b's own build then gave 588 ms, 74.1 MB, 83.9 MB, 10.6%): APK 5.4 MB, cold start 510 to
+559 ms, idle 76.2 to 80.6 MB, playing 85.1 to 90.7 MB, 100-song playlist 8.7 to 9.5% slow
+frames; 5,000-song playlist 8.7% slow frames (M1b's build, 8.7%); opening it with nothing
+kept, the app's peak 88.6 MB with the Java heap at 14 MB (M1b's build, 117 to 131 MB with
+the heap grown to 45 to 59 MB, the server's answer read into a JSON tree first).
+
+Memory on this emulator is mostly not the app's to cut: `dumpsys gfxinfo` shows about 36
+MB of the window's own buffers imported into the process (on a phone they are graphics
+memory), and decoded covers are 8 MB on a cold Home. The covers' memory cache was set by
+counting, in a debug build (log tag `NexusCovers`), what the same browse (ten pages, two
+albums again, Now Playing) drew: at 24 MB, 150 covers, 77 from memory and 4 decoded again
+after being let go; at 12 MB, 19 decoded again. This emulator's allowance is 192 MB, so
+the old 15% share was 29 MB here and the cap changes little; on a phone that allows 512 MB
+it was 75 MB.
+
+**Coming back after Android stopped the app.** Background the app, then
+`scripts/emu shell am kill org.medianexus.music` (what Android does when it needs memory:
+the screens' saved state is kept) and open it again. `scripts/emu kill` is a force stop,
+which also throws the saved state away, so the app opens afresh on Home.
 
 ## Gapless playback
 
@@ -569,7 +596,7 @@ the car has it)
 | Switch the car off and on (or pull the cable and plug it back) | The app is still there; play carries on from where it was |
 | Force-stop the app, then press play on the steering wheel or a Bluetooth headset | The saved queue carries on; with nothing saved, nothing happens (and nothing crashes) |
 | Play, swipe the app away on the phone | The music carries on |
-| Drive out of reach of the server (or switch Wi-Fi and data off) for a minute, then back | "Lost the connection to the server…" on the car's screen, the song stays where it was, and it carries on by itself |
+| Drive out of reach of the server (or switch Wi-Fi and data off) for a minute, then back | "Reconnecting…" on the car's screen, the song stays where it was, and it carries on by itself |
 | Sign in on the phone while the car shows "Sign in" | The car's lists appear without leaving and re-entering the app |
 | Force-stop the app on the phone, then open it from the car | It starts and browses with no phone screen involved |
 | Drive (a passenger looks) | Lists still usable; note anything cut short or locked |

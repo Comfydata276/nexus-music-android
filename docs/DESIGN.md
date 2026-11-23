@@ -182,7 +182,7 @@ How it is built (M1a):
   its kind alone, with no cause. A playback error reaches every app with a controller.
 - **A dropped connection**: a read that gets nothing for 10 seconds is given up on; the
   stream is asked for again after 1, 2, 4 and 8 seconds; then the song stays where it is,
-  the car and notification say "Lost the connection to the server…", and it is tried every
+  the car and notification say "Reconnecting…" (the phone, "Lost the connection to the server…"), and it is tried every
   15 seconds (a try that belongs to that account and that song, dropped if either has
   changed) and carries on when the server is back. Passing over a song that can't be played
   leaves "playing or paused" as it was. Swiped away, playback carries on unless the person
@@ -254,8 +254,11 @@ How it is built (M1a):
   shuffled, and the list remembers.
 - **Everything comes from kept pages** first and is checked with the server afterwards; a
   changed page is announced to the car. With the server out of reach the whole tree still
-  opens. Anything the car waits on is given up after seven seconds and the car told "Can't
-  reach your music server" (it waits about ten before showing an error of its own).
+  opens. Anything the car waits on is given up after seven seconds. A folder never fetched,
+  or a search, with the server out of reach, is one entry, "Can't reach the server", "Tap to
+  try again": a folder (each with an id of its own) that, opened, is the folder fetched
+  again; the car is told the folder has changed. The lost connection is "Reconnecting…" in
+  the session (a car's player has one line for it); the phone says it in full.
 - **Not signed in** is a standing error with a "Sign in" button that opens the app,
   published as soon as the saved sign-in has been read, whether or not anything has
   browsed; browse errors of that kind stay on the car's screen
@@ -290,8 +293,15 @@ How it is built (M1a):
 - **Settings**: one JSON file, written atomically with a backup copy, never silently reset
   (as on Windows). Exposed as a `StateFlow`.
 - **Pages**: JSON on disk, keyed by what was asked for (the Windows route keys where the page
-  is the same, hashed for the file name), under the account's cache folder; the last 64 also
-  held in memory. A page fetched within 15 seconds isn't fetched again.
+  is the same, hashed for the file name), under the account's cache folder; the ones used
+  lately also held in memory, by weight (about a song's worth each, 12,000 in all), not by
+  number. A page fetched within 15 seconds isn't fetched again. Each page has one order of
+  events: a refresh or a read from disk begun before a change made here (an unlike) is
+  dropped when it finishes, writes of one page take turns, and every atomic write in the app
+  goes through a temporary file of its own.
+- **Answers from the server** are decoded from the stream straight into the models, never
+  as a JSON tree first (a 12 MB playlist as a tree cost 80 to 100 MB), keeping what Windows
+  makes of an answer: an absent section is empty, one sent as null is malformed.
 - **Library copy**: every artist, album and song, kept compactly for instant search; the
   search and its ranking are a port of `src/search.rs` so both apps find the same things.
 - **Covers**: one store. Each cover is fetched once at 640 px (Windows' largest) and cut
@@ -300,8 +310,13 @@ How it is built (M1a):
   arrives. Coil and the car's content provider
   (`content://org.medianexus.music.covers/<cover id>`) both read from it: Coil through a
   fetcher of our own (`CoverImages.kt`), with its own disk cache off, so no picture is kept
-  twice; it decodes at the size shown and holds recent ones in memory (15% of the app's). Covers of downloaded music are kept
-  where the system won't clear them.
+  twice; it decodes at the size shown (and keys what it holds by that width, so a large
+  picture isn't kept for a small place) and holds recent ones in memory: 24 MB at most, or
+  15% of the app's allowance if that is less (see TESTING.md for how that was chosen). A few
+  covers are read and decoded at a time, and a fetch nobody is waiting for any more is
+  dropped before its turn. Now Playing's small copy leaves once the large one has drawn. A
+  cover that failed is asked for again when the connection comes back. Covers of downloaded
+  music are kept where the system won't clear them.
 - **Saved queue**: `queue.json` and `queue-place.json` in the account's data folder, in
   the Windows app's form (`SavedQueue`, `QueuePlace` and its `queue_shape`), ready for
   "Continue here" in M5. It stays saved through signing out.
@@ -377,15 +392,25 @@ How it is built (M1b):
   down asks the server again; a failure with something on screen is a strip with "Try
   again" above it, never in its place; skeleton rows only when nothing is kept. A page
   opened from a card draws its header at once from what the card said.
-- **The header** (Windows' `Hero`) stands the cover above the words on a phone: a cover
-  beside the title would leave the title too little room. Then the kind ("Album"), the
+- **The header** (Windows' `Hero`) stands the cover above the words on a phone held
+  upright: a cover beside the title would leave the title too little room. On its side, or
+  600 dp and wider, the cover sits beside the title as on Windows, sized by the height. Then the kind ("Album"), the
   name in the display face, and the artist or owner beside the facts ("2017, 14 songs,
   7 min"), wrapping under it when narrow. The action bar is Windows': play, the list's own
   shuffle (a dot under it when on), a heart for an album. A list with nothing in it offers
   neither play nor shuffle.
 - **The playing row**: the service puts the list the queue came from and the place in it of
   the song playing in the session's extras; a row is marked only if it is that place in
-  that list, so the same song elsewhere, or in another list, isn't.
+  that list and that song, so the same song elsewhere, or in another list, isn't, and a
+  refreshed list whose places have moved doesn't mark the neighbour.
+- **What the player said** goes when the connection to it is lost (song, queue, buffering,
+  error). After Android has stopped the app, "nothing playing" isn't believed until the
+  service has put back the saved queue and says which song it is settled on
+  (`PlayerConnection.reported`): Now Playing stays open meanwhile.
+- **Likes have one owner** (`Likes`): what the server last said, from every page that says
+  whether something is liked, and what has been done here and is still being sent. Every
+  heart, album hearts too, and Liked songs itself are read from it. Changes to one item go to
+  the server one at a time in the order made.
 - **The queue follows its list**: whenever the kept copy of the list the queue came from
   changes (a fresh copy from the server, a song unliked from Liked songs), the service runs
   `followList` and keeps each entry's number, so the song playing carries on untouched.
@@ -396,12 +421,15 @@ How it is built (M1b):
   colour), not the accent one pages use; buffering and "Lost the connection…" replace the
   format line in words. On its side, the cover sits beside the controls. Swipe down or
   back (predictive) to close.
-- **The queue sheet** is the Windows queue panel: "Now playing", then "Next in queue" with
+- **The queue sheet** is the Windows queue panel (its rows, its menu and every command name
+  a song by its queue entry's own number, as the person saw it): "Now playing", then "Next in queue" with
   "Clear queue", then "Next from <list>" with "Clear". Songs move by a drag handle (Lucide's
   grip-vertical, which Windows doesn't need), across the heading into "Next in queue" or out
-  of it, by the same arithmetic as Windows (`QueueRows.move`). A sideways swipe or "Remove
-  from queue" takes one out; screen readers get Move up, Move down and Remove. Below 400dp
-  the songs' lengths are left out so their names have room.
+  of it, by the same arithmetic as Windows (`QueueRows.move`). A cancelled drag sends nothing; a move
+  that changes nothing shows the player's order again. A sideways swipe or "Remove from
+  queue" takes one out; screen readers get Move up and Move down where they do something,
+  and Remove. Below 400dp the songs' lengths are left out so their names have room. The
+  sheet comes up to the foot of Now Playing's top bar, no further.
 - **A song's menu** has what works so far: Play next, Add to queue, like, Go to album, Go to
   artist (each credited artist when there are several), and Remove from queue from the
   queue. Nothing that does nothing yet is shown.
@@ -412,32 +440,41 @@ How it is built (M1b):
   playlists, then the pinned ones, then the rest by name. Albums have Windows' seven sorts
   as a second row of chips, sixty at a time as the grid scrolls; Home's "Show all" opens them.
 - **Artist**: albums, then singles and EPs, newest first; play plays the songs of their
-  first forty albums. "Popular" and "Fans also like" need the server to ask Last.fm, which
+  first forty releases, newest first as Windows builds it, saying it is getting them and
+  how many albums couldn't be fetched, if any. "Popular" and "Fans also like" need the server to ask Last.fm, which
   the test server can't; they come with the rest of browsing (M3).
 - **Search**: results as the words are typed (250 ms after the last key; a newer search
   always replaces an older one), in Windows' order: the first four songs, then artists,
   albums and playlists, with the artists first when one matches the words better than any
-  song does; chips narrow to one kind. With nothing typed, "Browse by genre". Windows keeps
+  song does, judged by a port of Windows' scoring (`SearchRank`), and the playlists whose
+  name has every typed word as the start of a word; chips narrow to one kind. Results, and
+  what tapping one plays, belong to the words that found them. With nothing typed, "Browse by genre". Windows keeps
   no recent searches, so neither does the phone. A song chosen from the results plays the
   results from it (Windows starts radio from it, which comes with M3).
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
   a like the server refused).
-- **Notifications** (Android 13 and later) are asked for the first time something is
-  played, once; refused, music plays with no notification.
+- **Notifications** are not asked for: Android exempts media-session notifications from
+  that permission, so the player's controls appear with it refused (checked on Android 17).
 - **Android 17 and home servers**: the app targets Android 17, where reaching an address on
   the local network needs `ACCESS_LOCAL_NETWORK` (a runtime permission in the Nearby devices
-  group; the system's question is about "nearby devices"). Local, as Google defines it and
-  `LocalNetwork` reads it: 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, multicast,
-  IPv6 link-local and unique-local, `.local` names, and any name that leads to one of
-  these; not 127.0.0.1. Signing in to such an address first says why the question is
-  coming, then asks; the sign-in goes ahead whatever the answer. Refused, the sign-in times
-  out and the screen says why, with "Allow". Signed in and not allowed (refused, or taken
-  away later), a bar over every page says so, with "Allow" (which opens the app's settings
-  once the system stops asking). The car, started cold with no permission, browses what is
-  kept and is told in words, with a button that opens the app, rather than waiting on a
-  connection that can't happen. Nothing stops a connection being tried: through a VPN the
-  same address may be reachable after all.
+  group; the system's question is about "nearby devices"). Google defines a local *network*
+  (Wi-Fi or Ethernet, not VPN or mobile), so `LocalNetwork` answers in three: certainly local
+  (10/8, 172.16/12, 192.168/16, link-local, multicast and broadcast, `.local` names),
+  maybe (100.64/10, which Tailscale and carriers use too; fc00::/7; any name), or not (the
+  phone itself, public addresses). Signing in to a certainly local address first says why
+  the question is coming, then asks, and the sign-in goes ahead with the answer; a maybe is
+  connected to first, and only a failure without the permission says it may be why, with
+  "Allow". Where the question stands (asked, granted, refused, can't ask again) and the
+  sign-in waiting on it are kept by `LocalAccess`, not the screen, so turning the phone while
+  the system asks loses nothing; "can't ask again" is what the platform reports after a
+  refusal, and then "Allow" opens the app's page in the phone's settings. Signed in and not
+  allowed, a bar over every page and on Now Playing says so. When it is allowed, when the
+  server answers again after failing, or when the phone has a network again, pages that
+  failed load again and covers are asked for again (`Graph.reconnects`); while the screens
+  are in front and the server was out of reach, it is asked every 15 seconds. The car,
+  started cold with no permission, browses what is kept and is told in words, with a button
+  that opens the app.
 - **Passwords**: the password field gives accessibility services dots, as a system password
   field does, not the password (Compose's own secure field gave them the text).
 
