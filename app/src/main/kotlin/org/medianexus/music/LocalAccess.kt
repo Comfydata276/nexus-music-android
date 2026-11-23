@@ -43,7 +43,7 @@ import org.medianexus.music.store.SettingsStore
  * Nothing here stops a connection being tried: if the address turns out to be reachable
  * after all (through a VPN, say), so much the better.
  */
-class LocalAccess(private val context: Context, session: Session, private val settings: SettingsStore, scope: CoroutineScope) {
+class LocalAccess(private val context: Context, private val session: Session, private val settings: SettingsStore, scope: CoroutineScope) {
     /** Where the question stands. */
     enum class Ask { NOT_ASKED, ASKING, GRANTED, REFUSED, CANNOT_ASK }
 
@@ -102,10 +102,27 @@ class LocalAccess(private val context: Context, session: Session, private val se
         if (granted.value && !was) given()
     }
 
-    /** About to ask; `then` hears the answer (whether it was granted). */
-    fun asking(then: ((Boolean) -> Unit)? = null) {
+    /**
+     * About to ask; `then` hears the answer (whether it was granted). It must hold nothing of
+     * a screen's: the screen may be rebuilt before the answer comes. False if a question is
+     * already open (only one is, at a time): nothing is asked, and `then` is not kept.
+     */
+    fun asking(then: ((Boolean) -> Unit)? = null): Boolean {
+        if (asked.value == Ask.ASKING) return false
         waiting = then
         asked.value = Ask.ASKING
+        return true
+    }
+
+    /**
+     * The question will never be answered (the app's screen closed for good while it was up,
+     * or it couldn't be shown): it is no longer open, and whatever was waiting on it, a
+     * sign-in with its password above all, is let go without being carried out.
+     */
+    fun abandoned() {
+        waiting = null
+        session.dropWaiting()
+        if (asked.value == Ask.ASKING) asked.value = if (settings.value.localNetworkRefusedForGood) Ask.CANNOT_ASK else Ask.NOT_ASKED
     }
 
     /** The system's answer: granted or not, and if not, whether it would ask again. */

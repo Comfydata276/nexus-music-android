@@ -148,6 +148,41 @@ class Session(
         return SessionState.SignedIn(Account(api.server, api.username, key, dirsFor(key)), api)
     }
 
+    /** What was typed for a sign-in that is waiting on a question (see [hold]). */
+    private class Waiting(val server: String, val username: String, val password: String)
+
+    private var waiting: Waiting? = null
+
+    /**
+     * Holds a sign-in that is waiting for the person to answer Android's local-network
+     * question: in memory only, here rather than in the screen, which Android may rebuild
+     * (and so empty) while its question is up. [resumeWaiting] signs in with it; [dropWaiting]
+     * lets it go. False, and nothing held, if one is already waiting: only one question is
+     * open at a time. After the app has been killed there is nothing to resume: the screen
+     * simply asks again.
+     */
+    fun hold(server: String, username: String, password: String): Boolean = synchronized(gate) {
+        if (waiting != null) return false
+        waiting = Waiting(server, username, password)
+        true
+    }
+
+    /** The question has been answered: the sign-in that waited on it goes ahead. False if
+     *  nothing was waiting. */
+    fun resumeWaiting(): Boolean {
+        val held = synchronized(gate) { waiting.also { waiting = null } } ?: return false
+        signIn(held.server, held.username, held.password)
+        return true
+    }
+
+    /** The question was abandoned: what was typed is let go. */
+    fun dropWaiting() {
+        synchronized(gate) { waiting = null }
+    }
+
+    /** Whether a sign-in is waiting on a question. */
+    val isWaiting: Boolean get() = synchronized(gate) { waiting != null }
+
     /**
      * Signs in. An address typed without "http://" or "https://" is tried over HTTPS first,
      * and over plain HTTP only if nothing answers there and the address is on the home

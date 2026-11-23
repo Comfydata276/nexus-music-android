@@ -109,11 +109,19 @@ fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String
         if (allowed > 0 && state.error != null && state.unreachable && !state.busy && ready) go()
     }
     val ask = rememberLocalNetworkAsk(localAccess)
+    // What was typed waits for the answer in the session, not in this screen: Android may
+    // rebuild the screen while its question is up (a change of font size, say), and this
+    // screen's password field is empty when it is. Let go as soon as it is used, or if the
+    // question is never put.
+    val holdThenAsk = { then: (Boolean) -> Unit ->
+        if (session.hold(server.text.toString(), username.text.toString(), password.text.toString())) {
+            if (!ask(then)) session.dropWaiting()
+        }
+    }
     val askThenGo = {
         explaining = false
         // Whatever the answer, the sign-in goes ahead with what was typed.
-        val signIn = go
-        ask { signIn() }
+        holdThenAsk { session.resumeWaiting() }
     }
     val connect: () -> Unit = {
         if (ready) {
@@ -227,7 +235,17 @@ fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String
                 } else if (mayBeWhy && !state.busy) {
                     BasicText(stringResource(R.string.local_network_refused), style = Theme.type.rowDetail.copy(color = colors.warm))
                     // Allowed, it connects again by itself.
-                    TextButton(stringResource(R.string.allow), onClick = { ask { granted -> if (granted && ready) go() } }, modifier = Modifier.fillMaxWidth())
+                    TextButton(
+                        stringResource(R.string.allow),
+                        onClick = {
+                            if (ready) {
+                                holdThenAsk { granted -> if (granted) session.resumeWaiting() else session.dropWaiting() }
+                            } else {
+                                ask(null)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
                 Spacer(Modifier.height(4.dp))
                 if (!explaining) {

@@ -70,6 +70,13 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        // Closed for good (not rebuilt) with Android's local-network question up: it will
+        // never be answered here, and a sign-in waiting on it lets go of its password.
+        if (isFinishing) graph.localAccess.abandoned()
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
         // The local-network permission may have been given or taken away in the phone's

@@ -28,10 +28,12 @@ fun openAppSettings(activity: Activity) {
  * still hears it if the activity is rebuilt while the system's question is showing.
  *
  * The launcher itself is registered again by the rebuilt activity under the same key, and
- * the system's answer is delivered to it there.
+ * the system's answer is delivered to it there. Says whether the system's question was put
+ * (false: the settings page was opened instead, or a question is already up), so a caller
+ * holding something for `then` can let it go.
  */
 @Composable
-fun rememberLocalNetworkAsk(access: LocalAccess): (then: ((Boolean) -> Unit)?) -> Unit {
+fun rememberLocalNetworkAsk(access: LocalAccess): (then: ((Boolean) -> Unit)?) -> Boolean {
     val activity = LocalActivity.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         // After a refusal the system says whether it would ask again: that, not how quickly
@@ -43,9 +45,18 @@ fun rememberLocalNetworkAsk(access: LocalAccess): (then: ((Boolean) -> Unit)?) -
         if (access.cannotAsk && activity != null) {
             // Allowed there, it is noticed when the app comes back to the front.
             openAppSettings(activity)
+            false
+        } else if (access.asking(then)) {
+            // Only one question at a time: a second tap while one is up asks nothing.
+            try {
+                launcher.launch(LocalAccess.PERMISSION)
+                true
+            } catch (_: android.content.ActivityNotFoundException) {
+                access.abandoned()
+                false
+            }
         } else {
-            access.asking(then)
-            launcher.launch(LocalAccess.PERMISSION)
+            false
         }
     }
 }

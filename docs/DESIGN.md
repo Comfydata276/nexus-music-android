@@ -617,9 +617,13 @@ How it is built (M1b):
   phone itself, public addresses). Signing in to a certainly local address first says why
   the question is coming, then asks, and the sign-in goes ahead with the answer; a maybe is
   connected to first, and only a failure without the permission says it may be why, with
-  "Allow". Where the question stands (asked, granted, refused, can't ask again) and the
-  sign-in waiting on it are kept by `LocalAccess`, not the screen, so turning the phone while
-  the system asks loses nothing; "can't ask again" is what the platform reports after a
+  "Allow". Where the question stands (asked, granted, refused, can't ask again) is kept by
+  `LocalAccess`, and the sign-in waiting on it (address, username, password) by the session
+  (`Session.hold`), in memory only and only while the question is open: not the screen, so
+  the screen being rebuilt while the system asks (turning the phone, a change of font size)
+  loses nothing. It is let go when used, or when the question is abandoned (the app's screen
+  closed for good); after the app has been killed there is nothing to resume, and the screen
+  simply asks again. One question is open at a time; "can't ask again" is what the platform reports after a
   refusal, and then "Allow" opens the app's page in the phone's settings. Signed in and not
   allowed, a bar over every page and on Now Playing says so. When it is allowed, when the
   server answers again after failing, or when the phone has a network again, pages that

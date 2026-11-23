@@ -321,4 +321,36 @@ class SessionTest {
         assertEquals("Wrong username or password.", result.error)
         assertEquals(SessionState.SignedOut, session.state.value)
     }
+    // ---- A sign-in waiting on Android's local-network question -------------------------------
+
+    @Test
+    fun aSignInWaitingOnTheQuestionKeepsWhatWasTypedWhateverHappensToTheScreen() = runBlocking {
+        val (session, _, _) = session(folder.newFolder())
+        withTimeout(5_000) { session.restored() }
+        // Continue: what was typed is held, and the system's question goes up.
+        assertTrue(session.hold("http://127.0.0.1:${server.port}", "ada", "sesame"))
+        // Only one question at a time: a second is turned away and holds nothing.
+        assertFalse(session.hold("http://127.0.0.1:${server.port}", "eve", "other"))
+        // The screen is rebuilt while the question is up (its fields are empty now): the
+        // answer comes, and the sign-in goes out with what was held.
+        assertTrue(session.resumeWaiting())
+        withTimeout(10_000) { session.settled() }
+        assertEquals("ada", (session.state.value as SessionState.SignedIn).account.username)
+        // Used once, and let go.
+        assertFalse(session.isWaiting)
+        assertFalse(session.resumeWaiting())
+    }
+
+    @Test
+    fun aQuestionAbandonedLetsGoOfThePassword() = runBlocking {
+        val (session, _, _) = session(folder.newFolder())
+        withTimeout(5_000) { session.restored() }
+        assertTrue(session.hold("http://127.0.0.1:${server.port}", "ada", "sesame"))
+        session.dropWaiting()
+        assertFalse(session.isWaiting)
+        assertFalse(session.resumeWaiting())
+        assertEquals(SessionState.SignedOut, session.state.value)
+        // A new question can be put.
+        assertTrue(session.hold("http://127.0.0.1:${server.port}", "ada", "sesame"))
+    }
 }
