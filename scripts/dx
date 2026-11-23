@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Run a command inside the nexus-music-android container as the current user.
+# Build the image first:  docker build -f docker/build.Dockerfile -t nexus-music-android docker
+# The Android SDK, Gradle's downloads and the emulator's files are kept in a cache folder.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cache="${NEXUS_ANDROID_CACHE:-$HOME/.cache/nexus-music-android}"
+mkdir -p "$cache/sdk" "$cache/home"
+kvm=()
+if [ -e /dev/kvm ]; then
+  kvm=(--device /dev/kvm --group-add "$(stat -c %g /dev/kvm)")
+fi
+# shellcheck disable=SC2086
+exec docker run --rm ${DX_DOCKER_ARGS:-} "${kvm[@]}" \
+  -u "$(id -u):$(id -g)" --network host \
+  -e HOME=/home/dev -e GRADLE_USER_HOME=/home/dev/.gradle \
+  -v "$root":/work -v "$cache/home":/home/dev -v "$cache/sdk":/sdk \
+  -w /work nexus-music-android "$@"
