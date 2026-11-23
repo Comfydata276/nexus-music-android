@@ -1,6 +1,7 @@
 package org.medianexus.music
 
 import java.io.File
+import java.net.InetAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -12,6 +13,7 @@ import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -64,11 +66,11 @@ class SessionTest {
         server.close()
     }
 
-    private fun session(dir: File): Triple<Session, SettingsStore, Notices> {
+    private fun session(dir: File, http: OkHttpClient = OkHttpClient()): Triple<Session, SettingsStore, Notices> {
         val settings = SettingsStore.open(File(dir, "settings.json"), scope, Dispatchers.IO)
         val notices = Notices()
         val session = Session(
-            settings, PasswordVault(File(dir, "password.sealed"), PlainBox), OkHttpClient(), OfflineSwitch(),
+            settings, PasswordVault(File(dir, "password.sealed"), PlainBox), http, OfflineSwitch(),
             { key -> accountDirs(File(dir, "files"), File(dir, "cache"), key) }, notices, scope, Dispatchers.IO,
         )
         return Triple(session, settings, notices)
@@ -109,6 +111,37 @@ class SessionTest {
         withTimeout(5_000) { while (File(dir, "password.sealed").exists()) kotlinx.coroutines.delay(20) }
         assertEquals(SessionState.SignedOut, withTimeout(5_000) { third.restored() })
         assertEquals("http://$typed", thirdSettings.value.server)
+    }
+
+    /** A client that finds "music.example.org" at the stand-in server, as if it were out on
+     *  the internet. */
+    private fun awayClient() = OkHttpClient.Builder()
+        .dns { host -> if (host == "music.example.org") listOf(InetAddress.getLoopbackAddress()) else Dns.SYSTEM.lookup(host) }
+        .build()
+
+    @Test
+    fun beyondTheHomeNetworkAnAddressWithoutASchemeIsTriedOverHttpsOnly() = runBlocking {
+        val (session, _, _) = session(folder.newFolder(), awayClient())
+        withTimeout(5_000) { session.restored() }
+        // The stand-in only speaks plain HTTP, so HTTPS fails; plain HTTP isn't tried.
+        session.signIn("music.example.org:${server.port}", "ada", "sesame")
+        val result = withTimeout(20_000) { session.settled() }
+        assertTrue(result.error != null)
+        assertTrue(result.suggestHttp)
+        assertEquals(SessionState.SignedOut, session.state.value)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun plainHttpBeyondHomeIsUsedWhenAskedForAndWarnedAbout() = runBlocking {
+        val (session, _, notices) = session(folder.newFolder(), awayClient())
+        withTimeout(5_000) { session.restored() }
+        session.signIn("HTTP://music.example.org:${server.port}", "ada", "sesame")
+        val result = withTimeout(20_000) { session.settled() }
+        assertNull(result.error)
+        val signedIn = session.state.value as SessionState.SignedIn
+        assertEquals("http://music.example.org:${server.port}", signedIn.account.server)
+        assertTrue(Notice.SignedInWithoutEncryption in notices.state.value)
     }
 
     @Test

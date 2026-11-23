@@ -18,6 +18,7 @@ import org.medianexus.music.net.OfflineSwitch
 import org.medianexus.music.net.ServerInfo
 import org.medianexus.music.net.Subsonic
 import org.medianexus.music.net.addressesToTry
+import org.medianexus.music.net.splitScheme
 import org.medianexus.music.net.unencryptedBeyondHome
 import org.medianexus.music.store.Account
 import org.medianexus.music.store.AccountDirs
@@ -33,8 +34,10 @@ sealed interface SessionState {
     data class SignedIn(val account: Account, val api: Subsonic) : SessionState
 }
 
-/** How the sign-in screen's request is going. */
-data class SignInState(val busy: Boolean = false, val error: String? = null)
+/** How the sign-in screen's request is going. `suggestHttp` is set when an address typed
+ *  without a scheme got nowhere over HTTPS and wasn't tried over plain HTTP, because it is
+ *  beyond the home network: the screen says how to ask for plain HTTP. */
+data class SignInState(val busy: Boolean = false, val error: String? = null, val suggestHttp: Boolean = false)
 
 /**
  * The signed-in account and its client for the server. Signing in and out happen here, not
@@ -90,8 +93,9 @@ class Session(
     }
 
     /**
-     * Signs in as the Windows app does: an address typed without "http://" or "https://" is
-     * tried over HTTPS first, and over plain HTTP only if nothing answers there.
+     * Signs in. An address typed without "http://" or "https://" is tried over HTTPS first,
+     * and over plain HTTP only if nothing answers there and the address is on the home
+     * network (see `addressesToTry`).
      */
     fun signIn(server: String, username: String, password: String) {
         if (signingIn.value.busy) return
@@ -125,7 +129,11 @@ class Session(
                     // Have connections open before the first taps need them.
                     scope.launch { client.warmUp(WARM_CONNECTIONS) }
                 },
-                onFailure = { error -> signingIn.value = SignInState(error = error.message) },
+                onFailure = { error ->
+                    // HTTPS was the only thing tried, and not because the person said so.
+                    val onlyGuessedHttps = addresses.size == 1 && splitScheme(server.trim()).first == null
+                    signingIn.value = SignInState(error = error.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server)
+                },
             )
         }
     }

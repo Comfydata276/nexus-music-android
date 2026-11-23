@@ -171,8 +171,9 @@ fun SignInScreen(session: Session, savedServer: String, savedUsername: String) {
                 )
 
                 state.error?.let { error ->
+                    val shown = if (state.suggestHttp) "$error ${stringResource(R.string.sign_in_try_http)}" else error
                     BasicText(
-                        error,
+                        shown,
                         Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                         style = Theme.type.rowDetail.copy(color = colors.danger),
                     )

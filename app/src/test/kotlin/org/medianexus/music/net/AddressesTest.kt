@@ -10,8 +10,14 @@ import org.junit.Test
 class AddressesTest {
     @Test
     fun triesHttpsFirstAndKnowsWhenPlainHttpMatters() {
-        assertEquals(listOf("https://music.example.org", "http://music.example.org"), addressesToTry(" music.example.org "))
+        // Unlike Windows: with no scheme typed, plain HTTP is tried only on the home network.
+        assertEquals(listOf("https://music.example.org"), addressesToTry(" music.example.org "))
+        assertEquals(listOf("https://192.168.1.5:4533", "http://192.168.1.5:4533"), addressesToTry("192.168.1.5:4533"))
+        assertEquals(listOf("https://nas:4533", "http://nas:4533"), addressesToTry("nas:4533"))
         assertEquals(listOf("http://192.168.1.5:4533"), addressesToTry("http://192.168.1.5:4533"))
+        // Typed with "http://" it is taken at its word, in whatever case.
+        assertEquals(listOf("http://music.example.org"), addressesToTry("http://music.example.org"))
+        assertEquals(listOf("HTTP://music.example.org"), addressesToTry("HTTP://music.example.org"))
         assertEquals(listOf("https://music.example.org/"), addressesToTry("https://music.example.org/"))
         assertTrue(addressesToTry("  ").isEmpty())
         // Plain HTTP only matters where someone else could be listening.
@@ -28,6 +34,21 @@ class AddressesTest {
             assertTrue(away, unencryptedBeyondHome(away))
         }
         assertFalse(unencryptedBeyondHome("https://music.example.org"))
+        // The scheme is read, not compared as text.
+        assertTrue(unencryptedBeyondHome("HTTP://music.example.org"))
+        assertTrue(unencryptedBeyondHome(" Http://music.example.org"))
+        assertFalse(unencryptedBeyondHome("HTTPS://music.example.org"))
+        assertFalse(unencryptedBeyondHome("HTTP://192.168.1.5"))
+        assertFalse(unencryptedBeyondHome("music.example.org"))
+    }
+
+    @Test
+    fun readsTheSchemeInAnyCase() {
+        assertEquals("http" to "music.example.org", splitScheme("HTTP://music.example.org"))
+        assertEquals("https" to "x/y", splitScheme("hTtPs://x/y"))
+        assertEquals(null to "music.example.org:4533", splitScheme("music.example.org:4533"))
+        assertEquals(null to "://x", splitScheme("://x"))
+        assertEquals("http://tower:4533", normalizeServerUrl("HTTP://tower:4533"))
     }
 
     @Test

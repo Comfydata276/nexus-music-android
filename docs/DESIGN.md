@@ -130,6 +130,11 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
 
 - **Account**: server address and username in settings; the password encrypted with a key
   held in the Android Keystore. Each account has its own downloads, cache and held changes.
+- **Sign-in and transport**: a sign-in token never goes over plain HTTP beyond the home
+  network unless the person typed `http://` themselves, and is warned first. An address typed
+  without a scheme is tried over HTTPS, and over plain HTTP only on the home network (this
+  differs from Windows, which falls back for any address); a redirect from HTTPS to HTTP is
+  never followed.
 - **Settings**: one JSON file, written atomically with a backup copy, never silently reset
   (as on Windows). Exposed as a `StateFlow`.
 - **Pages**: JSON on disk, keyed by what was asked for.

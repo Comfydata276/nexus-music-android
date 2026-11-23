@@ -7,7 +7,9 @@ package org.medianexus.music.net
 fun normalizeServerUrl(input: String): String {
     var url = input.trim()
     if (url.isEmpty()) return url
-    if ("://" !in url) url = "http://$url"
+    val (scheme, rest) = splitScheme(url)
+    // The scheme in small letters, so "HTTP://" and "http://" are the same account.
+    url = if (scheme == null) "http://$url" else "$scheme://$rest"
     val app = url.indexOf("/app/")
     if (app >= 0) url = url.substring(0, app)
     for (suffix in listOf("/app", "/rest")) {
@@ -17,23 +19,41 @@ fun normalizeServerUrl(input: String): String {
     return url
 }
 
-/** The addresses to try for what was typed as the server's. One that says "http://" or
- *  "https://" is taken at its word. One that doesn't is tried over HTTPS first, and over
- *  plain HTTP only if that gets nowhere. */
+/**
+ * The addresses to try for what was typed as the server's. One that names its scheme
+ * ("http://", "https://", in any case) is taken at its word. One that doesn't is tried over
+ * HTTPS, and over plain HTTP as well only when it is on the home network: a sign-in token
+ * never goes unencrypted beyond it unless the person typed "http://" themselves. (Windows
+ * falls back to plain HTTP for any address; the phone deliberately doesn't.)
+ */
 fun addressesToTry(typed: String): List<String> {
     val address = typed.trim()
     return when {
         address.isEmpty() -> emptyList()
-        "://" in address -> listOf(address)
+        splitScheme(address).first != null -> listOf(address)
+        unencryptedBeyondHome("http://$address") -> listOf("https://$address")
         else -> listOf("https://$address", "http://$address")
     }
 }
 
+/** The scheme an address starts with, in small letters, and the rest after its "://"; no
+ *  scheme and the whole address if it doesn't start with one. */
+internal fun splitScheme(address: String): Pair<String?, String> {
+    val mark = address.indexOf("://")
+    if (mark <= 0) return null to address
+    val scheme = address.substring(0, mark)
+    // As RFC 3986 has it: a letter, then letters, digits, "+", "-" or ".".
+    val valid = scheme[0].isAsciiLetter() && scheme.all { it.isAsciiLetter() || it in '0'..'9' || it in "+-." }
+    return if (valid) scheme.lowercase() to address.substring(mark + 3) else null to address
+}
+
+private fun Char.isAsciiLetter() = this in 'a'..'z' || this in 'A'..'Z'
+
 /** Whether an address is plain HTTP to somewhere that isn't on the home network (or this
  *  phone): the case where what's sent can be read by others on the way. */
 fun unencryptedBeyondHome(address: String): Boolean {
-    if (!address.startsWith("http://")) return false
-    val rest = address.removePrefix("http://")
+    val (scheme, rest) = splitScheme(address.trim())
+    if (scheme != "http") return false
     val authority = rest.split('/', '?', '#').first()
     val hostAndPort = authority.substringAfterLast('@')
     // An IPv6 address is in brackets, with the port after them.

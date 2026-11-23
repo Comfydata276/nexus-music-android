@@ -30,6 +30,7 @@
     <string name="connect">Connect</string>
     <string name="connecting">Connecting…</string>
     <string name="sign_in_unencrypted">Over plain HTTP your sign-in and your music can be read on the way. If your server has an https:// address, use that.</string>
+    <string name="sign_in_try_http">If your server really has no HTTPS, type http:// in front of the address.</string>
     <string name="password_kept">Your password is kept on this phone, sealed with a key that never leaves it.</string>
 
     <!-- The shell -->

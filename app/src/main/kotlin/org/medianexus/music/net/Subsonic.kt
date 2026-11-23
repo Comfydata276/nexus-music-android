@@ -470,6 +470,7 @@ internal fun networkHint(error: IOException): String {
     val lower = all.joinToString(" ") { it.message.orEmpty() }.lowercase()
     fun any(kind: Class<*>) = all.any { kind.isInstance(it) }
     return when {
+        any(InsecureRedirect::class.java) -> all.first { it is InsecureRedirect }.message!!
         any(UnknownHostException::class.java) || "dns" in lower || "resolve" in lower || "lookup" in lower ->
             "The server name couldn't be found. Check the address."
         "refused" in lower ->

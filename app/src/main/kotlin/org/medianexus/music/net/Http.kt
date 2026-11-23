@@ -8,6 +8,7 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Response
 
@@ -33,8 +34,33 @@ object Http {
         .addNetworkInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("User-Agent", userAgent).build())
         }
+        .addNetworkInterceptor(NoDowngrade)
         .build()
+
+    /**
+     * Refuses a redirect from HTTPS to plain HTTP. Every request carries a sign-in token in
+     * its address, and a redirect would send it on unencrypted. (Redirects the other way, or
+     * staying on one scheme, are followed as usual.) A network interceptor sees each step of
+     * a redirect before OkHttp follows it.
+     */
+    internal object NoDowngrade : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val response = chain.proceed(request)
+            if (request.isHttps && response.isRedirect) {
+                val target = response.header("Location")?.let { request.url.resolve(it) }
+                if (target != null && !target.isHttps) {
+                    response.close()
+                    throw InsecureRedirect()
+                }
+            }
+            return response
+        }
+    }
 }
+
+/** The server tried to send a request on from HTTPS to plain HTTP (see `Http.NoDowngrade`). */
+class InsecureRedirect : IOException("The server tried to send the request on without encryption, so it wasn't followed.")
 
 /** Runs the call without holding a thread while it waits, and cancels it if the caller is
  *  cancelled. The response's body still has to be read off the main thread. */
