@@ -272,6 +272,16 @@ app's data on the car (`scripts/emu -d car shell pm clear --user 10 org.medianex
 and run the tour. Server out of reach: sign in, run the tour once so the screens are
 loaded, `scripts/server stop`, and run it again.
 
+**Signing in while the car shows "Sign in"** has no automatic check (the probe can't sign
+in), and it broke once without any check noticing. By hand, on the car emulator with a
+debug build: clear the app's data; open the car's media screen on the app
+(`am start --user 10 -a android.car.intent.action.MEDIA_TEMPLATE -e
+android.car.intent.extra.MEDIA_COMPONENT org.medianexus.music/.playback.PlaybackService`)
+and see "Sign in"; open the app (`scripts/emu -d car launch org.medianexus.music`) and
+sign in; send the same `am start` again, without stopping anything. The car must show
+the tabs. The log (tag `NexusPlayback`) says "who is signed in changed: the car is asked
+to look again at N folders", and `dumpsys media_session` no longer says `state=ERROR`.
+
 Why it is not Android Auto: the layout, colours and proportions differ; Android Auto's
 limits while driving are not applied; there is no Assistant; and here the app is
 installed on the car itself rather than projected from a phone, so nothing about the

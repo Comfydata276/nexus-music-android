@@ -261,7 +261,11 @@ How it is built (M1a):
   browsed; browse errors of that kind stay on the car's screen
   (`LIBRARY_ERROR_REPLICATION_MODE_FATAL`). A search made while signed out is answered
   ("nothing") at once. When who is signed in changes, the car is told to load again the
-  folders it has asked for lately.
+  folders it has asked for lately. For that to reach it, a subscription to a folder stands
+  whoever is signed in (`onSubscribe`): Media3's own answer drops a subscription whose
+  folder can't be fetched, which signed out is every one, and a car that isn't subscribed
+  is told nothing. Signing in also clears the error Media3 copied from the failed folder
+  (`clearReplicatedLibraryError`), which otherwise stands until a folder next opens.
 - **Voice**: a request with a focus looks only at that kind, falling back to any kind if
   nothing matches; one without is read for "songs by", "the album", "… playlist", "X by Y".
   The best match wins (said exactly, then begins with, then contains, then words shared;

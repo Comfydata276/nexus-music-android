@@ -350,6 +350,9 @@ class PlaybackService : MediaLibraryService() {
             return
         }
         session.setPlaybackException(null)
+        // And the same error as a folder gave it to a car: Media3 keeps that one standing
+        // until a folder next opens, which a car showing only the player never asks for.
+        session.clearReplicatedLibraryError()
         val next = Era(++eras, now)
         era = next
         current = next
@@ -853,6 +856,20 @@ class PlaybackService : MediaLibraryService() {
             }
             val root = CarMedia.item(CarEntry(CarIds.ROOT, getString(R.string.app_name), browsable = true))
             return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(root, LibraryParams.Builder().setExtras(extras).build()))
+        }
+
+        /**
+         * A subscription to one of our folders stands, whoever is signed in. Media3's own
+         * answer asks for the folder's item first and drops the subscription if that fails,
+         * which with nobody signed in is always: and a car that isn't subscribed is never
+         * told to look again, so it sat on "Sign in" after the person had signed in.
+         */
+        override fun onSubscribe(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> {
+            if (CarIds.parse(parentId) == null) return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_BAD_VALUE))
+            // The system hands a car of the older kind the folder as it subscribes; a Media3
+            // browser waits to be told there is something to fetch.
+            if (browser.controllerVersion != MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION) session.notifyChildrenChanged(browser, parentId, Int.MAX_VALUE, params)
+            return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofVoid())
         }
 
         override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
