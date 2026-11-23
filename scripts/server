@@ -7,6 +7,8 @@
 #   scripts/server status     is it up, where, and what is in it
 #   scripts/server generate   make the library now (--force: again from nothing)
 #   scripts/server logs [-f]  the server's log
+#   scripts/server sweepcheck <recording>
+#                             find gaps in a recording of the "Continuous Sweep" album
 #   scripts/server api <method> [name=value...]
 #                             call the Subsonic API as the test account, e.g.
 #                             scripts/server api search3 query=lantern
@@ -81,6 +83,11 @@ case "${1:-}" in
     ;;
   generate) shift; generate "$@" ;;
   logs) shift; docker logs "$@" "$name" ;;
+  sweepcheck)
+    # Look for gaps in a recording of the "Continuous Sweep" album (tools/library/sweepcheck.py).
+    file="${2:?sweepcheck: which recording?}"; [ -f "$file" ] || die "sweepcheck: no such file: $file"
+    rig_run sh -c 'cat > /tmp/recording && python3 /work/tools/library/sweepcheck.py /tmp/recording' < "$file"
+    ;;
   api)
     shift; method="${1:?api: which method? e.g. scripts/server api getArtists}"; shift
     container_running "$name" || die "the test server is not running. Start it with: scripts/server start"
@@ -89,5 +96,5 @@ case "${1:-}" in
     rig_run curl -sS -G "$base/rest/$method" -d u=tester -d p=tester-pass-1 -d v=1.16.1 -d c=rig -d f=json "${args[@]}"
     echo
     ;;
-  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Numbers for a build: size, cold start, memory idle and playing, scrolling smoothness.
+# See docs/TESTING.md for what each number means and how far to trust it.
+#
+#   scripts/measure <app.apk> [options]     install this build on the phone emulator and measure it
+#   scripts/measure <package> [options]     measure what is already installed
+#   scripts/measure --standin               the stand-in fixture (to check the script itself)
+#
+#   --tap "<words>"   something to tap, by its text, to reach a long list before scrolling
+#                     (give it more than once for more than one tap)
+#   --runs N          cold starts to time (default 5, after one that is thrown away)
+#   --settle N        seconds to wait before reading memory (default 10)
+#   --flings N        swipes down the list (default 8; half as many back up)
+#   --keep            keep the app's data (default: uninstall first, for a clean install size)
+#   --json <file>     where to save the numbers (default: under the cache, and printed)
+#
+# Measure the release build (scripts/dx ./gradlew --no-daemon :app:assembleRelease):
+# a debug build is several times slower and larger and says nothing about either.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+device_setup ""
+
+what=""; taps=(); runs=5; settle=10; flings=8; keep=false; json=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --standin) what=standin ;;
+    --tap) taps+=("${2:?}"); shift ;;
+    --runs) runs="${2:?}"; shift ;;
+    --settle) settle="${2:?}"; shift ;;
+    --flings) flings="${2:?}"; shift ;;
+    --keep) keep=true ;;
+    --json) json="${2:?}"; shift ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    -*) die "unknown option $1 (scripts/measure --help)" ;;
+    *) what="$1" ;;
+  esac
+  shift
+done
+[ -n "$what" ] || { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+need_emulator
+build_tools
+ensure_installed "$probe_apk" org.medianexus.carprobe
+adb_sh cmd notification allow_listener org.medianexus.carprobe/org.medianexus.carprobe.Listener "$(current_user)" >/dev/null
+
+apk="-"
+if [ "$what" = standin ]; then what="$standin_apk"; fi
+if [ -f "$what" ]; then
+  apk="/tmp/measure-$$.apk"
+  docker exec -i "$container" sh -c "cat > $apk" < "$what"
+  package="$(docker exec "$container" sh -c 'ls -d /sdk/build-tools/*/ | sort -V | tail -n 1' | tr -d '\r\n')"
+  package="$(docker exec "$container" "${package}aapt2" dump packagename "$apk" | tr -d '\r\n')"
+  [ -n "$package" ] || die "could not read the package name from $what"
+else
+  package="$what"
+  [[ "$package" == *.* ]] || die "$what is neither an APK file nor a package name"
+fi
+taps_json="$(printf '%s\n' "${taps[@]}" | docker exec -i "$container" python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')"
+options="{\"runs\": $runs, \"settle\": $settle, \"flings\": $flings, \"keep\": $keep, \"taps\": $taps_json}"
+json="${json:-$cache/reports/measure-$package-$(date +%Y%m%d-%H%M%S).json}"
+mkdir -p "$(dirname "$json")"
+status=0
+docker exec "$container" python3 /work/scripts/measure.py "$serial" "$apk" "$package" "$(current_user)" "$options" > "$json" || status=$?
+[ "$apk" = "-" ] || docker exec "$container" rm -f "$apk"
+[ "$status" = 0 ] || { rm -f "$json"; exit "$status"; }
+say "numbers saved in $json"

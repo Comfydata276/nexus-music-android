@@ -92,6 +92,15 @@ class Probe : Instrumentation() {
             if (trusted) "a trusted caller, as Android Auto is (this probe has notification access)"
             else "an untrusted caller: an ordinary app with no special access. Android Auto is not one of these.")
         val service = discover() ?: return
+        if (mode == "play" || mode == "pause") {
+            // For scripts/measure: start (or stop) whatever the app would resume, nothing else.
+            if (!connect(service, "connect", "Connects")) return
+            if (mode == "pause") { quiet(); return }
+            onMain { controls.play() }
+            val ms = waitFor { playing() }
+            check("play", "Play with nothing chosen starts playback", ms >= 0, whyNotPlaying(), "now ${nowPlaying()}", ms)
+            return
+        }
         if (args.getString("cold") != "false") {
             shell("am force-stop $target")
             SystemClock.sleep(500)
@@ -125,9 +134,11 @@ class Probe : Instrumentation() {
         val pm = context.packageManager
         val found = pm.queryIntentServices(Intent(BROWSER_SERVICE).setPackage(target), PackageManager.GET_META_DATA)
         if (found.isEmpty()) {
-            val installed = runCatching { pm.getApplicationInfo(target, 0) }.isSuccess
+            // An app with no such service is invisible to this probe, as it is to Android
+            // Auto, so "not installed" and "nothing for a car" look the same from here;
+            // scripts/carcheck has already made sure the app is installed.
             record("discover.service", "FAIL", "Has a media browser service the car can find",
-                if (installed) "no service in $target answers $BROWSER_SERVICE" else "$target is not installed")
+                "no service in $target answers $BROWSER_SERVICE, so Android Auto cannot see the app at all")
             return null
         }
         val info = found[0].serviceInfo

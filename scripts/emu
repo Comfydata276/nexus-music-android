@@ -12,8 +12,8 @@ usage: scripts/emu [-d phone|car|phone28] <command> [arguments]
   -d phone28   the phone on Android 9, the oldest version supported
 
 Running it
-  start [--wipe] [--audio]  create if needed, start, wait until it is ready to use
-                            (--wipe: factory reset; --audio: keep what it plays, see `record`)
+  start [--wipe]            create if needed, start, wait until it is ready to use
+                            (--wipe: factory reset)
   stop                      shut it down
   status                    is it running, how much memory it holds, what is installed
   wait                      wait until it is ready (start does this already)
@@ -43,7 +43,6 @@ Seeing it
   waitfor "<words>" [secs]  wait until something with that text or description is on screen
   logs [package] [-f]       the log (only that app's lines if a package is given)
   crashes                   crashes and "not responding" reports since the emulator started
-  record <secs> <file.wav>  record what the emulator plays (needs `start --audio`)
 
 Fitting checks from the design
   look [--width <dp>] [--font <scale>] [--reset]
@@ -151,14 +150,19 @@ wait_ready() {
           settings put global animator_duration_scale 0; svc power stayon true;
           settings put secure show_ime_with_hard_keyboard 0;
           locksettings set-disabled true; wm dismiss-keyguard; input keyevent KEYCODE_WAKEUP' >/dev/null 2>&1 || true
+  # The test server, at an address every app can use: the device's own 127.0.0.1, passed
+  # back to this machine by adb. The usual 10.0.2.2 is on the device's own network, and
+  # from Android 17 an app may only reach that with the local-network permission
+  # (see docs/TESTING.md), so it is kept for testing exactly that.
+  local server_port="${NEXUS_TEST_PORT:-4533}"
+  adb_ reverse "tcp:$server_port" "tcp:$server_port" >/dev/null 2>&1 || true
 }
 
 start() {
-  local wipe="" audio=0
+  local wipe=""
   for a in "$@"; do
     case "$a" in
       --wipe) wipe="-wipe-data" ;;
-      --audio) audio=1 ;;
       *) die "start: unknown option $a" ;;
     esac
   done
@@ -178,25 +182,18 @@ start() {
   # ("Increasing RAM size to 4096MB"), and then holds 5 GB of this machine's 12. The
   # kernel setting mem= (passed at the end of the command) is what actually limits the
   # guest; the emulator itself needs close to another gigabyte on top.
-  # With --audio the emulator plays into a sound server that throws the sound away but
-  # lets `record` listen in. Without it, sound goes nowhere (playback still runs in time).
-  local audio_env=() sound="-no-audio"
-  if [ "$audio" = 1 ]; then audio_env=(-e NEXUS_AUDIO=1); sound=""; fi
+  # Sound goes nowhere (-no-audio): playback still runs in real time and Android still
+  # reports whether music is playing, which is what the checks use. Capturing the sound
+  # itself is not done yet; docs/TESTING.md says what was tried.
   docker run -d --name "$container" --rm \
     --device /dev/kvm --group-add "$(stat -c %g /dev/kvm)" \
     -u "$(id -u):$(id -g)" --network host \
-    -e HOME=/home/dev "${audio_env[@]}" \
+    -e HOME=/home/dev \
     -v "$root":/work:ro -v "$cache/home":/home/dev -v "$cache/sdk":/sdk \
     -v "$cache/logs":/logs \
     "$rig_image" bash -c "
-      if [ \"\${NEXUS_AUDIO:-}\" = 1 ]; then
-        export XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p \$XDG_RUNTIME_DIR
-        pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:/logs/$container-pulse.log \
-          --load='module-null-sink sink_name=rig rate=48000' --load='module-native-protocol-unix' || exit 3
-        export QEMU_AUDIO_DRV=pa
-      fi
       exec /sdk/emulator/emulator -avd $avd -port $port $wipe \
-        -no-window $sound -no-boot-anim -no-snapshot -no-metrics \
+        -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
         -gpu swiftshader_indirect -memory $ram -cores 2 \
         -netdelay none -netspeed full -camera-back none -camera-front none \
         -qemu -append mem=${ram}M \
@@ -371,15 +368,6 @@ case "$cmd" in
     need_emulator
     adb_ logcat -d -b crash -v time
     adb_ logcat -d -v time -s ActivityManager:E | grep -E "ANR in" || true
-    ;;
-  record)
-    need_emulator; secs="${1:?record: <seconds> <file.wav>}"; out="${2:?record: <seconds> <file.wav>}"
-    docker exec "$container" sh -c 'XDG_RUNTIME_DIR=/tmp/xdg pactl info >/dev/null 2>&1' \
-      || die "record: this emulator was started without sound. Restart it: scripts/emu$flag stop && scripts/emu$flag start --audio"
-    docker exec "$container" sh -c "XDG_RUNTIME_DIR=/tmp/xdg timeout $secs parec -d rig.monitor --rate=48000 --channels=2 --format=s16le --file-format=wav /tmp/record-$$.wav; true"
-    docker exec "$container" cat "/tmp/record-$$.wav" > "$out"
-    docker exec "$container" rm -f "/tmp/record-$$.wav"
-    echo "$out"
     ;;
   look)
     need_emulator

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# The real thing, as far as this machine can take it: Google's Desktop Head Unit (the
+# program car makers' screens are modelled on) connected to the real Android Auto app
+# on the phone emulator, drawn on a virtual display and photographed.
+#
+#   scripts/dhu status          what is in place and what is missing
+#   scripts/dhu check           prove the part that needs no Android Auto: the head unit
+#                               program runs here and reaches for the phone
+#   scripts/dhu setup <file>    install the real Android Auto over the image's stub
+#                               (<file>: an .apk, or an .apkm/.xapk/.apks bundle of splits)
+#   scripts/dhu start           start the head unit and connect it to the phone
+#   scripts/dhu shot [file]     a picture of the car screen
+#   scripts/dhu tap <x> <y>     touch the car screen
+#   scripts/dhu console <cmd>   a head unit console command, e.g. "day", "night",
+#                               "mic play /work/some.wav" (a recorded spoken request)
+#   scripts/dhu stop
+#
+# HOW FAR THIS HAS BEEN PROVED. The emulator image carries only a stub of Android Auto.
+# Google hands out the full app through the Play Store, which needs a Google account,
+# and this rig has none, so:
+#   proved here:      the head unit program runs in the rig's container with a virtual
+#                     display to draw on, and tries to reach the phone (status, check).
+#                     With nothing answering, it gives up and exits, as it should.
+#   NOT proved here:  setup, and everything after the phone answers. They are written
+#                     from Google's documentation and may need adjusting the first time
+#                     a real Android Auto package is supplied. docs/TESTING.md says how
+#                     to get one and what to do then.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+device_setup phone
+
+gearhead=com.google.android.projection.gearhead
+display=:77
+dhu_dir=/sdk/extras/google/auto
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+in_box() { docker exec -i "$container" "$@"; }
+auto_version() { adb_sh dumpsys package "$gearhead" | tr -d '\r' | sed -n 's/^ *versionName=//p' | head -n 1; }
+dhu_running() { in_box pgrep -x desktop-head-un >/dev/null 2>&1; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  status)
+    [ -x "$cache/sdk/extras/google/auto/desktop-head-unit" ] && echo "head unit program: installed" \
+      || echo "head unit program: missing (scripts/dx android sdk install extras/google/auto)"
+    if container_running "$container"; then
+      v="$(auto_version)"
+      case "$v" in
+        "") echo "Android Auto on the phone emulator: not present" ;;
+        *stub*) echo "Android Auto on the phone emulator: only the stub ($v). The real app is needed: scripts/dhu setup <file>" ;;
+        *) echo "Android Auto on the phone emulator: $v" ;;
+      esac
+      dhu_running && echo "head unit: running" || echo "head unit: not running"
+    else
+      echo "phone emulator: not running (scripts/emu start)"
+    fi
+    ;;
+  setup)
+    need_emulator; file="${1:?setup: which file? (an Android Auto .apk, .apkm, .xapk or .apks)}"
+    [ -f "$file" ] || die "setup: no such file: $file"
+    in_box rm -rf /tmp/aa && in_box mkdir -p /tmp/aa
+    in_box sh -c 'cat > /tmp/aa/in' < "$file"
+    # A bundle is a zip of split APKs. Keep the base, this emulator's processor, English
+    # and one screen density; the rest would only be refused.
+    in_box sh -c 'cd /tmp/aa && if unzip -l in 2>/dev/null | grep -q "\.apk$"; then unzip -q -o in "*.apk"; else mv in base.apk; fi; ls'
+    abis="$(adb_sh getprop ro.product.cpu.abilist | tr -d '\r\n')"
+    say "the emulator runs: $abis"
+    pick="$(in_box sh -c 'cd /tmp/aa && ls *.apk | grep -v -E "config\.(armeabi|arm64|x86)" | grep -v -E "config\.[a-z]{2}\.apk$|dpi\.apk$"; ls *.apk | grep -E "config\.en\.apk$|config\.xxhdpi\.apk$" || true; ls *.apk | grep -E "config\.x86_64\.apk$" || ls *.apk | grep -E "config\.arm64_v8a\.apk$" || true' | sort -u | sed 's|^|/tmp/aa/|' | tr '\n' ' ')"
+    say "installing: $pick"
+    # shellcheck disable=SC2086
+    adb_ install-multiple -r -d $pick || die "the system refused the package. It must be Google's own, signed build (anything else cannot replace the stub), and must have a split for one of: $abis"
+    in_box rm -rf /tmp/aa
+    say "Android Auto is now $(auto_version). Next: open it once on the phone and accept its terms (scripts/emu launch $gearhead, then scripts/emu ui / tap), then scripts/dhu start"
+    ;;
+  start)
+    need_emulator
+    v="$(auto_version)"
+    case "$v" in
+      ""|*stub*) die "the phone emulator has only a stub of Android Auto (${v:-none}). Supply the real app first: scripts/dhu setup <file> (docs/TESTING.md says where it comes from)" ;;
+    esac
+    dhu_running && { say "the head unit is already running"; exit 0; }
+    # Sideloaded media apps only show when Android Auto's developer setting "Unknown
+    # sources" is on; that and "Start head unit server" live behind tapping the version
+    # ten times in Android Auto's settings. Try the direct way first.
+    adb_sh "am start-foreground-service -n $gearhead/.companion.DeveloperHeadUnitNetworkService" >/dev/null 2>&1 \
+      || say "note: could not start the head unit server directly. On the phone: Android Auto settings > tap Version ten times > menu > Start head unit server (drive it with scripts/emu ui and tap)"
+    adb_ forward tcp:5277 tcp:5277 >/dev/null
+    in_box sh -c "pgrep -x Xvfb >/dev/null || (Xvfb $display -screen 0 1280x800x24 -nolisten tcp >/logs/dhu-xvfb.log 2>&1 &) ; sleep 1
+      rm -f /tmp/dhu-in; mkfifo /tmp/dhu-in
+      cd $dhu_dir && (tail -f /tmp/dhu-in | DISPLAY=$display ./desktop-head-unit --adb=5277 -c config/default_720p.ini >/logs/dhu.log 2>&1 &)"
+    sleep 5
+    dhu_running || { tail -n 15 "$cache/logs/dhu.log" >&2; die "the head unit did not stay up (log: $cache/logs/dhu.log)"; }
+    say "head unit started; its log is $cache/logs/dhu.log. Look: scripts/dhu shot"
+    ;;
+  check)
+    # What can be proved with no real Android Auto: the head unit program starts in the
+    # rig's container, finds a display to draw on, and gets as far as asking the phone.
+    need_emulator
+    in_box sh -c "pgrep -x Xvfb >/dev/null || (Xvfb $display -screen 0 1280x800x24 -nolisten tcp >/logs/dhu-xvfb.log 2>&1 &); sleep 1
+      cd $dhu_dir && DISPLAY=$display timeout 10 ./desktop-head-unit --adb=5277 -c config/default_720p.ini >/logs/dhu.log 2>&1 </dev/null; true"
+    in_box env DISPLAY="$display" xdpyinfo >/dev/null 2>&1 && echo "ok    virtual display $display is up (1280x800)" || echo "WRONG no virtual display"
+    grep -q "Connecting over ADB" "$cache/logs/dhu.log" && echo "ok    the head unit program runs and tries to reach the phone on port 5277" \
+      || { echo "WRONG the head unit program did not get as far as connecting:"; tail -n 8 "$cache/logs/dhu.log"; }
+    case "$(auto_version)" in
+      ""|*stub*) echo "stop  the phone has only a stub of Android Auto, so nothing answers: scripts/dhu setup <file>" ;;
+      *) echo "ok    Android Auto $(auto_version) is installed" ;;
+    esac
+    in_box sh -c 'pkill -x Xvfb; true'
+    ;;
+  shot)
+    need_emulator; out="${1:-$cache/shots/dhu-$(date +%Y%m%d-%H%M%S).png}"
+    mkdir -p "$(dirname "$out")"
+    in_box pgrep -x Xvfb >/dev/null || die "the head unit's display is not running (scripts/dhu start)"
+    in_box import -display "$display" -window root png:- > "$out"
+    echo "$out"
+    ;;
+  tap)
+    need_emulator; [ $# -eq 2 ] || die "tap: <x> <y>"
+    in_box env DISPLAY="$display" xdotool mousemove "$1" "$2" click 1
+    ;;
+  console)
+    need_emulator; [ $# -ge 1 ] || die "console: which command? (day, night, mic play <file.wav>, ...)"
+    dhu_running || die "the head unit is not running (scripts/dhu start)"
+    in_box sh -c "echo '$*' > /tmp/dhu-in"
+    ;;
+  stop)
+    if container_running "$container"; then
+      # By name, not by command line: a search of command lines would find this very command.
+      in_box sh -c 'pkill -x desktop-head-un; pkill -x tail; pkill -x Xvfb; rm -f /tmp/dhu-in; true'
+      adb_ forward --remove tcp:5277 >/dev/null 2>&1 || true
+    fi
+    say "head unit stopped"
+    ;;
+  *) usage ;;
+esac

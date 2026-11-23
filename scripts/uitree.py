@@ -21,18 +21,21 @@ def nodes(xml_text):
     if start < 0 or end < 0:
         sys.exit("the device returned no screen description (is the screen on, or a video playing?)")
     tree = ET.fromstring(xml_text[start:end + len("</hierarchy>")])
-    for depth, node in walk(tree, 0):
+    for depth, node, tappable in walk(tree, 0, False):
         b = re.match(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", node.get("bounds", ""))
         if not b:
             continue
         x1, y1, x2, y2 = map(int, b.groups())
+        node.set("_tappable", "true" if tappable else "false")
         yield depth, node, (x1, y1, x2, y2)
 
 
-def walk(node, depth):
+def walk(node, depth, inside_tappable):
+    """Every node, with whether it or something around it responds to a tap."""
     for child in node:
-        yield depth, child
-        yield from walk(child, depth + 1)
+        tappable = inside_tappable or child.get("clickable") == "true"
+        yield depth, child, tappable
+        yield from walk(child, depth + 1, tappable)
 
 
 def main():
@@ -54,20 +57,24 @@ def main():
         print((x1 + x2) // 2, (y1 + y2) // 2)
         return
     if len(sys.argv) >= 3 and sys.argv[1] == "--find":
+        # A form often shows the same words twice: as a label, and on the field itself.
+        # Prefer the one that responds to a tap, and an exact match over a partial one.
         want = sys.argv[2]
-        found = None
+        best, best_rank = None, 9
         for _, node, (x1, y1, x2, y2) in nodes(text):
             if x2 <= x1 or y2 <= y1:
                 continue
             labels = [node.get("text", ""), node.get("content-desc", "")]
-            if want in labels:
-                found = (x1, y1, x2, y2)
-                break
-            if found is None and any(want.lower() in label.lower() for label in labels if label):
-                found = (x1, y1, x2, y2)
-        if not found:
+            exact = want in labels
+            partial = any(want.lower() in label.lower() for label in labels if label)
+            if not (exact or partial):
+                continue
+            rank = (0 if exact else 2) + (0 if node.get("_tappable") == "true" else 1)
+            if rank < best_rank:
+                best, best_rank = (x1, y1, x2, y2), rank
+        if not best:
             sys.exit(1)
-        print((found[0] + found[2]) // 2, (found[1] + found[3]) // 2)
+        print((best[0] + best[2]) // 2, (best[1] + best[3]) // 2)
         return
 
     for depth, node, (x1, y1, x2, y2) in nodes(text):
