@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -18,13 +20,29 @@ android {
         versionName = "0.2.0"
     }
 
+    signingConfigs {
+        val handed = file("/signing/signing.properties")
+        if (handed.isFile) {
+            val props = Properties().apply { handed.inputStream().use { load(it) } }
+            create("release") {
+                storeFile = file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // A throwaway key until the project has its own (see README).
-            signingConfig = signingConfigs.getByName("debug")
+            // The project's own key when it has been handed to the build (scripts/dx does so
+            // only when asked, with NEXUS_SIGN=1); the debug key otherwise, so that anyone
+            // can build and the test rig can install over its own builds. A phone only takes
+            // an update signed with the key the installed app was signed with.
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

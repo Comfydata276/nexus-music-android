@@ -15,9 +15,17 @@ turn=()
 if [ "${1:-}" = "./gradlew" ] && command -v flock >/dev/null; then
   turn=(flock "$cache/gradle.lock")
 fi
+# The project's signing key is handed to the build only when asked for (NEXUS_SIGN=1): it is
+# kept outside the repository, and ordinary builds and checks sign with the debug key.
+sign=()
+if [ -n "${NEXUS_SIGN:-}" ]; then
+  keys="${NEXUS_SIGNING_DIR:-$HOME/.config/nexus-music-android}"
+  [ -f "$keys/signing.properties" ] || { echo "error: NEXUS_SIGN is set but $keys/signing.properties is missing" >&2; exit 1; }
+  sign=(-v "$keys":/signing:ro)
+fi
 # shellcheck disable=SC2086
 exec "${turn[@]}" docker run --rm ${DX_DOCKER_ARGS:-} "${kvm[@]}" \
   -u "$(id -u):$(id -g)" --network host \
   -e HOME=/home/dev -e GRADLE_USER_HOME=/home/dev/.gradle \
-  -v "$root":/work -v "$cache/home":/home/dev -v "$cache/sdk":/sdk \
+  -v "$root":/work -v "$cache/home":/home/dev -v "$cache/sdk":/sdk "${sign[@]}" \
   -w /work nexus-music-android "$@"
