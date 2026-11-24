@@ -2009,52 +2009,72 @@ How it is built (M4a, sound and lyrics):
   `Effects::process`). It sits in Media3's own sink (`DefaultAudioSink`) as the first of the
   processors the sink is given, which Media3 runs after its own trimming (the encoder delay and
   padding that make joins gapless) and channel mapping, and before the debug builds' capture
-  (`DebugAudio`), so a capture is what reaches the output. Nothing else is ours: no renderer,
-  no second sink. One small wrapper of the sink (`SoundSink`, a `ForwardingAudioSink`) is
-  there for one thing, below.
-- **Off is out.** With levelling, the equaliser (or a flat curve with no preamp) and mono all
-  off, the processor says it is inactive and Media3 leaves it out of the chain: the sound is
-  exactly what it was in 0.3.0, sample for sample (`SoundProcessorTest`: never in the chain,
-  every sample as it went in). Media3 decides who is in the chain only when it flushes it;
-  so when the first setting is switched on, or the last switched off (once its ramp has run),
-  `SoundSink` tells the sink of a discontinuity before the next buffer. That is what Media3
-  itself does at every change of song: it drains everything in the chain to the output,
-  flushes it and decides again. Nothing is lost or played twice, and the position does not
-  move (the test feeds a song through on, off and on again and counts every frame).
+  (`DebugAudio`), so a capture is what reaches the output. No renderer of our own, no second
+  sink, and nothing ever signalled to the sink.
+- **Always in the chain** (the fixes after the review, rule 1). It is installed from the start
+  and stays. With levelling, the equaliser and mono all off and nothing ramping, it hands on
+  exactly the samples it was given: the cost is one copy of each buffer, and the recording of
+  a song with everything off is the file sample for sample (on Android 12 and 17). A setting
+  switched on or off takes effect at the next buffer, with its ramp. **Why**: it used to leave
+  the chain when off, and to come in or go it had the sink drain and flush its chain mid-song
+  (a discontinuity, `SoundSink`). That drain went through Media3's trimmer as if the song had
+  ended: just before a padded song's last short buffer it let the padding the trimmer was
+  holding back out into the join (a test gave 8,400 frames where 7,900 are right), and it set
+  the sink's clock again at the next buffer. Strict bypass was not worth a risk to gapless
+  joins and the position, for a path that sounds the same.
 - **Which song, from Media3, and the gain at the join.** At each flush the sink hands its
   processors the timeline and the period that comes next (Media3 1.11's `StreamMetadata`).
   The processor reads the song from that period's media item (ours carry it,
   `QueuePlayer.SongTag`) and the songs either side of it in ExoPlayer's playlist, which is the
-  queue in playing order, and works out the gain then (`Levelling`, Windows' `level_gain` and
-  `in_album_order` with their tests): decided as the song begins, as Windows decides it when a
-  song loads. At a join between two songs Media3 configures the sink for the second song
-  before its first buffer, and the sink drains the first song through the chain before it
-  flushes for the second; so the new gain begins on exactly the second song's first sample
-  (tested on the sink, and on ExoPlayer itself playing two files). Inside an album played in
-  order, in Auto or Album mode, both songs have the album's value: nothing changes at the join
-  and the equaliser's filters carry straight across (tested: the same samples as one song or as
-  two come out identical).
+  queue in playing order, and works out the gain (`Levelling`, Windows' `level_gain` and
+  `in_album_order` with their tests), **at every flush**: a song played again takes what is
+  known of it by then. At a join Media3 configures the sink for the second song before its
+  first buffer, and drains the first song through the chain before it flushes for the second;
+  so the new gain begins on exactly the second song's first sample. **The period is the one
+  the sound was read from** (rule 5): Media3's renderer tells the sink the period it is
+  *reading* when the decoder's output changes format, and a decoder gives its output back
+  some frames late while the renderer reads ahead, so a short song whose sound only began once
+  the renderer was reading the next took the next one's gain (`CompressedJoinTest` showed it).
+  The app's renderer (`GaplessAudioRenderer`) marks each format, as it is read, with its period
+  (`ReadFrom`, in the format's custom data, which Media3 carries to the sink's format), and the
+  sink is configured with that period (`PeriodOfTheSound`, a wrapper of the sink's
+  `configure` and nothing else). Inside an album played in order, in Auto or Album mode, both
+  songs have the album's value: nothing changes at the join.
+- **Two ramps** (rule 4). The song's gain is one thing, which changes as a step where the song
+  does; a change the person makes is another, easing in over 50 ms from where it was (the gain
+  heard is the song's times an easing factor that moves to 1), across a join as within a song.
+  Mono and the equaliser's bands move the same way, the bands in steps (a full 24 dB swing in
+  50 ms, the coefficients worked out again each 32 frames while they move). Only sound that
+  begins with nothing before it (after a reset, or in a new format) has everything in place at
+  once.
+- **The filters' memory follows the sound** (rule 3): kept only when the sink drained
+  everything through before the flush, which is what it does at a gapless join; cleared at any
+  other flush (a seek, another song chosen, a new queue, a reset), so nothing of the sound
+  before a seek rings into what follows. Repeat-one comes as a join like any other song's.
 - **Settings reach it as one value** (`Sound`): made on the main thread from Settings and
   shuffle (Auto goes by song when shuffled), never changed, swapped in whole through one
-  volatile field. The audio thread notices a new one at the next buffer and ramps to it:
-  the gain, mono and the limiter over 50 ms; the equaliser's bands move to their new values
-  in steps (a full 24 dB swing in 50 ms) with the filters' coefficients worked out again each
-  32 frames while they move. A song beginning has everything as it should be from its first
-  sample. Nothing is made on the audio thread while it runs: filters and buffers are made when
-  the format changes, and the song is looked up once, at the flush that begins it.
-- **Clipping.** The gain is held to what the song's peak allows (Windows: Quiet and Normal
-  never push a peak past full scale, Loud by up to 3 dB). Above full scale Windows' soft
-  limiter rounds peaks off (`soft_clip`: untouched below 0.8 of full scale); it is applied
-  only while something can raise a peak (a gain above 1, or the equaliser on), and faded in
-  and out with them, so a song played untouched is never touched by it.
+  volatile field; the audio thread notices a new one at the next buffer. Nothing is made on the
+  audio thread while it runs: filters and buffers are made when the format changes (an output
+  buffer grows if a larger block arrives, once), and the song is looked up at the flush that
+  begins it. Its own timing is a debug build's only.
+- **Clipping** (rule 2). The gain is held to what the song's peak allows (Windows: Quiet and
+  Normal never push a peak past full scale, Loud by up to 3 dB). Whenever a sample may have
+  been pushed past where it was (the gain in force above 1, or the equaliser running), it goes
+  through Windows' soft limiter (`soft_clip`, untouched below 0.8 of full scale), whole,
+  whatever is ramping: never faded in or out, never blended with the unlimited sample. When
+  neither, nothing can go over full scale and nothing is rounded off: Normal and Quiet never
+  round a peak, as on Windows and as the setting says. (The lead's rule was "always on"; on
+  sound that nothing has raised the limiter could only round off peaks that Windows leaves
+  alone, so it is on whenever anything could raise one.) What it costs: at the instant the gain
+  first rises above 1, or the equaliser starts, a sample already above 0.8 of full scale is
+  rounded where a moment before it wasn't; Windows switches its limiter the same way.
 - **Formats.** It takes 16-bit and float PCM at any sample rate and channel count, and hands
   back the same. Media3's sink gives its processors 16-bit unless the player's float output is
   switched on, which it isn't (it never was: 0.3.0 plays a 24-bit file as 16-bit), so nothing
-  is converted that wasn't; the sample rate is never changed. In 16 bits a sample is turned
-  into a float and back by exact powers of two: with nothing to do, it comes out exactly as it
-  went in. Mono mixes all the channels into each (stereo: left and right each the average).
+  is converted that wasn't; the sample rate is never changed. Mono mixes all the channels into
+  each (stereo: left and right each the average; for more than two the LFE too, left as it is).
 - **The gapless trimming and the position** are Media3's and untouched: the processor neither
-  adds nor drops a frame, and it reports no change of duration.
+  adds nor drops a frame, reports no change of duration, and signals nothing to the sink.
 - **Offload and the car.** Audio offload is not switched on anywhere (Media3's default), and
   stays off: Media3 runs no processor on offloaded audio, so with it on levelling, the
   equaliser and mono would silently do nothing. A car (Android Auto) is sent what the phone
@@ -2062,12 +2082,24 @@ How it is built (M4a, sound and lyrics):
 - **Levelling values** come from the server with each song (`replayGain`, in the library copy
   and on every page) and are kept with a download (its `Downloaded.song`), so a download levels
   offline. A song that came without them (one kept before they were) has them looked up in the
-  phone's copy of the library, all the songs the player holds at once, off the main thread
-  (`PlayerSound.songsHeld`); one whose values arrive after it has begun is levelled from its
-  next play.
+  phone's copy of the library, off the main thread (`PlayerSound.songsHeld`). Those values
+  **belong to an account** (rule 5): gone the moment another account takes over, before
+  anything of the new one plays, a look still going for the old one called off, and filled
+  whenever the copy arrives or changes as well as when the queue does.
 - **Cost.** On the Android 17 emulator, with levelling and the equaliser on, 6 to 8 ms of the
   audio thread's time per second of sound, 0.6 to 0.8% (debug builds log it under `NexusSound`;
-  a phone's processor is faster); with everything off, none: it is not in the chain.
+  a phone's processor is faster); with everything off, one copy of each buffer.
+- **Crossfade (M4b) is not built on this path.** One sink cannot sound two songs at once: at a
+  change of format or configuration it waits for the old song's sound to drain through the
+  chain before it takes the new one's, so holding the old song's tail back in the chain stalls
+  the handoff, and carrying it outside the drain would need rules of its own for a true end, a
+  seek, an error, a replaced queue, the sleep timer and formats that differ; and a count of
+  frames skipped moves one clock for the whole player, which would move the session's item
+  boundary while the old song is still heard. A crossfade needs something that owns both
+  streams, their gains and a mapping of playout time across the overlap: a second player (whose
+  sink would have its own `PlayerSound`), kept away from the session and audio focus, with
+  `Levelling.inAlbumOrder` to leave an album alone and "End of this song" to suppress the
+  overlap. Nothing is left in this path for it.
 
 - **Streaming quality changed while a song plays** (as before, Windows' `reload_current`): the
   song is opened again at the new quality where it had been heard (the player stopped and
@@ -2079,23 +2111,32 @@ How it is built (M4a, sound and lyrics):
   network as well, with the song playing kept to the form it began in. Left for the lead.
 - **The sleep timer** (`playback/SleepTimer`, held by the `Graph`, so it carries on with every
   screen closed): Windows' choices (5, 10, 15, 30, 45 minutes, an hour, the end of this song,
-  off) from the moon on Now Playing, in Windows' menu ("Pause music after") and words. The
-  playback service pauses the player when the time is up, which keeps the queue and the place
-  as any pause does. "End of this song" asks ExoPlayer to pause at the end of each song while
-  it is set (`pauseAtEndOfMediaItems`): the player stops at the song's end by itself, at the
-  sample, whatever comes after it (a next song, songs autoplay has added), and the timer is
-  done. While it counts, the moon is lit with what is left beside it ("12 min", "After this
+  off) from the moon on Now Playing, in Windows' menu ("Pause music after") and words. It
+  counts, and the music is paused, on the player's thread, in turn with everything the person
+  does there (Off, another timer, Play): a pause goes ahead only if the timer that asked is
+  still the one set. The pause keeps the queue and the place as any pause does, and counts as
+  the person having stopped (the queue's one check of that, `QueuePlayer.intent` and
+  `carryOn`): autoplay, a station's rejoin and repeat all at the end of a long queue don't
+  start it again. "End of this song" means the song playing when it ends, however it ends:
+  ExoPlayer pauses at the end of each song while it is set (`pauseAtEndOfMediaItems`), at the
+  sample, whatever comes after; and a song that fails and is passed over (the service's one
+  way of doing that, `passTo`) ends it too, the next lined up, paused. A song the person
+  chooses takes the timer, as on Windows. While it counts, the moon is lit with what is left beside it ("12 min", "After this
   song").
 - **Lyrics** (`lyrics/LyricsBook`, a port of src/lyrics.rs and the lyrics parts of
   src/playback.rs): from Navidrome only; synced where the server has them (and every line has
-  a time), plain otherwise, "No lyrics for this song" said plainly. What the server said is
-  kept per account (that it had none included), shown at once, and asked again in the
-  background when a song's lyrics are opened. The song playing and the next five have theirs
-  fetched ahead on Wi-Fi, the next one on mobile data, none with Data Saver on or offline
-  (as songs are). Kept in the account's cache folder, and for a downloaded song also in its
-  data folder, where Android doesn't clear them: fetched as the download arrives, and for
-  downloads already on the phone, when the server can next be asked (with Wi-Fi only on, on
-  Wi-Fi). Nothing of lyrics goes to the car. **On Now Playing** the lyrics button puts them in
+  a time, and the times are in order: Windows does nothing about times that aren't, and they
+  are shown here as plain lyrics), plain otherwise, "No lyrics for this song" said plainly. A
+  line timed past the song's end is shown but is no place to seek to. One result per song,
+  which the view and fetching ahead both update: each opening of a song's lyrics shows what's
+  kept at once and, with the server there, asks again, showing and keeping what it says if
+  that differs; "couldn't ask" is never kept as "none". Kept per account. The song playing
+  and the next five have theirs fetched ahead on Wi-Fi, the next one on mobile data, none with
+  Data Saver on or offline (as songs are), the network looked at before each request. Kept in
+  the account's cache folder, and for a downloaded song also in its data folder, where Android
+  doesn't clear them: fetched as the download arrives, and for one already on the phone,
+  whenever lyrics may next be fetched (the server back, the network or the Wi-Fi-only setting
+  changing; with Wi-Fi only on, on Wi-Fi). Nothing of lyrics goes to the car. **On Now Playing** the lyrics button puts them in
   the cover's place: the line being sung lit, those sung dimmed, the view following the music
   a third of the way down; a tap on a line plays from it; scrolled by hand, it is left where it
   was put for four seconds after the finger lifts. Only the line being sung is worked out from
@@ -2115,11 +2156,13 @@ How it is built (M4a, sound and lyrics):
 - **The sleep timer and lyrics** are buttons on Now Playing beside the queue (Windows has them
   in the player bar); lyrics take the cover's place rather than a page of their own.
 - **A setting changed while music plays is ramped** (Windows applies the equaliser at once and
-  starts the song again for a levelling change); a song beginning gets its settings at once.
+  starts the song again for a levelling change); a change of song is a step of its own.
 - **The limiter is one, after the equaliser** (Windows has one after the gain and one after
-  the equaliser); faded in and out rather than switched.
+  the equaliser), switched rather than faded (see "Clipping" above).
 - **No dither** when a processed sample is put back into 16 bits: rounding, as Media3's own
-  processors do; with nothing to do, the processor is out of the chain anyway.
+  processors do; with nothing to do, every sample is handed on as it came.
+- **Saved equaliser presets are the phone's**, with every other setting, not an account's: a
+  second account on the same phone sees the same presets.
 - **Offline, a song with no lyrics kept** says so in words of the app's own ("None are kept on
   this phone, and your server can't be asked while you're offline"), not Windows' "Your music
   server doesn't have any for it", which would not be known.
@@ -2150,7 +2193,7 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
   finding and sorting in a list, Recently played, a song's details, "Go to" each artist.
 - **M4 Sound.** Quality switch, levelling, equaliser, mono, crossfade, sleep timer, lyrics.
   M4a (built): levelling, the equaliser, mono, the quality switch, the sleep timer, lyrics.
-  M4b: crossfade.
+  M4b: crossfade (not on this path: see "Crossfade (M4b) is not built on this path").
 - **M5 In step with your other devices.** Saved queue and "Continue here", the sync
   playlist, "Your stats", "Made for you" and mixes of your own.
 - **M6 Jams and linked devices.**

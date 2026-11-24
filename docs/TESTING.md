@@ -1712,13 +1712,13 @@ in `~/.cache/nexus-music-android/captures/` and the reports in
 | What | How | Result |
 |---|---|---|
 | The equaliser, Rock (4, 2, -2, -1, 2, 4 dB) | "Band Tones", `soundcheck eq` (`eqrock.wav`, `eq-rock.txt`) | every one of the 14 tones within 0.01 dB of the designed response (+3.84 dB at 30 Hz, -1.81 at 400 Hz, +2.02 at 15 kHz) |
-| Levelling, Normal, by song | "Level Tests" played through (`levelsong.wav`, `level-normal-song.txt`) | each song at its target: the four that can reach -14 LUFS measure -14.00; "Peaks At Loud" held back by its peak to -17.70 (expected -17.68), never over full scale; "Nothing To Go By" at -15.70 (6 dB down from Normal's +4) |
+| Levelling, Normal, by song | "Level Tests" played through (`levelsong.wav`, `level-normal-song.txt`) | each song at its target: the three that can reach -14 LUFS (Loud Song, Quiet Song, Song Value Only) measure -14.00; "Peaks At Loud" held back by its peak to -17.70 (expected -17.68), never over full scale; "Nothing To Go By" at -15.70 (6 dB down from Normal's +4) |
 | Levelling, Loud, Auto (the album in order) | the same album from its first song (`levelloud.wav`, `level-loud-auto.txt`) | every song on its album value (+2.9 dB), "Song Value Only" on its own (+6 dB), the untagged one left as it is; the loudest peaks pushed over full scale come out at 0.999: rounded by the limiter, not clipped |
 | A gapless album, levelled by album, with the equaliser on | "Continuous Sweep" played through, Normal, Auto, Rock (`sweepeq.wav`, `sweep-album-levelled-eq.txt`) | `sweepcheck`: no silence and no step at any of the seven joins (the one break it lists, at 160.000 s, is the album's end, where the capture runs on) |
 | Everything off | "Sweep 3 of 8" (`alloff.wav`, `all-off-bit-exact.txt`) | every one of its 1,764,000 samples exactly the file's; `joincheck` +0 at both ends |
-| Two quick changes of each control while music plays | mono on and off, the equaliser off and on, Level by twice, mono again, within four seconds (`quick.wav`, `quick-changes.txt`) | no change of level faster than 0.07 dB in a millisecond anywhere but at the album's own wrap-around join; `sweepcheck` finds nothing else |
+| Two quick changes of each control while music plays | mono on and off, the equaliser off and on, Level by twice, mono again, within four seconds (`quick.wav`, `quick-changes.txt`) | one change of 3.00 dB within a millisecond, at 0.982 s, on both channels; every other change 0.07 dB or less in a millisecond; `sweepcheck` finds nothing else. The 3 dB step was put down to the album's wrap-around join, but nothing here shows that it is: it is unexplained by this recording. The fixes' tests cover the ramps it could have been (rule 4, `SoundProcessorTest`) |
 | A download, offline | "Loud Song" downloaded, offline mode on, the cache's lyrics deleted (as Android may) and the app started again (`offline2.wav`, `level-offline-download.txt`) | levelled to -14.00 LUFS as online; its lyrics shown from the download's own copy |
-| Streaming quality switched mid-song | Lossless to Low six seconds into "Sweep 1 of 8" (`quality.wav`, `quality-switch.txt`) | 48 ms of silence, then the song carries on from where it had been heard; in the capture, which taps the sound before Android's output buffer, the 0.6 s that buffer held is there twice (written, then thrown away at the switch), so a recording after the buffer would show only the 48 ms |
+| Streaming quality switched mid-song | Lossless to Low six seconds into "Sweep 1 of 8" (`quality.wav`, `quality-switch.txt`) | in the capture, three silences (47.8 ms at 16.41 s, 3.5 ms just after it, 48.4 ms at 20.13 s) and 0.65 s of the song written twice, the song then carrying on. The capture taps the sound before Android's output buffer, so it shows what the app wrote, not what was heard: it cannot show whether any of the song was heard twice, nor how long the output itself stopped. That needs a recording after the output (a phone's, or the emulator's output captured on the host) |
 | What the processor costs | debug build, `NexusSound` in the log | 6 to 8 ms per second of sound with levelling and the equaliser on (0.6 to 0.8%), about 3 ms with levelling alone |
 | The sleep timer | 5 minutes, with repeat on, the app's task removed (screens closed) | paused at 5:00 to the second, mid-song, queue and place kept; "End of this song" paused at the song's end with the album still to come, and Play carried on into the next |
 | Lyrics | synced, plain, none, a long synced song; tap a line | the line sung lit (line 4 at 0:14; line 15 at 0:23 in the long one, a third of the way down), a tap on line 2 seeked to 5.000 s; plain says it isn't timed; none says so with Up next beneath |
@@ -1726,12 +1726,13 @@ in `~/.cache/nexus-music-android/captures/` and the reports in
 **Tests on Media3's own classes** (`SoundProcessorTest`, Robolectric): the processor in a real
 `DefaultAudioSink` driven as Media3's renderer drives it (configured for each song with its
 timeline and period, then fed), with Media3's `TeeAudioProcessor` after it as the capture is:
-with everything off it is never in the chain and every sample comes out as it went in; a new
+with everything off it is in the chain and every sample comes out as it went in; a new
 song's gain begins on its first sample; an album played in order, levelled by album and with
 the equaliser on, comes out the same whether fed as one song or two (no step at the join);
 shuffled, the same two songs each take their own value exactly at the join; switched on and
 off mid-song, every frame comes out once, untouched before, settled at the gain within the
 song, untouched again after the ramp, and no step between samples larger than the sine's own;
+switched on just before a padded song's last buffer, none of its padding let into the join;
 after a seek (the sink flushed), the first sample out is the first fed, at the song's level;
 mono from a song's first sample. And `ExoPlayer` itself, with Media3's own audio renderer,
 playing two WAV files: the second song's gain begins at exactly the frame the first song
@@ -1758,6 +1759,48 @@ is noticeable in battery on the phone (it is a small fraction of decoding); how 
 levelled at Loud sounds where the limiter rounds its peaks (measured here: no sample over full
 scale); TalkBack reading the equaliser's bands aloud (`scripts/emu ui` shows each named with
 its frequency, its value and its actions).
+
+**After the review (the M4a fixes).** Each fix has a test that fails on the code before it
+(the commits say how it failed). `SoundProcessorTest`: everything off, in the chain, every
+sample exact; a setting switched on just before a padded song's last buffer lets none of its
+padding into the join (the old drain let 500 frames of it out); switched on at Loud mid-song,
+or a band raised, no sample over full scale through the ramp; after a seek nothing of the bass
+before it rings on, and at a gapless join the filters' memory is kept; a settings change just
+before a join ramps on across it while the song's own gain steps at the join; a song played
+again is looked up again; switched off between songs, the next is untouched from its first
+sample. `CompressedJoinTest`: two LAME-padded MP3s through `GaplessAudioRenderer` with a
+decoder that gives its output back four frames late (as a real one does): before the fix the
+short first song came out at the second's gain from its first frame (1,592, its sound at
+the second's -8 dB, where its own -2 dB makes 3,177); now all 1,872 of its frames are at its
+own gain and the second's begins on the second's first. `PlayerSoundTest`: the fallback
+levelling values go with their account. `SleepTimerTest`: the pause is carried out on the
+player's thread, and only for the timer still set; `SleepAtTheEndTest`: paused by "End of this
+song" at the end of a 400-song queue with repeat all, it stays paused. `LyricsTest`: asked again
+when opened once the server is back; what fetching ahead finds is what the open view shows;
+the network looked at before each request; times out of order shown plain, a line past the
+song's end no place to seek.
+
+On the Android 12 emulator (`phone31`), a debug build of the fixes, reports `fixes-*` in
+`reports/m4a/`: everything off, "Sweep 3 of 8": 0 of its 1,764,000 samples differ from the
+file. Levelling on at 12.6 s, off at 12.8 s and on again at 19.36 s of "MP3 Sweep 1 of 6" (the
+padded MP3 album; the join at 20 s): `joincheck` puts the first song +0 at both ends with
+nothing of its head or tail missing, the player logged one automatic move to the next song
+from 19.999 s to 0, and the one break and the 0.82 dB step `sweepcheck` finds, at 19.996 s and
+20.001 s, are in the recording of the same album with nothing on (`sweepmp3.wav`, M1b): they are
+the files'. Bass boost on, a seek from the 60 Hz tone into silence: the last 20 ms before it
+the tone (0.306 of full scale), exact silence from the first sample after, nothing quiet
+ringing between. The sleep timer, offline with kept songs off: "End of this song" set while a
+downloaded song played, a jump to a song not on the phone, which failed and was passed over:
+the next lined up at 0, paused, the timer off (`shots/m4a/fixes-sleep-after-failed-song-android12.png`).
+`scripts/check --release` passed at 48b0a6e, 873 unit tests (its first run, a commit
+earlier, stopped on a lint error of the fixes', the Media3 opt-in on `ReadFrom`, and on one
+failure of `PlaylistsTest.undoOfAChangeThatDidNotHappenSendsNothing`, which passed in the next
+run and in all three below: a test that sometimes fails, not the sound's); the whole unit suite
+three times in a row with `--no-build-cache` and every task run again, 873 tests each time,
+none failed; the car check on that release build on Android 12, levelling (Normal) and the
+equaliser (Bass boost) on: 48 passed and 0 failed online, 24 passed and 0 failed offline (the
+sound instance stopped), the one warning each time the empty folder as before
+(`fixes-carcheck-*-android12.txt`).
 
 ## What is not covered
 
