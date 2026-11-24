@@ -24,10 +24,11 @@ import java.io.IOException
 import java.io.RandomAccessFile
 
 /**
- * What a file turned out to be when it was read as audio, from its first byte to its last.
+ * What a file turned out to be when it was read as audio: its beginning only
+ * ([AudioCheck.begins]), or from its first byte to its last ([AudioCheck.inspect]).
  */
 data class Inspected(
-    /** The container it is in (null: none the phone reads). */
+    /** The container it is in (null: none the player's reader recognises). */
     val container: String?,
     /** Whether there is sound in it. */
     val audio: Boolean,
@@ -70,19 +71,37 @@ enum class Broken {
  *  called it. `stop` is asked as it goes: once it says yes, the look is abandoned with a
  *  [Cancelled]. */
 fun interface AudioCheck {
+    /** Reads the file through, every sample, to its end. */
     @Throws(IOException::class)
     fun inspect(file: File, suffix: String, stop: () -> Boolean): Inspected
 
     @Throws(IOException::class)
     fun inspect(file: File, suffix: String): Inspected = inspect(file, suffix) { false }
+
+    /**
+     * Looks only at how the file begins: whether the player's reader recognises it, whether
+     * there is sound in it, and whether the phone can decode that sound. For a file already
+     * known to be whole. (A stand-in that only reads through says the same of the beginning.)
+     */
+    @Throws(IOException::class)
+    fun begins(file: File, suffix: String): Inspected = inspect(file, suffix)
 }
 
 /**
- * The check a download must pass before it is marked whole (see [SongFetch]): the file is
- * read by the same Media3 extractors the player will read it with, **every sample of it, to
- * the end of the file** (not decoded: the samples are read and let go). So "it is audio"
- * means what the player will find, not what a label says; and "it runs this long" is where
- * its last sample ends, not what its header claims.
+ * The two looks a download gets before it is marked whole (see [SongFetch]), both by the
+ * same Media3 extractors the player will read it with, tried in the order the player tries
+ * them, so "it is audio" means what the player will find and not what a label says.
+ *
+ * **Its beginning** ([begins]), for a file whose length already says it is the server's
+ * file, whole: the player's readers are tried on it as the player tries them on a new
+ * stream, and it is read only as far as the format of its sound (a FLAC's first block, an
+ * MP3's first frame, an MP4's header wherever in the file that is). That catches what a
+ * length cannot: something that is not a song at all, and sound this phone can't decode.
+ *
+ * **All of it** ([inspect]), for a file nothing else vouches for (a conversion, which comes
+ * with no length; a library that gives the song no size): **every sample, to the end of the
+ * file** (not decoded: read and let go), so that "it runs this long" is where its last
+ * sample ends, not what its header claims.
  *
  * - **An error or an early end anywhere is a failure**: the extractor refusing something
  *   part-way ([Broken.DAMAGED]), or the file ending inside a sample ([Broken.ENDS_EARLY]).
@@ -97,9 +116,12 @@ fun interface AudioCheck {
  *   sixty-four bytes changed inside a frame played its full 26 seconds with no error. So
  *   nothing at playback says so either; reading it through is the only place it is caught.)
  *   No other format here carries a checksum that can be checked without decoding.
- * - **Whether the phone has a decoder for it** is asked of the system, as the player's own
- *   renderer asks ([decodes]): an ALAC in an `.m4a` is an MP4 the extractor reads perfectly
- *   and nothing on the phone plays.
+ * - **Whether the phone can decode it** is the player's own question, asked the player's
+ *   way ([playerDecodes]): is there a decoder that takes this very format, its profile, its
+ *   channels and its sample rate; not merely one for the kind of sound. An ALAC in an `.m4a`
+ *   is an MP4 the extractor reads perfectly and nothing on the phone plays. **A question
+ *   that could not be put is a no**: the song is then downloaded as the server converts it,
+ *   which plays, rather than marked on a guess.
  *
  * **Bounded**: one file at a time across the whole app ([one]); abandoned when asked
  * (`stop`); no embedded picture is decoded, and an MP3's tag is stepped over rather than
@@ -110,21 +132,27 @@ fun interface AudioCheck {
  */
 @OptIn(UnstableApi::class)
 class Media3AudioCheck(
-    /** Whether the phone has a decoder for a track of this format. */
-    private val decodes: (Format) -> Boolean = ::systemDecodes,
+    /** Whether the phone can decode a track of this format. */
+    private val decodes: (Format) -> Boolean,
 ) : AudioCheck {
-    override fun inspect(file: File, suffix: String, stop: () -> Boolean): Inspected {
-        // One at a time: what a walk holds in memory (an MP4's tables) is then never held
-        // twice, however many downloads finish together.
+    override fun inspect(file: File, suffix: String, stop: () -> Boolean): Inspected = oneAtATime(stop) { walk(file, suffix, stop, whole = true) }
+
+    override fun begins(file: File, suffix: String): Inspected = oneAtATime({ false }) { walk(file, suffix, { false }, whole = false) }
+
+    /** One at a time: what a look holds in memory (an MP4's tables) is then never held
+     *  twice, however many downloads finish together. */
+    private fun <T> oneAtATime(stop: () -> Boolean, look: () -> T): T {
         while (!one.tryLock(100, java.util.concurrent.TimeUnit.MILLISECONDS)) if (stop()) throw Cancelled()
         try {
-            return walk(file, suffix, stop)
+            return look()
         } finally {
             one.unlock()
         }
     }
 
-    private fun walk(file: File, suffix: String, stop: () -> Boolean): Inspected {
+    /** `whole`: every sample to the end of the file; otherwise only as far as the format of
+     *  its sound. */
+    private fun walk(file: File, suffix: String, stop: () -> Boolean, whole: Boolean): Inspected {
         val length = file.length()
         RandomAccessFile(file, "r").use { raf ->
             val window = Window(raf, length)
@@ -166,6 +194,11 @@ class Media3AudioCheck(
                 var at = input.position
                 while (true) {
                     if (stop()) throw Cancelled()
+                    // Only its beginning was asked about: that is known once the reader has
+                    // said what sound is in it, or has handed over a first sample without
+                    // having said so (a track's format comes before its samples: there is
+                    // no sound in it).
+                    if (!whole && (seen.audio != null || seen.sampled)) break
                     val result = extractor.read(input, holder)
                     if (result == Extractor.RESULT_END_OF_INPUT) break
                     if (result == Extractor.RESULT_SEEK) {
@@ -214,18 +247,21 @@ class Media3AudioCheck(
             } finally {
                 runCatching { extractor.release() }
             }
-            if (broken == null && seen.flacTailUnverified()) broken = Broken.DAMAGED
+            // A FLAC's last frame that does not come to a right checksum: a tag put after
+            // the sound is read as part of it, and so is damage. Told apart by looking.
+            if (whole && broken == null && seen.flacTailUnverified() && !flacEndsInATag(seen)) broken = Broken.DAMAGED
             val said = seen.map?.durationUs?.takeIf { it != C.TIME_UNSET && it > 0 } ?: seen.durationUs
             val audio = seen.audio
             return Inspected(
                 container = container,
                 audio = audio != null,
                 durationUs = if (said == C.TIME_UNSET || said <= 0) -1 else said,
-                ranUs = if (broken == null) seen.endUs() else -1,
+                ranUs = if (whole && broken == null) seen.endUs() else -1,
                 broken = broken,
-                decodable = audio == null || decodes(audio),
+                // (A question that could not be put is a no: see [playerDecodes].)
+                decodable = audio == null || runCatching { decodes(audio) }.getOrDefault(false),
                 partial = seen.partial,
-                gaveUp = broken == null && container == "mp3" && seen.lastEnd >= 0 && input.position - seen.lastEnd >= MP3_SEARCH_BYTES,
+                gaveUp = whole && broken == null && container == "mp3" && seen.lastEnd >= 0 && input.position - seen.lastEnd >= MP3_SEARCH_BYTES,
             )
         }
     }
@@ -252,6 +288,30 @@ class Media3AudioCheck(
         return at
     }
 
+    /**
+     * Whether a FLAC's end, which did not come to a right checksum, is a whole frame with a
+     * tag after it (ID3v1, APE, Lyrics3 and ID3v2 are all written after the sound by one
+     * program or another, and the reader takes whatever follows the last frame header for
+     * that frame). It is, if the checksum comes to nothing part-way through what was read
+     * since the last right one, and what follows from there is a tag by its own signature,
+     * or only padding. Anything else is a last frame with wrong bytes in it, which used to
+     * be let through as "a tag".
+     */
+    private fun flacEndsInATag(seen: Seen): Boolean {
+        val tail = seen.tail.toByteArray()
+        var crc = 0
+        for (i in tail.indices) {
+            crc = crc16(crc, tail, i, 1)
+            // (A frame is at least a header and a checksum.)
+            if (crc != 0 || i < 6) continue
+            if (tagAt(tail, i + 1)) return true
+            if (seen.tailBytes == tail.size.toLong() && (i + 1 until tail.size).all { tail[it] == 0.toByte() }) return true
+        }
+        return false
+    }
+
+    private fun tagAt(bytes: ByteArray, at: Int): Boolean = TAGS.any { tag -> at + tag.size <= bytes.size && tag.indices.all { bytes[at + it] == tag[it] } }
+
     private fun containerOf(extractor: Extractor): String? = when (extractor) {
         is androidx.media3.extractor.flac.FlacExtractor -> "flac"
         is androidx.media3.extractor.mp3.Mp3Extractor -> "mp3"
@@ -260,9 +320,9 @@ class Media3AudioCheck(
         is androidx.media3.extractor.wav.WavExtractor -> "wav"
         is androidx.media3.extractor.mkv.MatroskaExtractor -> "matroska"
         is androidx.media3.extractor.ts.AdtsExtractor -> "adts"
-        // Something Media3 reads that is no kind of song file here (a picture, a video
-        // stream, a telephone recording).
-        else -> null
+        // Something else Media3 reads. Whether it is a song is whether there is sound in it
+        // (a picture has none), not which reader it took.
+        else -> "other"
     }
 
     /**
@@ -312,6 +372,22 @@ class Media3AudioCheck(
         /** Where in the file the last sample of sound ended (-1: there has been none). */
         var lastEnd = -1L
 
+        /** A FLAC's bytes since its last frame that came to a right checksum (the first
+         *  megabyte of them: where a frame ends and a tag begins is within a frame's length),
+         *  and how many there have been. */
+        val tail = java.io.ByteArrayOutputStream()
+        var tailBytes = 0L
+
+        private fun keep(bytes: ByteArray, offset: Int, length: Int) {
+            crc = crc16(crc, bytes, offset, length)
+            tailBytes += length
+            val room = MOST_TAIL - tail.size()
+            if (room > 0) tail.write(bytes, offset, minOf(length, room))
+        }
+
+        /** The reader has handed over a sample, of any track. */
+        var sampled = false
+
         var map: SeekMap? = null
         var durationUs = C.TIME_UNSET
 
@@ -339,10 +415,8 @@ class Media3AudioCheck(
             else -> lastUs + (lastUs - beforeUs)
         }
 
-        /** A FLAC whose last frames never came to a right checksum. One frame's worth is
-         *  let pass: a tag some programs put after the sound is read as part of the last
-         *  frame. */
-        fun flacTailUnverified(): Boolean = flac && unverified > 1
+        /** A FLAC whose last frame (or frames) never came to a right checksum. */
+        fun flacTailUnverified(): Boolean = flac && unverified > 0
 
         override fun track(id: Int, type: Int): TrackOutput = object : TrackOutput {
             private var sound = false
@@ -370,17 +444,18 @@ class Media3AudioCheck(
                     return C.RESULT_END_OF_INPUT
                 }
                 pending += got
-                if (flac && sound) crc = crc16(crc, scratch, 0, got)
+                if (flac && sound) keep(scratch, 0, got)
                 return got
             }
 
             override fun sampleData(data: ParsableByteArray, length: Int, sampleDataPart: Int) {
-                if (flac && sound) crc = crc16(crc, data.data, data.position, length)
+                if (flac && sound) keep(data.data, data.position, length)
                 data.skipBytes(length)
             }
 
             override fun sampleMetadata(timeUs: Long, flags: Int, size: Int, offset: Int, cryptoData: TrackOutput.CryptoData?) {
                 pending = 0
+                sampled = true
                 if (!sound) return
                 lastEnd = position()
                 if (lastUs == C.TIME_UNSET || timeUs > lastUs) {
@@ -403,6 +478,8 @@ class Media3AudioCheck(
         private fun frameEnded() {
             if (crc == 0) {
                 unverified = 0
+                tail.reset()
+                tailBytes = 0
             } else if (++unverified > MOST_UNVERIFIED) {
                 damaged = true
             }
@@ -416,15 +493,11 @@ class Media3AudioCheck(
     }
 
     companion object {
-        /** The check as the app uses it. */
-        val system = Media3AudioCheck()
-
-        /**
-         * The version of this check, kept with each download it has passed
-         * (`Downloaded.checked`): a download marked whole by a build whose check was less
-         * (0: it stopped at the headers) is checked again, once, in the background.
-         */
-        const val VERSION = 1
+        /** The check as the app uses it on this phone. */
+        fun forPhone(context: android.content.Context): Media3AudioCheck {
+            val app = context.applicationContext
+            return Media3AudioCheck { format -> playerDecodes(app, format) }
+        }
 
         /** One walk at a time, across every account's downloads. */
         private val one = java.util.concurrent.locks.ReentrantLock()
@@ -440,17 +513,12 @@ class Media3AudioCheck(
          *  not the reader having cut a frame at a false header (which makes two or three). */
         private const val MOST_UNVERIFIED = 4
 
-        /** The containers a file of each kind may rightly be in. */
-        fun fits(suffix: String, container: String): Boolean = when (suffix.lowercase()) {
-            "mp3" -> container == "mp3"
-            "flac" -> container == "flac"
-            "m4a", "mp4", "aac" -> container == "mp4" || container == "adts"
-            "ogg", "oga", "opus" -> container == "ogg"
-            "wav" -> container == "wav"
-            "mka", "webm" -> container == "matroska"
-            // A kind not known by name: any of them.
-            else -> true
-        }
+        /** How much of a FLAC's end that has not come to a right checksum is kept to look
+         *  through (see [flacEndsInATag]). */
+        private const val MOST_TAIL = 1024 * 1024
+
+        /** How the tags written after a FLAC's sound begin: ID3v1, APE, Lyrics3, ID3v2. */
+        private val TAGS = listOf("TAG", "APETAGEX", "LYRICSBEGIN", "ID3").map { it.toByteArray(Charsets.ISO_8859_1) }
 
         /**
          * Whether the container's own word on how long it runs is exact (a count of samples
@@ -460,16 +528,22 @@ class Media3AudioCheck(
         fun statesItsLength(container: String): Boolean = container != "mp3" && container != "adts"
 
         /**
-         * Whether the phone has a decoder for a track of this format, asked as the player's
-         * audio renderer asks. Plain PCM needs none. If the system can't be asked, yes: a
-         * question that couldn't be put is no reason to refuse a song.
+         * **Whether the player can play a track of exactly this format on this phone**, asked
+         * as the player's own audio renderer asks it (`MediaCodecAudioRenderer.supportsFormat`
+         * at Media3 1.11.1): the decoders for the kind of sound, in the player's order, and
+         * whether any of them takes this format (`MediaCodecInfo.isFormatSupported`: the
+         * codec's profile, the sample rate, the number of channels). Plain PCM needs no
+         * decoder. **If the system can't be asked, no**: a song is then downloaded as the
+         * server converts it, which plays, and not marked on a guess. (It used to ask only
+         * whether some decoder for the kind existed, and took a question that failed for yes.)
          */
-        fun systemDecodes(format: Format): Boolean {
+        fun playerDecodes(context: android.content.Context, format: Format): Boolean {
             if (format.sampleMimeType == MimeTypes.AUDIO_RAW) return true
+            if (format.sampleMimeType == null) return false
             return try {
-                MediaCodecUtil.getDecoderInfosSoftMatch(MediaCodecSelector.DEFAULT, format, false, false).isNotEmpty()
+                MediaCodecUtil.getDecoderInfosSoftMatch(MediaCodecSelector.DEFAULT, format, false, false).any { it.isFormatSupported(context, format) }
             } catch (_: MediaCodecUtil.DecoderQueryException) {
-                true
+                false
             }
         }
 

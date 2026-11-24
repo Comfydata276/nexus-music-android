@@ -59,10 +59,18 @@ class DownloadFailure(
     /** The file arrived whole and the phone has no decoder for what is in it: worth asking
      *  the server to convert it, and nothing else. */
     val undecodable: Boolean = false,
+    /** What arrived came to a clean end, is a song the player reads, and has this wrong
+     *  with it: if the next fetch brings the very same bytes, the flaw is the server's own
+     *  copy's (see [SongFetch]). */
+    val flawed: Flawed? = null,
 ) : IOException(reason)
 
-/** What is wrong with a file that was to be, or is, a download (see [SongFetch.faultOf]). */
+/** What is wrong with a file that was to be a download (see [SongFetch.faultOf]). */
 enum class Fault { NOT_A_SONG, CUT_SHORT, DAMAGED, WRONG_LENGTH, NO_DECODER }
+
+/** A file that arrived whole and failed its reading-through: its length, its bytes' digest
+ *  (SHA-256) and what was wrong. Two that are equal are the same bytes failing the same way. */
+data class Flawed(val bytes: Long, val digest: String, val fault: Fault)
 
 /** The network a fetch was going out on may no longer be used for it (with Wi-Fi only on:
  *  it has gone, or turned metered). Not a failure of the song's. */
@@ -126,22 +134,30 @@ internal data class PartOf(
  *
  * It arrives in a file of its own beside where it will go (".<id>.<kind>.part"). Only once it
  * has come to a clean end **and been verified** is it put in its place and entered in the
- * [Catalogue], which is what makes it a download. Verified means all of:
+ * [Catalogue], which is what makes it a download. What verified means depends on whether
+ * anything says how long the file should be:
  *
- * - it is as long as the server said that answer was;
- * - for the file as it is, that is also the size the library gives the song. If they
- *   disagree the server is asked for the song again, once, and its newer word is gone by;
- * - its bytes are audio, in the container it is meant to be in, as the player's own
- *   extractors read them ([AudioCheck]): not the name, not what the server called it;
- * - **every sample of it reads, to the end of the file**, with no error and no early end,
- *   and (a FLAC) every frame's checksum right: see [Media3AudioCheck];
- * - the phone has a decoder for it (if not, the file as it is is no use here: the caller
- *   asks for the server's conversion instead, see [DownloadFailure.undecodable]);
- * - where its length in bytes can't vouch for it (a conversion, which comes with none; a
- *   library that gives the song no size), **its samples run as long as the song is known
- *   to**, within a small tolerance (again the server's newer word, if the first disagrees).
- *   With no length known for the song either, having been read to a clean end is all there
- *   is, and is taken.
+ * - **The file as it is, the length the server stated for that answer, and the size the
+ *   library gives the song: it is the server's file, complete.** (If the library's size
+ *   disagrees the server is asked for the song again, once, and its newer word gone by.) It
+ *   is not read through, timed, or checksummed: that cost twelve seconds for a two-hour
+ *   FLAC, would have read 78 GB for a first download of 3,000 lossless songs, and refused
+ *   good files (a large tag after the sound, a file in another container than its name
+ *   says, which the player reads by what it is). Two things a length can't say are still
+ *   asked, of its beginning ([AudioCheck.begins]): that the player's reader recognises it
+ *   and finds sound in it, and that the phone can decode that sound; if it can't, the
+ *   server's conversion is downloaded in its place ([DownloadFailure.undecodable]).
+ * - **A conversion (which comes with no length), or a file the library gives no size for:
+ *   nothing else says whether it is whole, so it is read through to its end**
+ *   ([AudioCheck.inspect]): every sample, with no error and no end part-way through
+ *   anything; a last frame that is whole; a running time that is not nothing, that agrees
+ *   with what the container itself states, and that is the song's as the library gives it,
+ *   within a small tolerance (the server's newer word, if the first disagrees).
+ * - **The server's own copy may have the flaw.** When a file that is a song fails that
+ *   reading-through, and a second complete fetch brings exactly the same bytes (the same
+ *   length and digest) failing the same way, fetching again will bring nothing else: it is
+ *   kept, marked downloaded, and the entry says what is wrong with it ([Downloaded.flaw]),
+ *   which Diagnostics notes. One that fails differently each time is refused.
  *
  * **Picking up where it stopped.** The file as it is can be carried on with after the app
  * stopped or the network went, but only as part of the *same* file: the part's own record
@@ -166,7 +182,7 @@ internal data class PartOf(
 class SongFetch(
     private val http: OkHttpClient,
     private val catalogue: Catalogue,
-    private val check: AudioCheck = Media3AudioCheck.system,
+    private val check: AudioCheck,
     /** Asks the server for the song as its library has it now; null if it has none such.
      *  Throws an IOException if the server can't be asked. */
     private val refresh: (id: String) -> Song? = { null },
@@ -197,8 +213,10 @@ class SongFetch(
      * [Cancelled] if called off.
      */
     @Throws(IOException::class)
-    fun fetch(song: Song, form: SavedForm, url: String, progress: (Long, Long) -> Unit = { _, _ -> }): Downloaded {
-        catalogue.entry(song.id)?.let { if (catalogue.wholeFileOf(song.id) != null) return it }
+    fun fetch(song: Song, form: SavedForm, url: String, before: Flawed? = null, progress: (Long, Long) -> Unit = { _, _ -> }): Downloaded {
+        // (Unless what is there is to be replaced: see `Downloaded.stale`.)
+        val standing = catalogue.entry(song.id)
+        if (standing != null && !standing.stale && catalogue.wholeFileOf(song.id) != null) return standing
         val stem = stem(song.id)
         if (stem.isEmpty()) throw DownloadFailure("The server gave this song an id the app can't use.")
         val name = "$stem.${form.suffix.ifEmpty { "bin" }}"
@@ -210,8 +228,9 @@ class SongFetch(
         // A conversion can't be picked up part-way.
         if (form.converted) discard(part, meta)
         // A file left at the final name without an entry (the app stopped between the two):
-        // not trusted, fetched again.
-        target.delete()
+        // not trusted, fetched again. (One an entry names is a copy waiting to be replaced:
+        // it stays until the new one is verified and takes its place.)
+        if (standing?.file != name) target.delete()
 
         var from = resumable(part, meta)
         if (from == null) discard(part, meta)
@@ -228,7 +247,7 @@ class SongFetch(
             } catch (e: IOException) {
                 throw failure(e)
             }
-            if (arrived != null) return finish(song, form, part, meta, target, name, arrived)
+            if (arrived != null) return finish(song, form, part, meta, target, name, arrived, before)
             if (from == null) throw DownloadFailure("The server didn't send the whole song.", again = true)
             CrashPoints.say { "${song.id}: what the server sent doesn't fit its part: the part is thrown away, and it is fetched from nothing" }
             discard(part, meta)
@@ -421,20 +440,33 @@ class SongFetch(
         response.header("ETag").orEmpty().trim().takeIf { it.startsWith("\"") && it.endsWith("\"") && it.length > 2 }.orEmpty()
 
     /** Verifies what arrived, and if it is the song, whole, puts it in place and enters it. */
-    private fun finish(song: Song, form: SavedForm, part: File, meta: File, target: File, name: String, arrived: Arrived): Downloaded {
+    private fun finish(song: Song, form: SavedForm, part: File, meta: File, target: File, name: String, arrived: Arrived, before: Flawed?): Downloaded {
         if (cancelled) throw Cancelled()
         CrashPoints.reached("arrived")
+        var flaw = ""
         val verified = try {
             verify(song, form, part, arrived)
         } catch (e: DownloadFailure) {
-            // Not the song, whole: nothing of it is kept to be carried on from.
-            CrashPoints.say { "${song.id}: failed its checks (${e.reason})" }
-            discard(part, meta)
-            throw e
+            val fault = e.flawed?.fault
+            val now = if (fault != null) runCatching { Flawed(arrived.bytes, digest(part), fault) }.getOrNull() else null
+            if (now != null && now == before) {
+                // The same bytes as last time, failing the same way: the flaw is in the
+                // server's own copy, and asking again brings nothing else. Kept as it is.
+                CrashPoints.say { "${song.id}: the same bytes twice, failing the same way (${e.reason}): the server's copy has the flaw; kept" }
+                flaw = e.reason
+                song
+            } else {
+                // Not the song, whole: nothing of it is kept to be carried on from.
+                CrashPoints.say { "${song.id}: failed its checks (${e.reason})" }
+                discard(part, meta)
+                throw if (now != null) DownloadFailure(e.reason, again = true, flawed = now) else e
+            }
         }
         if (cancelled) throw Cancelled()
         CrashPoints.reached("verified")
         try {
+            // (Over a copy that was waiting to be replaced, if there is one of that name: one
+            // step, so there is a file of that name at every instant.)
             Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             meta.delete()
             CrashPoints.reached("renamed")
@@ -447,7 +479,7 @@ class SongFetch(
         }
         CrashPoints.reached("placed")
         CrashPoints.say { "${song.id}: verified and in place, ${arrived.bytes} bytes" }
-        val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate, target.lastModified(), Media3AudioCheck.VERSION)
+        val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate, target.lastModified(), flaw = flaw)
         try {
             // The mark: only now is it a download.
             catalogue.add(entry)
@@ -483,9 +515,8 @@ class SongFetch(
         if (!form.converted && song.size != bytes) {
             // Not the size the library gives it: perhaps the library's word here is old.
             newer()
-            // (A library that gives the song no size at all can't disagree. Then the length
-            // the server stated for the answer, checked above, vouches for it; and if the
-            // server stated none either, reading it through to its end, below, is what does.)
+            // (A library that gives the song no size at all can't disagree: then reading it
+            // through to its end, below, is what vouches for it.)
             if (song.size > 0 && song.size != bytes) {
                 throw DownloadFailure(
                     if (song.size > bytes) "The download was cut short." else "The server sent a different file from the one in its library.",
@@ -493,35 +524,54 @@ class SongFetch(
                 )
             }
         }
+        // The file as it is, the length the server stated for this answer, and the size the
+        // library gives the song: the server's file, complete. Only its beginning is looked at.
+        val whole = !form.converted && arrived.said == bytes && song.size == bytes
         val seen = try {
-            check.inspect(part, form.suffix) { cancelled }
+            if (whole) check.begins(part, form.suffix) else check.inspect(part, form.suffix) { cancelled }
         } catch (e: Cancelled) {
             throw e
         } catch (e: IOException) {
             if (cancelled) throw Cancelled()
             Inspected(null, false, -1)
         }
-        // An original that is the length the server stated and the length the library gives
-        // is the server's file, whole: how long its samples run is then not held against the
-        // library's figure (a library can be out, and that is no reason to refuse a file
-        // known to be complete). Where the lengths can't vouch for it (a conversion, which
-        // comes with none; a library that gives no size) the running time is what does.
-        val wholeByLength = !form.converted && song.size > 0 && song.size == bytes && (arrived.said < 0 || arrived.said == bytes)
-        var fault = faultOf(song, form, seen, wholeByLength)
-        // (The server's newer word on how long it runs, before it is refused for that.)
-        if (fault == Fault.WRONG_LENGTH && newer() && !(!form.converted && song.size > 0 && song.size != bytes)) fault = faultOf(song, form, seen, wholeByLength)
-        when (fault) {
-            null -> Unit
-            Fault.NOT_A_SONG -> throw DownloadFailure("What the server sent isn't a song the phone can play.", again = true)
-            Fault.CUT_SHORT -> throw DownloadFailure("The download was cut short.", again = true)
-            Fault.DAMAGED -> throw DownloadFailure("What arrived is damaged: it can't be read through to its end.", again = true)
-            Fault.WRONG_LENGTH -> throw DownloadFailure(
-                if (seen.runsUs < song.duration * 1_000_000L) "The download was cut short." else "The server sent a different file from the one in its library.",
-                again = true,
-            )
-            Fault.NO_DECODER -> throw DownloadFailure("This phone has no way to play that kind of file.", undecodable = true)
+        if (whole) {
+            // (Final at once: the same file would come again.)
+            if (seen.container == null || !seen.audio) throw DownloadFailure(NOT_A_SONG)
+            if (!seen.decodable) throw DownloadFailure(NO_DECODER, undecodable = true)
+            return song
         }
-        return song
+        var fault = faultOf(song, form, seen)
+        // (The server's newer word on how long it runs, before it is refused for that.)
+        if (fault == Fault.WRONG_LENGTH && newer() && !(!form.converted && song.size > 0 && song.size != bytes)) fault = faultOf(song, form, seen)
+        when (fault) {
+            null -> return song
+            Fault.NOT_A_SONG -> throw DownloadFailure(NOT_A_SONG, again = true)
+            Fault.NO_DECODER -> throw DownloadFailure(NO_DECODER, undecodable = true)
+            else -> Unit
+        }
+        // It is a song the player reads, and something is wrong with it (see [Flawed]).
+        val reason = when (fault) {
+            Fault.DAMAGED -> "What arrived is damaged: it can't be read through to its end."
+            Fault.WRONG_LENGTH -> if (seen.runsUs < song.duration * 1_000_000L) "The download was cut short." else "The server sent a different file from the one in its library."
+            else -> "The download was cut short."
+        }
+        throw DownloadFailure(reason, again = true, flawed = Flawed(bytes, "", fault))
+    }
+
+    /** The SHA-256 of a file's bytes. */
+    private fun digest(file: File): String {
+        val sum = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(BUFFER)
+            while (true) {
+                if (cancelled) throw Cancelled()
+                val got = input.read(buffer)
+                if (got < 0) break
+                sum.update(buffer, 0, got)
+            }
+        }
+        return sum.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun open(request: Request): okhttp3.Response {
@@ -553,6 +603,8 @@ class SongFetch(
 
     companion object {
         const val CANT_REACH = "Can't reach the server."
+        const val NOT_A_SONG = "What the server sent isn't a song the phone can play."
+        const val NO_DECODER = "This phone has no way to play that kind of file."
 
         /** Why a download was stopped, or not begun, for want of room. */
         const val NO_ROOM = "The phone is nearly out of space."
@@ -581,14 +633,13 @@ class SongFetch(
         }
 
         /**
-         * What is wrong with a file that is to be (or is) the download of `song` in `form`,
-         * from what reading it through found (`seen`); null if nothing is. The one rule for a
-         * download as it arrives and for one marked whole by an earlier build, checked again.
-         * `wholeByLength`: its length in bytes is known to be the server's file's.
+         * What is wrong with a file that is to be the download of `song` in `form`, from what
+         * reading it through found (`seen`); null if nothing is. For a file whose length does
+         * not vouch for it (see the class): every rule applies whatever its size.
          */
-        fun faultOf(song: Song, form: SavedForm, seen: Inspected, wholeByLength: Boolean): Fault? {
+        fun faultOf(song: Song, form: SavedForm, seen: Inspected): Fault? {
             val container = seen.container
-            if (container == null || !seen.audio || !Media3AudioCheck.fits(form.suffix, container)) return Fault.NOT_A_SONG
+            if (container == null || !seen.audio) return Fault.NOT_A_SONG
             when (seen.broken) {
                 Broken.ENDS_EARLY -> return Fault.CUT_SHORT
                 Broken.DAMAGED -> return Fault.DAMAGED
@@ -599,18 +650,19 @@ class SongFetch(
             // read by then is the song's length, the rest is a tag; if not (or the song's
             // length isn't known), the rest is sound that will never be played.
             if (seen.gaveUp && (song.duration <= 0 || !runsAsLongAs(song, seen.runsUs))) return Fault.DAMAGED
-            if (wholeByLength) return null
-            // It stops part-way through a frame, and nothing says the stream was meant to
-            // end there.
+            // It stops part-way through a frame.
             if (seen.partial) return Fault.CUT_SHORT
             val runs = seen.runsUs
-            // A conversion comes with no length: how long it runs is the only word on whether
-            // it is whole, so it must run at all.
-            if (form.converted && runs <= 0) return Fault.CUT_SHORT
+            // How long it runs is the only word on whether it is whole: it must run at all.
+            if (runs <= 0) return Fault.CUT_SHORT
             // The container's own count of its samples, where it states one: sound that
-            // stops well before it has lost its end.
-            if (seen.ranUs >= 0 && seen.durationUs > 0 && Media3AudioCheck.statesItsLength(container) && seen.ranUs < seen.durationUs - SHORT_OF_ITSELF_US) return Fault.CUT_SHORT
-            if (runs > 0 && !runsAsLongAs(song, runs)) return Fault.WRONG_LENGTH
+            // stops well before it has lost its end, and sound that runs well past it is
+            // not the file the header describes.
+            if (seen.ranUs >= 0 && seen.durationUs > 0 && Media3AudioCheck.statesItsLength(container)) {
+                if (seen.ranUs < seen.durationUs - SHORT_OF_ITSELF_US) return Fault.CUT_SHORT
+                if (seen.ranUs > seen.durationUs + SHORT_OF_ITSELF_US) return Fault.DAMAGED
+            }
+            if (!runsAsLongAs(song, runs)) return Fault.WRONG_LENGTH
             return null
         }
 

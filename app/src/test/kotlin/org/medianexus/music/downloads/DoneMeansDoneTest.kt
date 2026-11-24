@@ -218,8 +218,8 @@ class DoneMeansDoneTest {
     }
 
     @Test
-    fun aDownloadThatFailsItsChecksIsFetchedAFewTimesAndThenListedWithItsReason() {
-        // The right size, called FLAC, and no audio in it, every time it is asked for.
+    fun aDownloadThatIsNotASongIsListedWithItsReason() {
+        // The right size, called FLAC, and no audio in it.
         original = ByteArray(three.size) { (it * 31 + 7).toByte() }
         val (catalogue, engine) = appStarted()
         until("ready") { engine.state.value.settled }
@@ -227,7 +227,9 @@ class DoneMeansDoneTest {
         until("given up on") { asked.isCompleted && engine.state.value.failed.isNotEmpty() && !engine.state.value.busy }
         assertFalse(catalogue.has("s1"))
         assertEquals("What the server sent isn't a song the phone can play.", engine.state.value.failed.single().reason)
-        assertEquals(Downloads.VERIFY_TRIES, server.asked.count { "stream" in it.path })
+        // (It is the size the library gives and the length the server stated: the server's
+        // file, and it would come again the same. Asked for once.)
+        assertEquals(1, server.asked.count { "stream" in it.path })
         // Nothing of it is left to be mistaken for a song.
         assertTrue(dir.listFiles()!!.none { it.name.contains("s1") })
     }

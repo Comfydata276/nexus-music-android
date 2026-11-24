@@ -859,7 +859,6 @@ class PlaybackService : MediaLibraryService() {
         era = null
         reading.clear()
         triedAgain.clear()
-        readThrough.clear()
         ahead.want(emptyList())
         old.scope.cancel()
         // Off the main thread: closing writes the cache's index.
@@ -965,17 +964,28 @@ class PlaybackService : MediaLibraryService() {
     }
 
 
+    /** The server is known to be there: a check of it has succeeded, and nothing since has
+     *  said otherwise. */
+    private fun serverThere(): Boolean = graph.watch.state.value.let { it.sure && !it.offline }
+
     /** Called on the player's loading threads, for a read that belongs to `era`. */
     private fun resolve(era: Era, songId: String): SongWhere {
         val api = era.account.api
         val song = player.songFor(songId)
-        // A downloaded copy first (unless this session found it won't play: then it is set
-        // aside and streamed; and only a file still as long as the one that was verified),
-        // then the kept copy, then the server.
-        val entry = if (era.account.availability.isDownloaded(songId)) era.account.catalogue.entry(songId) else null
-        val downloaded = if (entry != null) era.account.catalogue.wholeFileOf(songId) else null
+        // A downloaded copy first, then the kept copy, then the server. A download that
+        // needs a fresh copy (it failed once when played) is passed over for the server's
+        // while the server is known to be there, and played all the same when it isn't (or
+        // isn't yet known to be: a cold start in a dead spot). And only a
+        // file still as long as the one that was verified: one that isn't is no download,
+        // and the catalogue is told so now, not at the next start (`Downloads.notWhole`).
+        val entry = era.account.catalogue.entry(songId)
+        val whole = if (entry != null) era.account.catalogue.wholeFileOf(songId) else null
+        if (entry != null && whole == null) era.account.downloads?.notWhole(songId)
+        val downloaded = whole.takeIf { entry?.stale != true || !serverThere() }
         val suffix = song?.suffix?.lowercase().orEmpty()
-        val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting
+        // (As the server converts it, if this phone is known not to decode the file itself:
+        // found by this session's player, or remembered from a download.)
+        val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting && !era.account.catalogue.convertsFor(songId, song?.size ?: 0)
         val form = streamForm(native, graph.settings.value.bitrate, suffix, song?.bitRate ?: 0)
         val least = if (form.converted && song != null) leastBytes(song.duration, form.bitrate, song.bitRate) else 0
         return SongWhere(form, cacheKey(songId, form), least, downloaded, entry?.bitrate ?: 0) { offset -> api.streamUrl(songId, form.bitrate, offset) }
@@ -1129,8 +1139,6 @@ class PlaybackService : MediaLibraryService() {
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
             val from = oldPosition.positionMs / 1000.0
             val sameEntry = entryOf(oldPosition.mediaItem) != null && entryOf(oldPosition.mediaItem) == entryOf(newPosition.mediaItem)
-            // A download has played to its end: its file is read through (see [playedOut]).
-            if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) playedOut(oldPosition.mediaItem)
             when {
                 // Repeating one song: the play that just finished is counted, and the next
                 // time round is a new play of it.
@@ -1142,29 +1150,7 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             // The end of the queue. The same song started again from the top is a new play.
-            if (playbackState == Player.STATE_ENDED) {
-                playedOut(exo.currentMediaItem)
-                plays.ended(clock())
-            }
-        }
-
-        /**
-         * A song has played to its end from its download: that file is read through, once
-         * in a run of the app, and if it is at fault it stops being a download and is
-         * fetched again (`Downloads.verifyNow`).
-         *
-         * Nothing the player says can be gone by instead. Seen on the Android 16 emulator: a
-         * FLAC with bytes changed inside a frame played its whole length with no error (the
-         * decoder plays on past it); and an MP3 with a stretch of junk in its middle "played"
-         * its whole length too, the last twenty-three seconds of it in silence (Media3's
-         * reader took the junk for the end of the song, and the player ran the clock on to
-         * the length the file states). No error, no early end, nothing to notice: only
-         * reading the file says.
-         */
-        private fun playedOut(item: MediaItem?) {
-            val song = (item?.localConfiguration?.tag as? QueuePlayer.SongTag)?.song ?: return
-            if (reading[song.id] !is SongCopy.Download || !readThrough.add(song.id)) return
-            era?.account?.downloads?.verifyNow(song.id)
+            if (playbackState == Player.STATE_ENDED) plays.ended(clock())
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -1233,28 +1219,42 @@ class PlaybackService : MediaLibraryService() {
                     exo.prepare()
                 }
                 // A downloaded file that couldn't be read or parsed (or holds what this phone
-                // has no way to play): that file is passed over from this instant (set
-                // aside, so the song is streamed if it can be), and **stops being a
-                // download**: unmarked, and fetched again when the server can be reached
-                // (`Downloads.demote`). Only when it was the download that was playing, and
-                // only that file: one downloaded again has a fresh chance.
-                download != null && Recovery.laidAtTheFile(error.errorCode, failure?.local == true) &&
-                    era?.account?.availability?.setAside(song.id, download.file, download.modified) == true -> {
-                    graph.diagnostics.note("a downloaded copy wouldn't play (${error.errorCodeName}): streamed instead")
-                    era?.account?.downloads?.demote(song.id, download.file.name, download.modified, "wouldn't play (${error.errorCodeName})")
-                    graph.toasts.show(getString(R.string.bad_download, song.title))
+                // can't decode): **it needs a fresh copy** (`Downloads.demote`), which is
+                // fetched when the server can be reached and takes its place once verified.
+                // Nothing is deleted: with no server it is still what there is. Only when it
+                // was the download that was playing, and only that file. Meanwhile the song
+                // is played from the server if it can be had; if not, this entry is passed
+                // over (it has just failed where it stands).
+                download != null && Recovery.laidAtTheFile(error.errorCode, failure?.local == true) -> {
+                    graph.diagnostics.note("a downloaded copy wouldn't play (${error.errorCodeName}): it needs a fresh copy")
                     reading.remove(song.id)
                     publishExtras()
-                    exo.prepare()
+                    val uid = player.queue.currentUid()
+                    val downloads = era?.account?.downloads
+                    (era?.scope ?: graph.scope).launch(Dispatchers.Main.immediate) {
+                        // (On the disk before the player looks again for where to read from.)
+                        val stale = downloads?.demote(
+                            song.id, download.file.name, download.modified, "wouldn't play (${error.errorCodeName})",
+                            beyondThePhone = Recovery.beyondThePhone(error.errorCode),
+                        ) == true
+                        if (player.queue.currentUid() != uid || exo.playerError == null) return@launch
+                        when {
+                            stale && serverThere() -> {
+                                graph.toasts.show(getString(R.string.bad_download, song.title))
+                                exo.prepare()
+                            }
+                            // (No longer that download: it has been replaced, or removed.
+                            // Looked for again, once.)
+                            !stale && uid?.let { triedAgain.add(it) } == true -> exo.prepare()
+                            else -> passOver()
+                        }
+                    }
                 }
                 // A decoder or the sound output failing while a download plays says nothing
                 // about the file: nothing is set aside. The entry is made ready again, once.
                 download != null && undecodable(error) && !Recovery.laidAtTheFile(error.errorCode, false) &&
                     player.queue.currentUid()?.let { triedAgain.add(it) } == true -> {
-                    graph.diagnostics.note("a downloaded copy stopped (${error.errorCodeName}): nothing set aside, tried again")
-                    // (And its file is read through, in case it is the file after all: the
-                    // reader finds a file's frames without looking inside them.)
-                    era?.account?.downloads?.verifyNow(song.id)
+                    graph.diagnostics.note("a downloaded copy stopped (${error.errorCodeName}): nothing is laid at the file; tried again")
                     exo.prepare()
                 }
                 download == null && undecodable(error) && era?.needsConverting?.mark(song.id) == true -> {
@@ -1388,9 +1388,6 @@ class PlaybackService : MediaLibraryService() {
         // The words change: no longer "Reconnecting…".
         player.refresh()
     }
-
-    /** Downloads read through after playing to their end, in this run (see `playedOut`). */
-    private val readThrough = HashSet<String>()
 
     /** The queue entry that has been heard since it came to the cursor (its number). */
     private var heardUid: Long? = null

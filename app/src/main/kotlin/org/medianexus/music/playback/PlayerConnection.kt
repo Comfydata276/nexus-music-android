@@ -157,7 +157,7 @@ class PlayerConnection(
     val format: StateFlow<FormatLine> = combine(
         currentSong, convertedNow, settings.state.map { it.bitrate }.distinctUntilChanged(),
         // A song played from its download plays as it was saved, whatever the streaming
-        // quality is (unless this session set the download aside: then it streams).
+        // quality is (unless the download needs a fresh copy: then the server's is preferred).
         accounts.state.flatMapLatest { account -> account?.catalogue?.state ?: flowOf(null) },
         copyNow,
     ) { song, converted, cap, downloads, playing ->
@@ -166,7 +166,7 @@ class PlayerConnection(
         // goes on from the copy it started on, whatever has been downloaded or changed since.
         if (playing.songId == song.id && playing.kbps >= 0) return@combine formatLineOf(song, playing.kbps, liveStream)
         // Until then (it is still being made ready), what it would be opened from now.
-        val saved = downloads?.songs?.get(song.id)?.takeIf { accounts.state.value?.availability?.isSetAside(song.id) != true }
+        val saved = downloads?.songs?.get(song.id)?.takeIf { !it.stale }
         when {
             saved == null -> formatLine(song, cap, converted, liveStream)
             saved.bitrate > 0 -> FormatLine("MP3 · ${saved.bitrate} kbps", false)

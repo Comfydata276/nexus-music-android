@@ -19,3 +19,6 @@ fun phoneDecoders(): ShadowMediaCodecConfig = ShadowMediaCodecConfig.withCodecs(
     ),
     emptyList(),
 )
+
+/** The check a download gets on this (Robolectric's) phone, with the decoders above. */
+fun phoneCheck(): Media3AudioCheck = Media3AudioCheck.forPhone(org.robolectric.RuntimeEnvironment.getApplication())

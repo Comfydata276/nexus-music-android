@@ -56,7 +56,7 @@ class WholeDownloadTest {
     @After
     fun stop() = server.close()
 
-    private fun fetcher() = SongFetch(http, catalogue, refresh = { library[it] })
+    private fun fetcher() = SongFetch(http, catalogue, phoneCheck(), refresh = { library[it] })
 
     private fun url(id: String = "s1") = server.url("/rest/stream?id=$id")
 
@@ -226,15 +226,13 @@ class WholeDownloadTest {
         } catch (e: DownloadFailure) {
             assertEquals("What the server sent isn't a song the phone can play.", e.reason)
         }
-        // Nor one kind of audio called another.
-        server.handler = { GatedServer.file(it, twenty, MONDAY) }
-        try {
-            fetcher().fetch(asThree().copy(size = twenty.size.toLong(), duration = 20), flac, url())
-            fail("an MP3 is not a FLAC")
-        } catch (_: DownloadFailure) {
-        }
         assertFalse(catalogue.has("s1"))
         assertTrue(catalogue.dir.listFiles()!!.none { it.name.contains("s1") })
+        // One kind of audio called another is a song all the same: the player reads a file
+        // by what it is, not by its name. (It used to be refused.)
+        server.handler = { GatedServer.file(it, twenty, MONDAY) }
+        val entry = fetcher().fetch(asThree().copy(size = twenty.size.toLong(), duration = 20), flac, url())
+        assertArrayEquals(twenty, File(catalogue.dir, entry.file).readBytes())
     }
 
     @Test

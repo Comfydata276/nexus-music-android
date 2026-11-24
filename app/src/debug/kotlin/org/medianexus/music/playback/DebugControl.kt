@@ -103,9 +103,10 @@ class DebugControl : BroadcastReceiver() {
             return
         }
         intent.getStringExtra("inspect")?.let { name ->
-            // What reading a file through costs (the check a download passes: docs/TESTING.md,
-            // "Done means it plays to the end"): the time, and the most the app's heap grew
-            // by while it ran. The file is one in the app's cache folder.
+            // What the two looks a download gets cost (docs/TESTING.md, "What Done requires"):
+            // the look at its beginning, which every whole original gets, and the reading
+            // through, which a conversion gets; the time of each, and the most the app's heap
+            // grew by while the second ran. The file is one in the app's cache folder.
             val done = goAsync()
             Thread {
                 done.resultData = runCatching {
@@ -117,12 +118,16 @@ class DebugControl : BroadcastReceiver() {
                     val peak = java.util.concurrent.atomic.AtomicLong(before)
                     val watching = java.util.concurrent.atomic.AtomicBoolean(true)
                     val watcher = Thread { while (watching.get()) { peak.accumulateAndGet(runtime.totalMemory() - runtime.freeMemory()) { a, b -> maxOf(a, b) }; Thread.sleep(5) } }.apply { start() }
+                    val check = org.medianexus.music.downloads.Media3AudioCheck.forPhone(context)
+                    val first = System.nanoTime()
+                    val start = check.begins(file, name.substringAfterLast('.'))
+                    val looked = (System.nanoTime() - first) / 1_000
                     val began = System.nanoTime()
-                    val seen = org.medianexus.music.downloads.Media3AudioCheck.system.inspect(file, name.substringAfterLast('.'))
+                    val seen = check.inspect(file, name.substringAfterLast('.'))
                     val took = (System.nanoTime() - began) / 1_000_000
                     watching.set(false)
                     watcher.join()
-                    "${file.length()} bytes read through in $took ms; the heap grew by at most ${(peak.get() - before) / 1024} KB; it is ${seen.container}, runs ${seen.ranUs / 1000} ms (says ${seen.durationUs / 1000} ms), broken ${seen.broken}, partial ${seen.partial}, decodable ${seen.decodable}"
+                    "${file.length()} bytes: its beginning looked at in $looked µs (it is ${start.container}, sound ${start.audio}, decodable ${start.decodable}); read through in $took ms; the heap grew by at most ${(peak.get() - before) / 1024} KB; it is ${seen.container}, runs ${seen.ranUs / 1000} ms (says ${seen.durationUs / 1000} ms), broken ${seen.broken}, partial ${seen.partial}, decodable ${seen.decodable}"
                 }.getOrElse { "failed: $it" }
                 done.finish()
             }.start()

@@ -299,7 +299,12 @@ How it is built (M1a):
 - **Where a song's bytes come from** (`PlaybackService.resolve`): its downloaded copy if
   there is one (and its file is still the length that was verified), whatever the streaming
   quality, then a copy kept whole among the kept songs, then the server at the streaming
-  quality. A download is read as a plain file (Media3's `FileDataSource`).
+  quality. A download is read as a plain file (Media3's `FileDataSource`). A download that
+  needs a fresh copy (below) is passed over for the server's while the server can be had,
+  and played all the same when it can't. **A file that is no longer the length that was
+  verified is not opened, and the catalogue is told at once** (`Downloads.notWhole`): it is
+  unmarked and fetched again there and then, as it would be at the next start. (The player
+  used to stream it while every list went on showing it as downloaded.)
 - **A song keeps playing from the copy it started on** (`SongDataSource.open`, `SongCopy`).
   Media3 opens a song's data source again at every seek and every retry, asking for a *byte*
   it worked out from the copy it has been reading; that byte means something only in that
@@ -317,28 +322,38 @@ How it is built (M1a):
   copy each song was opened from; the service puts its bit rate in the session's extras, and
   the line under the song ("FLAC · 48 kHz · 24-bit", or "MP3 · 160 kbps" for a conversion or
   a download saved smaller) says that, not what the downloads and settings would give now.
-- **A download that won't play stops being a download**: it is passed over from that
-  instant (`Availability.setAside`, so the song is streamed if it can be), unmarked, shown
-  as on its way again, and fetched again when the server can be reached
-  (`Downloads.demote`); a fresh copy that fails the same way in the same run is listed as
-  failed, not fetched over and over. (It used to be set aside until the app was next
-  started, and went on being shown as downloaded.) **Only for a failure that can be laid at
-  that file**, met while it was the download that was playing (`Recovery.laidAtTheFile`): it
-  couldn't be read, it couldn't be parsed, or it holds what this phone has no way to play.
-  And **only that file**: its name and the modification time it had when it was marked
-  whole; downloaded again, it has a fresh chance. A decoder that fell over or couldn't be
-  had, or the sound output failing, says nothing about the file by itself: the entry is made
-  ready again, once, and the file is read through (below). Such failures are final at once:
-  the player's retry rule used to take a file it couldn't parse (Media3's `ParserException`
-  is an `IOException`) for a dropped connection and ask for it four more times, fifteen
-  seconds of silence.
-- **A download that has played to its end is read through**, once in a run of the app, by
-  the check a download passes (`playedOut`, `Downloads.verifyNow`), and demoted if it no
-  longer passes. The player itself can't be gone by: on the Android 16 emulator a FLAC with
-  bytes changed inside a frame played its whole length with no error (the decoder plays on
-  past it), and an MP3 with a stretch of junk in its middle "played" its whole stated length,
-  the last twenty-three seconds in silence (Media3's reader takes the junk for the end of
-  the song, and the player runs the clock on). No error, no early end.
+- **A download that fails when it is played needs a fresh copy, and nothing is deleted
+  until that copy has arrived** (`Downloads.demote`, `Downloaded.stale`). **Only for a
+  failure that can be laid at that file**, met while it was the download that was playing
+  (`Recovery.laidAtTheFile`): it couldn't be read, it couldn't be parsed, or it holds what
+  this phone can't decode. And **only that file**: its name and the modification time it had
+  when it was marked. It is marked, on the disk, as needing a fresh copy, shown as on its
+  way again, and fetched when the server can be reached; the new copy takes its place, in
+  one step, only once it has been verified. **Meanwhile it is still a download**: on the
+  phone, listed offline, and played with no server as far as it plays; with the server
+  there, the server's copy is played instead. (It used to be unmarked and deleted on the
+  spot, and set aside for the rest of the run: a song that stumbled once in a dead spot was
+  gone until there was a signal again.) A fresh copy that fails too, in the same run, is
+  listed as failed with the reason, not fetched over and over, and is still on the phone.
+  **If what failed was the phone's decoding of the file as it is** (the player says the
+  format is unsupported, or exceeds what the phone can do), that is remembered on the disk
+  (`Catalogue.mustConvert`, `convert.json`, by the song's id and that file's size) and the
+  fresh copy is the server's conversion: the same original is never fetched again to fail
+  again, in this run or any other, and the song is streamed converted too. A decoder that
+  fell over or couldn't be had, or the sound output failing, says nothing about the file:
+  the entry is made ready again, once, and nothing else is done. Such failures are final at
+  once: the player's retry rule used to take a file it couldn't parse (Media3's
+  `ParserException` is an `IOException`) for a dropped connection and ask for it four more
+  times, fifteen seconds of silence.
+- **Nothing downloaded is read again after it is marked.** The second round read a file
+  through each time it had played to its end, and read every download of an earlier build
+  through once; both are gone. What they were for was real (on the Android 16 emulator a
+  FLAC with bytes changed inside a frame played its whole length with no error, and an MP3
+  with a stretch of junk in its middle "played" its stated length, the last twenty-three
+  seconds in silence), but a file that was the server's when it was marked is still the
+  server's, and the cost was every file read twice and a good copy deleted on a finding
+  nobody could act on in a dead spot. What is left is the one case where the player itself
+  says the file is at fault (above).
 - **Fetching ahead** (`FetchAhead`, Windows' `keep_ahead`): the songs of the next places in
   the queue that aren't downloaded or kept whole are read whole, one at a time, through the
   player's own data source and thrown away as they go, so they are kept by exactly the rules
@@ -743,60 +758,71 @@ How it is built (M1a):
 - **Downloads** (`downloads/`; how they are kept going is "Downloads: what Android allows"
   below), in the account's own data folder (`files/accounts/<key>/downloads`), which needs
   no permission and which the system never clears; no choice of folder.
-  - **"Done" means the right song, whole, on disk, read through to its end** (`SongFetch`,
-    `Media3AudioCheck`). A download arrives in a part file of its own; once it has come to a
-    clean end it is **verified**, and only then moved to its own name (the folder synced) and
-    entered in the account's catalogue, **which is the mark**: a file without an entry is
-    never played and is cleared away. Verified means all of:
-    - it is as long as the server said that answer was; for the file as it is, that is also
-      the size the library gives the song (if they disagree, the server is asked for the
-      song again, once, and its newer word gone by; a library that gives no size can't
-      disagree, and if the server stated no length either, being read through is what
-      vouches for it);
-    - its bytes are audio in the container it should be in, as Media3's own extractors read
-      them (not its name, not what the server called it);
-    - **every sample of it reads, from the first to the end of the file**, with no error and
-      no end part-way through anything (not decoded: read and let go). The first check
-      stopped once it had a track and a length, so good headers with nothing sound behind
-      them passed. Two things Media3's readers pass in silence are caught as well: a FLAC
-      frame that doesn't match its own checksum (each frame ends with a CRC-16; the reader
-      finds frames by their headers and never looks inside), and an MP3 with a stretch that
-      is not MP3, where the reader looks 128 KiB for the next frame and then *ends the song
-      there*, with no error (seen by where it stopped; taken for damage unless what it had
-      read by then is the song's length, when the rest is only a tag);
-    - **the phone has a decoder for it**, asked of the system as the player's renderer asks
-      (`MediaCodecUtil.getDecoderInfosSoftMatch`). If not (an ALAC in an `.m4a`), the file as
-      it is is never marked: the server's conversion is downloaded in its place, as
-      streaming asks for one the phone can't play;
-    - where its length in bytes can't vouch for it (a conversion, which comes with none; a
-      library that gives the song no size), **its samples run as long as the song is known
-      to** (no more than a second and a two-hundredth short, two seconds and a hundredth
-      over; the server's newer word if the first disagrees), by where its last sample ends,
-      not by what its header says; and it does not stop part-way through a frame. With no
-      length known for the song either, a clean end is all there is, and is taken.
-    One that fails is fetched afresh, three times in all, then listed as failed with the
-    reason. **Bounded**: one file is read through at a time across the app; the look is
-    called off when the download is; no embedded picture is decoded and an ID3 tag is
-    stepped over rather than read into memory (Media3 reads the whole tag first); what it
-    cannot avoid is what the player itself needs, an MP4's sample tables (TESTING.md has the
-    times and memory).
-  - **What "Done" guarantees, in three sentences.** A song marked Done is a file on the
-    phone that was read from its first byte to its last when it was marked, by the player's
-    own reader: every sample was there, it was the length the server said it was (or, with
-    no length to go by, ran as long as the song is known to), a FLAC's frames matched their
-    own checksums, and the phone has a decoder for what is in it. It is not a promise about
-    the sound: nothing was decoded, so bytes that were wrong inside the frames of an MP3, an
-    AAC, an Ogg or a WAV as the server sent them go unseen, and so does a conversion of a
-    song the library gives no length for that the server cut short exactly between two
-    frames. And it is true of the file as it was then: a file whose length has changed since
-    is not opened and is fetched again at the next start, and a file that has played to its
-    end is read through again (once a run) and, if it no longer passes, unmarked and fetched
-    again.
-  - **Downloads marked by an earlier build are read through once** (`Downloaded.checked`,
-    `Downloads.recheckOld`), in the background, one at a time, only while the server can be
-    asked (one that would be taken away could not otherwise be replaced, and is no worse
-    than it was); what passes is noted and not read again, what doesn't is demoted and
-    fetched again.
+  - **"Done" means the right song, whole, on disk** (`SongFetch`, `Media3AudioCheck`). A
+    download arrives in a part file of its own; once it has come to a clean end it is
+    **verified**, and only then moved to its own name (the folder synced) and entered in the
+    account's catalogue, **which is the mark**: a file without an entry is never played and
+    is cleared away. What verified means depends on whether anything says how long the file
+    should be:
+    - **The file as it is, as long as the server said that answer was, and the size the
+      library gives the song: it is the server's file, complete, and that is enough.** (If
+      the library's size disagrees, the server is asked for the song again, once, and its
+      newer word gone by.) It is not read through, timed or checksummed. Two things a length
+      cannot say are asked of its beginning: **that the player's own readers recognise it
+      and find sound in it** (tried in the order the player tries them, and read only as far
+      as the format of the sound: a FLAC's first block, an MP3's first frame, an MP4's
+      header wherever in the file that is), which is what catches a server's error page
+      saved as a song; and **that the phone can decode that sound** (below).
+    - **A conversion (which comes with no length), or a file the library gives no size for:
+      nothing else says whether it is whole, so it is read through to its end**, every
+      sample (not decoded: read and let go), with no error and no end part-way through
+      anything; **its last frame must be whole and its running time more than nothing,
+      whatever sizes agree**; it must not contradict the length its own container states
+      (half a second short of it, or past it); and its samples must run as long as the song
+      is known to (no more than a second and a two-hundredth short, two seconds and a
+      hundredth over; the server's newer word if the first disagrees; with no length known
+      for the song, a clean end is all there is, and is taken). Two things Media3's readers
+      pass in silence are caught there: a FLAC frame that doesn't match its own checksum,
+      **its last frame included** (a tag written after the sound is read as part of the
+      last frame, so one frame's worth at the end used to be let pass; now it is told apart
+      by looking: the checksum comes right part-way and a tag's own signature, or padding,
+      follows), and an MP3 with a stretch that is not MP3, where the reader looks 128 KiB
+      for the next frame and then ends the song there with no error (taken for damage
+      unless what it had read by then is the song's length, when the rest is only a tag).
+    - **The phone can decode it, by the player's own answer** (`Media3AudioCheck
+      .playerDecodes`): the decoders for that kind of sound, as the player's renderer lists
+      them, and whether one of them takes **this very format**, its profile, channels and
+      sample rate (`MediaCodecInfo.isFormatSupported`, what `MediaCodecAudioRenderer` asks
+      at 1.11.1); not merely whether a decoder for the kind exists. **A question that can't
+      be put is a no.** A no (an ALAC in an `.m4a`; more channels than the phone decodes) is
+      not a failure: the server's conversion is downloaded in its place, that is remembered
+      on the disk, and the file as it is is not asked for again.
+    - **The server's own copy may be what has the flaw.** When a file that is a song fails
+      its reading-through, and the next complete fetch brings exactly the same bytes (the
+      same length and SHA-256) failing the same way, asking again will bring nothing else:
+      it is kept, marked downloaded, its entry says what is wrong with it
+      (`Downloaded.flaw`), and Diagnostics says the server's copy has a flaw. One that fails
+      differently each time is fetched three times in all and then listed as failed with
+      the reason. Something that is not a song at all is never kept, however often it comes.
+    **Bounded**: one file is looked at or read through at a time across the app; a
+    reading-through is called off when the download is; no embedded picture is decoded and
+    an ID3 tag is stepped over rather than read into memory (Media3 reads the whole tag
+    first); what it cannot avoid is what the player itself needs, an MP4's sample tables
+    (TESTING.md has the times and memory).
+  - **What "Done" guarantees, in three sentences.** A song marked Done that was fetched as
+    the file it is on the server is a file on the phone exactly as long as the server said
+    it was sending and as the server's library says the song's file is, whose beginning the
+    player's own reader recognises as sound the phone can decode. A song marked Done that
+    the server converted, or whose size the library doesn't give, was read from its first
+    sample to its last when it was marked, ended whole, and ran as long as the song is known
+    to (or, with no length to go by, to a clean end); unless its entry says it has a flaw,
+    which means the server sent the very same bytes twice and they are all there is. It is
+    not a promise that every byte inside is the sound that was recorded (nothing is decoded,
+    and an original is not read past its beginning: a file the server holds damaged is
+    downloaded damaged, as it would be streamed), and it is true of the file as it was then:
+    a file whose length has changed since is not opened and is fetched again at once, and
+    one that fails when played is kept, marked as needing a fresh copy, and replaced when
+    one has arrived.
   - **Picking up where it stopped.** The file as it is can be carried on with, but only as
     part of the *same* file. A part has a record beside it (`.<name>.part.meta`): the
     server's validator for the copy it came from, the file's whole length, and how much of the
@@ -815,9 +841,11 @@ How it is built (M1a):
     validator, "no such range", or anything else that doesn't fit throws the part away and
     fetches from nothing. A part is never made a download on the strength of its size. A
     conversion starts again. A server's error page in place of the song is never saved.
-  - **At sign-in, a marked file that is not the length recorded is not a download**: the
-    catalogue drops it as it is read and the engine fetches it again; the player opens a
-    download only if it is still that length.
+  - **A marked file that is not the length recorded is not a download, at sign-in and in
+    the run alike**: the catalogue drops it as it is read, or the moment the player finds it
+    so as it opens the song (`Downloads.notWhole`), and the engine fetches it again; the
+    player opens a download only if it is still that length. The catalogue and the player
+    never disagree about it.
   - **The catalogue survives being interrupted** (`Catalogue`). A mark is one line added to
     a log and synced. The log is only ever added to after its last whole line: a line cut
     short (the app killed, a write that failed) is cut off when the log is read and again

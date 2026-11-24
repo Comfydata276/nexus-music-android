@@ -287,30 +287,30 @@ class PinnedCopyTest {
     // ---- What a failure is laid at -----------------------------------------------------------
 
     @Test
-    fun whatIsSetAsideIsTheFileAndADecoderOrOutputErrorBlamesNothing() {
+    fun aDownloadThatNeedsAFreshCopyIsStillOnThePhoneAndADecoderOrOutputErrorBlamesNothing() {
         val dir = folder.newFolder("downloads")
         val catalogue = Catalogue(dir)
-        fun put(modified: Long): File {
-            val file = File(dir, "s1.flac").also { it.writeBytes(ByteArray(10)) }
-            catalogue.add(Downloaded(Song(id = "s1", title = "One"), "s1.flac", 10, at = modified / 1000, suffix = "flac", modified = modified))
-            return file
-        }
+        val file = File(dir, "s1.flac").also { it.writeBytes(ByteArray(10)) }
+        catalogue.add(Downloaded(Song(id = "s1", title = "One"), "s1.flac", 10, at = 1_000, suffix = "flac", modified = 1_000_000))
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
         val availability = Availability(catalogue, KeptIndex(File(folder.root, "kept.json"), scope, kotlinx.coroutines.Dispatchers.Unconfined), cap = { 0 }, keeping = { false })
-        val file = put(1_000_000)
         assertTrue(availability.isDownloaded("s1"))
-        // That file couldn't be parsed: set aside, once.
-        assertTrue(availability.setAside("s1", file, 1_000_000))
-        assertFalse(availability.setAside("s1", file, 1_000_000))
-        assertFalse(availability.isDownloaded("s1"))
-        assertTrue(availability.isSetAside("s1"))
-        // Downloaded again: another file, with a fresh chance.
-        catalogue.remove(listOf("s1"))
-        put(2_000_000)
+        // That file couldn't be parsed: it needs a fresh copy. It is still a download, on
+        // the phone, and still what plays with no server. (It used to be set aside for the
+        // rest of the run, and deleted.)
+        assertTrue(catalogue.stale(catalogue.entry("s1")!!)!!.stale)
         assertTrue(availability.isDownloaded("s1"))
-        // And a failure of the file that was there before is not laid at the one there now.
-        assertFalse(availability.setAside("s1", file, 1_000_000))
-        assertTrue(availability.isDownloaded("s1"))
+        assertTrue(availability.plays(Song(id = "s1", title = "One")))
+        assertTrue(file.isFile)
+        // And a failure of a file that was there before is not laid at the one there now.
+        assertEquals(null, catalogue.stale(catalogue.entry("s1")!!.copy(modified = 5)))
+
+        // Which failures say the phone can't decode what the file holds: the next copy is
+        // the server's conversion.
+        assertTrue(Recovery.beyondThePhone(PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES))
+        assertTrue(Recovery.beyondThePhone(PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED))
+        assertFalse(Recovery.beyondThePhone(PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED))
+        assertFalse(Recovery.beyondThePhone(PlaybackException.ERROR_CODE_DECODING_FAILED))
 
         // Which failures are the file's: it couldn't be read or parsed, or holds what the
         // phone has no way to play.

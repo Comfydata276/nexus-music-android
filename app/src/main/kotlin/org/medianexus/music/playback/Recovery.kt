@@ -19,11 +19,19 @@ object Recovery {
      * Whether a playback error, met while a song's **downloaded file** was playing, can be
      * laid at that file: it couldn't be read (`local`: the read of the file itself failed),
      * it couldn't be parsed, or what is in it is something this phone has no way to play.
-     * Then the file is set aside and the song streamed. Anything else (a decoder that fell
+     * Then the download needs a fresh copy, and the song is streamed meanwhile if it can be.
+     * Anything else (a decoder that fell
      * over or couldn't be had, the sound output failing) says nothing about the file, and
      * blames nothing: a codec taken away by another app must not cost a good download.
      */
     fun laidAtTheFile(errorCode: Int, local: Boolean): Boolean = local || errorCode in FILE_FAULTS
+
+    /** Whether the error says the phone can't decode what the file holds (as against the
+     *  file being unreadable): the same file fetched again would fail the same way, so what
+     *  is fetched next is the server's conversion. */
+    fun beyondThePhone(errorCode: Int): Boolean =
+        errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ||
+            errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES
 
     private val FILE_FAULTS = setOf(
         androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,

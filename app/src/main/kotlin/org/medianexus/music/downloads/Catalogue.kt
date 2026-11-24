@@ -36,10 +36,14 @@ data class Downloaded(
     /** The file's modification time when it was marked whole (milliseconds since 1970; 0 for
      *  one marked before this was kept): with its name, which file this entry is of. */
     val modified: Long = 0,
-    /** The version of the check this file passed when it was marked whole, or has passed
-     *  since (`Media3AudioCheck.VERSION`; 0 for one marked by a build that looked only at a
-     *  file's headers). One below the present version is checked again, once. */
-    val checked: Int = 0,
+    /** **It needs a fresh copy**: it failed when it was played, for a reason that is the
+     *  file's own. It is still a download, still on the phone and still played with no
+     *  server (as far as it plays); a new copy is fetched, and takes its place only once it
+     *  has been verified. Until then the server's copy is preferred when it can be had. */
+    val stale: Boolean = false,
+    /** What is wrong with it, in plain words, if it was kept knowing something is: the
+     *  server's own copy has the flaw (see `SongFetch`). Empty otherwise. */
+    val flaw: String = "",
 ) {
     /** Its bit rate in kbps, as near as its size and the song's length say (Windows'
      *  `saved_as`). */
@@ -115,6 +119,7 @@ class Catalogue(
     private val songs = LinkedHashMap<String, Downloaded>()
     private val lists = LinkedHashMap<String, DownloadedList>()
     private val failures = LinkedHashMap<String, Failed>()
+    private val converts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** Changes in the log since the list was last written whole. */
     private var logged = 0
@@ -163,7 +168,39 @@ class Catalogue(
         wanting = found
         read(LISTS_FILE, ListSerializer(DownloadedList.serializer()))?.forEach { lists[it.key] = it }
         read(FAILED_FILE, ListSerializer(Failed.serializer()))?.forEach { failures[it.song.id] = it }
+        read(CONVERT_FILE, ListSerializer(Convert.serializer()))?.forEach { converts[it.id] = it.size }
         publish()
+    }
+
+    // ---- Songs whose own file this phone can't play ------------------------------------------
+
+    /** A song whose file, as it is on the server, this phone was found not to decode: the
+     *  song's id and that file's size (so that another file under the same id has a fresh
+     *  chance). */
+    @Serializable
+    private class Convert(val id: String, val size: Long = 0)
+
+    /**
+     * This phone can't decode the song's file as it is (asked of the player before it was
+     * marked, or found by the player when it was played): **remembered, on the disk**, so
+     * that it is downloaded, and streamed, as the server converts it, and the same file is
+     * never fetched again to fail again. It outlives "Remove all": it is a fact about the
+     * phone and the file, not a download.
+     */
+    fun mustConvert(song: Song) {
+        synchronized(lock) {
+            if (converts.put(song.id, song.size) == song.size) return
+            write(CONVERT_FILE, ListSerializer(Convert.serializer()), converts.map { Convert(it.key, it.value) }, durable = true)
+        }
+    }
+
+    /** Whether the song's file as it is has been found not to play on this phone (in memory:
+     *  asked as songs are opened). */
+    fun convertsFor(song: Song): Boolean = convertsFor(song.id, song.size)
+
+    fun convertsFor(id: String, size: Long): Boolean {
+        val of = converts[id] ?: return false
+        return of <= 0 || size <= 0 || of == size
     }
 
     /** The list as last written whole; the one before it if that can't be read, or isn't
@@ -305,8 +342,11 @@ class Catalogue(
         synchronized(lock) {
             // The mark, on the disk before it is in memory: one line, synced.
             append(Change(add = entry))
-            songs.remove(entry.song.id)
+            val before = songs.remove(entry.song.id)
             songs[entry.song.id] = entry
+            // A copy this one replaces, under another name (it was the file as it is, and
+            // this is the server's conversion): gone only now, the new one marked.
+            if (before != null && before.file != entry.file) File(dir, before.file).delete()
             compactIfDue()
             if (failures.remove(entry.song.id) != null) writeFailures()
             publish()
@@ -340,28 +380,44 @@ class Catalogue(
     }
 
     /**
-     * A download marked whole by an earlier build has now passed the present check
-     * (`version`): noted, so it is not checked again. Only if it is still the download that
-     * was looked at (`was`). Nothing is published for it: nothing anyone is shown changes.
+     * This download needs a fresh copy (see [Downloaded.stale]): said on the disk, so that it
+     * is still so after the app is next started. Only if it is still the download that failed
+     * (`was`). Returns the entry as it now stands; null if it is no longer that download, or
+     * the phone would not take the write (then it stays as it was).
      */
-    fun passed(was: Downloaded, version: Int) {
+    fun stale(was: Downloaded): Downloaded? {
         synchronized(lock) {
-            if (songs[was.song.id] != was) return
-            val now = was.copy(checked = version)
+            val entry = songs[was.song.id] ?: return null
+            if (entry.file != was.file || entry.modified != was.modified) return null
+            if (entry.stale) return entry
+            val now = entry.copy(stale = true)
             try {
                 append(Change(add = now))
             } catch (_: IOException) {
-                // Checked again next time: nothing is lost.
-                return
+                note("downloads: a download that needs a fresh copy couldn't be marked so (the list couldn't be written)")
+                return null
             }
             songs[was.song.id] = now
             compactIfDue()
+            publish()
+            return now
         }
     }
 
-    /** The downloads as they stand this instant, the newest change included (what [state]
-     *  last published may be a moment behind for a change nobody is shown: see [passed]). */
-    fun entries(): List<Downloaded> = synchronized(lock) { songs.values.toList() }
+    /**
+     * A download's file is no longer the length that was recorded when it was verified: it
+     * is not that download, in the run as at the start of one (see the class's `init`). It is
+     * unmarked, what is left of it goes, and the entry that was is returned for it to be
+     * fetched again; null if the file is the right length after all (it has been replaced
+     * since by a fresh copy), or its unmarking couldn't be written.
+     */
+    fun dropIfNotWhole(id: String): Downloaded? {
+        synchronized(lock) {
+            val entry = songs[id] ?: return null
+            if (entry.bytes > 0 && File(dir, entry.file).length() == entry.bytes) return null
+            return entry.takeIf { remove(listOf(id)).isNotEmpty() }
+        }
+    }
 
     /**
      * **Everything goes** (Settings, "Remove all"): every download, every list downloaded
@@ -585,11 +641,12 @@ class Catalogue(
         private const val COMPACT_AFTER = 200
         const val LISTS_FILE = "collections.json"
         const val FAILED_FILE = "failed.json"
+        const val CONVERT_FILE = "convert.json"
 
         /** The key the songs asked for by themselves are kept under, among the lists (it is
          *  not one, and is never shown as one). */
         const val SINGLES = "songs"
-        private val OWN_FILES = setOf(SONGS_FILE, BACKUP_FILE, LOG_FILE, LISTS_FILE, FAILED_FILE)
+        private val OWN_FILES = setOf(SONGS_FILE, BACKUP_FILE, LOG_FILE, LISTS_FILE, FAILED_FILE, CONVERT_FILE)
         private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     }
 }
