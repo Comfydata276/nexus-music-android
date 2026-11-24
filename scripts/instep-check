@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # The end-to-end check of keeping in step: the phone's code and the Windows app's own code
 # exchanging in turn through a real Navidrome (docs/TESTING.md, "In step with other devices").
+# Besides the exchange in turn: a pin made on a phone before it had read the PC's pins, and
+# its process killed; a phone upgraded from the files of the build before keeping in step
+# (app/src/test/resources/instep-upgrade); a server whose answers leave out a playlist's
+# owner and comment, and one whose sync playlist has an empty comment; a phone whose clock is
+# an hour out.
 #
 #   scripts/instep-check          starts a test server of its own (instance "step"), builds
 #                                 the Windows code (tools/instep), runs InStepLiveTest
@@ -24,6 +29,8 @@ program="$(tools/instep/run build | tail -1)"
 mkdir -p build/instep
 cp "$program" build/instep/instep
 
+# (Each test of the run adds its lines to this file.)
+rm -f app/build/instep/live.txt
 status=0
 DX_DOCKER_ARGS="-e NEXUS_STEP_SERVER=http://127.0.0.1:$NEXUS_TEST_PORT -e NEXUS_STEP_TOOL=/work/build/instep/instep" \
   scripts/dx ./gradlew --no-daemon :app:cleanTestDebugUnitTest :app:testDebugUnitTest --tests '*InStepLiveTest*' >build/instep/gradle.txt 2>&1 || status=$?
