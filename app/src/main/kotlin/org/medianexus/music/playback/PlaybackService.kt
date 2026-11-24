@@ -288,6 +288,9 @@ class PlaybackService : MediaLibraryService() {
         // from where it is, as on Windows (`reload_current`).
         scope.launch { graph.settings.state.map { it.bitrate }.distinctUntilChanged().drop(1).collect { qualityChanged() } }
         main.postDelayed(ticker, TICK_MILLIS)
+        // The server found to be out of reach, with a song chosen that isn't on the phone:
+        // passed over then, not after the stream's own tries have run their course.
+        scope.launch { graph.watch.state.map { it.unreachable && it.sure && !it.manual }.distinctUntilChanged().collect { if (it) passOverOutOfReach() } }
         // Fetching ahead stops the moment offline mode goes on, or the server is gone.
         scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().collect { aheadNow() } }
         scope.launch { graph.settings.state.map { it.cacheAhead to it.cacheLimitMb }.distinctUntilChanged().collect { aheadNow() } }
@@ -1094,6 +1097,7 @@ class PlaybackService : MediaLibraryService() {
     private inner class Watcher : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
+                heardUid = player.queue.currentUid()
                 failures = 0
                 stopWaiting()
                 gaveUp = false
@@ -1120,6 +1124,9 @@ class PlaybackService : MediaLibraryService() {
             gaveUp = false
             // An outage is counted for the song it stopped: this one starts from nothing.
             goingWell()
+            // Come to a song that isn't on the phone, with the server known to be out of
+            // reach: not waited on.
+            passOverOutOfReach()
             // Rolled into the next song while playing (the song before it has had its last
             // sample, in onPositionDiscontinuity, which comes first).
             if (exo.isPlaying) countPlaying()
@@ -1240,6 +1247,9 @@ class PlaybackService : MediaLibraryService() {
                     exo.prepare()
                 }
                 offline(error) -> passOver()
+                // Chosen with the server known to be out of reach, and not on the phone:
+                // the next that is, at once, with a line saying so. Not "Reconnecting…".
+                network(error) && passOverOutOfReach() -> Unit
                 network(error) -> {
                     // Is the server there at all? (Windows asks it, as here: a ping.) Out of
                     // reach, the app is offline until it is back: what plays, plays from the
@@ -1360,6 +1370,50 @@ class PlaybackService : MediaLibraryService() {
         exo.pause()
         // The words change: no longer "Reconnecting…".
         player.refresh()
+    }
+
+    /** The queue entry that has been heard since it came to the cursor (its number). */
+    private var heardUid: Long? = null
+
+    /**
+     * The server is **known** to be out of reach, and the song at the cursor is not on the
+     * phone and has not been heard since it was chosen (see [Recovery.passesOverOutOfReach]):
+     * the next in the queue that can be played is started at once, and a short line says
+     * why; with none, the player stops where it is and says that. Returns whether it did
+     * either. Asked when the server is found to be out of reach, when the player comes to
+     * another song, and when a stream fails.
+     */
+    private fun passOverOutOfReach(): Boolean {
+        val era = era ?: return false
+        val reach = graph.watch.state.value
+        val song = player.queue.current() ?: return false
+        val known = reach.unreachable && reach.sure && !reach.manual
+        val onPhone = song.radioUrl.isEmpty() && era.account.availability.plays(song)
+        if (!Recovery.passesOverOutOfReach(known, onPhone, heard = heardUid == player.queue.currentUid(), meansToPlay = exo.playWhenReady)) return false
+        val plays = { index: Int -> (exo.getMediaItemAt(index).localConfiguration?.tag as? QueuePlayer.SongTag)?.song?.let { it.radioUrl.isEmpty() && era.account.availability.plays(it) } == true }
+        val next = Recovery.nextThatPlays(exo.currentMediaItemIndex, exo.mediaItemCount, plays)
+        stopWaiting()
+        if (next == null) {
+            // Nothing further on is on the phone: stopped here, and said (not left trying).
+            graph.diagnostics.note("a song chosen with the server out of reach is not on the phone, and nor is anything after it: stopped")
+            exo.pause()
+            exo.stop()
+            say(getString(R.string.cant_play_offline))
+            return true
+        }
+        graph.diagnostics.note("a song chosen with the server out of reach is not on the phone: passed over for the next that is")
+        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "out of reach: passed over to place $next of the queue")
+        exo.seekTo(next, 0)
+        exo.prepare()
+        say(getString(R.string.passed_over_out_of_reach))
+        return true
+    }
+
+    /** A short line for whoever is looking: the phone's own screens (a toast), and every
+     *  controller (a car shows it under what is playing), without stopping anything. */
+    private fun say(words: String) {
+        graph.toasts.show(words)
+        runCatching { session.sendError(SessionError(SessionError.ERROR_NOT_SUPPORTED, words)) }
     }
 
     /**

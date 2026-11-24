@@ -228,7 +228,9 @@ fun OfflinePill(modifier: Modifier = Modifier) {
     val reach = org.medianexus.music.ui.downloads.reachNow()
     // (While the home network is out of bounds, its own bar says why nothing answers.)
     val blocked = ui.graph.localAccess.blocked.collectAsStateWithLifecycle().value
-    if (!reach.offline || (blocked && !reach.manual)) return
+    // (Not while it isn't yet known: offline mode has just been switched off and the server
+    // is being asked. "Can't reach server" is said once that is what was found.)
+    if (!reach.offline || (!reach.manual && !reach.sure) || (blocked && !reach.manual)) return
     val colors = Theme.colors
     val words = stringResource(if (reach.manual) R.string.offline_mode else R.string.cant_reach_server_short)
     val said = stringResource(R.string.offline_named, words)

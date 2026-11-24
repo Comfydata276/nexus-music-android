@@ -18,7 +18,7 @@ import org.medianexus.music.net.ApiError
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ServerWatchTest {
-    private var answer: () -> Unit = {}
+    private var answer: suspend () -> Unit = {}
     private var pings = 0
     private var online = 0
     private var caughtUp = 0
@@ -360,5 +360,51 @@ class ServerWatchTest {
         runCurrent()
         assertFalse(watch.state.value.unreachable)
         assertEquals(1, online)
+    }
+
+    // ---- Offline mode switched off (offline hardening 2, item 6) ------------------------------
+
+    @Test
+    fun offlineModeSwitchedOffIsStillOfflineUntilACheckOfTheServerHasSucceeded() = runTest {
+        val watch = watch()
+        watch.manual(true)
+        // The server is slow to answer the check.
+        val heard = kotlinx.coroutines.CompletableDeferred<Unit>()
+        answer = { heard.await() }
+        watch.manual(false)
+        runCurrent()
+        assertEquals(1, pings)
+        // The switch has moved and nothing has been heard from the server: the app is not
+        // online on the strength of that. (It was, at once: the sender of held changes and
+        // the downloads started against a server nobody had heard from.)
+        assertTrue(watch.offline)
+        assertFalse(watch.state.value.manual)
+        assertFalse(watch.state.value.sure)
+        assertEquals(0, caughtUp)
+        // It answers: online, caught up with, and nothing said.
+        heard.complete(Unit)
+        runCurrent()
+        assertFalse(watch.offline)
+        assertTrue(watch.state.value.sure)
+        assertEquals(1, caughtUp)
+        assertEquals(0, online)
+    }
+
+    @Test
+    fun offlineModeSwitchedOffAndStraightBackOnIsOfflineByHand() = runTest {
+        val watch = watch()
+        watch.manual(true)
+        val heard = kotlinx.coroutines.CompletableDeferred<Unit>()
+        answer = { heard.await() }
+        watch.manual(false)
+        runCurrent()
+        watch.manual(true)
+        heard.complete(Unit)
+        runCurrent()
+        // The check's answer changes nothing about a switch that is on again.
+        assertTrue(watch.state.value.manual)
+        assertTrue(watch.offline)
+        assertEquals(0, caughtUp)
+        assertEquals(0, online)
     }
 }

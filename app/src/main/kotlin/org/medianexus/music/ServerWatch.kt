@@ -56,10 +56,12 @@ data class Reach(
  * account has gone ([reset]) changes nothing.
  *
  * Offline mode switched on by hand asks nothing at all. Switched off, the server is asked
- * whether it is really there before it is assumed to be; if it is, `caughtUp` runs (held
- * changes are sent, downloads carry on), as Windows' `check_connection` catches up after any
- * check that finds the server, but nothing says "Back online": the switch was in the
- * person's hand. If it isn't, it is out of reach, and its coming back is the usual one.
+ * whether it is really there before it is assumed to be, **and until it has answered the
+ * app is still offline** (out of reach, and not sure of it: see [manual]); if it is there,
+ * `caughtUp` runs (held changes are sent, downloads carry on), as Windows' `check_connection`
+ * catches up after any check that finds the server, but nothing says "Back online": the
+ * switch was in the person's hand. If it isn't, it is out of reach, and its coming back is
+ * the usual one.
  */
 class ServerWatch(
     private val scope: CoroutineScope,
@@ -130,13 +132,30 @@ class ServerWatch(
         if (!now.value.manual && !now.value.unreachable) gone()
     }
 
-    /** Offline mode, by hand, as Settings has it. */
+    /**
+     * Offline mode, by hand, as Settings has it. **Switched off, the app is not online yet**:
+     * it is out of reach, and not sure of it, until a check of the server has succeeded
+     * (given the few seconds the first check after start-up gets). Until then nothing that
+     * waits on "no longer offline" is let go: the sender of held changes, the downloads. It
+     * used to become "online" the instant the switch moved, on no evidence, and the sender
+     * and the downloads started against a server nobody had heard from.
+     */
     fun manual(on: Boolean) {
         val was = now.value
         if (was.manual == on) return
-        now.value = was.copy(manual = on)
-        switchedOff = !on
-        if (!on) check()
+        if (on) {
+            switchedOff = false
+            now.value = was.copy(manual = true)
+            return
+        }
+        // (Its first answer after this is no return worth announcing: see [answered].)
+        switchedOff = true
+        goneAt = clock()
+        now.value = was.copy(manual = false, unreachable = true, sure = false)
+        synchronized(lock) {
+            if (asking?.isActive == true) return
+            asking = scope.launch { askOnce(first = true) }
+        }
     }
 
     /**
@@ -201,6 +220,7 @@ class ServerWatch(
             error == null -> answered()
             error.signInRefused -> {
                 now.value = now.value.copy(sure = true)
+                switchedOff = false
                 signInGone()
             }
             // No answer, an error page from something in front of the server, or an error
@@ -217,13 +237,16 @@ class ServerWatch(
     /** The server answered a ping: back, if it was out of reach; caught up with, if offline
      *  mode has just been switched off. */
     private fun answered() {
-        if (!now.value.sure) now.value = now.value.copy(sure = true)
+        if (now.value.manual) return
+        // Found there straight after offline mode was switched off: caught up with, and
+        // nothing said (the switch was in the person's hand).
+        val quiet = switchedOff
+        switchedOff = false
         if (now.value.unreachable) {
-            switchedOff = false
-            back()
-        } else if (switchedOff && !now.value.manual) {
-            switchedOff = false
-            caughtUp()
+            back(quiet)
+        } else {
+            if (!now.value.sure) now.value = now.value.copy(sure = true)
+            if (quiet) caughtUp()
         }
     }
 
@@ -247,7 +270,7 @@ class ServerWatch(
         }
     }
 
-    private fun back() {
+    private fun back(quiet: Boolean = false) {
         val was = now.value
         if (!was.unreachable) return
         now.value = was.copy(unreachable = false, sure = true)
@@ -256,8 +279,9 @@ class ServerWatch(
             loop = null
         }
         // Taken to be out of reach only because the phone had no network when the app
-        // started: caught up with, and nothing said.
-        if (assumed) {
+        // started (or `quiet`: only until this check, offline mode having just been switched
+        // off): caught up with, and nothing said.
+        if (assumed || quiet) {
             assumed = false
             caughtUp()
         } else {

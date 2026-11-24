@@ -38,6 +38,23 @@ object Recovery {
     )
 
     /**
+     * Whether the song at the cursor is to be **passed over at once** because the server is
+     * out of reach: it is known to be out of reach (`known`: a check has failed, not merely
+     * "not heard from yet"), the song is not on the phone, the player means to play it, and
+     * it has not been heard since it came to the cursor. A song that was playing when the
+     * server went is not this: it stays where it is and carries on when the server is back
+     * ("Reconnecting…"). A song chosen when there is no server to send it has nothing to
+     * reconnect to, and waiting on it kept the car silent for as long as the stream's own
+     * tries took.
+     */
+    fun passesOverOutOfReach(known: Boolean, onPhone: Boolean, heard: Boolean, meansToPlay: Boolean): Boolean =
+        known && !onPhone && !heard && meansToPlay
+
+    /** The place of the next entry after `current`, of `count`, that plays with no server;
+     *  null if none does. */
+    fun nextThatPlays(current: Int, count: Int, plays: (Int) -> Boolean): Int? = (current + 1 until count).firstOrNull(plays)
+
+    /**
      * Streaming quality was changed in Settings: whether the song at the cursor is to be
      * opened again, from where it is, so that it plays at the new quality straight away (as
      * Windows' `reload_current` does). Not if nothing is open (the next song opened is at the

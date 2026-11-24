@@ -176,7 +176,8 @@ class Graph(context: Context) {
         if (said) toasts.show(app.getString(R.string.back_online))
         val account = accounts.state.value ?: return
         account.scope.launch {
-            val sent = account.flush()
+            account.flush()
+            val sent = account.acceptedToSay()
             // Said once. (A toast takes the place of one still showing, so after "Back online"
             // it says both.)
             if (sent > 0) toasts.show(app.resources.getQuantityString(if (said) R.plurals.back_online_held_sent else R.plurals.held_sent, sent, sent))

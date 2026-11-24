@@ -146,6 +146,9 @@ class HeldChanges(
 
         /** Changes that had waited and have now been dealt with, not yet counted by [flush]. */
         val caughtUp = java.util.concurrent.atomic.AtomicInteger()
+
+        /** How many changes that had waited the server has **accepted**, in all. */
+        val accepted = MutableStateFlow(0L)
     }
 
     private val shared: Shared = synchronized(all) { all.getOrPut(file.absolutePath) { Shared() } }
@@ -153,6 +156,15 @@ class HeldChanges(
 
     /** How many changes are waiting (or being sent), for the screens and Diagnostics. */
     val waiting: StateFlow<Int> = shared.count.asStateFlow()
+
+    /**
+     * How many changes that had been held the server has since **accepted**, in all, for as
+     * long as the process has run: only ever goes up. What is said about held changes having
+     * been sent is said from this (each sayer keeps its own place in the count), so that it
+     * counts what the server took, not what it turned down for good, and counts it once,
+     * whichever of the passes sent it. ([flush]'s own number is taken by whoever asks first.)
+     */
+    val accepted: StateFlow<Long> = shared.accepted.asStateFlow()
 
     /** The file of held changes couldn't be read, and was set aside (see the class). */
     val damaged: StateFlow<Boolean> = shared.broken.asStateFlow()
@@ -267,7 +279,10 @@ class HeldChanges(
                         }
                         save()
                         strange = 0
-                        if (entry.parked) shared.caughtUp.incrementAndGet()
+                        if (entry.parked) {
+                            shared.caughtUp.incrementAndGet()
+                            if (error == null) shared.accepted.value++
+                        }
                         entry.settled?.complete(if (error == null) Settled.Taken else Settled.Failed(error))
                     }
                     error is ApiError.NotSubsonic && strange < 2 -> {

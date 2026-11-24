@@ -245,14 +245,30 @@ class AccountGraph(
         is Pending.Played -> api.scrobbleAt(change.id, change.at)
     }
 
-    /** Sends what is waiting (Windows' `flush_pending`), if the server may be asked. Says how
-     *  many changes that had been held the server has now dealt with (taken, or turned down
-     *  for good). */
-    suspend fun flush(): Int {
-        val sent = held.flush()
+    /** Sends what is waiting (Windows' `flush_pending`), if the server may be asked. */
+    suspend fun flush() {
+        val before = held.accepted.value
+        held.flush()
         // What the server now has (likes made offline) is asked for again.
-        if (sent > 0) likes.refresh()
-        return sent
+        if (held.accepted.value != before) likes.refresh()
+    }
+
+    /** How many held changes the server has accepted that nobody has yet been told of. */
+    private var saidUpTo = held.accepted.value
+
+    /**
+     * How many changes that had been held the server has accepted since this was last
+     * asked: what "the changes you made offline have been sent" counts. Accepted, not
+     * merely dealt with (one the server turned down for good was not sent in any sense the
+     * person means); and each counted once, whichever pass sent it and however many things
+     * ask for a pass at the same moment (two do, when the server comes back).
+     */
+    @Synchronized
+    fun acceptedToSay(): Int {
+        val now = held.accepted.value
+        val more = (now - saidUpTo).toInt()
+        saidUpTo = now
+        return more
     }
 
     /** Asks whether the copy of the library is out of date, and fetches it if it is. Not

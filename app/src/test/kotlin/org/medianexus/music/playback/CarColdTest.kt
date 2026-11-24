@@ -98,6 +98,12 @@ class CarColdTest {
         assertEquals("the server was asked", 0, taken.size)
     }
 
+    /** Answered without waiting on the server: within a couple of seconds, where a wait on
+     *  the black hole would be the better part of a minute. (Not held to "the server was not
+     *  asked": while it isn't known whether the server is there, it is asked behind the
+     *  answer, to fill it in.) */
+    private fun <T> atOnce(block: suspend () -> T): T = runBlocking { withTimeout(2_000) { block() } }
+
     private fun titles(entries: List<CarEntry>?) = entries!!.map { it.title }
 
     @Test
@@ -172,13 +178,13 @@ class CarColdTest {
         offline = false
         unsure = true
         val tree = tree()
-        assertEquals(listOf("Mix"), fromThePhone { titles(tree.children(CarNode.Playlists)) })
-        assertEquals(listOf("Shuffle", "Song 4"), fromThePhone { titles(tree.children(CarNode.Playlist("p1"))) })
-        assertEquals(listOf("Shuffle", "Song 2"), fromThePhone { titles(tree.children(CarNode.Liked)) })
-        assertEquals(listOf("Shuffle", "Song 2", "Song 4"), fromThePhone { titles(tree.children(CarNode.Album("al-1"))) })
-        assertEquals(listOf("Songs", "Liked songs", "Mix", "First Light"), fromThePhone { titles(tree.children(CarNode.Downloads)) })
-        assertTrue(fromThePhone { tree.search("song 4") }.any { it.title == "Song 4" })
-        assertEquals("album:al-1", fromThePhone { tree.forVoice(VoiceRequest(query = "First Light")) }!!.source)
+        assertEquals(listOf("Mix"), atOnce { titles(tree.children(CarNode.Playlists)) })
+        assertEquals(listOf("Shuffle", "Song 4"), atOnce { titles(tree.children(CarNode.Playlist("p1"))) })
+        assertEquals(listOf("Shuffle", "Song 2"), atOnce { titles(tree.children(CarNode.Liked)) })
+        assertEquals(listOf("Shuffle", "Song 2", "Song 4"), atOnce { titles(tree.children(CarNode.Album("al-1"))) })
+        assertEquals(listOf("Songs", "Liked songs", "Mix", "First Light"), atOnce { titles(tree.children(CarNode.Downloads)) })
+        assertTrue(atOnce { tree.search("song 4") }.any { it.title == "Song 4" })
+        assertEquals("album:al-1", atOnce { tree.forVoice(VoiceRequest(query = "First Light")) }!!.source)
         // Something that isn't on the phone waits only to know whether the server is there
         // (here: it turns out not to be, when the test says so), and is then answered from
         // the phone, at once and with nothing: the server itself is never waited on.
@@ -194,7 +200,88 @@ class CarColdTest {
         offline = true
         unsure = false
         known.complete(Unit)
-        assertEquals(emptyList<CarEntry>(), fromThePhone { search.await() })
-        assertEquals(emptyList<CarEntry>(), fromThePhone { folder.await() })
+        assertEquals(emptyList<CarEntry>(), atOnce { search.await() })
+        assertEquals(emptyList<CarEntry>(), atOnce { folder.await() })
+    }
+
+    // ---- Cold, on a link that swallows packets (offline hardening 2, item 6) -----------------
+
+    /** A tree for which it is never known whether the server is there: anything that waits
+     *  to know, waits for ever. */
+    private fun neverKnown(): CarTree {
+        offline = false
+        unsure = true
+        return CarTree(library, CarWords(), CarOffline(
+            now = { offline }, availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true }),
+            downloads = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) },
+            unsure = { unsure }, settle = { kotlinx.coroutines.awaitCancellation() },
+        ))
+    }
+
+    @Test
+    fun homeShowsWhatIsKeptWithoutWaitingForThePagesThatAreNot() {
+        // Liked songs is kept; the two rows of albums are not.
+        runBlocking { library.pages.put(library.liked(), org.medianexus.music.net.Found(songs = listOf(song(1), song(2), song(3)))) }
+        val tree = neverKnown()
+        // (It waited for all three if any one was not kept.) Liked songs as it is kept, the
+        // whole of it; and, neither row of albums being kept, the albums the phone has.
+        val home = atOnce { tree.children(CarNode.Home) }!!
+        assertEquals(listOf("Liked songs", "First Light"), home.map { it.title })
+        assertEquals("3 songs", home.first().subtitle)
+        // A row that is kept is shown as it is.
+        runBlocking { library.pages.put(library.albums(org.medianexus.music.net.AlbumList.Recent, 0, CarTree.HOME_ROW), listOf(org.medianexus.music.net.Album(id = "al-9", name = "Slow Rivers"))) }
+        assertEquals(listOf("Liked songs", "Slow Rivers"), atOnce { titles(tree.children(CarNode.Home)) })
+        // With none of the three kept: what the phone has by itself.
+        runBlocking {
+            library.pages.forget(library.liked().key)
+            library.pages.forget(library.albums(org.medianexus.music.net.AlbumList.Recent, 0, CarTree.HOME_ROW).key)
+        }
+        assertEquals(listOf("Liked songs", "First Light"), atOnce { titles(neverKnown().children(CarNode.Home)) })
+    }
+
+    @Test
+    fun theArtistAndGenreBranchesAnswerFromThePhoneWhileItIsNotKnown() {
+        val tree = neverKnown()
+        // No page of any of these is kept: each used to go straight to the server.
+        assertEquals(listOf("Paper Lanterns"), atOnce { titles(tree.children(CarNode.Artists)) })
+        assertEquals(listOf("Folk"), atOnce { titles(tree.children(CarNode.Genres)) })
+        assertEquals(listOf("First Light"), atOnce { titles(tree.children(CarNode.Artist("ar-1"))) })
+        assertEquals(listOf("First Light"), atOnce { titles(tree.children(CarNode.Genre("Folk"))) })
+        assertEquals("Paper Lanterns", atOnce { tree.item(CarNode.Artist("ar-1")) }!!.title)
+        assertEquals("First Light", atOnce { tree.item(CarNode.Album("al-1")) }!!.title)
+        // A kept page is shown as it is (the whole of it, as when online), also at once.
+        runBlocking {
+            library.pages.put(library.artists(), listOf(org.medianexus.music.net.Artist(id = "ar-1", name = "Paper Lanterns"), org.medianexus.music.net.Artist(id = "ar-2", name = "Sable Arcade")))
+        }
+        assertEquals(listOf("Paper Lanterns", "Sable Arcade"), atOnce { titles(tree.children(CarNode.Artists)) })
+    }
+
+    @Test
+    fun aSongFoundOnThePhoneIsNotHeldUpForTheListOfPlaylists() {
+        // No playlist is downloaded, and the server's list of them is not kept.
+        catalogue.forget("playlist:p1")
+        val tree = neverKnown()
+        // (The song was found at once, and then the list of playlists was asked of the server.)
+        assertTrue(atOnce { tree.search("song 4") }.any { it.title == "Song 4" })
+        assertEquals("album:al-1", atOnce { tree.forVoice(VoiceRequest(query = "First Light")) }!!.source)
+    }
+
+    @Test
+    fun aPlaylistAskedForByNameAndDownloadedPlaysWithoutWaitingToKnow() {
+        val tree = neverKnown()
+        // "Play Mix": no song, album or artist on the phone is called that; a playlist is.
+        assertEquals("playlist:p1", atOnce { tree.forVoice(VoiceRequest(query = "Mix")) }!!.source)
+        assertEquals("playlist:p1", atOnce { tree.forVoice(VoiceRequest(query = "Mix", focus = VoiceRequest.Focus.PLAYLIST)) }!!.source)
+        assertTrue(atOnce { tree.search("mix") }.any { it.title == "Mix" })
+    }
+
+    @Test
+    fun aSongChosenWhileItIsNotKnownPlaysFromThePhone() {
+        val tree = neverKnown()
+        val row = atOnce { tree.children(CarNode.Album("al-1")) }!!.first { it.title == "Song 4" }
+        val chosen = atOnce { tree.play(CarIds.parse(row.id) as CarNode.Track) }!!
+        assertEquals("s4", chosen.songs[chosen.start].id)
+        // A song with no album to speak of, that is on the phone: not asked of the server.
+        assertEquals("s2", atOnce { tree.play(CarNode.Track("s2", ListRef.Album(""), -1)) }!!.songs.single().id)
     }
 }

@@ -400,4 +400,26 @@ class HeldChangesTest {
         }
         assertEquals(1, notes.count { "1 play could be neither sent to the server nor kept on the phone, and is lost" in it })
     }
+
+    // ---- What is said to have been sent (offline hardening 2, item 6) --------------------------
+
+    @Test
+    fun whatIsSaidToHaveBeenSentIsWhatTheServerAcceptedCountedOnce() = runBlocking {
+        left(star("a", true), star("b", true), star("c", true))
+        // The server takes two and turns one down for good.
+        val held = held { if (it.id == "b") throw ApiError.Server(70, "not found") }
+        val before = held.accepted.value
+        // Two things ask for a pass at the same moment, as they do when the server comes back.
+        val one = async(Dispatchers.Default) { held.flush() }
+        val two = async(Dispatchers.Default) { held.flush() }
+        one.await()
+        two.await()
+        // Two were accepted: not three "sent", and not two said twice or split between the
+        // askers so that neither can say it.
+        assertEquals(2L, held.accepted.value - before)
+        assertTrue(held.all().isEmpty())
+        // Something sent straight away, never held, is not a change "made offline".
+        held.submit(star("d", true))
+        assertEquals(2L, held.accepted.value - before)
+    }
 }

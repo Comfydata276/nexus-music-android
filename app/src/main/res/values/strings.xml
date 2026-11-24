@@ -108,6 +108,8 @@
     <!-- What the session (the car, and every app with a controller) is told: fixed sentences, never a song's name or the words of a request. -->
     <string name="couldnt_play_song">Couldn\'t play this song</string>
     <string name="couldnt_find_that">Couldn\'t find that in your library</string>
+    <!-- A song chosen while the server can't be reached, that isn't on the phone: said as the next that is begins. Short: a car shows it. -->
+    <string name="passed_over_out_of_reach">Can\'t reach your server: skipped to a song on this phone</string>
     <string name="cant_play_offline">That isn\'t downloaded, so it can\'t play while you\'re offline</string>
     <string name="list_is_empty_now">There\'s nothing in that list any more.</string>
     <string name="nothing_to_play">Nothing to play yet. Like some songs, or play something on your phone.</string>

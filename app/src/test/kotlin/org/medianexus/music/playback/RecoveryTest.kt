@@ -94,4 +94,32 @@ class RecoveryTest {
         // Waiting for the server: the next try is.
         assertFalse(Recovery.reopensForQuality(ready, downloaded = false, radio = false, waitingForServer = true))
     }
+
+    // ---- A song chosen with the server out of reach (offline hardening 2, item 6) -------------
+
+    @Test
+    fun aSongChosenWithTheServerKnownToBeOutOfReachIsPassedOverAtOnce() {
+        // Known out of reach, not on the phone, meant to play, not yet heard: passed over.
+        assertTrue(Recovery.passesOverOutOfReach(known = true, onPhone = false, heard = false, meansToPlay = true))
+        // On the phone: it plays.
+        assertFalse(Recovery.passesOverOutOfReach(known = true, onPhone = true, heard = false, meansToPlay = true))
+        // It was playing when the server went: it stays where it is, and carries on when the
+        // server is back.
+        assertFalse(Recovery.passesOverOutOfReach(known = true, onPhone = false, heard = true, meansToPlay = true))
+        // Not known (a request failed; the server has not been asked, or has not answered):
+        // that is not yet "out of reach".
+        assertFalse(Recovery.passesOverOutOfReach(known = false, onPhone = false, heard = false, meansToPlay = true))
+        // Paused: nothing is being waited for.
+        assertFalse(Recovery.passesOverOutOfReach(known = true, onPhone = false, heard = false, meansToPlay = false))
+    }
+
+    @Test
+    fun whatItIsPassedOverForIsTheNextThatPlays() {
+        val onPhone = setOf(0, 4, 7)
+        assertEquals(4, Recovery.nextThatPlays(current = 1, count = 9) { it in onPhone })
+        assertEquals(7, Recovery.nextThatPlays(current = 4, count = 9) { it in onPhone })
+        // Never back to an earlier one, never the one it is on.
+        assertEquals(null, Recovery.nextThatPlays(current = 7, count = 9) { it in onPhone })
+        assertEquals(null, Recovery.nextThatPlays(current = 0, count = 1) { true })
+    }
 }
