@@ -382,6 +382,20 @@ class LikesTest {
     }
 
     @Test
+    fun aLikeLeftHeldByAnEarlierRunIsInLikedSongsWhateverIsHeardFirst() = runBlocking {
+        // An earlier run left b's like held. Before the account has been told what is held
+        // (its collector runs when it runs), the server's Liked songs arrives, without b: the
+        // heart and the list must agree at once. (The list used to learn of b only from that
+        // collector; the heart's set, already holding b, didn't change when it did, so the
+        // page wasn't told to look again.)
+        held.value = listOf(org.medianexus.music.store.Pending.Star("song", "b", true, song = b))
+        val (likes, _) = holding()
+        likes.heard(Found(songs = listOf(a)))
+        assertTrue(likes.isLiked("b"))
+        assertEquals(listOf("b", "a"), likes.songsOf(Found(songs = listOf(a)))!!.map { it.id })
+    }
+
+    @Test
     fun aLikeStillWaitingToBeSentWinsOverWhatTheServerSays() = runBlocking {
         server = Found(songs = listOf(a))
         val (likes, pages) = holding()

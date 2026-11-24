@@ -139,19 +139,7 @@ class Likes(
 
     /** The held changes are not what they were (what an earlier run left has been read; one
      *  that had waited has gone): what is shown is worked out again. */
-    fun heldChanged() = synchronized(lock) {
-        // A song whose like is held, and which the server's list doesn't have yet, heads
-        // Liked songs with what was shown of it when it was liked: after a restart as well,
-        // when nothing else here remembers it (the kept list may by then be the server's,
-        // fetched while the like was held).
-        val likedNow = waiting()
-        for (change in held.value) {
-            val song = (change as? Pending.Star)?.song ?: continue
-            if (likedNow[Item(StarTarget.SONG, song.id)] != true) continue
-            if (song.id !in listed && song.id !in justLiked) justLiked[song.id] = song
-        }
-        publish()
-    }
+    fun heldChanged() = synchronized(lock) { publish() }
 
     /**
      * A like or unlike that had been held has had its answer: the server took it, or (not
@@ -370,10 +358,21 @@ class Likes(
     }
 
     private fun publish() {
+        // A song whose like is held, and which the server's list doesn't have yet, heads
+        // Liked songs with what was shown of it when it was liked: after a restart as well,
+        // when nothing else here remembers it (the kept list may by then be the server's,
+        // fetched while the like was held). Taken in on every publish, not only when the
+        // account says what is held has changed, so the heart and the list never disagree.
+        val likedNow = waiting()
+        for (change in held.value) {
+            val song = (change as? Pending.Star)?.song ?: continue
+            if (likedNow[Item(StarTarget.SONG, song.id)] != true) continue
+            if (song.id !in listed && song.id !in justLiked) justLiked[song.id] = song
+        }
         val songs = server.songs.toMutableSet()
         val albums = server.albums.toMutableSet()
         // The server's word, then what is held for it, then what is being sent now.
-        for (changes in arrayOf(waiting(), wanted)) {
+        for (changes in arrayOf(likedNow, wanted)) {
             for ((item, like) in changes) {
                 val set = if (item.target == StarTarget.ALBUM) albums else songs
                 if (like) set += item.id else set -= item.id
