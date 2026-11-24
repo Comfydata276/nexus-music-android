@@ -53,6 +53,25 @@ class SongTable private constructor(
     /** When it was added to the library, in milliseconds since 1970; 0 if not known. */
     fun createdMillis(i: Int): Long = times[i * TIMES + CREATED].let { if (it == NO_TIME) 0 else it }
 
+    // What the mixes and "Your stats" read of every song, without making one (see `Mixes`).
+    fun artistId(i: Int): String = texts[textRefs[i * TEXTS + ARTIST_ID]]
+    fun genre(i: Int): String = texts[textRefs[i * TEXTS + GENRE]]
+    fun year(i: Int): Int = numbers[i * NUMBERS + YEAR]
+    fun playCount(i: Int): Int = numbers[i * NUMBERS + PLAY_COUNT]
+    fun rating(i: Int): Int = numbers[i * NUMBERS + RATING]
+
+    /** When it was last played, in seconds since 1970, as Windows' `parse_time` reads the
+     *  server's time: 0 for none, or for a time that can't be read. */
+    fun playedSeconds(i: Int): Long = seconds(times[i * TIMES + PLAYED])
+
+    /** When it was added to the library, as [playedSeconds]. */
+    fun createdSeconds(i: Int): Long = seconds(times[i * TIMES + CREATED])
+
+    /** Whether the server's copy says it is liked (Windows' `is_liked` with no likes known). */
+    fun starred(i: Int): Boolean = times[i * TIMES + STARRED] != NO_TIME || oddTimes.containsKey(i.toLong() * TIMES + STARRED)
+
+    private fun seconds(millis: Long): Long = if (millis == NO_TIME) 0 else Math.floorDiv(millis, 1000L)
+
     /** How many songs have been made of the table (for the tests; not exact across threads). */
     internal var made = 0L
 

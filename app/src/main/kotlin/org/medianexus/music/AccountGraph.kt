@@ -204,6 +204,15 @@ class AccountGraph(
      *  `plays.log`; see [org.medianexus.music.store.PlayLog]). */
     val playLog = org.medianexus.music.store.PlayLog(File(account.dirs.data, "plays.log"), io, note = wiring?.note ?: {})
 
+    /** The account's mixes of its own, made to rules (Windows' `rule_mixes`). */
+    val ruleMixes = org.medianexus.music.store.RuleMixes(File(account.dirs.data, "rule-mixes.json"), io)
+
+    /** The "Made for you" mixes, kept up to date off the main thread (see [org.medianexus.music.library.MixBook]). */
+    val mixes = org.medianexus.music.library.MixBook(
+        scope, copy.state, likes.liked, recentlyPlayed.state, ruleMixes.state,
+        took = { mixes, songs, millis -> if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusMixes", "$mixes mixes from $songs songs in ${"%.1f".format(millis)} ms") },
+    )
+
     /**
      * When each of a list's songs was added to it, in seconds (0 where that isn't known), for
      * "Date added" (Windows' `added_dates`): a playlist's own notes, else the day the song
@@ -259,6 +268,7 @@ class AccountGraph(
             // With no log yet, it starts from what Recently played remembers (Windows' `load`).
             playLog.open { recentlyPlayed.state.value.map { it.song.id to it.at } }
         }
+        scope.launch { ruleMixes.open() }
         // Every copy of a playlist read from the server (or the phone) is looked at, so a song
         // that turns up in it later can be dated (Windows' `observe_playlist`).
         scope.launch {

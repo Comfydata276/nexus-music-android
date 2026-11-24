@@ -39,11 +39,23 @@ class Plays internal constructor(
     private val songs: IntArray,
     private val ats: LongArray,
     private val froms: IntArray,
-    private val names: Array<String?>,
+    private val nameTable: Array<String?>,
 ) {
-    fun song(i: Int): String = names[songs[i]]!!
+    /** (Read once: the log's array of names may grow past it, but never changes below it.) */
+    private val nameCount = nameTable.size
+
+    fun song(i: Int): String = nameTable[songs[i]]!!
     fun at(i: Int): Long = ats[i]
-    fun from(i: Int): String = froms[i].let { if (it < 0) "" else names[it]!! }
+    fun from(i: Int): String = froms[i].let { if (it < 0) "" else nameTable[it]!! }
+
+    // The same by number, for counting without a map of text: every song id and route key
+    // the log names has a number of its own ([name]), below [names].
+    fun songRef(i: Int): Int = songs[i]
+    /** -1 for a play made from no playlist. */
+    fun fromRef(i: Int): Int = froms[i]
+    /** How many numbers there are (it may count names past the last play handed out). */
+    val names: Int get() = nameCount
+    fun name(ref: Int): String = nameTable[ref] ?: ""
 
     /** When the first play was, or null for none. The log is oldest first, but plays taken in
      *  from another device can be older than the newest here, so it is looked for. */
@@ -56,6 +68,16 @@ class Plays internal constructor(
 
     companion object {
         val EMPTY = Plays(0, IntArray(0), LongArray(0), IntArray(0), emptyArray())
+
+        /** These plays (song, seconds, where from), in this order. */
+        fun of(plays: List<Triple<String, Long, String>>): Plays {
+            val refs = HashMap<String, Int>()
+            val names = ArrayList<String>()
+            fun ref(name: String) = refs.getOrPut(name) { names += name; names.size - 1 }
+            val songs = IntArray(plays.size) { ref(plays[it].first) }
+            val froms = IntArray(plays.size) { plays[it].third.let { from -> if (from.isEmpty()) -1 else ref(from) } }
+            return Plays(plays.size, songs, LongArray(plays.size) { plays[it].second }, froms, names.toTypedArray())
+        }
     }
 }
 
