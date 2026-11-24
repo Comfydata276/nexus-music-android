@@ -775,6 +775,8 @@ class PlaybackService : MediaLibraryService() {
         // with nobody signed in is "no change" from the start, and must still be said.
         if (now === era?.account && told) return
         told = true
+        // Levelling values the phone found for one account's songs are not another's.
+        sound.account(now)
         // (That playing could not be started was said of the queue that was there.)
         cantStart = false
         // Someone else, or nobody: what was playing was theirs.
@@ -831,6 +833,9 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         next.scope.launch { restore(next) }
+        // The library copy arriving or changing: songs held that came without levelling
+        // values may find them there.
+        next.scope.launch { now.copy.state.collect { copy -> if (era === next) sound.songsHeld(songsHeld(), copy) } }
         // What is downloaded changed: the car's Downloads tab, and anything of it open, is
         // told to look again.
         now.downloads?.let { downloads ->
@@ -1077,7 +1082,7 @@ class PlaybackService : MediaLibraryService() {
         // levelling values from the library copy.
         sound.update(graph.settings.value, queue.shuffle)
         lyricsAhead()
-        sound.songsHeld(List(exo.mediaItemCount) { exo.getMediaItemAt(it) }.mapNotNull { (it.localConfiguration?.tag as? QueuePlayer.SongTag)?.song }, era?.account?.copy?.state?.value)
+        sound.songsHeld(songsHeld(), era?.account?.copy?.state?.value)
     }
 
     /**
@@ -2392,6 +2397,10 @@ class PlaybackService : MediaLibraryService() {
         val availability = era?.account?.availability
         ahead.want(if (availability == null) emptyList() else FetchAhead.upcoming(player.queue, count) { availability.isDownloaded(it.id) || availability.isKept(it) })
     }
+
+    /** The songs the player holds, for the sound processor's fallback levelling values. */
+    private fun songsHeld(): List<org.medianexus.music.net.Song> =
+        List(exo.mediaItemCount) { exo.getMediaItemAt(it) }.mapNotNull { (it.localConfiguration?.tag as? QueuePlayer.SongTag)?.song }
 
     /** The lyrics of the song playing and the next few are fetched ahead (see LyricsBook), as
      *  sparingly as songs are: five on Wi-Fi, the next one on mobile data, none with Data

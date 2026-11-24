@@ -95,7 +95,7 @@ fun interface SongTags {
  *   and nothing is rounded off (Normal and Quiet never round a peak, as on Windows).
  * - **Nothing made on the audio thread** while it runs: the settings arrive as one value
  *   swapped in ([Sound]), filters and buffers are made when the format changes, and a song is
- *   looked up once, at the flush that begins it.
+ *   looked up at the flush that begins it.
  *
  * It takes 16-bit and float PCM, whatever the sample rate and channels, and hands back the
  * same: the sink gives it 16-bit (the player's float output is off), so nothing is converted
@@ -119,9 +119,8 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
      *  gapless join), so what comes next follows on from it. */
     private var drained = false
 
-    /** The song being processed: its period, its levelling values, and whether it plays as
-     *  part of its album (decided as it begins, as Windows decides when a song loads). */
-    private var period: Any? = null
+    /** The song being processed: its levelling values, and whether it plays as part of its
+     *  album (decided as it begins, as Windows decides when a song loads). */
     private var hasSong = false
     private var songTags: ReplayGain? = null
     private var albumRun = false
@@ -187,8 +186,9 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         }
         // The settings the sound is under; a newer value is eased in at the next buffer.
         val settings = if (fresh) s else lastSound ?: s
-        val joined = streamMetadata.periodUid != period || period == null
-        if (joined) whichSong(streamMetadata, settings)
+        // Looked up at every start of a stream: played again, a song takes what is known of
+        // it by then.
+        whichSong(streamMetadata, settings)
         // A new song's level is in place from its first sample, as a step; whatever the
         // person changed is still easing in, and carries on.
         songGain = songGainFor(settings)
@@ -210,7 +210,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
 
     override fun onReset() {
         drained = false
-        period = null
         hasSong = false
         songTags = null
         rate = 0
@@ -296,7 +295,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
      *  plays). Something that isn't one of our songs (none, or a station) is left as it is. */
     private fun whichSong(meta: AudioProcessor.StreamMetadata, s: Sound) {
         val uid = meta.periodUid
-        period = uid
         hasSong = false
         songTags = null
         albumRun = false

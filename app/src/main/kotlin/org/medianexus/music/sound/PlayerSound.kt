@@ -6,6 +6,7 @@ import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,14 +23,21 @@ import org.medianexus.music.store.Settings
  * levelling values the library copy has for songs that came without them).
  */
 @OptIn(UnstableApi::class)
-class PlayerSound(private val scope: CoroutineScope) {
+class PlayerSound(private val scope: CoroutineScope, private val work: CoroutineDispatcher = Dispatchers.Default) {
     /** Levelling values from the phone's copy of the library, for the songs the player holds
-     *  that came without their own (a download kept before its song had them). Replaced
-     *  whole; read on the audio thread. */
+     *  that came without their own (a download kept before its song had them). They are the
+     *  account's whose copy they came from: gone the moment another account takes over.
+     *  Replaced whole; read on the audio thread. */
     @Volatile
     private var fromLibrary: Map<String, ReplayGain> = emptyMap()
 
-    val processor = SoundProcessor { song -> song.replayGain ?: fromLibrary[song.id] }
+    val processor = SoundProcessor(::tagsOf)
+
+    /** A song's levelling values: its own, else what the library copy has. */
+    fun tagsOf(song: Song): ReplayGain? = song.replayGain ?: fromLibrary[song.id]
+
+    /** Whose turn it is at the player (the account's objects), or nobody's. */
+    private var owner: Any? = null
 
     private var settings: Settings? = null
     private var shuffled = false
@@ -60,8 +68,20 @@ class PlayerSound(private val scope: CoroutineScope) {
         processor.sound = Sound.of(settings, shuffled)
     }
 
+    /** Another account takes over, or nobody: what was known of the last one's songs goes
+     *  first, and a look still going for it is called off. */
+    fun account(owner: Any?) {
+        if (owner === this.owner) return
+        this.owner = owner
+        looking?.cancel()
+        looking = null
+        fromLibrary = emptyMap()
+        asked = emptySet()
+        askedOf = null
+    }
+
     /**
-     * The songs the player holds have changed: for any that came without levelling values,
+     * The songs the player holds have changed, or the library copy has: for any that came without levelling values,
      * the library copy is looked through for them (once, off the main thread, for all of them
      * together). A song whose values arrive after it has begun is levelled from its next play.
      */
@@ -72,8 +92,9 @@ class PlayerSound(private val scope: CoroutineScope) {
         askedOf = library
         looking?.cancel()
         if (missing.isEmpty()) return
+        val mine = owner
         looking = scope.launch {
-            val found = withContext(Dispatchers.Default) {
+            val found = withContext(work) {
                 val table = library.songs
                 val out = HashMap<String, ReplayGain>()
                 for (i in 0 until table.size) {
@@ -82,7 +103,7 @@ class PlayerSound(private val scope: CoroutineScope) {
                 }
                 out
             }
-            fromLibrary = found
+            if (owner === mine) fromLibrary = found
         }
     }
 

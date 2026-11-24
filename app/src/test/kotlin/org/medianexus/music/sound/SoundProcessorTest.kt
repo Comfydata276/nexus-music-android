@@ -338,6 +338,26 @@ class SoundProcessorTest {
         assertTrue("the same sound, sample for sample", whole.tap.samples == split.tap.samples)
     }
 
+    /** Rule 5: the song is looked up at every start of a stream, not once per period: played
+     *  again (repeat-one, the same period), it takes the values known by then. */
+    @Test
+    fun played_again_the_same_song_is_looked_up_again() {
+        var known: ReplayGain? = null
+        val processor = SoundProcessor { known }.also { it.sound = Sound.of(Settings(normalize = true, untaggedDb = 0f), false) }
+        val rig = Rig(processor)
+        val timeline = timelineOf(song("a"))
+        rig.begin(timeline, 0)
+        rig.feed(steady(2000, 10_000))
+        // Its values arrive (from the library copy) while it plays; then it plays again.
+        known = ReplayGain(trackGain = -10f, trackPeak = 1f)
+        rig.begin(timeline, 0)
+        rig.feed(steady(2000, 10_000))
+        rig.end()
+        val out = rig.left()
+        assertEquals("untagged and left alone the first time", 10_000f, out[1999].toFloat(), 1f)
+        assertEquals("its own value the second", 10_000 * 10f.pow(-6f / 20f), out[2000].toFloat(), 1f)
+    }
+
     @Test
     fun a_new_songs_gain_begins_on_its_first_sample() {
         val processor = levelled()

@@ -8,7 +8,11 @@ import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.FormatHolder
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.ForwardingAudioSink
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -199,7 +203,16 @@ class Mp3HeaderReader(private val mp3: androidx.media3.extractor.Extractor) : an
 
 /**
  * The audio renderer, with the trim for MP3 put right for the decoder in use (see
- * [Mp3Trim]). Everything else is Media3's.
+ * [Mp3Trim]), and the sink told which song the sound it is given belongs to. Everything else
+ * is Media3's.
+ *
+ * **Which song.** Media3's renderer tells the sink the period it is *reading* when the
+ * decoder's output changes format. A decoder gives its output back some frames after its
+ * input, and the renderer reads ahead; so when a short song's sound begins to come out, the
+ * renderer may already be reading the next song, and the sink was told that one: the short
+ * song took the next one's gain (CompressedJoinTest). So each format is marked, as it is
+ * read, with the period it was read from ([ReadFrom], in the format's custom data, which
+ * Media3 carries to the sink's format), and the sink is told that period instead.
  */
 @OptIn(UnstableApi::class)
 class GaplessAudioRenderer(
@@ -212,8 +225,13 @@ class GaplessAudioRenderer(
     sink: AudioSink,
     /** Told, once for each decoder met, which one plays MP3 and what is trimmed for it. */
     private val note: (String) -> Unit = {},
-) : MediaCodecAudioRenderer(context, codecs, selector, decoderFallback, handler, listener, sink) {
+) : MediaCodecAudioRenderer(context, codecs, selector, decoderFallback, handler, listener, PeriodOfTheSound(sink)) {
     private var said: String? = null
+
+    override fun onInputFormatChanged(formatHolder: FormatHolder): DecoderReuseEvaluation? {
+        formatHolder.format?.let { formatHolder.format = it.buildUpon().setCustomData(ReadFrom(mediaPeriodId)).build() }
+        return super.onInputFormatChanged(formatHolder)
+    }
 
     override fun onOutputFormatChanged(format: Format, mediaFormat: MediaFormat?) {
         var given = format
@@ -256,5 +274,17 @@ class GaplessAudioRenderer(
 
     private companion object {
         const val GAPLESS_COMMENT = "iTunSMPB"
+    }
+}
+
+/** The period a format was read from (see [GaplessAudioRenderer]). */
+class ReadFrom(val period: MediaSource.MediaPeriodId?)
+
+/** The sink, told the period the sound it is configured for was read from. */
+@OptIn(UnstableApi::class)
+private class PeriodOfTheSound(sink: AudioSink) : ForwardingAudioSink(sink) {
+    override fun configure(audioSinkConfig: AudioSink.AudioSinkConfig) {
+        val from = audioSinkConfig.format.customData as? ReadFrom
+        super.configure(if (from == null) audioSinkConfig else audioSinkConfig.buildUpon().setMediaPeriodId(from.period).build())
     }
 }
