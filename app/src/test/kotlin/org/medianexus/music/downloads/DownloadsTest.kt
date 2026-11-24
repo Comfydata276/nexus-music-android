@@ -267,7 +267,7 @@ class DownloadsTest {
         engine.remove(listOf("s2"))
         until("removed") { !catalogue.has("s2") }
         assertFalse(file.exists())
-        assertFalse(File(catalogue.dir, Catalogue.SONGS_FILE).readText().contains("s2"))
+        assertFalse(Catalogue(catalogue.dir).has("s2"))
     }
 
     @Test

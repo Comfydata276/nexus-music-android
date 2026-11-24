@@ -78,6 +78,9 @@ class Catalogue(val dir: File) {
     private val lists = LinkedHashMap<String, DownloadedList>()
     private val failures = LinkedHashMap<String, Failed>()
 
+    /** Changes in the log since the list was last written whole. */
+    private var logged = 0
+
     private val now = MutableStateFlow(Snapshot())
 
     /** What is downloaded, as it stands, for whoever follows it. */
@@ -95,10 +98,24 @@ class Catalogue(val dir: File) {
     init {
         dir.mkdirs()
         org.medianexus.music.store.sweepTemporaries(dir)
-        read(SONGS_FILE, ListSerializer(Downloaded.serializer())).forEach { entry ->
-            // Trust the folder over the list: a file that has gone is simply not downloaded.
-            if (File(dir, entry.file).isFile) songs[entry.song.id] = entry
+        read(SONGS_FILE, ListSerializer(Downloaded.serializer())).forEach { songs[it.song.id] = it }
+        // Then what has happened since that was written, in order. A line cut short (the app
+        // stopped while writing it) is no entry: that download is not marked, and is fetched
+        // again.
+        val log = File(dir, LOG_FILE)
+        if (log.isFile) {
+            try {
+                log.forEachLine { line ->
+                    val change = runCatching { json.decodeFromString(Change.serializer(), line) }.getOrNull() ?: return@forEachLine
+                    change.add?.let { songs.remove(it.song.id); songs[it.song.id] = it }
+                    change.remove?.let { songs.remove(it) }
+                    logged++
+                }
+            } catch (_: IOException) {
+            }
         }
+        // Trust the folder over the list: a file that has gone is simply not downloaded.
+        songs.values.removeAll { !File(dir, it.file).isFile }
         read(LISTS_FILE, ListSerializer(DownloadedList.serializer())).forEach { lists[it.key] = it }
         read(FAILED_FILE, ListSerializer(Failed.serializer())).forEach { failures[it.song.id] = it }
         publish()
@@ -126,11 +143,12 @@ class Catalogue(val dir: File) {
     @Throws(IOException::class)
     fun add(entry: Downloaded) {
         synchronized(lock) {
+            // The mark, on the disk before it is in memory: one line, synced.
+            append(Change(add = entry))
             songs.remove(entry.song.id)
             songs[entry.song.id] = entry
-            failures.remove(entry.song.id)
-            writeSongs()
-            writeFailures()
+            compactIfDue()
+            if (failures.remove(entry.song.id) != null) writeFailures()
             publish()
         }
     }
@@ -140,13 +158,16 @@ class Catalogue(val dir: File) {
         synchronized(lock) {
             var changed = false
             for (id in ids) {
-                val gone = songs.remove(id) ?: continue
+                val gone = songs[id] ?: continue
+                // Unmarked first, then the file goes: never a mark without its file.
+                runCatching { append(Change(remove = id)) }
+                songs.remove(id)
                 File(dir, gone.file).delete()
                 changed = true
             }
+            compactIfDue()
             if (failures.keys.removeAll(ids.toSet())) writeFailures()
-            if (changed) writeSongs()
-            publish()
+            if (changed) publish()
         }
     }
 
@@ -178,7 +199,37 @@ class Catalogue(val dir: File) {
         }
     }
 
-    private fun writeSongs() = write(SONGS_FILE, ListSerializer(Downloaded.serializer()), songs.values.toList())
+    /** One change to the list of downloads. */
+    @Serializable
+    private class Change(val add: Downloaded? = null, val remove: String? = null)
+
+    /**
+     * Writes one change to the end of the log and syncs it: a whole download is marked with a
+     * line of its own, not the whole list written again (5,000 downloads are a few megabytes
+     * of list, and a batch would have written it once a song). Now and then, the list is
+     * written whole and the log begun afresh.
+     */
+    private fun append(change: Change) {
+        java.io.FileOutputStream(File(dir, LOG_FILE), true).use { out ->
+            out.write((json.encodeToString(Change.serializer(), change) + "\n").toByteArray())
+            out.fd.sync()
+        }
+        logged++
+    }
+
+    /** Once what is held in memory includes every change logged (never between the two: the
+     *  list written then would lack the change just logged, and the log goes with it). */
+    private fun compactIfDue() {
+        if (logged >= maxOf(COMPACT_AFTER, songs.size / 2)) runCatching { compact() }
+    }
+
+    /** The list written whole, and then the log let go (a crash between the two replays the
+     *  log over the list, which comes to the same). */
+    private fun compact() {
+        write(SONGS_FILE, ListSerializer(Downloaded.serializer()), songs.values.toList())
+        File(dir, LOG_FILE).delete()
+        logged = 0
+    }
 
     private fun writeLists() = write(LISTS_FILE, ListSerializer(DownloadedList.serializer()), lists.values.toList())
 
@@ -208,9 +259,11 @@ class Catalogue(val dir: File) {
 
     companion object {
         const val SONGS_FILE = "downloads.json"
+        const val LOG_FILE = "downloads.log"
+        private const val COMPACT_AFTER = 200
         const val LISTS_FILE = "collections.json"
         const val FAILED_FILE = "failed.json"
-        private val OWN_FILES = setOf(SONGS_FILE, LISTS_FILE, FAILED_FILE)
+        private val OWN_FILES = setOf(SONGS_FILE, LOG_FILE, LISTS_FILE, FAILED_FILE)
         private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     }
 }
