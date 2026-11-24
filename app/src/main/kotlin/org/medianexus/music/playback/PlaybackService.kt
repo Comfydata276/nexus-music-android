@@ -168,8 +168,9 @@ class PlaybackService : MediaLibraryService() {
     /** The next few songs of the queue, fetched ahead into the kept songs (see [aheadNow]). */
     private lateinit var ahead: FetchAhead
 
-    /** What the server is told about listening: "now playing", and each play that counts. */
-    private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::scrobble)
+    /** What the server is told about listening: "now playing", and each play that counts
+     *  (which the log of plays notes too: see [counted]). */
+    private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::counted)
     private var failures = 0
 
     /** The songs passed over, with no server, since something last played (see
@@ -1622,7 +1623,11 @@ class PlaybackService : MediaLibraryService() {
     private fun countPlaying() {
         val uid = player.queue.currentUid() ?: return
         val song = player.queue.current() ?: return
-        plays.playing(uid, song, exo.currentPosition / 1000.0, clock())
+        // A song playing as part of a playlist counts towards that playlist too; one put in
+        // the queue by hand, or played from anywhere else, doesn't (Windows' `tick`).
+        val queue = player.queue
+        val from = if (queue.currentOrigin() != null && queue.source.startsWith("playlist:")) queue.source else ""
+        plays.playing(uid, song, exo.currentPosition / 1000.0, clock(), from)
     }
 
     private fun reportNowPlaying(song: Song) {
@@ -1634,13 +1639,17 @@ class PlaybackService : MediaLibraryService() {
         graph.scope.launch { runCatching { graph.api.scrobble(song.id, submission = false) } }
     }
 
-    /** A play counts: tell the server, if the person wants plays reported. Sent now, or
-     *  held with the time it counted and sent when the server can next be reached (see
-     *  AccountGraph.submit): a play made in a tunnel is not lost. */
-    private fun scrobble(songId: String) {
+    /** A play counts (decided in one place, [PlayReporter]): the log of plays behind "Your
+     *  stats" notes it, whether or not plays are reported (as Windows' `tick`); and the server
+     *  is told, if the person wants plays reported. Sent now, or held with the time it
+     *  counted and sent when the server can next be reached (see AccountGraph.submit): a
+     *  play made in a tunnel is not lost. */
+    private fun counted(songId: String, from: String) {
         val graph = account ?: return
-        if (!this.graph.settings.value.scrobble || songId.isEmpty()) return
+        if (songId.isEmpty()) return
         val at = System.currentTimeMillis()
+        graph.playLog.add(songId, at / 1000, from)
+        if (!this.graph.settings.value.scrobble) return
         graph.scope.launch { runCatching { graph.submit(org.medianexus.music.store.Pending.Played(songId, at)) } }
     }
 

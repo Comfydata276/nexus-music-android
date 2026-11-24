@@ -200,6 +200,10 @@ class AccountGraph(
     /** The last hundred songs played (Windows' `history.json`). */
     val recentlyPlayed = org.medianexus.music.store.RecentlyPlayed(File(account.dirs.data, "history.json"), scope, io)
 
+    /** Every play that counted, and when, for "Your stats" and the mixes (Windows'
+     *  `plays.log`; see [org.medianexus.music.store.PlayLog]). */
+    val playLog = org.medianexus.music.store.PlayLog(File(account.dirs.data, "plays.log"), io, note = wiring?.note ?: {})
+
     /**
      * When each of a list's songs was added to it, in seconds (0 where that isn't known), for
      * "Date added" (Windows' `added_dates`): a playlist's own notes, else the day the song
@@ -250,7 +254,11 @@ class AccountGraph(
         library.likedShown = likes::songsOf
         library.playlistShown = playlists::fetched
         likes.load()
-        scope.launch { recentlyPlayed.open() }
+        scope.launch {
+            recentlyPlayed.open()
+            // With no log yet, it starts from what Recently played remembers (Windows' `load`).
+            playLog.open { recentlyPlayed.state.value.map { it.song.id to it.at } }
+        }
         // Every copy of a playlist read from the server (or the phone) is looked at, so a song
         // that turns up in it later can be dated (Windows' `observe_playlist`).
         scope.launch {

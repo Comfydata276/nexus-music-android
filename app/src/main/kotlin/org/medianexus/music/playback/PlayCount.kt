@@ -93,25 +93,39 @@ class PlayCount {
  * and the play itself once it counts. It is told what the player does (starts, pauses,
  * moves on, seeks, reaches the end) and keeps count of the play in between.
  *
+ * **The one place that decides "this was a play"**: what it reports through `played` is
+ * what the server is sent (if plays are reported) and what the log of plays behind "Your
+ * stats" notes (always), at the same moment. An internet radio station is never a play
+ * (Windows: `song.radio_url.is_empty()`).
+ *
  * A play is one go at one entry of the queue. The same entry played again is a new play:
  * repeating one song, or a queue that reached its end and was started again from the top.
  */
 class PlayReporter(
     private val nowPlaying: (Song) -> Unit,
-    private val played: (songId: String) -> Unit,
+    /** A play counts: the song, and the playlist it was played from (its route key), or "". */
+    private val played: (songId: String, from: String) -> Unit,
 ) {
     private val count = PlayCount()
     /** The queue entry whose play is being counted. */
     private var entry: Long? = null
+    /** Where that entry's play was made from (see [playing]). */
+    private var from = ""
 
-    /** The song of this queue entry is playing, at `seconds`. */
-    fun playing(uid: Long, song: Song, seconds: Double, nowMs: Long) {
+    /**
+     * The song of this queue entry is playing, at `seconds`. `from`: the playlist it is
+     * playing as part of (its route key, "playlist:<id>"), for a song of the list the queue
+     * was started from; "" for one put in the queue by hand, or played from anywhere else
+     * (Windows: a playlist's play counts towards that playlist too).
+     */
+    fun playing(uid: Long, song: Song, seconds: Double, nowMs: Long, from: String = "") {
         if (uid == entry) {
             count.resume(seconds, nowMs)
             return
         }
         entry = uid
-        count.start(song.id, song.duration.toDouble(), seconds, nowMs)
+        this.from = from
+        count.start(if (song.radioUrl.isEmpty()) song.id else "", song.duration.toDouble(), seconds, nowMs)
         nowPlaying(song)
     }
 
@@ -145,6 +159,6 @@ class PlayReporter(
     }
 
     private fun told(counts: Boolean) {
-        if (counts) played(count.songId)
+        if (counts) played(count.songId, from)
     }
 }

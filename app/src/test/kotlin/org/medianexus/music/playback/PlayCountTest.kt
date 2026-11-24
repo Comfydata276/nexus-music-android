@@ -65,7 +65,7 @@ class PlayCountTest {
     private class Told {
         val nowPlaying = mutableListOf<String>()
         val played = mutableListOf<String>()
-        val reporter = PlayReporter({ nowPlaying += it.id }, { played += it })
+        val reporter = PlayReporter({ nowPlaying += it.id }, { id, _ -> played += id })
     }
 
     private fun song(id: String, seconds: Int) = Song(id = id, duration = seconds)
@@ -120,6 +120,25 @@ class PlayCountTest {
         for (s in 1..10) t.reporter.tick(s.toDouble(), 60_000 + s * 1000L)
         assertEquals(listOf("a", "a"), t.played)
         assertEquals(listOf("a", "a"), t.nowPlaying)
+    }
+
+    @Test
+    fun aPlaySaysWhichPlaylistItWasFromAndAStationIsNeverAPlay() {
+        val told = mutableListOf<Pair<String, String>>()
+        val reporter = PlayReporter({}, { id, from -> told += id to from })
+        reporter.playing(1, song("a", 10), 0.0, 0, from = "playlist:p")
+        for (s in 1..5) reporter.tick(s.toDouble(), s * 1000L)
+        // The next, put in the queue by hand: from nowhere.
+        reporter.left(5.0, 5_000)
+        reporter.playing(2, song("b", 10), 0.0, 5_000)
+        for (s in 1..5) reporter.tick(s.toDouble(), 5_000 + s * 1000L)
+        reporter.left(5.0, 10_000)
+        assertEquals(listOf("a" to "playlist:p", "b" to ""), told)
+        // An internet radio station, however long it plays (Windows: `radio_url.is_empty()`).
+        reporter.playing(3, Song(id = "station", radioUrl = "http://radio.invalid/live"), 0.0, 10_000)
+        for (s in 1..600) reporter.tick(s.toDouble(), 10_000 + s * 1000L)
+        reporter.left(600.0, 610_000)
+        assertEquals(2, told.size)
     }
 
     @Test
