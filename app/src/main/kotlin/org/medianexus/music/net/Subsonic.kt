@@ -398,9 +398,12 @@ class Subsonic private constructor(
     }
 
     /** The account's playlists as the server states them (see [StatedPlaylist]), without
-     *  their songs. */
-    suspend fun playlistsStated(): List<StatedPlaylist> =
-        call("getPlaylists", emptyList(), "playlists", StatedWrap.serializer(), ::StatedWrap).playlist.map { it.stated() }
+     *  their songs, and the server's clock as it answered. */
+    suspend fun playlistsStated(): Timed<List<StatedPlaylist>> {
+        val answer = request("getPlaylists", emptyList(), "playlists", StatedWrap.serializer())
+        val listed = answer.value?.takeIf { answer.present } ?: StatedWrap()
+        return Timed(listed.playlist.map { it.stated() }, answer.date?.let(::httpDate))
+    }
 
     /** One playlist as the server states it, without its songs, and the server's clock as it
      *  answered. */

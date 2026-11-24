@@ -236,8 +236,12 @@ class InStepLiveTest {
         say("9. Signed in as another account: nothing of the first's is shared into the second's record.")
         val guest = Phone("phone, as the second account", user = "guest")
         assertEquals(InStep.Outcome.DONE, guest.exchange())
+        // (With nothing of its own to say, it makes no record at all.)
+        assertEquals(0, peek("guest").getValue("sync_playlists").jsonPrimitive.int)
+        guest.settings.update { it.copy(pinnedPlaylists = listOf("guests-own"), pinsAt = now()) }
+        assertEquals(InStep.Outcome.DONE, guest.exchange())
         val theirs = SharedText.read(peek("guest").text("comment")!!)!!
-        assertEquals(Shared(layout = 1, theme = "Violet"), theirs)
+        assertEquals(Shared(layout = 1, pins = listOf("guests-own"), pinsAt = theirs.pinsAt, theme = "Violet"), theirs)
         assertEquals(before, peek().text("comment"))
         assertEquals(1, peek().getValue("sync_playlists").jsonPrimitive.int)
 

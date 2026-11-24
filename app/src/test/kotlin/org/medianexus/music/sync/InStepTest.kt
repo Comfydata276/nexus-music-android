@@ -57,10 +57,10 @@ class InStepTest {
 
         fun comment(id: String) = lists.getValue(id).comment
 
-        override suspend fun playlists(): List<StatedPlaylist> {
+        override suspend fun playlists(): Timed<List<StatedPlaylist>> {
             gate("list")
             listed++
-            return lists.values.toList()
+            return Timed(lists.values.toList(), time)
         }
 
         override suspend fun playlist(id: String): Timed<StatedPlaylist> {
@@ -281,6 +281,57 @@ class InStepTest {
         val down = Server().apply { gate = { if (it == "list") throw ApiError.Network("The connection timed out.") } }
         assertEquals(InStep.Outcome.FAILED, step(down, Device(holds = pc)).exchange())
         assertTrue(down.made.isEmpty())
+    }
+
+    // ---- what the server did not say is not "empty" ---------------------------------------------
+
+    @Test
+    fun aServerThatLeavesOutTheOwnerOrTheCommentIsNotTakenToHaveNone() = runBlocking {
+        // Navidrome leaves a playlist's owner and comment out of its answers for clients it
+        // has been told to treat as minimal. The PC's record is there all the while.
+        for (phone in listOf(nothing, pc.copy(pins = listOf("mine"), pinsAt = NOW - 5))) {
+            // Neither stated.
+            val neither = Server().apply { put("a", comment = null, by = null) }
+            val notes = ArrayList<String>()
+            assertEquals(InStep.Outcome.NOT_STATED, step(neither, Device(holds = phone), notes = notes).exchange())
+            // Nothing written into it, and no second one made beside it.
+            assertTrue(neither.writes.isEmpty() && neither.made.isEmpty())
+            assertEquals(1, notes.size)
+            // The owner stated, the comment left out: read as empty, the phone's own record
+            // would be written over everything the PCs had put there.
+            val noComment = Server().apply { put("a", comment = null) }
+            val device = Device(holds = phone)
+            assertEquals(InStep.Outcome.NOT_STATED, step(noComment, device).exchange())
+            assertTrue(noComment.writes.isEmpty() && noComment.made.isEmpty())
+            assertTrue(device.took.isEmpty())
+            // The comment stated, the owner left out: not known to be ours.
+            val noOwner = Server().apply { put("a", comment = text(pc), by = null) }
+            assertEquals(InStep.Outcome.NOT_STATED, step(noOwner, Device(holds = phone)).exchange())
+            assertTrue(noOwner.writes.isEmpty() && noOwner.made.isEmpty())
+            // One that is stated to be ours beside one that isn't stated: ours is used.
+            val both = Server().apply { put("a", comment = "whose?", by = null); put("b", comment = text(pc)) }
+            assertEquals(InStep.Outcome.DONE, step(both, Device(holds = nothing)).exchange())
+            assertTrue(both.writes.isEmpty() && both.made.isEmpty())
+        }
+    }
+
+    @Test
+    fun aPhoneWithNothingToSayMakesNoRecordAndFillsNoEmptyOne() = runBlocking {
+        // No playlist at all: none is made.
+        val none = Server().apply { put("c1", "not it", name = "Road trip") }
+        assertEquals(InStep.Outcome.DONE, step(none, Device(holds = nothing)).exchange())
+        assertTrue(none.made.isEmpty() && none.writes.isEmpty())
+        // An empty one (just made by another device, not yet written): left empty.
+        val empty = Server().apply { put("a", "") }
+        assertEquals(InStep.Outcome.DONE, step(empty, Device(holds = nothing)).exchange())
+        assertTrue(empty.writes.isEmpty())
+        assertEquals("", empty.comment("a"))
+        // The default theme's name, with no time on it, is nobody's choice: still nothing.
+        assertEquals(InStep.Outcome.DONE, step(empty, Device(holds = Shared(layout = 1, theme = "Violet"))).exchange())
+        assertTrue(empty.writes.isEmpty())
+        // With one pin of the person's, it is filled.
+        assertEquals(InStep.Outcome.DONE, step(empty, Device(holds = Shared(layout = 1, pins = listOf("p"), pinsAt = NOW - 9))).exchange())
+        assertEquals(listOf("p"), SharedText.read(empty.comment("a")!!)!!.pins)
     }
 
     // ---- a write with no answer ------------------------------------------------------------------

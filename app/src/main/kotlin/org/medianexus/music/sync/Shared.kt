@@ -33,7 +33,14 @@ data class Shared(
      *  know, and so could not write back as it found it. Such a record is read and never
      *  written (see [KotlinSettler]). */
     val more: Boolean = false,
-)
+) {
+    /** Whether the record holds anything of the person's at all: a pin or a time on the
+     *  pins, a theme that was chosen, a list's choices, a date, a play. (A theme's name with
+     *  no time on it is the default, chosen by nobody.) */
+    val says: Boolean
+        get() = pins.isNotEmpty() || pinsAt != 0L || themeAt != 0L || lists.isNotEmpty() || added.isNotEmpty() ||
+            history.isNotEmpty() || plays.isNotEmpty() || playSources.isNotEmpty()
+}
 
 /** One list's choices, as shared (Windows' `ListPrefs`). `sort` is as wide as Windows' own
  *  number: a value past anything either app offers is still carried, unchanged. */
