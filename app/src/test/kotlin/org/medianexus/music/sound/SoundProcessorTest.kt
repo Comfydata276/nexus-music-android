@@ -307,6 +307,37 @@ class SoundProcessorTest {
         assertTrue("after a seek, as if the song began there", fresh.left().contentEquals(seeked.left()))
     }
 
+    /**
+     * Rule 4: a change the person makes and a change of song are two ramps. Settings changed
+     * just before a join inside an album played in order (levelling switched to Loud, the
+     * equaliser switched on, mono on): the ramps carry on across the join exactly as they
+     * would inside one song, and the album's own gain doesn't move at the join.
+     */
+    @Test
+    fun a_settings_change_just_before_a_join_ramps_on_across_it() {
+        val before = Sound.of(Settings(normalize = true), false)
+        val after = Sound.of(Settings(normalize = true, volumeLevel = 2, equalizer = true, eqGains = listOf(6f, 0f, 0f, 0f, 0f, 3f), mono = true), false)
+        val tags = ReplayGain(trackGain = -4f, albumGain = -6f, trackPeak = 0.5f, albumPeak = 0.5f)
+        val timeline = timelineOf(song("one", album = "x", track = 1, gain = tags), song("two", album = "x", track = 2, gain = tags.copy(trackGain = -9f)))
+        val left = sine(8000, hz = 220.0, level = 0.3)
+        val right = sine(8000, hz = 330.0, level = 0.2)
+        val split = Rig(SoundProcessor().also { it.sound = before })
+        split.begin(timeline, 0)
+        split.feed(left.copyOfRange(0, 3500), right.copyOfRange(0, 3500))
+        split.processor.sound = after
+        split.feed(left.copyOfRange(3500, 4000), right.copyOfRange(3500, 4000))
+        split.begin(timeline, 1)
+        split.feed(left.copyOfRange(4000, 8000), right.copyOfRange(4000, 8000))
+        split.end()
+        val whole = Rig(SoundProcessor().also { it.sound = before })
+        whole.begin(timeline, 0)
+        whole.feed(left.copyOfRange(0, 3500), right.copyOfRange(0, 3500))
+        whole.processor.sound = after
+        whole.feed(left.copyOfRange(3500, 8000), right.copyOfRange(3500, 8000))
+        whole.end()
+        assertTrue("the same sound, sample for sample", whole.tap.samples == split.tap.samples)
+    }
+
     @Test
     fun a_new_songs_gain_begins_on_its_first_sample() {
         val processor = levelled()
