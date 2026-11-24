@@ -88,6 +88,27 @@ class CoverStore(
         }
     }
 
+    /**
+     * As [pin], but a cover that isn't on the phone yet is had from `fetch` (its bytes, or
+     * null if they can't be had now) and never by this store's own way to the server: with
+     * "Download on Wi-Fi only" on, a download's cover is part of the download, and comes by
+     * the unmetered network the songs come by or not at all.
+     */
+    suspend fun pin(id: String, fetch: suspend () -> ByteArray?): Boolean {
+        val target = pinnedFor(id, SIZE) ?: return false
+        if (withContext(io) { target.isFile && target.length() > 0 }) return true
+        val bytes = withContext(io) { kept(id)?.takeIf { it.isFile && it.length() > 0 }?.readBytes() } ?: fetch() ?: return false
+        if (bytes.isEmpty()) return false
+        return withContext(io) {
+            try {
+                writeAtomically(target, bytes)
+                true
+            } catch (_: IOException) {
+                false
+            }
+        }
+    }
+
     /** No downloaded music uses this cover any more. */
     fun unpin(id: String) {
         pinnedFor(id, SIZE)?.delete()

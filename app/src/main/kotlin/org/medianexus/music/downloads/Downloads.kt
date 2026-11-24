@@ -394,7 +394,7 @@ class Downloads(
         }
         publish()
         // Covers for the lists, kept where the system won't clear them.
-        list?.coverArt?.takeIf { it.isNotEmpty() }?.let { scope.launch { covers.pin(it) } }
+        list?.coverArt?.takeIf { it.isNotEmpty() }?.let { scope.launch { pinCover(it) } }
         return if (reach.value.offline) Asked.Offline else Asked.Started(fresh.size, fresh.first())
     }
 
@@ -626,6 +626,35 @@ class Downloads(
 
     // ---- Covers -----------------------------------------------------------------------------
 
+    /**
+     * Keeps a cover with the downloads. With Wi-Fi only on, a cover that isn't on the phone
+     * yet is fetched **by the unmetered network, as the songs are**, and not at all if there
+     * is none just now (it is asked for again as later songs of the album arrive): the
+     * covers of a hundred downloaded songs were two megabytes over mobile data, by the
+     * phone's default route, with every song of them held to the Wi-Fi.
+     */
+    private suspend fun pinCover(id: String) {
+        if (!settings.value.downloadWifiOnly) {
+            covers.pin(id)
+            return
+        }
+        covers.pin(id) {
+            val bound = unmetered.now.value ?: return@pin null
+            withContext(Dispatchers.IO) {
+                try {
+                    bound.client.newCall(okhttp3.Request.Builder().url(api.coverUrl(id, CoverStore.SIZE)).build()).execute().use { answer ->
+                        val type = answer.header("Content-Type").orEmpty().lowercase()
+                        if (!answer.isSuccessful || !type.startsWith("image/")) return@use null
+                        val source = answer.body.source()
+                        if (source.request(MOST_COVER_BYTES + 1)) null else source.buffer.readByteArray()
+                    }
+                } catch (_: IOException) {
+                    null
+                }
+            }
+        }
+    }
+
     /** A list is no longer downloaded whole: forgotten, and its own cover (kept with the
      *  downloads when it was asked for) let go if nothing downloaded still uses it. (Off the
      *  main thread.) */
@@ -696,7 +725,7 @@ class Downloads(
                     asks.remove(id)
                     catalogue.entry(id)?.song?.coverArt?.takeIf { it.isNotEmpty() }?.let { cover ->
                         // Have the artwork kept too, for when the server can't be reached.
-                        scope.launch { covers.pin(cover) }
+                        scope.launch { pinCover(cover) }
                     }
                 }
                 Download.STATE_FAILED -> {
@@ -1157,6 +1186,9 @@ class Downloads(
         const val SPARE = 500L * 1024 * 1024
 
         private const val TICK_MILLIS = 500L
+
+        /** A cover larger than this is not one. */
+        private const val MOST_COVER_BYTES = 16L * 1024 * 1024
 
         /** How long Remove all waits for Media3 to let go of what it was fetching. */
         private const val LET_GO_MILLIS = 10_000L
