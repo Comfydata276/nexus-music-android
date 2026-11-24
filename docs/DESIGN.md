@@ -1258,6 +1258,54 @@ above; what had to be decided on the way, and what was found:
 - **What "changes sent" counts** is what the server accepted; one it turned down for good
   was not sent in any sense the person means.
 
+### What the third hardening of the offline engine decided
+
+The reviewer, asked a third time, still answered no, and part of what was found had been
+made by the first two rounds. This round was told to simplify first. What changed is
+described where it belongs above; what was decided, and what was taken out:
+
+- **Taken out**: the reading of every sample of every original at download, with its
+  running-time comparison and frame checksums (kept only where nothing else says a file is
+  whole); the rule that a file's container must match its name; the re-reading of a
+  download each time it had played to its end; the one-time re-reading of downloads from
+  an earlier build, and the version kept with each download for it; the list of downloads
+  "set aside" for the run; the deletion of a download on the spot when it failed in
+  playback; the minute's "leaving alone" of a Wi-Fi that didn't reach the server; and, in
+  the sender of held changes, the two flags that said whether a queued change had been
+  written yet or refused.
+- **An original the length the server stated and the size the library gives is Done.** The
+  second round's decision to refuse a FLAC with a frame that fails its checksum is
+  reversed for such a file: it is the server's own, and the player plays past it.
+- **The server's own flaw is kept, not refused**: the same bytes twice, failing the same
+  way, are downloaded and marked, with the flaw said. (The second round listed such a song
+  as failed after three identical fetches.) "The same bytes" is their length and SHA-256,
+  not the server's validator, which a conversion doesn't have.
+- **A question about decoders that can't be put is a no**, and a no means the conversion:
+  the first two rounds took it for a yes.
+- **What the phone can decode is asked for the exact format**, which is stricter than the
+  player itself: Media3's track selector will still *try* a format its renderer says
+  exceeds the decoder's stated limits. A file a phone's decoder would in fact play, though
+  it says it can't, is downloaded converted.
+- **A change the phone won't write is not sent**, even with the server there (it used to be
+  queued unwritten and sent). On a phone whose storage refuses a hundred-byte write, a
+  like fails with its message and a play is lost with a line in Diagnostics.
+- **Only codes 50 and 70 are final for a held change.** A like or a rating the server keeps
+  answering with any other error is given up a day after it was made; a play never.
+- **With Wi-Fi only on, the server is asked on the Wi-Fi**, and what the app as a whole
+  knows of the server (asked on the phone's own route) decides nothing for downloads.
+- **With Wi-Fi only on, the app's own unmetered network governs, not the job's** (above).
+- **The lowest Android is 12.**
+- **A Remove on the Downloads page removes all of the group**, arrived or not; a Cancel
+  there (offered while what is shown is itself arriving) stops what is arriving and leaves
+  what has arrived.
+- **A download that needs a fresh copy is shown as on its way again**, and, with nothing
+  fetching it (the fetch was cancelled), as "It wouldn't play, and needs downloading again"
+  until Retry failed, or the next start, fetches it.
+- **Left as it is**: with Wi-Fi only off, transfers still go out on the network Android gave
+  the job and fall back to the phone's own route; a like held, the server's list fetched
+  while it is held, and the app restarted before it is delivered shows the heart but not
+  the song in Liked songs until it is delivered.
+
 ### What the design left open, and what was decided (M2b)
 
 - **A list's download button offers removal** in a sheet rather than removing at once (Windows

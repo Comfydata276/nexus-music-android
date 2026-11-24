@@ -37,14 +37,16 @@ In the app, the server's address is **`http://127.0.0.1:4533`** (see "Two addres
 | `scripts/cartour` | Pictures of the app in a car's own media screens (Android Automotive) |
 | `scripts/dhu` | Google's Desktop Head Unit with the real Android Auto: not usable yet, see below |
 | `scripts/measure` | Size, start-up time, memory, scrolling |
-| `scripts/slowlink` | Slows the emulator's tunnel to the test server, cuts it, or makes it a black hole (downloads part-way, the server gone, a signal that carries nothing) |
+| `scripts/slowlink` | Slows the emulator's tunnel to the test server, cuts it, or makes it a black hole (downloads part-way, the server gone, a signal that carries nothing). Each emulator has a relay of its own (`NEXUS_DEVICE`), so two people on two emulators don't take each other's link away |
 
 Each prints its own help when run with no arguments or `--help`.
 
 **Memory.** The machine has 12 GB and is shared. The phone emulator holds about 3 GB, the
 car emulator about 3.4 GB, the Android 16 phone about 2.9 GB, the Android 12 phone about
-2.6 GB, the server under 50 MB. Run
-one emulator at a time; `scripts/emu start` refuses when too little memory is free. The
+2.6 GB, the server under 50 MB. With the
+machine's 8 GB of swap two emulators can be up at once (two people, one each), but look at
+`free -m` first and wait if less than 4 GB is available; `scripts/emu start` refuses when
+too little memory is free. The
 rig's own Gradle build (the tools under `tools/`) waits for any other Gradle build to
 finish before it starts.
 
@@ -611,7 +613,11 @@ Media3's own test kit for a clock the player can be run against. They are part o
 | `KnownHostsTest` | The app's own copy of Google's list, read from its resources |
 | `DoneMeansDoneTest` | Media3's `DownloadManager` and its database under our downloader, real audio made by ffmpeg (`src/test/resources/audio`), a server whose answers stop where the test says (`GatedServer`), then ExoPlayer with Media3's extractors reading what was marked Done through the app's data source with the network gone: an original interrupted after its first bytes, the app "restarted" on the same files, a different file under the same song id, the network cut, the downloads read cold, and every one played to its end |
 | `WholeDownloadTest`, `AudioCheckTest` | Media3's extractors on that audio: each way a resumed or cut-short answer could once be marked complete (a part joined to another file, a server that ignores the condition, no validator, "no such range", an unasked range, a short answer that agrees with itself, a conversion most of the way there, something that isn't audio) |
-| `DownloadsTest`, `KeeperTest` | Media3's `DownloadManager` again (lists that share songs, the space check, the start-up sweep held by a gate, the network turning metered, Android stopping the job, an old engine still unwinding); Android's `JobScheduler` and connectivity classes (what network the job asks for, a schedule rejected) |
+| `DownloadsTest`, `KeeperTest` | Media3's `DownloadManager` again (lists that share songs, the space check, the start-up sweep held by a gate, the network turning metered, Android stopping the job, an old engine still unwinding, a group removed half-arrived, a folder that takes no writes); Android's `JobScheduler` and connectivity classes (what network the job asks for, a schedule rejected) |
+| `WhatDoneRequiresTest` | Media3's `DownloadManager`, extractors and Robolectric's list of decoders, real audio, `GatedServer`: which files are Done on a look at their beginning and which are read through (each look counted), the same bytes twice, a copy that fails when played kept until its replacement arrives, the phone's "can't decode this" remembered across a restart |
+| `WifiOnlyTest` | Media3's `DownloadManager` and `GatedServer` holding an answer part-sent, clients with a ten-minute read time-out so that only a cancel can end a held request: a stalled transfer and a cover cancelled the moment their network may no longer be used; Remove all with a cover on its way |
+| `UnmeteredNetworkTest` | Android's `NetworkRequest`, `NetworkCapabilities` and main looper (whose clock the test moves), with a stand-in for `ConnectivityManager` that refuses or reports "unavailable" when told |
+| `PassOverTest` | ExoPlayer under the queue's player, holding a window of a 600-song queue: the next song that plays found beyond the window, in shuffled order, round to the top |
 | `PinnedCopyTest` | ExoPlayer, the progressive source and the MP3 extractor over two copies of a song at different bit rates, each frame carrying its time: a seek after the download arrives, a download removed or replaced while it plays |
 
 What Robolectric cannot be: Android's rules about foreground services and audio, another
@@ -1083,6 +1089,15 @@ its whole stated length with no error, so that nothing could be hung on the play
 so; and a comment that said Android's FLAC decoder stops at a damaged frame, which it
 doesn't.
 
+**Rig notes (third round).** `scripts/slowlink` now gives each emulator a relay of its own:
+`NEXUS_DEVICE=phone36 scripts/slowlink start 300` listens on the server's port plus 3
+(plus 1 for the phone, 5 for `phone31`, 7 for the car) in a container of its own, so two
+people on two emulators don't take each other's link away. An app signed in at
+`http://10.0.2.2:<that port>` goes through it whatever network its connections are bound
+to, which is how Wi-Fi only was slowed above. Editing `files/settings.json` to change the
+server's address signs the app out (the saved sign-in is the account's): sign in again on
+the screen.
+
 **Rig notes.** `scripts/slowlink` does not slow or cut a transfer bound to a network (the
 job's, or the unmetered one with Wi-Fi only on): on the emulator a bound connection to
 `127.0.0.1` doesn't pass through adb's tunnel. To see Wi-Fi only by interface, sign in at
@@ -1094,6 +1109,119 @@ and on). `adb root` drops the tunnel to the test server: `scripts/emu adb revers
 tcp:4533` puts it back. `scripts/server manyalbums --remove` leaves the genre "Paging test"
 listed with its songs until the server is told to forget its missing files (as `biglibrary
 --remove` does).
+
+### The third hardening of the offline engine: what was checked
+
+The brief was to simplify first; what each item changed is in `docs/DESIGN.md` and the
+commits. Everything below is under `~/.cache/nexus-music-android/reports/oh3/` unless said
+(logs of the test runs under `logs/oh3/`, pictures under `shots/oh3-*`).
+
+**Each numbered item has a test that fails on the code before it.** Where the new test
+compiles against the old code it was run there (in a scratch copy of the commit before);
+where it doesn't (a constructor changed), the fault was written as a test of its own
+against the old code, run once, and not kept in the tree.
+
+| Item | Failed on the code before | Log |
+|---|---|---|
+| 1, the sender | "sent before it was on the phone: [a]; the file: (none)" (a pass overlapping a first save, the write held at a gate); "the play is still held: Failure(Server: … database is locked)"; "held, it is still liked" | `logs/oh3/item1-on-old-code.log`, the tests as run in `Item1OnOldCodeTest.kt.txt` |
+| 7, the check of the server | `ServerWatchTest.anAskGivenUpForANewerOneCannotPutItsAnswerOverTheNewerOnes` | `logs/oh3/item7-on-old-code.log` |
+| 2, what Done requires | the old tests asserted the opposite of each reversal and passed ("an MP3 is not a FLAC"; `assertFalse(File(dir, was.file).exists())` on demotion); the new ones need the new constructors | the commit's message |
+| 3, Wi-Fi only | 4 of `WifiOnlyTest`'s 6: never "downloaded by the other network" (twice), "the cover's request was not cancelled", the note 0 for 1 | `logs/oh3/item3-on-old-code.log` |
+| 4, groups | "s2 is downloaded" (a half-arrived album, and one of songs downloaded singly); "the cover's request was not cancelled" (Remove all) | `logs/oh3/item4-on-old-code.log` |
+| 5, the car | 5 of `CarColdTest`'s 13: "expected:<[First Light]> but was:<[]>", two timed out waiting on a server that never answers, a playlist not found, a stale album shown as kept | `logs/oh3/item5-on-old-code.log` |
+
+**The whole unit-test suite, five times in a row** (`--rerun-tasks`, in a scratch copy of
+the last commit, `665bdf2`): 735 run, 0 failed, each of the five times (1 m 39 s to 1 m
+50 s a run; `logs/oh3/five-runs-b.txt`). The five before those, at `4fe7823`, were 735
+passed four times and on the fifth one failure, `PinnedCopyTest.aDownloadReplacedWhileIt
+PlaysIsNotReadOnAtTheOldFilesByte`, on a machine then also running two emulators and the
+car check: the test rewrote a file while the player could still be reading it ahead, and
+waited five minutes for an error that then never comes. `665bdf2` makes it wait for the
+read-ahead to end, which is the case it is about (`logs/oh3/five-runs.txt`).
+`scripts/check --release` passed on the same commit: the debug build, the 735 tests, lint,
+and the release build (6,191,574 bytes).
+
+**Item 2 on the Android 16 emulator** (debug builds; the unit-test suite was running on the
+same machine at the time, so the times are noisy).
+
+| | Before (`da975e3`) | After |
+|---|---|---|
+| A first download of the test server's four lossless albums (37 FLACs, 59 MB), from the request to all 37 Done, three runs (`item2-download-times.txt`) | 3.5, 2.9 and 3.6 s | 2.0, 1.7 and 3.0 s |
+| One 152 MB FLAC of twenty minutes of noise (`DebugControl --es inspect`, `item2-two-looks.txt`) | read through: 2.4, 2.2 and 2.4 s | its beginning looked at: 9.5, 0.9 and 0.8 ms |
+
+The test library is small, so the first row moves by about a second. The second row is the
+per-file cost that goes: what the two-hour, 778 MB FLAC of the last round took twelve
+seconds for is now under ten milliseconds for any original the library gives a size for.
+**The files refused wrongly before now download, and what must be refused still is**
+(`WhatDoneRequiresTest`): an MP3 with 160 KiB after its sound and no running time in the
+library, and an MP3 the library calls `.m4a`, are Done; an error page of the right size,
+and a conversion cut short at a different place each time, are refused.
+
+**Item 3 on the Android 16 emulator** (`item3-wifi-only-android16.txt`): Wi-Fi (`wlan0`)
+and mobile data (`eth0`) both up, signed in at the relay's address (`http://10.0.2.2:4536`,
+300 KB/s), Wi-Fi only on, 23 FLACs asked for; bytes received per interface from
+`/proc/net/dev`.
+
+| The moment | `wlan0` | `eth0` | The downloads |
+|---|---|---|---|
+| 12 s in | 9,635,831 | 2,570 | 7 Done, 1 arriving |
+| **The Wi-Fi switched off** (`svc wifi disable`), as it is | 9,860,895 | 2,570 | |
+| 1 s later | 9,892,803 | 4,445 | "held WIFI", nothing arriving |
+| 6 s later | 9,892,803 | 11,321 | the same: nothing more on either for the songs (the 9 KB on mobile data is the app's own asking whether the server is there) |
+| The Wi-Fi on again | | | arriving again after about 5 s, on `wlan0` |
+| **The Wi-Fi marked metered** mid-transfer (`cmd netpolicy set metered-network AndroidWifi true`), as it is | 15,377,752 | 11,429 | 14 Done, 2 arriving |
+| 1 s later | 15,520,597 | 19,560 | "held WIFI", nothing arriving |
+| 6 s later | 15,528,000 | 19,722 | the same |
+| Unmetered again | | | arriving again after about 2 s |
+| All 23 Done | 54,311,532 | 19,896 | 50.6 MB of songs: 52.6 MB by the Wi-Fi, 17 KB by mobile data in all |
+
+The 32 KB and 143 KB that arrived on `wlan0` in the second around each change are what
+was already on its way as the command was given (the first reading is taken as the command
+is sent, not after Android has acted on it). **What the emulator cannot show**: a transfer
+that is stalled when its network goes (that is `WifiOnlyTest`, with a server that holds
+its answer), and two unmetered networks at once.
+
+**Item 4 on the Android 16 emulator** (`item4-half-arrived-album-android16.txt`,
+`shots/oh3-item4-*.png`): the relay at 25 KB/s, the album Collected Works (14 FLACs) asked
+for; with 2 arrived and 12 on their way, its page under Library, Downloads shows "2 songs,
+1 MB" and "Remove from downloads". Remove, confirmed: two seconds later "downloaded 0, on
+the way 0", no list; the same 32 seconds later, and 20 seconds after the link was made
+fast again. The account's downloads folder then holds its record and nothing else.
+
+**Item 5 in the car, cold, on a black-holed link** (`carcheck-offline-hole-android16.txt`):
+47 songs downloaded (two albums, two playlists, Liked songs), then `NEXUS_DEVICE=phone36
+scripts/slowlink hole`, then `scripts/carcheck org.medianexus.music --nexus --mode offline`
+(which starts the app cold): **24 passed, 0 failed**, one standing warning (the playlist
+that is empty on purpose). One folder took 3.8 s, an album with nothing on the phone: that
+is the wait to know whether the server is there (four seconds at most), which is by design;
+every other folder opened in under 20 ms.
+
+**The oldest version, Android 12** (`phone31`, the release build; `carcheck-android12.txt`,
+`carcheck-offline-android12.txt`, `smoke-android12.txt`, `shots/oh3-android12-*.png`):
+signed in on the screen; the whole car check, 48 passed and none failed (the one standing
+warning); an album downloaded from its page (the button became "Remove from downloads",
+every row "Downloaded": on 12 and 13 that is the foreground service started from the app
+on screen, with the job behind it); then the server cut (`NEXUS_DEVICE=phone31
+scripts/slowlink cut`) and `--mode offline` from a cold start, 25 passed and none failed;
+no crash in the log. **Android 17 was not run this round**: the other engineer had that
+emulator throughout.
+
+**Measurements** (`measure-before-android16*.txt`, `measure-after-android16*.txt`): the
+release build at the start of the round (`fa69b91`) and at its end, turn about, twice each,
+on the Android 16 emulator, signed in, data kept, the 100-song playlist for scrolling. The
+earlier numbers in "Measurements" were taken on the Android 17 emulator, which was not
+free, so these stand beside each other and not beside those; the machine was shared, and
+the two passes show how far apart the same build lands.
+
+| | At the start of the round | At its end |
+|---|---|---|
+| APK | 6,250,842 bytes | 6,191,574 bytes |
+| Cold start, median of five | 832 and 926 ms | 907 and 891 ms |
+| Memory, idle | 91.4 and 82.4 MB | 82.1 and 86.3 MB |
+| Memory, playing | 103.0 and 85.1 MB | 87.8 and 94.4 MB |
+| Slow frames, 100-song playlist | 5.8% and 14.2% | 14.2% and 16.4% |
+
+(The end of the round is both engineers' work: the search and list changes are in it too.)
 
 ## The library on the phone, search and the Songs page (M3a)
 

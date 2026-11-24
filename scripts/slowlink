@@ -12,12 +12,20 @@
 #                            answered, as on a signal that is there and carries nothing. A
 #                            request made into it hangs until the app gives it up.
 #
-# Uses the phone emulator; NEXUS_DEVICE=phone36 (and so on) for another.
+# Uses the phone emulator; NEXUS_DEVICE=phone36 (and so on) for another. **Each emulator has
+# a relay of its own** (its own container, and its own port on this machine: the server's
+# port plus 1 for the phone, 3 for phone36, 5 for phone31, 7 for the car), so two people
+# working on two emulators don't take each other's link away.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 port="${NEXUS_TEST_PORT:-4533}"
-relay=$((port + 1))
-name=nexus-slowlink
+case "${NEXUS_DEVICE:-phone}" in
+  phone) relay=$((port + 1)); name=nexus-slowlink ;;
+  phone36) relay=$((port + 3)); name=nexus-slowlink-phone36 ;;
+  phone31) relay=$((port + 5)); name=nexus-slowlink-phone31 ;;
+  car) relay=$((port + 7)); name=nexus-slowlink-car ;;
+  *) die "unknown device '${NEXUS_DEVICE}'" ;;
+esac
 case "${1:-}" in
   start)
     rate="${2:-200}"
