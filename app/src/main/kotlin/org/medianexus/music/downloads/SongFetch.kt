@@ -231,18 +231,23 @@ class SongFetch(
         if (standing != null && !standing.stale && catalogue.wholeFileOf(song.id) != null) return standing
         val stem = stem(song.id)
         if (stem.isEmpty()) throw DownloadFailure("The server gave this song an id the app can't use.")
-        val name = "$stem.${form.suffix.ifEmpty { "bin" }}"
+        val plain = "$stem.${form.suffix.ifEmpty { "bin" }}"
+        // **A replacement is written under a name of its own**, never over the copy it
+        // replaces: that copy and its entry stay as they are until the catalogue names the
+        // new one, on the disk ([Catalogue.add], which only then deletes the old file).
+        val name = if (standing?.file == plain) "$stem.$REPLACEMENT.${form.suffix.ifEmpty { "bin" }}" else plain
         val target = File(catalogue.dir, name)
-        val part = File(catalogue.dir, partName(name))
-        val meta = File(catalogue.dir, metaName(name))
+        // (The part is named for the plain name, whichever name it ends under, so that one
+        // left by an earlier run is carried on with.)
+        val part = File(catalogue.dir, partName(plain))
+        val meta = File(catalogue.dir, metaName(plain))
         // A part of a different kind is no use to this fetch.
         catalogue.dir.listFiles()?.forEach { if (it.name != part.name && it.name != meta.name && stemOfPart(it.name) == stem) it.delete() }
         // A conversion can't be picked up part-way.
         if (form.converted) discard(part, meta)
         // A file left at the final name without an entry (the app stopped between the two):
-        // not trusted, fetched again. (One an entry names is a copy waiting to be replaced:
-        // it stays until the new one is verified and takes its place.)
-        if (standing?.file != name) target.delete()
+        // not trusted, fetched again. (One an entry names is never this one: see `name`.)
+        target.delete()
 
         var from = resumable(part, meta)
         if (from == null) discard(part, meta)
@@ -479,8 +484,7 @@ class SongFetch(
         if (cancelled) throw Cancelled()
         CrashPoints.reached("verified")
         try {
-            // (Over a copy that was waiting to be replaced, if there is one of that name: one
-            // step, so there is a file of that name at every instant.)
+            // (Never over a copy an entry names: see `name` in [fetch].)
             Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             meta.delete()
             CrashPoints.reached("renamed")
@@ -495,9 +499,10 @@ class SongFetch(
         CrashPoints.say { "${song.id}: verified and in place, ${arrived.bytes} bytes" }
         val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate, target.lastModified(), flaw = flaw)
         try {
-            // The mark: only now is it a download.
+            // The mark: only now is it a download (and only now does a copy it replaces go).
             catalogue.add(entry)
         } catch (e: IOException) {
+            // The copy it was to replace, and its entry, are as they were.
             target.delete()
             throw failure(e)
         }
@@ -690,6 +695,11 @@ class SongFetch(
 
         /** A song id as part of a file name: letters, digits, '-' and '_' (Windows' rule). */
         fun stem(id: String): String = id.filter { it.isLetterOrDigit() && it.code < 128 || it == '-' || it == '_' }
+
+        /** What a replacement's file name has between its stem and its kind ("tr-1.r.flac"),
+         *  while the copy it replaces is at the plain name; the next one goes back to the
+         *  plain name. (A stem has no dots, so the two never meet.) */
+        private const val REPLACEMENT = "r"
 
         fun partName(name: String): String = ".$name.part"
 

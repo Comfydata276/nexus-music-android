@@ -204,6 +204,55 @@ class SongFetchTest {
     }
 
     @Test
+    fun aReplacementThatCantBeMarkedCostsNothingOfTheCopyItWasToReplace() {
+        val original = file.copyOf()
+        val first = fetcher().fetch(song, SavedForm(0, "flac"), url())
+        // It failed when played: it needs a fresh copy. The server's copy is now another.
+        assertTrue(catalogue.stale(first)!!.stale)
+        file = ByteArray(280_000) { (it % 13).toByte() }
+        val newer = song.copy(size = file.size.toLong())
+        var meanwhile: Downloaded? = first
+        CrashPoints.at = { point ->
+            when (point) {
+                // Verified and in place, not yet marked: the player's look at whether the
+                // download is the length it was marked at finds the old copy as it was.
+                "placed" -> meanwhile = catalogue.dropIfNotWhole(song.id)
+                // And the mark can't be written.
+                "append-half" -> throw java.io.IOException("the phone would not take the write")
+            }
+        }
+        try {
+            fetcher().fetch(newer, SavedForm(0, "flac"), url())
+            fail("its mark could not be written")
+        } catch (_: DownloadFailure) {
+        } finally {
+            CrashPoints.at = null
+        }
+        assertNull(meanwhile)
+        assertArrayEquals(original, catalogue.wholeFileOf(song.id)!!.readBytes())
+        // Started again with the server gone: the copy that was there is still a download,
+        // whole, and still waiting to be replaced; the new one has gone.
+        server.close()
+        val again = Catalogue(catalogue.dir)
+        assertTrue(again.wanting.isEmpty())
+        assertArrayEquals(original, again.wholeFileOf(song.id)!!.readBytes())
+        assertTrue(again.entry(song.id)!!.stale)
+        assertEquals(listOf("downloads.log", "tr-1.flac"), files())
+    }
+
+    @Test
+    fun aReplacementTakesTheOldCopysPlaceOnlyOnceItIsMarked() {
+        val first = fetcher().fetch(song, SavedForm(0, "flac"), url())
+        catalogue.stale(first)
+        file = ByteArray(280_000) { (it % 13).toByte() }
+        val fresh = fetcher().fetch(song.copy(size = file.size.toLong()), SavedForm(0, "flac"), url())
+        assertFalse(fresh.stale)
+        assertArrayEquals(file, catalogue.wholeFileOf(song.id)!!.readBytes())
+        assertEquals(listOf("downloads.log", fresh.file), files())
+        assertArrayEquals(file, Catalogue(catalogue.dir).wholeFileOf(song.id)!!.readBytes())
+    }
+
+    @Test
     fun theFormIsWindowsChoice() {
         // The original, at Original quality and a file the phone plays.
         assertEquals(SavedForm(0, "flac"), savedForm(song, 0))

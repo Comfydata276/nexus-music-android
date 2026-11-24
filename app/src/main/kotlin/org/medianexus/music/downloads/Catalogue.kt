@@ -363,12 +363,12 @@ class Catalogue(
             append(Change(add = entry))
             val before = songs.remove(entry.song.id)
             songs[entry.song.id] = entry
-            // A copy this one replaces, under another name (it was the file as it is, and
-            // this is the server's conversion): gone only now, the new one marked.
-            if (before != null && before.file != entry.file) File(dir, before.file).delete()
             compactIfDue()
             if (failures.remove(entry.song.id) != null) writeFailures()
             publish()
+            // A copy this one replaces (always under another name: see `SongFetch`): gone
+            // only now, the new one marked, and shown, in its place.
+            if (before != null && before.file != entry.file) File(dir, before.file).delete()
         }
     }
 
