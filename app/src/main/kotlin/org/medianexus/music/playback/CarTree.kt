@@ -812,6 +812,9 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     suspend fun play(track: CarNode.Track): PlayList? {
         val known = if (track.list is ListRef.Album) runCatching { songsOf(track.list, track.songId) }.getOrNull() else songsOf(track.list, track.songId)
         val start = known?.first?.let { songs -> if (songs.getOrNull(track.index)?.id == track.songId) track.index else songs.indexOfFirst { it.id == track.songId } } ?: -1
+        // A station is chosen by its own id among the stations, and nothing else: one that is
+        // no longer there is not found (it was looked up as a song).
+        if (track.list == ListRef.Radio && start < 0) return null
         if (known == null || start < 0) {
             // A song with no album to speak of, or one its album doesn't hold (an old kept
             // page of it, a song kept from it separately): just the song, as a spoken request
