@@ -357,7 +357,21 @@ class PlaybackService : MediaLibraryService() {
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (Recovery.carriesOnWhenSwipedAway(exo.playWhenReady, exo.playbackState, waitingFor != null)) return
-        pauseAllPlayersAndStopSelf()
+        pauseAndStop()
+    }
+
+    /**
+     * Pauses and stops the service, as Media3's `pauseAllPlayersAndStopSelf` does, without
+     * the other thing that does: switch off, for the rest of the service's life, the ten
+     * minutes Media3 keeps the service in the foreground after playback stops (its
+     * notification manager's "user engaged" timeout, which nothing can switch on again).
+     * While a car stays bound the service lives on, and whatever it played next would then
+     * leave the foreground the moment the player went idle (an ordinary Wi-Fi dropout), with
+     * no standing to come back into it when the server answered again.
+     */
+    private fun pauseAndStop() {
+        for (each in sessions) each.player.playWhenReady = false
+        stopSelf()
     }
 
     // ---- Started by a button, with the app not running --------------------------------------
@@ -632,20 +646,22 @@ class PlaybackService : MediaLibraryService() {
         runCatching { foreground.leave() }
         if (was) graph.diagnostics.note("asked to play with nothing to play: left the foreground and stopped cleanly", now = true)
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "asked to play with nothing to play: stopped cleanly")
-        pauseAllPlayersAndStopSelf()
+        pauseAndStop()
     }
 
     /**
-     * Android refused to let the service into the foreground when playback began (Media3
-     * tells its listener: see onCreate). It is handled, never thrown: the player is paused,
-     * so that nothing claims to be playing from a service Android may silence or stop at any
-     * moment, and the next Play (from the car's screen, the notification or the app, each of
-     * which Android lets start a foreground service) begins cleanly.
+     * Android refused to let the service into the foreground when Media3 asked for it (it
+     * tells its listener: see onCreate), at the start or at any time after: the player
+     * buffering again after a dropout, with the ten minutes after a stop run out. It is
+     * handled, never thrown, and it is what a refusal at the start is (see [cannotStart]):
+     * the player is stopped at its place, so that nothing claims to be playing from a service
+     * Android may silence or stop at any moment, and the session says what will put it right,
+     * with Play still offered. It used to be only paused, with nothing said.
      */
     private fun foregroundRefused() {
-        graph.diagnostics.note("foreground: Android would not allow it when playback began; paused", now = true)
-        if (BuildConfig.DEBUG) android.util.Log.w(TAG, "Android refused the foreground: paused")
-        exo.pause()
+        graph.diagnostics.note("foreground: Android would not allow it when Media3 asked; stopped where it was", now = true)
+        if (BuildConfig.DEBUG) android.util.Log.w(TAG, "Android refused the foreground")
+        cannotStart("Android would not let the player into the foreground")
         if (holding) standDown()
     }
 
@@ -1162,9 +1178,23 @@ class PlaybackService : MediaLibraryService() {
             delay(delayMs)
             if (waitingFor != wanted) return@launch
             waitingFor = null
-            if (wanted.stillStands(this@PlaybackService.era?.number, player.queue.currentUid(), exo.playerError != null)) exo.prepare()
+            if (!wanted.stillStands(this@PlaybackService.era?.number, player.queue.currentUid(), failedNow())) return@launch
+            // The player is to play again with nobody having asked it to just now, and after a
+            // long outage Media3 may have let the foreground go with the player idle: in the
+            // foreground first, as before any Play, or the player would ask for the sound with
+            // no standing to have it (and be refused it, on Android 15 and later, with nothing
+            // said). Android refusing is the same recoverable error as a refusal at the start.
+            if (exo.playWhenReady && !holdForeground(why = "to carry on after the server came back")) {
+                cannotStart("Android would not let the player back into the foreground to carry on")
+                return@launch
+            }
+            exo.prepare()
         }
     }
+
+    /** Whether the player has failed and is waiting to be asked again: ExoPlayer's word,
+     *  stood in for by the one test that is about what a try does, not how a stream fails. */
+    internal var failedNow: () -> Boolean = { exo.playerError != null }
 
     private fun stopWaiting() {
         retry?.cancel()

@@ -384,9 +384,18 @@ How it is built (M1a):
   playing", with a button that opens the app and with Play still offered; it goes at the
   next start that works. It is a player's own error and not Media3's standing one
   (`setPlaybackException`), which takes every command away, Play included, and so could
-  not be recovered from the car. A start Media3 itself is refused is handled through its
-  own hook (`MediaSessionService.Listener`): noted, the player paused, never an uncaught
-  exception.
+  not be recovered from the car. A start Media3 itself is refused (at the start, or later:
+  the player buffering again after a dropout) is handled through its own hook
+  (`MediaSessionService.Listener`) in the same way: noted, the player stopped at its place,
+  the same words with Play still offered, never an uncaught exception. A try at the server
+  after an outage goes into the foreground first, as a Play does, and is the same recoverable
+  error if Android won't have it.
+- **Stopping never switches off Media3's ten minutes.** Media3 keeps the service in the
+  foreground for ten minutes after playback stops; its `pauseAllPlayersAndStopSelf` switches
+  that off for the rest of the service's life, and a car bound to the service keeps it alive,
+  so the next song would have left the foreground at the first dropout. A start that came to
+  nothing, and a swipe away while paused, pause and stop the service themselves
+  (`pauseAndStop`).
 - **Handing the foreground to Media3.** The foreground a request entered is held by a
   notification of the service's own until Media3's takes its place. When the time allowed
   for a start runs out (seven seconds) and it still has not: a request still being looked

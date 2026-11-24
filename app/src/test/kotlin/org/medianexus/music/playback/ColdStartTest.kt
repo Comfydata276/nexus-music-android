@@ -104,6 +104,42 @@ class ColdStartTest {
         assertTrue(shadow.notificationShouldRemoved)
     }
 
+    /** Whether Media3 will still keep the service in the foreground for its ten minutes after
+     *  playback stops (its `MediaNotificationManager`'s "user engaged" timeout): a switch it
+     *  only ever turns off, which nothing outside Media3 can read but this. */
+    private fun graceStands(service: PlaybackService): Boolean {
+        val field = androidx.media3.session.MediaSessionService::class.java.getDeclaredField("mediaNotificationManager").apply { isAccessible = true }
+        val manager = field.get(service) ?: return true
+        return manager.javaClass.getDeclaredField("isUserEngagedTimeoutEnabled").apply { isAccessible = true }.getBoolean(manager)
+    }
+
+    @Test
+    fun standingDownLeavesMediaThreesTenMinutesForWhatPlaysLater() {
+        // A start that came to nothing is stood down. The service is stopped, but a car bound
+        // to it keeps it alive; whatever it plays later must have Media3's ten minutes in the
+        // foreground after a stop like any other playback. Media3's own way of stopping
+        // (`pauseAllPlayersAndStopSelf`) switches them off for the rest of the service's
+        // life, so the next Wi-Fi dropout would put it out of the foreground at once.
+        val service = start()
+        val shadow = shadowOf(service)
+        service.onStartCommand(playButton(), 0, 1)
+        settle()
+        assertTrue(graceStands(service))
+        shadowOf(Looper.getMainLooper()).idleFor(8, TimeUnit.SECONDS)
+        assertTrue("not stood down", shadow.isStoppedBySelf)
+        assertTrue(shadow.isForegroundStopped)
+        assertTrue("Media3's ten minutes after a stop were switched off for good", graceStands(service))
+    }
+
+    @Test
+    fun swipedAwayWhilePausedStopsWithoutSwitchingOffMediaThreesTenMinutes() {
+        val service = start()
+        service.onTaskRemoved(null)
+        settle()
+        assertTrue(shadowOf(service).isStoppedBySelf)
+        assertTrue("Media3's ten minutes after a stop were switched off for good", graceStands(service))
+    }
+
     @Test
     fun playWithNothingToResumeIsEndedAtOnceNotWaitedOut() {
         // Someone is signed in, and nothing was ever saved for them to carry on with.

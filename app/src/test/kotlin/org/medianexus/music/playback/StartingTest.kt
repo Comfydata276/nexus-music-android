@@ -176,6 +176,65 @@ class StartingTest {
     }
 
     @Test
+    fun whenAndroidRefusesMediaThreesForegroundTheCarIsToldWhyAsAtTheStart() {
+        inside.player.play(songs(5), 1, "A list", playNow = false)
+        settle()
+        inside.player.play()
+        settle()
+        assertTrue(inside.exo.playWhenReady)
+        // Later, Media3 goes to put the service in the foreground (the player buffering again
+        // after a dropout, say) and Android refuses it: Media3 catches that and tells the
+        // service's listener. It used to be paused with nothing said, where a refusal at the
+        // start says what will put it right.
+        val hook = androidx.media3.session.MediaSessionService::class.java.getDeclaredMethod("onForegroundServiceStartNotAllowedException").apply { isAccessible = true }
+        hook.invoke(service)
+        settle()
+        assertFalse(inside.exo.playWhenReady)
+        assertEquals(app.getString(R.string.car_open_to_play), inside.player.playerError?.message)
+        assertTrue(inside.player.isCommandAvailable(Player.COMMAND_PLAY_PAUSE))
+        assertEquals("s1", inside.player.queue.current()?.id)
+    }
+
+    @Test
+    fun aTryAtTheServerThatAndroidWillNotLetBackIntoTheForegroundSaysWhy() {
+        val server = StandInServer().also { it.start() }
+        try {
+            server.signIn(app)
+            settle()
+            inside.player.play(songs(5), 2, "A list", playNow = false)
+            settle()
+            inside.player.play()
+            settle()
+            // Playing: Media3's notification holds the foreground from here.
+            service.onUpdateNotificationAsync(inside.session, true)
+            settle()
+            assertTrue(noted().any { it.startsWith("foreground: playing in it") })
+            val before = android.asked
+            // The server goes out of reach part-way: the player has failed, and waits where it
+            // is to try again. (The player's own failure stood in for: the stream is not what
+            // is being tested.)
+            service.failedNow = { true }
+            inside.watcher.onPlayerError(androidx.media3.common.PlaybackException("gone", null, androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED))
+            settle()
+            // Meanwhile Media3 has let the foreground go with the player idle, and Android
+            // will not have the service back in it: nobody has pressed anything.
+            android.inIt = false
+            android.allows = false
+            shadowOf(Looper.getMainLooper()).idleFor(16, java.util.concurrent.TimeUnit.SECONDS)
+            // The try is not made from the background, where the player would ask for the
+            // sound with no standing to have it; it is the same recoverable error as a
+            // refusal at the start, with Play still offered.
+            assertTrue("no try at the foreground", android.asked > before)
+            assertFalse(inside.exo.playWhenReady)
+            assertEquals(app.getString(R.string.car_open_to_play), inside.player.playerError?.message)
+            assertTrue(inside.player.isCommandAvailable(Player.COMMAND_PLAY_PAUSE))
+            assertEquals("s2", inside.player.queue.current()?.id)
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
     fun mediaThreeIsNotTakenToHoldTheForegroundUnlessAndroidSaysTheServiceIsInIt() {
         inside.player.play(songs(3), 0, "A list", playNow = false)
         settle()
