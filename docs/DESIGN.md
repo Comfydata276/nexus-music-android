@@ -2030,23 +2030,31 @@ How it is built (M4a, sound and lyrics):
   `in_album_order` with their tests), **at every flush**: a song played again takes what is
   known of it by then. At a join Media3 configures the sink for the second song before its
   first buffer, and drains the first song through the chain before it flushes for the second;
-  so the new gain begins on exactly the second song's first sample. **The period is the one
-  the sound was read from** (rule 5): Media3's renderer tells the sink the period it is
-  *reading* when the decoder's output changes format, and a decoder gives its output back
-  some frames late while the renderer reads ahead, so a short song whose sound only began once
-  the renderer was reading the next took the next one's gain (`CompressedJoinTest` showed it).
-  The app's renderer (`GaplessAudioRenderer`) marks each format, as it is read, with its period
-  (`ReadFrom`, in the format's custom data, which Media3 carries to the sink's format), and the
-  sink is configured with that period (`PeriodOfTheSound`, a wrapper of the sink's
-  `configure` and nothing else). Inside an album played in order, in Auto or Album mode, both
-  songs have the album's value: nothing changes at the join.
-- **Two ramps** (rule 4). The song's gain is one thing, which changes as a step where the song
-  does; a change the person makes is another, easing in over 50 ms from where it was (the gain
-  heard is the song's times an easing factor that moves to 1), across a join as within a song.
-  Mono and the equaliser's bands move the same way, the bands in steps (a full 24 dB swing in
-  50 ms, the coefficients worked out again each 32 frames while they move). Only sound that
-  begins with nothing before it (after a reset, or in a new format) has everything in place at
-  once.
+  so the new gain begins on exactly the second song's first sample (`CompressedJoinTest`:
+  two padded MP3s through the app's renderer, each song's frames at its own gain from first to
+  last). Inside an album played in order, in Auto or Album mode, both songs have the album's
+  value: nothing changes at the join. **The limit, accepted**: the period is the one Media3's
+  renderer is *reading* when the decoder's output changes format, and a decoder gives its
+  output back some frames late, so a song shorter than what the decoder holds at once (tens of
+  milliseconds) has been read to its end before its first sound comes out, and takes its
+  neighbour's level. Marking each format with the period it was read from fixed that, but it
+  sat in the renderer that keeps albums seamless and could stop playback after a queue edit
+  (the period it named could be gone from the timeline): not worth it for songs no real album
+  has, so it was taken out again.
+- **What eases is the setting.** A change the person makes eases in over 50 ms, and what
+  moves is the setting itself, something that means the same for every song, never one song's
+  gain against another's: levelling as a share of each setting it is moving between (the new
+  one coming in, its share rising to 1, the ones before it giving way in proportion, so a
+  change of mode or of the untagged amount eases as well as on, off and the level), mono's
+  share, the preamp and each band (in steps: a full 24 dB swing in 50 ms, the coefficients
+  worked out again each 32 frames while they move). The gain heard is worked out from them
+  for the song sounding. At a join the song changes, its gain under each setting is worked
+  out, and the shares carry on from where they were; at a change of format the equaliser's
+  coefficients are made again at the bands as they are and everything easing carries on. Only
+  sound that begins with nothing before it (after a reset) has everything in place at once.
+  (The last round's ramp was the ratio of the old gain to the new one, kept for the song
+  playing: put under the next song's gain at a join it could start that song several times
+  too loud.)
 - **The filters' memory follows the sound** (rule 3): kept only when the sink drained
   everything through before the flush, which is what it does at a gapless join; cleared at any
   other flush (a seek, another song chosen, a new queue, a reset), so nothing of the sound
@@ -2129,12 +2137,16 @@ How it is built (M4a, sound and lyrics):
   src/playback.rs): from Navidrome only; synced where the server has them (and every line has
   a time, and the times are in order: Windows does nothing about times that aren't, and they
   are shown here as plain lyrics), plain otherwise, "No lyrics for this song" said plainly. A
-  line timed past the song's end is shown but is no place to seek to. One result per song,
+  line is a place to seek to only inside the song's length as the player reports it (as the
+  library has it where the player doesn't know; where neither does, no line is): one timed
+  past the end is shown but not tappable. One result per song,
   which the view and fetching ahead both update: each opening of a song's lyrics shows what's
   kept at once and, with the server there, asks again, showing and keeping what it says if
   that differs; "couldn't ask" is never kept as "none". Kept per account. The song playing
   and the next five have theirs fetched ahead on Wi-Fi, the next one on mobile data, none with
-  Data Saver on or offline (as songs are), the network looked at before each request. Kept in
+  Data Saver on or offline (as songs are), the network looked at immediately before each
+  request. Lyrics fetched for a download go through the same one result, so an open panel
+  shows them. Kept in
   the account's cache folder, and for a downloaded song also in its data folder, where Android
   doesn't clear them: fetched as the download arrives, and for one already on the phone,
   whenever lyrics may next be fetched (the server back, the network or the Wi-Fi-only setting
@@ -2165,6 +2177,17 @@ How it is built (M4a, sound and lyrics):
   processors do; with nothing to do, every sample is handed on as it came.
 - **Saved equaliser presets are the phone's**, with every other setting, not an account's: a
   second account on the same phone sees the same presets.
+- **Known, and accepted** (the second round of fixes):
+  - Switching "End of this song" off in the last few milliseconds of a song can lose the race
+    with the player's own pause at its end, and the music pauses once: the switch reaches the
+    player's own thread a moment after it is made, and the player may have paused by then;
+    one press of Play carries on.
+  - If a stream's timestamps jump mid-song and Media3 resynchronises, the equaliser's memory
+    is kept across it and can ring for a moment: Media3 gives its processors no flush there
+    (it is one stream), and a jump like that is a damaged file's, already heard as a break.
+  - The limiter's knee is entered and left in one step when the gain crosses 1 or the
+    equaliser starts or stops: only a sample already above 0.8 of full scale moves, by a
+    little, and fading the limiter in is what let samples over full scale during a ramp.
 - **Offline, a song with no lyrics kept** says so in words of the app's own ("None are kept on
   this phone, and your server can't be asked while you're offline"), not Windows' "Your music
   server doesn't have any for it", which would not be known.

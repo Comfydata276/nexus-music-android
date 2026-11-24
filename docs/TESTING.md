@@ -1771,11 +1771,13 @@ again is looked up again; switched off between songs, the next is untouched from
 sample. `CompressedJoinTest`: two LAME-padded MP3s through `GaplessAudioRenderer` with a
 decoder that gives its output back four frames late (as a real one does): before the fix the
 short first song came out at the second's gain from its first frame (1,592, its sound at
-the second's -8 dB, where its own -2 dB makes 3,177); now all 1,872 of its frames are at its
-own gain and the second's begins on the second's first. `PlayerSoundTest`: the fallback
+the second's -8 dB, where its own -2 dB makes 3,177); with the fix, all 1,872 of its frames
+were at its own gain (the fix was taken out again in the second round: see below). `PlayerSoundTest`: the fallback
 levelling values go with their account. `SleepTimerTest`: the pause is carried out on the
 player's thread, and only for the timer still set; `SleepAtTheEndTest`: paused by "End of this
-song" at the end of a 400-song queue with repeat all, it stays paused. `LyricsTest`: asked again
+song" at the end of the last song held of a 400-song queue with repeat all, Media3 stays ready
+and paused (it doesn't reach the guard on repeat all's going round, which has no test: see the
+test's comment). `LyricsTest`: asked again
 when opened once the server is back; what fetching ahead finds is what the open view shows;
 the network looked at before each request; times out of order shown plain, a line past the
 song's end no place to seek.
@@ -1801,6 +1803,28 @@ none failed; the car check on that release build on Android 12, levelling (Norma
 equaliser (Bass boost) on: 48 passed and 0 failed online, 24 passed and 0 failed offline (the
 sound instance stopped), the one warning each time the empty folder as before
 (`fixes-carcheck-*-android12.txt`).
+
+**The second round of fixes** (no emulator: unit tests and the check only). `SoundProcessorTest`:
+Loud switched on 10 ms before the end of a song Loud turns down (0.25) into one it turns up
+(1.41): no sample of the second above its own gain at Loud, and it begins where the ramp had
+got to (it began at 4.65 times before); the same into 48 kHz, driven as the sink drives a
+change of format (everything was put in place at once before); Loud switched off just before
+such a join, the next song eased down from between its two gains (it began at 0.40 before).
+`CompressedJoinTest`, with the period tag taken back out of the renderer, is a record of the
+limit: two two-second MP3s, each song's frames exactly at its own gain from first to last,
+both counted exactly; a song shorter than the decoder holds at once may take its neighbour's
+level (DESIGN, "Which song"). `LyricsTest`: a download's lyrics arriving while its panel is
+open are shown there; the network stops being allowed while the kept copy is read, and
+nothing is asked; with no length known, no line is a place to seek. Each new test failed on
+the code before it (the limit's record and the renamed `SleepAtTheEndTest` fix nothing).
+`CompressedJoinTest` failed once in the whole suite with the machine busy: its decoder took
+any amount of input, so the renderer read all of the first song before its first sound came
+out; it now holds at most eight frames, as a real decoder's few buffers do. At df9580b the
+whole unit suite passed twice in a row with `--no-build-cache` and every task run again, 895
+tests each time, none failed; `scripts/check --release` failed once on
+`DownloadsTest.theSameNetworkTurningMeteredStopsWifiOnlyDownloadsAtOnce` (a 30-second wait on
+another thread, which passed in both runs of the suite: a timing failure under load, not the
+sound's), and passed run again (its tests then up to date from the second run of the suite).
 
 ## What is not covered
 
