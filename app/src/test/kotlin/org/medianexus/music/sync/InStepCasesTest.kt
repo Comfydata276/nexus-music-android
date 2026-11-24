@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -99,7 +100,7 @@ class InStepCasesTest {
             val settled = KotlinSettler.settle(server = SharedText.write(b), local = SharedText.write(a), now = now)
             // (A server's record in a later layout is never merged at all.)
             if (b.layout > LAYOUT) {
-                assertTrue(name, settled is Settled.Newer)
+                assertTrue(name, settled is Settled.ReadOnly)
                 continue
             }
             settled as Settled.Merged
@@ -143,6 +144,25 @@ class InStepCasesTest {
             assertEquals(name, case.getValue("merged"), tree(Shared(added = Merge.mergeNotes(a, b, now))).jsonObject.getValue("added"))
             assertEquals(name, case.getValue("merged_other_way"), tree(Shared(added = Merge.mergeNotes(b, a, now))).jsonObject.getValue("added"))
         }
+    }
+
+    @Test
+    fun onlyThePlainSixteenDigitsAreDigitsInAnEscape() {
+        // Java reads full-width digits, and other scripts', as digits; serde does not. Read
+        // the Java way, such an escape in a field nobody knows was carried into what the
+        // phone wrote, which Windows then could not read at all (and wrote over).
+        assertNull(SharedText.read("{\"theme\":\"\\u\uFF10\uFF10\uFF16\uFF11\"}"))
+        assertNull(SharedText.read("{\"later\":\"\\u\uFF10\uFF10\uFF16\uFF11\",\"pins_at\":3}"))
+        assertNull(SharedText.read("{\"theme\":\"\\u\u0660\u0660\u0666\u0661\"}"))
+        assertEquals("\u00e9\u00e9", SharedText.read("{\"theme\":\"\\u00E9\\u00e9\"}")!!.theme)
+        assertTrue(section("reads").count { it.getValue("name").jsonPrimitive.content.startsWith("an escape") } >= 7)
+    }
+
+    @Test
+    fun aFieldNobodyKnowsInsideAListOrANoteIsSaidToBeThere() {
+        assertFalse(SharedText.read("""{"devices":{"pc":1},"lists":{"k":{"at":2}},"added":{"p":{"s":{"times":[1],"at":1}}}}""")!!.more)
+        assertTrue(SharedText.read("""{"lists":{"k":{"at":2,"columns":[1,2]}}}""")!!.more)
+        assertTrue(SharedText.read("""{"added":{"p":{"s":{"times":[1],"at":1,"by":"pc"}}}}""")!!.more)
     }
 
     @Test

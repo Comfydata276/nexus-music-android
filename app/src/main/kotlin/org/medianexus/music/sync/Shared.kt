@@ -29,6 +29,10 @@ data class Shared(
      *  written. Not part of what is merged or compared (Windows drops them); the phone puts
      *  the server's back when it writes (see [KotlinSettler]). */
     val unknown: List<Pair<String, String>> = emptyList(),
+    /** The text held something inside a list's choices or a note that this version doesn't
+     *  know, and so could not write back as it found it. Such a record is read and never
+     *  written (see [KotlinSettler]). */
+    val more: Boolean = false,
 )
 
 /** One list's choices, as shared (Windows' `ListPrefs`). `sort` is as wide as Windows' own
@@ -202,6 +206,9 @@ object SharedText {
     private class Reader(private val s: String) {
         private var i = 0
 
+        /** A field this version doesn't know was passed over inside a list's choices or a note. */
+        private var more = false
+
         private fun fail(): Nothing = throw Unreadable()
 
         /** JSON's four kinds of space, and no others. */
@@ -279,7 +286,7 @@ object SharedText {
             )
             return Shared(
                 layout ?: 0, pins.orEmpty(), pinsAt ?: 0, theme.orEmpty(), themeAt ?: 0, lists.orEmpty(), added.orEmpty(),
-                history.orEmpty(), plays.orEmpty(), sources.orEmpty(), unknown,
+                history.orEmpty(), plays.orEmpty(), sources.orEmpty(), unknown, more,
             )
         }
 
@@ -299,7 +306,7 @@ object SharedText {
                         "descending" -> { once(descending); descending = bool() }
                         "sort_chosen" -> { once(chosen); chosen = bool() }
                         "at" -> { once(at); at = time() }
-                        else -> skip()
+                        else -> { skip(); more = true }
                     }
                 },
                 placed = { place ->
@@ -325,7 +332,7 @@ object SharedText {
                     when (name) {
                         "times" -> { once(times); times = list { time() } }
                         "at" -> { once(at); at = time() }
-                        else -> skip()
+                        else -> { skip(); more = true }
                     }
                 },
                 placed = { place -> if (place == 0) times = list { time() } else at = time() },
@@ -536,8 +543,14 @@ object SharedText {
             if (i + 4 > s.length) fail()
             var value = 0
             repeat(4) {
-                val digit = Character.digit(s[i++], 16)
-                if (digit < 0) fail()
+                // The sixteen digits of plain text only, as serde takes them: Java's own
+                // reading of a digit also takes the full-width ones and those of other scripts.
+                val digit = when (val c = s[i++]) {
+                    in '0'..'9' -> c - '0'
+                    in 'a'..'f' -> c - 'a' + 10
+                    in 'A'..'F' -> c - 'A' + 10
+                    else -> fail()
+                }
                 value = value * 16 + digit
             }
             return value.toChar()

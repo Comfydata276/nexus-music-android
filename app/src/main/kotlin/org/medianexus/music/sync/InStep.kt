@@ -88,6 +88,9 @@ class InStep(
         BUSY,
         /** The server's record is in a later layout: taken in as far as understood, not written. */
         NEWER_LAYOUT,
+        /** The server's record holds, inside a list's choices or a note, something this version
+         *  doesn't know and couldn't write back: taken in as far as understood, not written. */
+        MORE_THAN_KNOWN,
         /** The comment on the server isn't a record this app can read: left exactly as it is. */
         UNREADABLE,
         /** The server couldn't be asked, or refused: tried again at the next look. */
@@ -149,10 +152,12 @@ class InStep(
                 note("in step: the shared record on the server isn't one this version can read; it was left as it is")
                 Outcome.UNREADABLE
             }
-            is Settled.Newer -> {
-                // Written by a newer version of the app: read what's understood, change nothing.
+            is Settled.ReadOnly -> {
+                // Written by a newer version of the app, or holding more than this one could
+                // write back: read what's understood, change nothing.
+                if (!settled.laterLayout) note("in step: the shared record holds more than this version knows; it is read and not written")
                 SharedText.read(settled.text)?.let { phone.take(it) }
-                Outcome.NEWER_LAYOUT
+                if (settled.laterLayout) Outcome.NEWER_LAYOUT else Outcome.MORE_THAN_KNOWN
             }
             is Settled.Merged -> {
                 if (settled.write) {

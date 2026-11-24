@@ -233,6 +233,14 @@ fn read_texts() -> Vec<(&'static str, String)> {
         ("empty keys and ids", r#"{"pins":[""],"lists":{"":{"at":1}},"added":{"":{"":{"times":[],"at":0}}},"history":[["",0]]}"#),
         ("capitals in a name", r#"{"Pins_at":5,"PINS":["a"]}"#),
         ("true written large", r#"{"lists":{"liked":{"shuffle":True}}}"#),
+        // Digits that are digits to Java and not to serde: full-width, and another script's.
+        ("an escape in full-width digits", "{\"theme\":\"\\u\u{FF10}\u{FF10}\u{FF16}\u{FF11}\"}"),
+        ("an escape in full-width digits, in a field nobody knows", "{\"later\":\"\\u\u{FF10}\u{FF10}\u{FF16}\u{FF11}\",\"pins_at\":3}"),
+        ("an escape in full-width digits, in a name", "{\"\\u\u{FF10}\u{FF10}\u{FF16}\u{FF11}\":1,\"pins_at\":3}"),
+        ("an escape in another script's digits", "{\"theme\":\"\\u\u{0660}\u{0660}\u{0666}\u{0661}\"}"),
+        ("an escape with a full-width letter", "{\"theme\":\"\\u00\u{FF46}1\"}"),
+        ("an escape in capitals", r#"{"theme":"\u00E9\u00e9"}"#),
+        ("a field nobody knows inside a note inside a list as a list", r#"{"added":{"p":{"s":[[3],4]}},"lists":{"k":{"at":2,"more":{"deep":[1,{"x":"\u0041"}]}}}}"#),
     ]
     .into_iter()
     .map(|(name, text)| (name, text.to_string()))

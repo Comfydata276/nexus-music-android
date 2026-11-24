@@ -202,11 +202,16 @@ class SharedStoresTest {
         try {
             val api = Subsonic(server.url("/").toString(), "tester", "pass", okhttp3.OkHttpClient(), OfflineSwitch())
             val library = Library(api, PageCache(folder.newFolder(), scope, Dispatchers.Unconfined))
-            server.enqueue(answer(""""playlists":{"playlist":[{"id":"p1","name":"Road trip","owner":"tester"},{"id":"sync","name":"Nexus Music sync","owner":"tester","comment":"{}"},{"id":"p2","name":"Nexus Music sync notes","owner":"tester"}]}"""))
+            // (Answered by what is asked, in any order and however often.)
+            server.dispatcher = object : mockwebserver3.Dispatcher() {
+                override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse = when {
+                    "getPlaylists" in request.url.encodedPath -> answer(""""playlists":{"playlist":[{"id":"p1","name":"Road trip","owner":"tester"},{"id":"sync","name":"Nexus Music sync","owner":"tester","comment":"{}"},{"id":"p2","name":"Nexus Music sync notes","owner":"tester"}]}""")
+                    else -> answer(""""playlist":{"id":"sync","name":"Nexus Music sync","owner":"tester","comment":"{}"}""")
+                }
+            }
             // As the server sends it: left out of the list every screen, the car and search read.
             assertEquals(listOf("p1", "p2"), library.fresh(library.playlists()).map { it.id })
             // Asked for by its id (an old link, a car that kept it): not found.
-            server.enqueue(answer(""""playlist":{"id":"sync","name":"Nexus Music sync","owner":"tester","comment":"{}"}"""))
             val refused = runCatching { library.fresh(library.playlist("sync")) }.exceptionOrNull()
             assertEquals(70L, (refused as ApiError.Server).code)
             // A copy of the list kept on the phone by a version that didn't know of it: read

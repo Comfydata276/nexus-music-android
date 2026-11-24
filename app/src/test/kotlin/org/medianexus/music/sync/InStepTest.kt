@@ -159,7 +159,8 @@ class InStepTest {
 
     @Test
     fun aCommentThatIsNotARecordIsLeftAloneAndSaidInDiagnostics() = runBlocking {
-        for (comment in listOf("My sync playlist, do not delete", """{"nexus_music_sync":1,"pins":["a","b""", """{"pins":null}""", "null", """{"nexus_music_sync":4294967296}""")) {
+        // (A comment of spaces among them: only the empty text is "nothing shared yet".)
+        for (comment in listOf("My sync playlist, do not delete", """{"nexus_music_sync":1,"pins":["a","b""", """{"pins":null}""", "null", """{"nexus_music_sync":4294967296}""", "  \n ", " ")) {
             val server = Server().apply { put("a", comment) }
             val notes = ArrayList<String>()
             val device = Device(holds = pc)
@@ -183,6 +184,25 @@ class InStepTest {
         assertEquals(later, server.comment("a"))
         // What is understood of it is taken in (as Windows does).
         assertEquals(listOf("z"), device.holds!!.pins)
+    }
+
+    @Test
+    fun aRecordThePhoneCouldNotWriteBackWholeIsReadAndNotWritten() = runBlocking {
+        // Inside a list's choices and inside a note, fields this version doesn't know: it
+        // would drop them if it wrote. So it takes in what it understands and writes nothing.
+        for (text in listOf(
+            """{"nexus_music_sync":1,"pins":["z"],"pins_at":1790000000,"lists":{"liked":{"shuffle":true,"at":9,"columns":[1,2]}}}""",
+            """{"nexus_music_sync":1,"pins":["z"],"pins_at":1790000000,"added":{"p":{"s":{"times":[4],"at":4,"by":"pc"}}}}""",
+        )) {
+            val server = Server().apply { put("a", text) }
+            val notes = ArrayList<String>()
+            val device = Device(holds = pc)
+            assertEquals(InStep.Outcome.MORE_THAN_KNOWN, step(server, device, notes = notes).exchange())
+            assertTrue(server.writes.isEmpty())
+            assertEquals(text, server.comment("a"))
+            assertEquals(listOf("z"), device.holds!!.pins)
+            assertEquals(1, notes.size)
+        }
     }
 
     @Test
