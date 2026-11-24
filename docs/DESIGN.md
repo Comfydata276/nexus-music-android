@@ -1732,13 +1732,21 @@ How it is built (M3a, finding music):
   fetches it. No refusing, no retries, no comparison with the server's count. Nothing is
   fetched while the server scans. A copy Android cleared is written again from memory; a
   resumed fetch uses only pages kept under its own scan.
-- **A tap hands over the arrangement on screen**: the list, the find text and order it was
-  arranged with, the song tapped and its place. The service plays that arrangement from that
-  song, wherever it now is; if it isn't there, nothing plays and the person is told ("That
-  song isn't in the list as it was shown any more"), never a neighbour. Rows of an
-  arrangement that a newer one is replacing are drawn but don't respond. A queue from a
-  narrowed list follows its list narrowed the same way (Windows' follows it unnarrowed); the
-  saved queue keeps the find text in a field of its own (`list_filter`) Windows reads past.
+- **A tap hands over what was drawn** (changed by the small fixes, item 1): the screen leaves
+  the very list its rows were made from and the order it drew them in (the packed table, or
+  the page's list, and the rows' places) in a holder in the process (`playback/Drawn`: a few
+  slots, each taken once, nothing written), and the PLAY carries its number with the find
+  text and order, the song tapped and its place. The service, in the same process (no
+  `android:process`), takes that object and builds the queue from it: a row from the song
+  tapped, the play button from the top row (anywhere, shuffled). Nothing is read again, so a
+  refresh or the first copy arriving between the tap and the start changes nothing. Rows of
+  an arrangement that a newer one is replacing play what they show, in the order shown. Only
+  if the number isn't there (the process was started again in between) is the list read
+  again, as before: the arrangement worked out again, from that song wherever it now is, and
+  if it isn't there, nothing plays and the person is told ("That song isn't in the list as
+  it was shown any more"), never a neighbour. A queue from a narrowed list follows its list
+  narrowed the same way (Windows' follows it unnarrowed); the saved queue keeps the find text
+  in a field of its own (`list_filter`) Windows reads past.
 - **A queue holds places, not songs**: a list from the copy is places in its table
   (`PlacedSongs`), a saved queue is read back into a table of its own, and the queue's play
   order, entry numbers and places are arrays of numbers. A song is made only for what is

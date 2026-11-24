@@ -1918,11 +1918,13 @@ class PlaybackService : MediaLibraryService() {
                     // has been overtaken. In the foreground first, as for any request that
                     // is to end in playing (the app is in front, so Android allows it).
                     holdForeground(why = "for a list chosen in the app")
+                    // The list as the screen drew it, left for the player (see Drawn).
+                    val drawn = Drawn.take(AppCommands.drawnOf(args))
                     if (AppCommands.byPage(args)) {
-                        playPage(player.beginStart(), args)
+                        playPage(player.beginStart(), args, drawn)
                     } else {
                         // A short list, sent whole: the same arrangement and song as by page.
-                        started(AppCommands.queueFor(player, args, AppCommands.songsOf(args), AppCommands.shuffleOf(args, ::shuffleFor), playsOffline(), ::addedDates), args.getString("source").orEmpty())
+                        started(AppCommands.queueFor(player, args, drawn?.songs ?: AppCommands.songsOf(args), AppCommands.shuffleOf(args, ::shuffleFor), playsOffline(), ::addedDates, drawn), args.getString("source").orEmpty())
                             ?.let { player.play(it); true } ?: false
                     }
                 }
@@ -1949,25 +1951,31 @@ class PlaybackService : MediaLibraryService() {
         return true
     }
 
+    /** Held here, in the tests that hold a named start between the tap and its list. */
+    @androidx.annotation.VisibleForTesting
+    internal var beforeNamedStart: suspend () -> Unit = {}
+
     /**
      * Starts a list the app's screens named rather than sent (a long album, playlist or Liked
-     * songs): its songs are read from the library's kept copy, where the screen read them,
-     * off the main thread. Dropped if something else is chosen meanwhile.
+     * songs, the Songs page), off the main thread: the list the screen drew, which it left
+     * for the player (`drawn`); failing that, its songs as the library keeps them, where the
+     * screen read them. Dropped if something else is chosen meanwhile.
      */
-    private fun playPage(mine: Long, args: Bundle): Boolean {
+    private fun playPage(mine: Long, args: Bundle, drawn: DrawnList?): Boolean {
         val era = era ?: return false
         val source = args.getString("source").orEmpty()
         era.scope.launch {
+            beforeNamedStart()
             val shuffle = AppCommands.shuffleOf(args, ::shuffleFor)
             // Read, and made into a queue, off the main thread: it is thousands of songs.
             val plays = playsOffline()
             val result = withContext(Dispatchers.Default) {
                 // A list of the downloads is read from their own record, like the car's
                 // Downloads tab; any other from the library's kept copy.
-                val songs = era.account.downloads?.let { org.medianexus.music.downloads.DownloadedViews.songsFor(it.state.value, source) }
+                val songs = drawn?.songs ?: era.account.downloads?.let { org.medianexus.music.downloads.DownloadedViews.songsFor(it.state.value, source) }
                     ?: era.account.library.keptSongs(source)
                 // The arrangement the screen showed, from the song tapped (see StartPlace.pick).
-                if (songs.isNullOrEmpty()) AppCommands.Started.Empty else AppCommands.queueFor(player, args, songs, shuffle, plays, ::addedDates)
+                if (songs.isNullOrEmpty()) AppCommands.Started.Empty else AppCommands.queueFor(player, args, songs, shuffle, plays, ::addedDates, drawn)
             }
             // Something else has been chosen while this was being read (or the account has
             // gone, which overtakes every start): that stands.

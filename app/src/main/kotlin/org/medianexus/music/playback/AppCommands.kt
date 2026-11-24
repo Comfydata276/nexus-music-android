@@ -69,29 +69,41 @@ object AppCommands {
         data object Empty : Started
     }
 
+    /** The number of the list a PLAY's screen left for the player (see [Drawn]); 0 if none. */
+    fun drawnOf(args: Bundle): Long = args.getLong("drawn")
+
     /**
-     * The queue a PLAY asks for, made ready to play. `songs` is the list: the one the
-     * command carried, or, for a command that names a page instead, that page's songs as the
-     * phone keeps them. Touches nothing of the player (see [QueuePlayer.prepare]): for a
-     * long list, call it off the main thread.
+     * The queue a PLAY asks for, made ready to play. `drawn` is the list as the screen drew
+     * it, taken from [Drawn]: what plays. Without it (the app's process started again since
+     * the tap), `listed` is the list: the one the command carried, or, for a command that
+     * names a page instead, that page's songs as the phone keeps them. Touches nothing of the
+     * player (see [QueuePlayer.prepare]): for a long list, call it off the main thread.
      */
     fun queueFor(
         player: QueuePlayer,
         args: Bundle,
-        songs: List<Song>,
+        listed: List<Song>,
         shuffle: Boolean,
         plays: ((Song) -> Boolean)? = null,
         dates: (source: String, songs: List<Song>) -> LongArray = { _, list -> LongArray(list.size) },
+        drawn: DrawnList? = null,
     ): Started {
         val source = args.getString("source").orEmpty()
+        val songs = drawn?.songs ?: listed
         // Sorted, or narrowed to what was typed in its find box: what was shown, in the order
-        // shown (Windows' `visible_songs`), worked out here from the list as the phone keeps
-        // it, as the screen worked it out. Each song still knows its place in the list itself.
+        // shown (Windows' `visible_songs`): the rows as drawn, or, without them, worked out
+        // here from the list as the phone keeps it, as the screen worked it out. Each song
+        // still knows its place in the list itself.
         val view = viewOf(args)
-        val added = if (view?.sort == org.medianexus.music.library.ListView.ADDED) dates(source, songs) else null
+        val startId = args.getString("startId")?.takeIf { !args.getBoolean("anyStart") }
         // Read without making a song of each where the list holds places (the Songs page's
         // 50,000 are places in the copy of the library): see PlacedSongs.
-        val picked = StartPlace.pick(songs.arrangeable(), { songs.idAt(it) }, view, args.getInt("start"), args.getString("startId")?.takeIf { !args.getBoolean("anyStart") }) { added?.get(it) ?: 0 }
+        val picked = if (drawn != null) {
+            StartPlace.within({ songs.idAt(it) }, songs.size, drawn.shown, args.getInt("start"), startId)
+        } else {
+            val added = if (view?.sort == org.medianexus.music.library.ListView.ADDED) dates(source, songs) else null
+            StartPlace.pick(songs.arrangeable(), { songs.idAt(it) }, view, args.getInt("start"), startId) { added?.get(it) ?: 0 }
+        }
         val rows = when (picked) {
             is StartPlace.Picked.Rows -> picked
             StartPlace.Picked.Gone -> return Started.Gone
@@ -186,7 +198,16 @@ object StartPlace {
     fun pick(songs: org.medianexus.music.library.SongColumns, ids: (Int) -> String, view: org.medianexus.music.library.ListView?, start: Int, startId: String?, added: (Int) -> Long = { 0 }): Picked {
         val arranged = view?.takeIf { !it.isDefault }
         val shown = arranged?.let { org.medianexus.music.library.Arrange.arrange(songs, it, added = added) }
-        val rows = shown ?: IntArray(songs.size) { it }
+        return within(ids, songs.size, shown, start, startId)
+    }
+
+    /**
+     * The rows a screen drew (`shown`, places in a list of `size` songs whose ids `ids` gives;
+     * null: the whole list in its order) and the row of the song that was tapped (`startId`,
+     * at place `start`; see [rowOf]). With no song named, the top row.
+     */
+    fun within(ids: (Int) -> String, size: Int, shown: IntArray?, start: Int, startId: String?): Picked {
+        val rows = shown ?: IntArray(size) { it }
         if (rows.isEmpty()) return Picked.Empty
         val first = StartPlace.rowOf(ids, rows, start, startId) ?: return Picked.Gone
         return Picked.Rows(shown, first)

@@ -2,12 +2,9 @@ package org.medianexus.music.playback
 
 import kotlin.random.Random
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.medianexus.music.library.Arrange
 import org.medianexus.music.library.ListView
-import org.medianexus.music.library.Shown
 import org.medianexus.music.library.columns
 import org.medianexus.music.net.Song
 
@@ -52,19 +49,6 @@ class HandoverTest {
         val picked = pick(list, ListView(ListView.TITLE, descending = true, filter = "harbour"), 0, null) as StartPlace.Picked.Rows
         assertEquals(listOf("4", "2"), picked.shown!!.map { list[it].id })
         assertEquals(0, picked.first)
-    }
-
-    @Test
-    fun rowsOfASupersededArrangementCannotBeTapped() {
-        val view = ListView(filter = "amber")
-        val arranged = Shown(list, view, Arrange.arrange(list.columns(), view))
-        assertTrue(arranged.tappable(list, view))
-        // Another letter typed: until the new arrangement is ready, the old rows are shown but
-        // not tappable.
-        assertFalse(arranged.tappable(list, view.copy(filter = "amber r")))
-        assertFalse(arranged.tappable(list, view.copy(sort = ListView.TITLE)))
-        // A newer copy of the list arrived: the same.
-        assertFalse(arranged.tappable(list.toList(), view))
     }
 
     @Test

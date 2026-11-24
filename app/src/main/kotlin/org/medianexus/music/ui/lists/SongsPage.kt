@@ -101,17 +101,7 @@ fun SongsContent() {
         if (value?.list !== snap) value = null
         value = withContext(Dispatchers.Default) {
             val job = coroutineContext[kotlinx.coroutines.Job]
-            val newest = snap.newestFirst
-            // (Made here, once a copy, not on the main thread: what marks the row playing.)
-            snap.newestPlace
-            val order = if (view.isDefault) newest else {
-                val table = snap.songs
-                // Places in the newest-first list, then back to places in the table. Stopped
-                // part-way if more typing has replaced it.
-                Arrange.arrange(table.columns(newest), view, cancelled = { job?.isActive == false }) { Arrange.dayStart(table.createdMillis(newest[it]) / 1000) }
-                    .let { at -> IntArray(at.size) { newest[at[it]] } }
-            }
-            org.medianexus.music.library.Shown(snap, view, order)
+            songsShown(snap, view) { job?.isActive == false }
         }
     }
     val marks = rememberDownloadMarks()
@@ -123,9 +113,6 @@ fun SongsContent() {
     val list = rememberLazyListState()
     val now = shown
     val table = now?.list?.songs
-    // Rows of an arrangement that more typing (or another order, or a newer copy) has replaced
-    // are shown until the new one is ready, but a tap on them plays nothing (see Shown).
-    val tappable = now != null && copy != null && now.tappable(copy!!, view)
     val context = stringResource(R.string.songs)
     val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
 
@@ -134,11 +121,9 @@ fun SongsContent() {
     // arrangement.
     val ownPlace = now?.list?.newestPlace ?: IntArray(0)
     fun play(row: Int, any: Boolean = false) {
-        val n = now ?: return
-        if (!tappable) return
-        val t = n.order.getOrNull(row) ?: return
-        // The arrangement on the screen (its find text and order), and the song tapped.
-        player.playPage(key, ownPlace[t], if (any) null else n.list.songs.id(t), context, anyStart = any, view = n.view)
+        // The arrangement on the screen, as drawn (while another is worked out, the one still
+        // shown), and the song tapped.
+        songsTap(now ?: return, row, any, context)?.let(player::play)
     }
 
     when {
@@ -247,6 +232,42 @@ fun SongsContent() {
             }
         }
     }
+}
+
+/**
+ * What the Songs page shows of a copy of the library for one order and one find: places in
+ * the copy's song table, for that very copy. Worked out off the main thread (the newest-first
+ * order of the copy is a sort of every song, made once a copy; a find or another order on top
+ * of it, at each change), and stopped part-way once `cancelled` says more typing has
+ * replaced it.
+ */
+internal fun songsShown(snap: LibrarySnapshot, view: ListView, cancelled: () -> Boolean = { false }): org.medianexus.music.library.Shown<LibrarySnapshot> {
+    val newest = snap.newestFirst
+    // (Made here, once a copy, not on the main thread: what marks the row playing.)
+    snap.newestPlace
+    val order = if (view.isDefault) newest else {
+        val table = snap.songs
+        // Places in the newest-first list, then back to places in the table.
+        Arrange.arrange(table.columns(newest), view, cancelled = cancelled) { Arrange.dayStart(table.createdMillis(newest[it]) / 1000) }
+            .let { at -> IntArray(at.size) { newest[at[it]] } }
+    }
+    return org.medianexus.music.library.Shown(snap, view, order)
+}
+
+/**
+ * The PLAY a tap on the Songs page sends (`row` of what is shown; `any`: the play button):
+ * the page named, and the rows as drawn left for the player, as places in every song newest
+ * first (the list the page is named for), from that very copy. Null for a row not shown.
+ */
+internal fun songsTap(shown: org.medianexus.music.library.Shown<LibrarySnapshot>, row: Int, any: Boolean, context: String): android.os.Bundle? {
+    val t = shown.order.getOrNull(row) ?: return null
+    val snap = shown.list
+    val own = snap.newestPlace
+    val drawn = org.medianexus.music.playback.DrawnList(
+        org.medianexus.music.library.PlacedSongs.of(snap.songs, snap.newestFirst),
+        if (shown.view.isDefault) null else IntArray(shown.order.size) { own[shown.order[it]] },
+    )
+    return org.medianexus.music.playback.PlayerConnection.pageArgs(Library.SONGS, own[t], if (any) null else snap.songs.id(t), context, anyStart = any, view = shown.view, drawn = drawn)
 }
 
 /** Font scale from which song titles may take two lines (the design's large-type case is 1.3). */

@@ -312,8 +312,9 @@ class PlayerConnection(
      * is remembered and its playing row marked; a list with a source is the page's whole
      * list, in its order. `shuffle` null plays it as it was last played. `view` is how the
      * list was arranged on the screen the tap was made on (sorted, narrowed to what was
-     * typed): the player plays that arrangement, from the song at `start`, or nothing if it
-     * isn't there any more. `anyStart`: no song was chosen (the play button).
+     * typed), and `shown` the rows that arrangement drew (places in `songs`, in the order
+     * drawn; null: all of them as they are): the player plays exactly those rows, from the
+     * song at `start`. `anyStart`: no song was chosen (the play button).
      */
     fun play(
         songs: List<Song>,
@@ -323,52 +324,11 @@ class PlayerConnection(
         shuffle: Boolean? = null,
         anyStart: Boolean = false,
         view: org.medianexus.music.library.ListView? = null,
-    ) {
-        // A long list that is a page the phone keeps (an album, a playlist, Liked songs)
-        // is named, and the service reads it from where the screen read it: writing
-        // 20,000 songs out here and reading them back there would hold the main thread
-        // for both. A short list, or one put together on the spot, is sent as it is.
-        if (songs.size > AppCommands.MOST_SENT && keptPage(source)) {
-            playPage(source, start, songs.getOrNull(start)?.id, context, shuffle, anyStart, view)
-            return
-        }
-        send(AppCommands.PLAY, Bundle().apply {
-            putString("songs", AppCommands.songsArg(songs))
-            putInt("start", start)
-            songs.getOrNull(start)?.id?.let { putString("startId", it) }
-            putString("context", context)
-            putString("source", source)
-            putInt("shuffle", when (shuffle) { null -> -1; true -> 1; false -> 0 })
-            putBoolean("anyStart", anyStart)
-            AppCommands.putView(this, view)
-        })
-    }
+        shown: IntArray? = null,
+    ) = play(playArgs(songs, start, context, source, shuffle, anyStart, view, shown))
 
-    /**
-     * Plays a list the phone keeps, by naming it (`source`) rather than sending its songs:
-     * the service reads it where the screen read it. `start` is the place of the song tapped
-     * in the list's own order and `startId` that song; `view` how the screen arranged the list
-     * (see [play]). For the Songs page, whose 50,000 songs the screen never holds as songs,
-     * this is the only way.
-     */
-    fun playPage(
-        source: String,
-        start: Int,
-        startId: String?,
-        context: String,
-        shuffle: Boolean? = null,
-        anyStart: Boolean = false,
-        view: org.medianexus.music.library.ListView? = null,
-    ) = send(AppCommands.PLAY, Bundle().apply {
-        putBoolean("byPage", true)
-        startId?.let { putString("startId", it) }
-        putInt("start", start)
-        putString("context", context)
-        putString("source", source)
-        putInt("shuffle", when (shuffle) { null -> -1; true -> 1; false -> 0 })
-        putBoolean("anyStart", anyStart)
-        AppCommands.putView(this, view)
-    })
+    /** Sends a PLAY made by [playArgs] or [pageArgs]. */
+    fun play(args: Bundle) = send(AppCommands.PLAY, args)
 
     /** Plays these straight after the song playing, ahead of anything else queued. */
     fun playNext(songs: List<Song>) = enqueue(songs, playNext = true)
@@ -437,12 +397,6 @@ class PlayerConnection(
         accounts.state.value?.likes?.toggle(song)
     }
 
-    /** Whether a list's route key names a page the library keeps whole (see
-     *  `Library.keptSongs`). */
-    private fun keptPage(source: String): Boolean =
-        source == "liked" || source.startsWith("album:") || source.startsWith("playlist:") || source == org.medianexus.music.library.Library.SONGS ||
-            source == org.medianexus.music.downloads.DownloadedViews.SOURCE || source.startsWith("${org.medianexus.music.downloads.DownloadedViews.SOURCE}:")
-
     private fun withController(block: (MediaController) -> Unit) {
         val c = controller
         if (c != null) {
@@ -457,8 +411,78 @@ class PlayerConnection(
 
     private fun send(command: SessionCommand, args: Bundle) = withController { it.sendCustomCommand(command, args) }
 
-    private companion object {
-        const val TICK_MILLIS = 250L
+    companion object {
+        private const val TICK_MILLIS = 250L
+
+        /**
+         * What a PLAY from a screen carries (see [play]). The list itself, as drawn, is left
+         * for the player (see [Drawn]), and the command says which it is; besides, as before,
+         * a short list's songs, or for a long list that is a page the phone keeps (an album,
+         * a playlist, Liked songs), its name: what the player falls back on if the list left
+         * for it isn't there (the app's process was started again in between).
+         */
+        fun playArgs(
+            songs: List<Song>,
+            start: Int,
+            context: String,
+            source: String = "",
+            shuffle: Boolean? = null,
+            anyStart: Boolean = false,
+            view: org.medianexus.music.library.ListView? = null,
+            shown: IntArray? = null,
+        ): Bundle {
+            val drawn = DrawnList(songs, shown)
+            // A long list named rather than written out: 20,000 songs written here and read
+            // back there would hold the main thread for both.
+            if (songs.size > AppCommands.MOST_SENT && keptPage(source)) {
+                return pageArgs(source, start, songs.getOrNull(start)?.id, context, shuffle, anyStart, view, drawn)
+            }
+            return Bundle().apply {
+                putLong("drawn", Drawn.leave(drawn))
+                putString("songs", AppCommands.songsArg(songs))
+                putInt("start", start)
+                songs.getOrNull(start)?.id?.let { putString("startId", it) }
+                putString("context", context)
+                putString("source", source)
+                putInt("shuffle", when (shuffle) { null -> -1; true -> 1; false -> 0 })
+                putBoolean("anyStart", anyStart)
+                AppCommands.putView(this, view)
+            }
+        }
+
+        /**
+         * A PLAY of a list the phone keeps, named (`source`) rather than written out, with the
+         * list as drawn left for the player (`drawn`). `start` is the place of the song tapped
+         * in the list's own order and `startId` that song; `view` how the screen arranged the
+         * list (see [play]). For the Songs page, whose 50,000 songs the screen never holds as
+         * songs, this is the only way.
+         */
+        fun pageArgs(
+            source: String,
+            start: Int,
+            startId: String?,
+            context: String,
+            shuffle: Boolean? = null,
+            anyStart: Boolean = false,
+            view: org.medianexus.music.library.ListView? = null,
+            drawn: DrawnList? = null,
+        ): Bundle = Bundle().apply {
+            putBoolean("byPage", true)
+            drawn?.let { putLong("drawn", Drawn.leave(it)) }
+            startId?.let { putString("startId", it) }
+            putInt("start", start)
+            putString("context", context)
+            putString("source", source)
+            putInt("shuffle", when (shuffle) { null -> -1; true -> 1; false -> 0 })
+            putBoolean("anyStart", anyStart)
+            AppCommands.putView(this, view)
+        }
+
+        /** Whether a list's route key names a page the library keeps whole (see
+         *  `Library.keptSongs`). */
+        private fun keptPage(source: String): Boolean =
+            source == "liked" || source.startsWith("album:") || source.startsWith("playlist:") || source == org.medianexus.music.library.Library.SONGS ||
+                source == org.medianexus.music.downloads.DownloadedViews.SOURCE || source.startsWith("${org.medianexus.music.downloads.DownloadedViews.SOURCE}:")
     }
 }
 

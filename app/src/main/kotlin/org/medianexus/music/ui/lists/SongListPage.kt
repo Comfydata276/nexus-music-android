@@ -117,10 +117,12 @@ fun SongListPage(
     // thread for a long list; meanwhile, a list whose order is its own is shown as it is.
     val arranged = rememberShown(songs, view) { list -> account?.addedDates(key, list) ?: LongArray(list.size) }
     val shown = arranged?.order
-    // A row of an arrangement that more typing (or another order) has replaced is shown until
-    // the new one is ready, but a tap on it does nothing: what a tap plays is the arrangement
-    // it was made on, and the person has moved on from it.
-    val tappable = arranged != null && songs != null && arranged.tappable(songs, view)
+    // What a tap plays is the arrangement drawn, handed to the player as it is: while more
+    // typing (or another order) is being worked out, the rows still shown, in their order.
+    fun play(start: Int, anyStart: Boolean) {
+        val drawn = arranged ?: return
+        ui.play(drawn.list, start, context, key, anyStart = anyStart, view = drawn.view, shown = drawn.order.takeIf { !drawn.view.isDefault })
+    }
     val list = rememberLazyListState()
     val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
     // As the queue has it if this is the list playing, else as the list remembers it.
@@ -158,7 +160,7 @@ fun SongListPage(
                         when {
                             from.isList(key) -> player.playPause()
                             playOverride != null -> playOverride()
-                            !songs.isNullOrEmpty() && tappable -> shown?.firstOrNull()?.let { ui.play(songs, it, context, key, anyStart = true, view = arranged!!.view) }
+                            !songs.isNullOrEmpty() -> shown?.firstOrNull()?.let { play(it, anyStart = true) }
                         }
                     },
                     shuffle = shuffle,
@@ -229,7 +231,7 @@ fun SongListPage(
                                 val current = from.isRow(key, index, song.id)
                                 TrackRow(
                                     base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
-                                    onClick = { if (tappable) ui.play(songs, index, context, key, view = arranged!!.view) },
+                                    onClick = { play(index, anyStart = false) },
                                     onMore = { ui.menu = SongMenu(song) },
                                     showCover = !look.album,
                                     showNumber = look.album,
@@ -270,8 +272,8 @@ fun SongListPage(
  * as places in `songs`, with the songs and the view it was worked out for; null while there
  * is none. A list as it comes is itself at once; a short one is worked out there and then; a
  * long one (thousands of songs, a sort's keys for each) off the main thread, and until it is
- * ready the list shows what it showed for these songs before, if anything (whose rows are not
- * to be tapped: see [org.medianexus.music.library.Shown.tappable]). `dates` gives when each
+ * ready the list shows what it showed for these songs before, if anything (and a tap plays
+ * what it shows). `dates` gives when each
  * song was added, for "Date added"; it is asked only for that order.
  */
 @Composable

@@ -80,15 +80,12 @@ data class ListView(val sort: Int = OWN, val descending: Boolean = false, val fi
 /**
  * One arrangement of a list as a screen shows it: which list (`list`, the very copy it was
  * worked out from), how (`view`), and the result (`order`, places in the list). A screen
- * keeps showing the last arrangement while a newer one is worked out off the main thread;
- * its rows are not to be tapped meanwhile ([tappable]), since what a tap hands the player is
- * this arrangement, and the person is already typing or choosing another. `added`, for an
- * arrangement by date added, is when each song (by place in the list) was added.
+ * keeps showing the last arrangement while a newer one is worked out off the main thread,
+ * and a tap meanwhile plays what it shows: this arrangement is what is handed to the player.
+ * `added`, for an arrangement by date added, is when each song (by place in the list) was
+ * added. Nothing in it is changed once it is made.
  */
-class Shown<L>(val list: L, val view: ListView, val order: IntArray, val added: LongArray? = null) {
-    /** Whether this is the arrangement of `list` as `view` now has it. */
-    fun tappable(list: L, view: ListView): Boolean = this.list === list && this.view == view
-}
+class Shown<L>(val list: L, val view: ListView, val order: IntArray, val added: LongArray? = null)
 
 /** What arranging a list needs of its songs, by place. */
 interface SongColumns {

@@ -63,9 +63,9 @@ class Ui(val graph: Graph, val navigator: Navigator) {
     fun toast(text: String) = graph.toasts.show(text)
 
     /** Plays a list from one of its songs (see `PlayerConnection.play`). */
-    fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false, view: org.medianexus.music.library.ListView? = null) {
+    fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false, view: org.medianexus.music.library.ListView? = null, shown: IntArray? = null) {
         if (songs.isEmpty()) return
-        player.play(songs, start, context, source, shuffle, anyStart, view)
+        player.play(songs, start, context, source, shuffle, anyStart, view, shown)
     }
 
     /** Remembers the order a list is shown in, for the next visit (Windows'
