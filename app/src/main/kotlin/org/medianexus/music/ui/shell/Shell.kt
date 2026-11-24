@@ -176,7 +176,9 @@ fun Shell(graph: Graph) {
         }
         if (ui.queueOpen) QueueSheet(onClose = { ui.queueOpen = false })
         ui.menu?.let { menu -> SongMenuSheet(menu, onClose = { ui.menu = null }) }
-        ui.sheet?.let { sheet -> SheetHost(sheet, onClose = { if (ui.sheet === sheet) ui.sheet = null }) }
+        // Each sheet its own: one opened from another's choice (a menu's "Save as playlist")
+        // would otherwise take on the state of the one closing, and open hidden.
+        ui.sheet?.let { sheet -> androidx.compose.runtime.key(sheet) { SheetHost(sheet, onClose = { if (ui.sheet === sheet) ui.sheet = null }) } }
       }
     }
 }
