@@ -118,6 +118,7 @@ fun SongsContent() {
     val now = shown
     val table = now?.copy?.songs
     val context = stringResource(R.string.songs)
+    val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
 
     // The place of a song (by its place in the table) in the newest-first list: what the
     // service is told, and what marks the row playing.
@@ -144,17 +145,17 @@ fun SongsContent() {
             PageStatus(PageState.Empty(stringResource(if (offline && fetching == null) R.string.songs_offline_empty else R.string.songs_empty), icon = R.drawable.ic_music))
         }
         else -> LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
-            item(key = "head", contentType = "head") {
-                val total = copy?.songs?.size ?: 0
+            val total = copy?.songs?.size ?: 0
+            val facts = @Composable { modifier: Modifier ->
                 // (What it is, "Songs", is said just above: by Library's chip, or the page's title.)
-                Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).padding(top = 8.dp)) {
+                Column(modifier) {
                     BasicText(res.getString(R.string.songs_newest_first, songCount(res, total)), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
                     fetching?.takeIf { it.first }?.let {
                         BasicText(res.getString(R.string.songs_arriving, songCount(res, it.songs)), Modifier.padding(top = 2.dp), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
                     }
                 }
             }
-            item(key = "actions", contentType = "actions") {
+            val actions = @Composable { inline: Boolean ->
                 ActionBar(
                     title = context,
                     canPlay = now?.order?.isNotEmpty() == true,
@@ -162,15 +163,31 @@ fun SongsContent() {
                     onPlay = { if (from.isList(key)) player.playPause() else play(0, any = true) },
                     shuffle = shuffle,
                     onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
+                    inline = inline,
                 )
             }
-            item(key = "find", contentType = "find") {
-                FindAndSort(box, view, playlist = false, onSort = { choice ->
+            val find = @Composable { modifier: Modifier ->
+                FindAndSort(box, view, playlist = false, modifier = modifier, onSort = { choice ->
                     val next = view.sortedBy(choice)
                     sorted = next.sort
                     descending = next.descending
                     ui.rememberSort(key, next)
                 })
+            }
+            if (sideways) {
+                // On its side there is height for a few rows: the facts, the play button and the
+                // find box share one line, so the first view has songs in it.
+                item(key = "head", contentType = "head") {
+                    Row(Modifier.fillMaxWidth().padding(start = Theme.dimens.pagePad), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        actions(true)
+                        facts(Modifier.weight(0.7f))
+                        find(Modifier.weight(1f))
+                    }
+                }
+            } else {
+                item(key = "head", contentType = "head") { facts(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).padding(top = 8.dp)) }
+                item(key = "actions", contentType = "actions") { actions(false) }
+                item(key = "find", contentType = "find") { find(Modifier) }
             }
             when {
                 now == null || table == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
