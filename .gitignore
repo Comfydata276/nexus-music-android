@@ -5,3 +5,4 @@
 /.kotlin
 *.jks
 *.keystore
+__pycache__/
