@@ -8,13 +8,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.medianexus.music.downloads.Catalogue
 import org.medianexus.music.downloads.Downloads
 import org.medianexus.music.library.Availability
 import org.medianexus.music.library.Library
 import org.medianexus.music.library.Likes
-import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.StarTarget
 import org.medianexus.music.net.Subsonic
 import org.medianexus.music.playback.QueueFiles
@@ -77,8 +78,17 @@ class AccountGraph(
 
     val library = Library(api, pages)
 
-    /** Likes, ratings and plays waiting for the server (see [submit]). */
-    val held = HeldChanges(File(account.dirs.data, "held.json"), io)
+    /** Likes, ratings and plays on their way to the server, and the one sender they all go
+     *  through, in order (see [HeldChanges] and [submit]). */
+    val held = HeldChanges(
+        File(account.dirs.data, "held.json"), io,
+        send = { send(it) },
+        offline = { reach.value.offline },
+        // It stopped answering part-way, or something answered in its place: worth asking
+        // whether it is there at all.
+        lostTouch = { suspect() },
+        note = wiring?.note ?: {},
+    )
 
     val likes = Likes(pages, library.liked(), send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked)) }, scope)
 
@@ -107,8 +117,12 @@ class AccountGraph(
         likes.load()
         // Covers past their limit go, oldest first, once a start: it reads the whole folder.
         scope.launch { covers.trim() }
-        // Changes held from an earlier run go as soon as the server can be asked.
-        scope.launch { if (!reach.value.offline) flush() }
+        // Changes held from an earlier run go as soon as the server can be asked: now, and
+        // whenever the app stops being offline (the server back, or offline mode switched off
+        // by hand, which starts the sender just as the server returning does).
+        scope.launch {
+            reach.map { it.offline }.distinctUntilChanged().collect { offline -> if (!offline) flush() }
+        }
         // A list downloaded whole follows its kept page: its order, and the songs it gains.
         downloads?.let { downloads ->
             scope.launch {
@@ -122,24 +136,14 @@ class AccountGraph(
     }
 
     /**
-     * Sends a change to the server, or holds it for later when that isn't possible (Windows'
-     * `submit`). Offline, it is held. The server refusing it (it is there, and said no) is
-     * thrown, for whoever asked to say so and put it back; anything else (no connection, a
-     * proxy answering in the server's place, a sign-in it won't take) holds it, and the
-     * server is asked whether it is there at all.
+     * Makes a change (a like, a rating, a play): written to the phone, then sent in its turn
+     * by the account's one sender (Windows' `submit`, but with no way round the queue).
+     * Returns when the server has it or it is safely held for later. The server refusing it
+     * (it is there, and said no) is thrown, for whoever asked to say so and put it back; so
+     * is a change that could be neither kept nor sent.
      */
     suspend fun submit(change: Pending) {
-        if (reach.value.offline) {
-            held.hold(change)
-            return
-        }
-        try {
-            send(change)
-        } catch (e: ApiError) {
-            if (e is ApiError.Server && !e.signInRefused) throw e
-            held.hold(change)
-            suspect()
-        }
+        held.submit(change)
     }
 
     private suspend fun send(change: Pending) = when (change) {
@@ -148,15 +152,14 @@ class AccountGraph(
         is Pending.Played -> api.scrobbleAt(change.id, change.at)
     }
 
-    /** Sends what was held back (Windows' `flush_pending`). What the server dealt with goes;
-     *  if it stopped answering part-way, it is asked whether it is there. Says how many the
-     *  server took (or turned down for good: dealt with, either way). */
+    /** Sends what is waiting (Windows' `flush_pending`), if the server may be asked. Says how
+     *  many changes that had been held the server has now dealt with (taken, or turned down
+     *  for good). */
     suspend fun flush(): Int {
-        val sent = held.flush(::send) ?: return 0
+        val sent = held.flush()
         // What the server now has (likes made offline) is asked for again.
-        if (sent.done > 0) likes.refresh()
-        if (sent.lostTouch) suspect()
-        return sent.done
+        if (sent > 0) likes.refresh()
+        return sent
     }
 
     fun close() {

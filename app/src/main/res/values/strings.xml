@@ -322,6 +322,7 @@
         <item quantity="one">The change you made offline has been sent to your server</item>
         <item quantity="other">The %1$d changes you made offline have been sent to your server</item>
     </plurals>
+    <string name="held_damaged">Changes you made offline couldn\'t be read, so they weren\'t sent to your server. They were set aside on this phone.</string>
     <plurals name="back_online_held_sent">
         <item quantity="one">Back online. The change you made offline has been sent to your server</item>
         <item quantity="other">Back online. The %1$d changes you made offline have been sent to your server</item>

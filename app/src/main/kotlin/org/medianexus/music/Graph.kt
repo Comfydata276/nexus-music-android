@@ -258,6 +258,10 @@ class Graph(context: Context) {
                         }
                     }
                 }
+                // Changes held from before that couldn't be read were set aside, not sent: said.
+                if (account != null) account.scope.launch {
+                    account.held.damaged.collect { if (it) toasts.show(context.getString(R.string.held_damaged)) }
+                }
                 // Downloaded lists topped up with what they gained while the app was away.
                 if (account != null) account.scope.launch {
                     if (!watch.offline) account.downloads?.let { downloads ->
