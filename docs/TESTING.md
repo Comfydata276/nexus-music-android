@@ -1817,6 +1817,34 @@ Tests: `PlaylistsTest.aPlaylistHoldingSongsMissingFromTheLibraryIsNotChangedByPo
 counts and removes as the server did; both fail with the two checks taken out);
 `SubsonicTest.aPlaylistsHiddenSongsAreToldByTheListsCount` (the two answers as recorded).
 
+### The fixes: what was checked
+
+**Unit tests**, each seen to fail with its rule's code taken out (the order of events forced
+with gates, nothing waiting on time):
+
+- Item 1: `DragCopyTest` (Robolectric, real touches on a real Compose list drawn as the
+  playlist page draws its rows): the page drawn again from another copy while the finger is
+  down; the drop is the move on the copy drawn when it went down (it was made on the copy
+  read meanwhile). `PlaylistsTest.aDeleteConfirmedOnTheCopyShownDuringARemovalThatFailed…`:
+  the copy shown with a removal on its way is busy, and once the removal has failed a Delete
+  on it is refused. (The header menu's wiring itself, `kept` to the copy drawn, is one word
+  in `PlaylistPage`; no test drives the page with an account behind it.)
+- Item 2: `aCardWhoseCountHasChangedSendsNothing` (rename and delete: nothing sent, the card
+  brought up to what was read, then the change goes), `theCardsCountFollowsThePhonesOwnChange`.
+- Items 3 and 4: `notAskedAndOneIsThereNowNothingIsAddedAndThePersonIsAsked`,
+  `theAnswerIsCarriedOutOnTheReadTheAddIsMadeOn` ("Add new ones" after another device added
+  one of them; "Add all"; none new), `anAddShowsNothingInAdvanceAndThenWhatTheServerHolds`,
+  `aSongTheServerSaidYesToButLeftOutIsNotShown` (a stand-in that says yes and leaves the song
+  out, as Navidrome does), `ifTheReadAfterAnAddFailsItWasStillMadeAndThePageStaysAsItWas`.
+- Item 5: `SheetOnceTest` (Robolectric: the real sheet, its button pressed twice through its
+  semantics, for a Confirm and for a drawn sheet as the name sheet is): once.
+- Item 6: `anUndoIsForItsOwnChangeOnly` (two removals, the first's Undo: nothing sent; the
+  second's: done).
+- Item 7 (every choice taking one place in the order of choices) was not taken on in this
+  round: six changes across the player, the service and the app's connection to it, each
+  wanting a test of its own in the service; left for the lead to plan.
+
+
 ## Sound and lyrics (M4a)
 
 **Songs of its own, on a server of its own.** The ordinary server keeps its hundred songs.

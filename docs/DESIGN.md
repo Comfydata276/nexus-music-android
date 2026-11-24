@@ -1670,6 +1670,13 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
   Delete say "Still saving the last change to this playlist." and do nothing, like every other
   change. A drag takes its copy when the finger goes down (and, as before, a redraw with other
   songs stops it).
+- **Accepted, and not put right:**
+  - Between the phone's fresh read and its write another device's change can still land (the
+    window written down in the second round; unchanged).
+  - With Repeat all, a station that gave up (four rejoins) is tried again when the queue comes
+    round to it: coming round to it is taken as choosing it again.
+  - A playlist that was downloaded and has since been deleted on the server still shows offline,
+    from the downloads' own record, until its download is removed.
 
 ## Working with the Windows app
 
