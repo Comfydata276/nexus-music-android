@@ -525,6 +525,18 @@ start 566 to 629 ms (765624f: 595 to 612); idle 73.5 to 80.1 MB (75.2 to 75.4); 
 to 89.9 MB (81.1); 100-song playlist 8.4 to 9.4% slow frames (8.5 to 8.9%); opening the
 5,000-song playlist with nothing kept, the app's peak 85.1 to 89.8 MB (86.7 to 90.7), sampled
 from `dumpsys meminfo` four times a second while it opens.
+Sound and lyrics (M4a), release builds measured in turn on the same day, signed in to the
+sound instance, on "Everything (long list)" (the reports are in `reports/m4a/`): the build
+before the milestone (dfdf175) and with it (d3bd52b), everything off, twice each: cold start
+839 and 937 ms against 903 and 715 ms (the machine was busy: 0.3.0 itself gave 744 and 842),
+no change to be seen; APK 6,241,194 bytes against 6,342,154 (+99 KB: the sound, lyrics and
+sleep-timer code, and the strings). The script's idle memory moved by up to 10 MB between
+runs of one build (what Home shows changes with what was played): read directly, twelve
+seconds after a cold start on the same screen, the two builds' native heaps were 45.8 and
+46.0 MB. The tree as it now stands (36c2ddb, with M3b's work too), everything off and then
+levelling and the equaliser (Rock) on: cold start 958 and 753 ms, playing 86.4 and 82.1 MB,
+scrolling 11.3% and 9.2% slow frames. Nothing measurable moves with the sound on; what the
+processor takes is in "Sound and lyrics" below (6 to 8 ms per second of sound).
 
 Memory on this emulator is mostly not the app's to cut: `dumpsys gfxinfo` shows about 36
 MB of the window's own buffers imported into the process (on a phone they are graphics
@@ -1644,6 +1656,15 @@ against the designed response; `LevellingTest` Windows' tests of `level_gain` an
 `LyricsTest` (which line is current before the first and after the last; what's kept, that a
 song has none included; fetching ahead once a run and again after a day; a download's lyrics
 where Android doesn't clear them; a download keeps its levelling values) the rest.
+
+**The rest of the walk**, the same emulator: every setting kept across the app being killed
+and started again; the car check on the release build (36c2ddb) with levelling and the
+equaliser on, 48 passed and 0 failed online (the one warning, as before, an empty playlist and
+the empty Radio folder) and 24 passed and 0 failed offline (`--mode offline`, the sound
+instance stopped); `scripts/check --release` passed (831 unit tests then); the whole unit
+suite three times in a row with `--no-build-cache` and every task run again, 843 tests each
+time, none failed (0b623ae). Screenshots of every new screen, at the default size, at 360 dp
+with 1.3 font scale and on its side, are in `~/.cache/nexus-music-android/shots/m4a/`.
 
 **What only a real phone can say**: whether the phone's own sound effects (Samsung's Dolby
 Atmos, its equaliser, "Adapt sound") are on top of ours, and what a Bluetooth headset or the
