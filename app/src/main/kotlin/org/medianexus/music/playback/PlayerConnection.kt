@@ -47,6 +47,8 @@ data class UpNext(
     val context: String = "",
     val total: Int = songs.size,
     val uids: List<Long> = List(songs.size) { AppCommands.NONE },
+    /** In a jam: who queued each row ("you", a guest's name, or empty). */
+    val by: List<String> = emptyList(),
 )
 
 /**
@@ -83,11 +85,14 @@ class PlayerConnection(
     private val context: Context,
     private val accounts: Accounts,
     settings: SettingsStore,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     /** The words for a radio station's format line. */
     private val liveStream: String = "Live stream",
     /** The words for a lost connection: the player says it shortly, for a car's screen. */
     private val lostConnection: String = "Lost the connection to the server.",
+    /** Another player this one shows while the phone is in a jam or steering another of the
+     *  person's devices (M6; see [Steered]). */
+    private val steered: Steered = Steered(),
 ) {
     private var future: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -122,36 +127,47 @@ class PlayerConnection(
         connect = { connect() },
     )
 
+    /** What the screens show: this phone's own player's `own`, or while the player shows
+     *  another ([Steered]: a jam, another of the person's devices), that one's. */
+    private fun <T> shown(own: StateFlow<T>, there: (Steered.Shown) -> T): StateFlow<T> =
+        combine(own, steered.shown) { mine, other -> if (other != null) there(other) else mine }
+            .stateIn(scope, SharingStarted.Eagerly, steered.shown.value?.let(there) ?: own.value)
+
     /** The song playing (or paused on); null with an empty queue. */
-    val song: StateFlow<Song?> = currentSong.asStateFlow()
+    val song: StateFlow<Song?> = shown(currentSong) { it.song }
     /** The queue entry playing, by its own number: the same song twice in a row is two. */
-    val entry: StateFlow<Long> = entryNow.asStateFlow()
-    val playing: StateFlow<Boolean> = playingNow.asStateFlow()
+    val entry: StateFlow<Long> = shown(entryNow) { AppCommands.NONE }
+    val playing: StateFlow<Boolean> = shown(playingNow) { it.playing }
     /** Waiting for the stream. */
-    val buffering: StateFlow<Boolean> = bufferingNow.asStateFlow()
+    val buffering: StateFlow<Boolean> = shown(bufferingNow) { false }
     /** Milliseconds into the song; moves about four times a second while it plays. */
-    val position: StateFlow<Long> = positionNow.asStateFlow()
+    val position: StateFlow<Long> = steered.shown
+        .flatMapLatest { other -> if (other == null) positionNow else Steered.ticking(other, TICK_MILLIS) }
+        .stateIn(scope, SharingStarted.WhileSubscribed(), positionNow.value)
     /** The song's length in milliseconds, 0 if not known yet. */
-    val duration: StateFlow<Long> = durationNow.asStateFlow()
-    val queue: StateFlow<UpNext> = queueNow.asStateFlow()
-    val shuffle: StateFlow<Boolean> = shuffleNow.asStateFlow()
+    val duration: StateFlow<Long> = shown(durationNow) { it.durationMs }
+    val queue: StateFlow<UpNext> = shown(queueNow) { it.queue }
+    val shuffle: StateFlow<Boolean> = shown(shuffleNow) { it.shuffle }
     /** [Repeat.OFF], [Repeat.ALL] or [Repeat.ONE]. */
-    val repeat: StateFlow<Int> = repeatNow.asStateFlow()
+    val repeat: StateFlow<Int> = shown(repeatNow) { it.repeat }
     /** Why the song isn't playing, in words, when something went wrong ("Lost the
      *  connection to the server…", in the service's words). */
-    val error: StateFlow<String?> = errorNow.asStateFlow()
+    val error: StateFlow<String?> = shown(errorNow) { null }
     /** The list what's playing came from, and its place in it. */
-    val from: StateFlow<PlayingFrom> = fromNow.asStateFlow()
+    val from: StateFlow<PlayingFrom> = shown(fromNow) { PlayingFrom() }
 
     /** The player has said what it's doing since the screens connected. Until then "nothing
      *  playing" means only "not heard yet" (as when the app has just come back after Android
      *  stopped it, and the service hasn't answered). */
-    val reported: StateFlow<Boolean> = reportedNow.asStateFlow()
+    val reported: StateFlow<Boolean> = shown(reportedNow) { true }
+
+    /** The player shows another (see [Steered]), and what it is. */
+    val elsewhere: StateFlow<Steered.Shown?> get() = steered.shown
 
     /** Whether the song playing is liked. */
     val liked: StateFlow<Boolean> = accounts.state
         .flatMapLatest { account -> account?.likes?.liked ?: flowOf(emptySet()) }
-        .let { likes -> combine(likes, currentSong) { set, song -> song != null && song.id in set } }
+        .let { likes -> combine(likes, song) { set, song -> song != null && song.id in set } }
         .stateIn(scope, SharingStarted.Eagerly, false)
 
     /** What's being played, as the line under the song says it. */
@@ -173,7 +189,8 @@ class PlayerConnection(
             saved.bitrate > 0 -> FormatLine("MP3 · ${saved.bitrate} kbps", false)
             else -> formatLine(song, 0, false, liveStream)
         }
-    }.stateIn(scope, SharingStarted.Eagerly, FormatLine("", false))
+    }.let { line -> combine(line, steered.shown) { mine, other -> if (other != null) FormatLine("", false) else mine } }
+        .stateIn(scope, SharingStarted.Eagerly, FormatLine("", false))
 
     private val listener = object : Player.Listener, MediaController.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -338,6 +355,8 @@ class PlayerConnection(
 
     /** Sends a PLAY made by [playArgs] or [pageArgs]. */
     fun play(args: Bundle) {
+        // Showing another player: it is played there (or, in a friend's jam, added).
+        steered.hands?.let { Steered.play(it, args); return }
         Choices.take()
         send(AppCommands.PLAY, args)
     }
@@ -366,6 +385,7 @@ class PlayerConnection(
     fun addToQueue(songs: List<Song>) = enqueue(songs, playNext = false)
 
     private fun enqueue(songs: List<Song>, playNext: Boolean) {
+        steered.hands?.let { it.add(songs, playNext); return }
         Choices.take()
         send(AppCommands.ENQUEUE, AppCommands.enqueueArgs(songs, playNext))
     }
@@ -378,25 +398,40 @@ class PlayerConnection(
      *  song playing), into "Next in queue" (`queued`) or out of it. */
     fun move(uid: Long, after: Long?, queued: Boolean) {
         if (uid == AppCommands.NONE) return
+        steered.hands?.let { it.move(uid, after, queued); return }
         send(AppCommands.MOVE, Bundle().apply { putLong("uid", uid); putLong("after", after ?: AppCommands.NONE); putBoolean("queued", queued) })
     }
 
     /** Takes the entry `uid` out of the queue. */
     fun remove(uid: Long) {
         if (uid == AppCommands.NONE) return
+        steered.hands?.let { it.remove(uid); return }
         send(AppCommands.REMOVE, Bundle().apply { putLong("uid", uid) })
     }
 
     /** Empties "Next in queue" (`queued`), or the rest of the list after it. */
-    fun clear(queued: Boolean) = send(AppCommands.CLEAR, Bundle().apply { putBoolean("queued", queued) })
+    fun clear(queued: Boolean) {
+        steered.hands?.let { it.clear(queued); return }
+        send(AppCommands.CLEAR, Bundle().apply { putBoolean("queued", queued) })
+    }
 
     /** Plays the entry `uid` now. */
     fun jump(uid: Long) {
         if (uid == AppCommands.NONE) return
+        steered.hands?.let { it.jump(uid); return }
         send(AppCommands.JUMP, Bundle().apply { putLong("uid", uid) })
     }
 
-    fun playPause() = withController { c ->
+    fun playPause() {
+        steered.hands?.let { it.toggle(); return }
+        ownPlayPause()
+    }
+
+    /** Pauses this phone's own player, whatever the screens are showing (joining a jam). */
+    fun pauseOwn() = withController { it.pause() }
+
+    /** Play or pause on this phone's own player, whatever the screens are showing. */
+    fun ownPlayPause() = withController { c ->
         if (c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)) {
             c.pause()
         } else {
@@ -406,25 +441,50 @@ class PlayerConnection(
         }
     }
 
-    fun next() = withController { it.seekToNext() }
-
-    fun previous() = withController { it.seekToPrevious() }
-
-    fun seek(positionMs: Long) = withController {
-        it.seekTo(positionMs)
-        positionNow.value = positionMs
+    fun next() {
+        steered.hands?.let { it.next(); return }
+        withController { it.seekToNext() }
     }
 
-    fun setShuffle(on: Boolean) = withController { it.shuffleModeEnabled = on }
+    fun previous() {
+        steered.hands?.let { it.previous(); return }
+        withController { it.seekToPrevious() }
+    }
 
-    fun setRepeat(mode: Int) = withController { it.repeatMode = QueuePlayer.exoRepeat(mode) }
+    fun seek(positionMs: Long) {
+        steered.hands?.let { it.seek(positionMs); return }
+        withController {
+            it.seekTo(positionMs)
+            positionNow.value = positionMs
+        }
+    }
+
+    fun setShuffle(on: Boolean) {
+        steered.hands?.let { if (on != steered.shown.value?.shuffle) it.shuffle(); return }
+        withController { it.shuffleModeEnabled = on }
+    }
+
+    fun setRepeat(mode: Int) {
+        steered.hands?.let { it.repeat(); return }
+        withController { it.repeatMode = QueuePlayer.exoRepeat(mode) }
+    }
 
     /** Off, the whole queue, one song, and round again: the repeat button. */
-    fun cycleRepeat() = setRepeat((repeatNow.value + 1) % 3)
+    fun cycleRepeat() {
+        steered.hands?.let { it.repeat(); return }
+        setRepeat((repeatNow.value + 1) % 3)
+    }
+
+    /** Another of the person's devices being steered from here: its volume (0 to 1). */
+    fun setVolumeThere(to: Float) {
+        steered.hands?.volume(to)
+    }
 
     /** Likes or unlikes the song playing. */
     fun toggleLike() {
-        val song = currentSong.value ?: return
+        val song = this.song.value ?: return
+        // A song of someone else's jam that this library doesn't have can't be liked here.
+        if (Steered.foreign(song)) return
         accounts.state.value?.likes?.toggle(song)
     }
 

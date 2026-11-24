@@ -151,6 +151,19 @@ data class Settings(
      *  account's own brought out (see `sync/Belongs.kt`). Empty until an account first is. */
     val sharedFor: String = "",
 
+    // ---- Jams and linked devices (the relay's host key is kept apart: see `jam/KeyVault`) ----
+    /** Hosting jams is switched on, and the relay they're hosted at. */
+    val jamHost: Boolean = false,
+    val jamRelay: String = "",
+    /** The name to go by in jams; empty for the account's name. */
+    val jamName: String = "",
+    /** Guests in a jam hosted here may pause and skip. */
+    val jamGuestsControl: Boolean = true,
+    /** Find the person's other devices through the relay. */
+    val linkDevices: Boolean = true,
+    /** What this phone is called in other devices' lists; empty for the phone's own name. */
+    val deviceName: String = "",
+
     // ---- The phone's own ----
     /** Android 17's local-network permission was refused and the system won't ask again:
      *  "Allow" opens the app's page in the phone's settings instead (see `LocalAccess`). */

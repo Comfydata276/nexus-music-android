@@ -263,8 +263,36 @@ class Graph(context: Context) {
         reconnectCount.value++
     }
 
+    /** Another player the phone's player shows while it is in a jam or steering another of
+     *  the person's devices (M6; see `jam/Jams`). */
+    val steered = org.medianexus.music.playback.Steered()
+
     /** The screens' one way to the player (the playback service's session). */
-    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection))
+    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), steered)
+
+    /** The jam relay's host key, sealed as the password is (see `jam/KeyVault`). */
+    val relayKey = org.medianexus.music.jam.KeyVault(java.io.File(context.noBackupFilesDir, "relay-key.sealed"), KeystoreBox())
+
+    fun relayKeyKept(): Boolean = relayKey.kept()
+
+    private val jamsNow = kotlinx.coroutines.flow.MutableStateFlow<org.medianexus.music.jam.Jams?>(null)
+
+    /** [jams] once anything has made it; null until then (the strip and Connect look here,
+     *  so that showing them doesn't make it). */
+    val jamsMade: kotlinx.coroutines.flow.StateFlow<org.medianexus.music.jam.Jams?> = jamsNow
+
+    /** Jams and the person's other devices: made the first time anything asks (see
+     *  `jam/JamApp`), never with the feature unused. */
+    val jams: org.medianexus.music.jam.Jams by lazy {
+        org.medianexus.music.jam.JamApp(app, this, steered).jams.also { jamsNow.value = it }
+    }
+
+    /** A jam's link handed over by another app (see `jam/JamLinkActivity`), for the jam page
+     *  to put in its box; taken by the shell. */
+    val jamLinkArrived = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** [jams], if anything has made it. */
+    fun jamsIfMade(): org.medianexus.music.jam.Jams? = jamsNow.value
 
     companion object {
         /** How long the server is given to answer the first time it is asked after start-up. */

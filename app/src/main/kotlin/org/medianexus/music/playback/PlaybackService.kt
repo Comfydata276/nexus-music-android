@@ -596,6 +596,13 @@ class PlaybackService : MediaLibraryService() {
         // The Play that Media3 sends after a request that was overtaken, or failed: not a
         // Play anyone pressed. Whatever is in the player now stays as it is.
         if (requests.isDropped(session.controllerForCurrentRequest)) return false
+        // M6, rule 2: while the phone's player shows another (a jam, another of the person's
+        // devices), nothing plays this phone's own music over it. The app's own screens steer
+        // the other; whatever else asks (the car above all) is told to open the app.
+        if (graph.steered.shown.value != null) {
+            cannotStart("the phone's player is showing another device's music")
+            return false
+        }
         if (!holdForeground(why = "to play")) {
             cannotStart("Android would not let the player into the foreground")
             return false
@@ -1866,6 +1873,12 @@ class PlaybackService : MediaLibraryService() {
         @Deprecated("Media3 offers nothing else that is asked per command and per controller")
         override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
             val caller = callerOf(session, controller)
+            // M6, rule 2: while the phone's player shows another, a headset's buttons (and the
+            // notification's, which arrive under the same name) steer that one, as Windows'
+            // media keys do, and nothing of this phone's own moves (see Steered.press).
+            if (caller == Caller.NOTIFICATION) graph.steered.hands?.let { hands ->
+                if (Steered.press(hands, playerCommand)) return SessionError.ERROR_PERMISSION_DENIED
+            }
             // ("Play that entry of the queue", by its place, from someone whose screen may
             // still show the places as they were a moment ago, is the player's to act on or
             // not: see QueuePlayer.placeIsSure.)

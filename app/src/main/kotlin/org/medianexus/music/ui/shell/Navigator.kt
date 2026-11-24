@@ -52,6 +52,8 @@ sealed interface Route {
     @Serializable data class Mix(val id: String, val title: String = "", val cover: String = "") : Route
     /** "Your stats", for a period (`Stats.TODAY` … `Stats.ALL`, a finer choice, or a year). */
     @Serializable data class Stats(val period: Int = org.medianexus.music.library.Stats.TODAY) : Route
+    /** Jams (from Library, Connect and the strip): `link` is one another app handed over. */
+    @Serializable data class Jam(val link: String = "") : Route
 
     /** The key the Windows app files the page under ("album:<id>"): where its list's
      *  choices are remembered, and what a queue started from it is said to come from. */

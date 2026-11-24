@@ -112,6 +112,8 @@ fun Shell(graph: Graph) {
     val song by graph.player.song.collectAsStateWithLifecycle()
     val reported by graph.player.reported.collectAsStateWithLifecycle()
     LaunchedEffect(song == null, reported) { if (song == null && reported) ui.nowPlaying = false }
+    // A jam's link another app handed over: the jam page, with it in the box.
+    LaunchedEffect(ui) { graph.jamLinkArrived.collect { link -> if (link != null) { graph.jamLinkArrived.value = null; ui.open(Route.Jam(link)) } } }
 
     androidx.compose.runtime.CompositionLocalProvider(
         LocalUi provides ui,
@@ -135,6 +137,7 @@ fun Shell(graph: Graph) {
                         }
                         LocalNetworkBar(graph)
                         NoticeList(graph)
+                        if (!keyboard) org.medianexus.music.ui.jam.JamStrip()
                         if (!keyboard) MiniPlayer(Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)))
                     }
                 }
@@ -146,6 +149,7 @@ fun Shell(graph: Graph) {
                     LocalNetworkBar(graph)
                     NoticeList(graph)
                     if (!keyboard) {
+                        org.medianexus.music.ui.jam.JamStrip()
                         MiniPlayer()
                         BottomBar(navigator.tab, navigator::select)
                     }
@@ -238,6 +242,7 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         is Route.Stats -> org.medianexus.music.ui.stats.StatsPage(route)
         is Route.Downloaded -> org.medianexus.music.ui.downloads.DownloadedListPage(route)
         Route.Licences -> org.medianexus.music.ui.settings.LicencesPage(onBack = navigator::back)
+        is Route.Jam -> org.medianexus.music.ui.jam.JamPage(route.link, onBack = navigator::back)
     }
 }
 

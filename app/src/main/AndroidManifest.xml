@@ -22,6 +22,10 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Jams and steering another device (jam/JamService): the relay's connection held with
+         the screens closed, under a notification that says so. Its kind needs a network
+         permission held, which CHANGE_NETWORK_STATE (above) is. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!-- The known hosts of media apps (res/xml/allowed_media_browser_callers.xml), so that
          one that connects can be looked up by name and its signing certificate checked,
@@ -134,6 +138,35 @@
             android:name=".downloads.DownloadsService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- A jam's link from another app: shared to this one as text, or opened where the
+             person can choose an app for it (see jam/JamLinkActivity). -->
+        <activity
+            android:name=".jam.JamLinkActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter android:label="@string/jam_join_a_jam">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="*" android:pathPattern="/j/.*" />
+                <data android:scheme="https" android:host="*" android:pathPattern="/.*/j/.*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Keeps the relay's connection while in a jam or steering another device. -->
+        <service
+            android:name=".jam.JamService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- Cover art for the car and the system's media controls, which can't fetch it from
              the server. Read-only, it serves nothing but covers, and only to this app and

@@ -189,6 +189,15 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                     ) { Icon(R.drawable.ic_radio, size = 24.dp, tint = Theme.colors.muted) }
                 }
             }
+            // Jams (Windows' Jam, in its sidebar under Radio): one queue friends add to.
+            item(key = "jam", contentType = "row") {
+                ListRow(stringResource(R.string.jam), stringResource(R.string.jam_listen_with_friends), onClick = { ui.open(Route.Jam()) }) {
+                    Box(
+                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(R.drawable.ic_party_popper, size = 24.dp, tint = Theme.colors.muted) }
+                }
+            }
             // What's been played most (Windows' "Your stats", in its sidebar under Radio): from
             // what is on the phone, so offline too.
             item(key = "stats", contentType = "row") {

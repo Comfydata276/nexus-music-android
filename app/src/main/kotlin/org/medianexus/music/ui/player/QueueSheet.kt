@@ -120,6 +120,10 @@ private fun QueueList() {
     val upNext by player.queue.collectAsStateWithLifecycle()
     val song by player.song.collectAsStateWithLifecycle()
     val playing by player.playing.collectAsStateWithLifecycle()
+    // In a jam, or steering another device (M6): the queue is the other player's, and says
+    // who added what.
+    val steered by player.elsewhere.collectAsStateWithLifecycle()
+    val byOf = remember(upNext) { upNext.uids.zip(upNext.by).toMap() }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val edge = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
@@ -174,14 +178,14 @@ private fun QueueList() {
                     style = Theme.type.heading.copy(color = colors.text),
                 )
                 // Windows' "Save queue as playlist": what is playing and everything after it.
-                if (song != null) org.medianexus.music.ui.parts.IconButton(R.drawable.ic_list_plus, stringResource(R.string.save_queue_as_playlist), {
+                if (song != null && steered == null) org.medianexus.music.ui.parts.IconButton(R.drawable.ic_list_plus, stringResource(R.string.save_queue_as_playlist), {
                     ui.saveQueueAsPlaylist(org.medianexus.music.playback.QueueNow.fromNowOn())
                 })
             }
         }
         // Another device has been playing since this one did anything: offer to pick it up
         // where it had got to (Windows' queue panel has the same card, in the same words).
-        elsewhere?.let { there ->
+        elsewhere?.takeIf { steered == null }?.let { there ->
             item(key = "elsewhere", contentType = "elsewhere") { ElsewhereCard(there) { ui.account?.queueStep?.continueHere() } }
         }
         val now = song
@@ -193,7 +197,7 @@ private fun QueueList() {
         }
         item(key = "now-heading", contentType = "heading") { Heading(stringResource(R.string.now_playing)) }
         item(key = "now", contentType = "song") {
-            SongLine(now, current = true, playing = playing, onClick = player::playPause, onMenu = { ui.menu = SongMenu(now) })
+            SongLine(now, current = true, playing = playing, onClick = player::playPause, onMenu = { ui.menu = SongMenu(now) }, menu = !org.medianexus.music.playback.Steered.foreign(now))
         }
         item(key = "next-heading", contentType = "heading") {
             // As the rows show it, edits not yet answered included.
@@ -250,6 +254,8 @@ private fun QueueList() {
                             },
                             actions = actions,
                             queued = row.queued,
+                            by = byOf[row.uid].orEmpty(),
+                            menu = !org.medianexus.music.playback.Steered.foreign(row.song),
                         )
                     }
                 }
@@ -314,6 +320,10 @@ private fun SongLine(
     queued: Boolean = false,
     handle: Modifier? = null,
     actions: List<CustomAccessibilityAction> = emptyList(),
+    /** In a jam: who added it ("you", a guest's name), or empty. */
+    by: String = "",
+    /** Its menu is offered: not for a song of someone else's jam this library doesn't have. */
+    menu: Boolean = true,
 ) {
     val colors = Theme.colors
     val queuedWord = stringResource(R.string.in_next_in_queue)
@@ -335,14 +345,17 @@ private fun SongLine(
         Cover(song.coverArt, Modifier.size(Theme.dimens.rowCover), CoverShape.ROW)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             BasicText(song.title, style = Theme.type.rowTitle.copy(color = if (current) colors.accentBright else colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            BasicText(song.artistLabel, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            BasicText(
+                if (by.isEmpty()) song.artistLabel else "${song.artistLabel} · ${stringResource(R.string.jam_added_by, by)}",
+                style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
         }
         // On a narrow screen the length gives way to the name, as Windows' gives way to the
         // menu button.
         if (song.duration > 0 && with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() } >= 400.dp) {
             BasicText(clock(song.duration), style = Theme.type.rowDetail.copy(color = colors.muted))
         }
-        IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, song.title), onMenu, iconSize = 20.dp)
+        if (menu) IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, song.title), onMenu, iconSize = 20.dp)
         if (handle != null) {
             val label = stringResource(R.string.drag_to_move, song.title)
             Box(handle.size(Theme.dimens.touch).semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
