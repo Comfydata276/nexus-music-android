@@ -228,4 +228,38 @@ class PlayLogTest {
         log.flushed()
         assertEquals("[\"a\",100]\n[\"b\",200]\n[\"c\",300]\n[\"e\",500]\n", path.readText())
     }
+
+    // ---- the M5b fixes, item 3 ----------------------------------------------------------------
+
+    /** A play is a song and a time, taken in at most once: offered twice with another play of
+     *  the same second between them (Windows' sort and `dedup` kept both), or already held
+     *  further back than Windows' newest 5,000. */
+    @Test
+    fun eachPlayIsTakenInAtMostOnce() = runBlocking {
+        val path = File(folder.root, "plays.log")
+        val log = log(path, listOf("old" to 1L))
+        for (i in 0 until 5_001) log.add("s$i", 10L + i)
+        assertEquals(2, log.absorb(listOf("z" to 9_000_000L, "y" to 9_000_000L, "z" to 9_000_000L), emptyList()))
+        // "old" is the first play of more than 5,000.
+        assertEquals(0, log.absorb(listOf("old" to 1L, "s0" to 10L), emptyList()))
+        assertEquals(1 + 5_001 + 2, log.shared().size)
+        log.flushed()
+        assertEquals(1 + 5_001 + 2, path.readLines().size)
+    }
+
+    /** Windows keeps one source for a song and a second (a map by the play), the one noted
+     *  last; and the plays and sources to share come from one moment. */
+    @Test
+    fun sourcesAreWindowsOne() = runBlocking {
+        val path = File(folder.root, "plays.log")
+        val log = log(path)
+        log.add("a", 100, "playlist:p")
+        log.add("a", 100, "playlist:q")
+        log.add("a", 100)
+        log.add("b", 200, "playlist:p")
+        assertEquals(listOf(Triple("a", 100L, "playlist:q"), Triple("b", 200L, "playlist:p")), log.sources())
+        val (plays, sources) = log.sharedWithSources()
+        assertEquals(4, plays.size)
+        assertEquals(log.sources(), sources)
+    }
 }

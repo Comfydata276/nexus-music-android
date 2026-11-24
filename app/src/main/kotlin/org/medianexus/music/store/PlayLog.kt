@@ -96,7 +96,8 @@ class Plays internal constructor(
  * **Its interface** (what syncing between devices builds on; Windows' names):
  * - [add]: a play counted here.
  * - [absorb]: plays heard of from other devices, each taken in once; returns how many were new.
- * - [shared] and [sources]: the plays, and where those made from a playlist were made from.
+ * - [shared] and [sources]: the plays, and where those made from a playlist were made from;
+ *   [sharedWithSources]: the two from one and the same moment.
  * - [state]: the same, as one [Plays] that is never copied, for whatever reads them all.
  *
  * **Kept as Windows keeps it.** A file that is only ever added to, a line at a time, so
@@ -284,25 +285,30 @@ class PlayLog(
 
     /**
      * Takes in plays made on other devices (see the sync milestone), leaving out the ones
-     * already here: Windows' `absorb`, exactly. `sources` says which playlists some of them
-     * were made from. Returns how many were new. Waits for the file to have been read.
+     * already here (Windows' `absorb`). A play is a song and a time: each is taken in at most
+     * once, however often it is offered and whatever else is offered at the same time, and not
+     * at all if the log holds it (Windows compares with its newest 5,000 only, and keeps two of
+     * a play offered twice when another play of the same second sorts between them). A play
+     * older than everything the log still holds (taken out at its limit) is not known, and is
+     * taken in again if offered again, as on Windows. `sources` says which playlists some of
+     * them were made from (the first it gives for a play). Returns how many were new. Waits for
+     * the file to have been read.
      */
     suspend fun absorb(plays: List<Pair<String, Long>>, sources: List<Triple<String, Long, String>>): Int {
         ready.await()
         val new = synchronized(this) {
             if (closed || !holding) return 0
-            // Anything another device has to tell is recent, so the newest part is enough to
-            // compare with.
+            // What the log holds of the seconds offered (only those can be the same play).
+            val offered = plays.mapTo(HashSet()) { it.second }
             val known = HashSet<Pair<String, Long>>()
-            for (i in size - 1 downTo maxOf(0, size - ABSORB_WINDOW)) known += names[songs[i]]!! to ats[i]
-            // Oldest first, and the same play twice running once (Rust's stable sort, then
-            // `dedup`).
-            val new = plays.filter { it !in known }.sortedBy { it.second }
-            val kept = ArrayList<Pair<String, Long>>(new.size)
-            for (play in new) if (kept.lastOrNull() != play) kept += play
+            for (i in 0 until size) if (ats[i] in offered) known += names[songs[i]]!! to ats[i]
+            // Oldest first (Rust's stable sort), each play once.
+            val kept = ArrayList<Pair<String, Long>>()
+            for (play in plays.sortedBy { it.second }) if (known.add(play)) kept += play
+            val sourceOf = HashMap<Pair<String, Long>, String>()
+            for ((song, at, from) in sources) sourceOf.putIfAbsent(song to at, from)
             for ((song, at) in kept) {
-                val from = sources.firstOrNull { it.first == song && it.second == at }?.third.orEmpty()
-                put(song, at, from)
+                put(song, at, sourceOf[song to at].orEmpty())
                 lines++
                 trim()
             }
@@ -314,21 +320,29 @@ class PlayLog(
     }
 
     /** The plays, oldest first (Windows' `shared`). */
-    fun shared(): List<Pair<String, Long>> {
+    fun shared(): List<Pair<String, Long>> = sharedOf(current.value)
+
+    /** Where the plays made from a playlist were made from (Windows' `sources`): one row per
+     *  song and second, as Windows keeps them (a map by the play), with the playlist noted
+     *  last for it, in the order the plays were first noted. */
+    fun sources(): List<Triple<String, Long, String>> = sourcesOf(current.value)
+
+    /** [shared] and [sources] from one and the same moment (two calls can see two logs, a
+     *  play noted in between): what syncing between devices shares. */
+    fun sharedWithSources(): Pair<List<Pair<String, Long>>, List<Triple<String, Long, String>>> {
         val plays = current.value
-        return List(plays.size) { plays.song(it) to plays.at(it) }
+        return sharedOf(plays) to sourcesOf(plays)
     }
 
-    /** The plays that were made from a playlist, each with that playlist's route key, oldest
-     *  first (Windows' `sources`). */
-    fun sources(): List<Triple<String, Long, String>> {
-        val plays = current.value
-        val out = ArrayList<Triple<String, Long, String>>()
+    private fun sharedOf(plays: Plays): List<Pair<String, Long>> = List(plays.size) { plays.song(it) to plays.at(it) }
+
+    private fun sourcesOf(plays: Plays): List<Triple<String, Long, String>> {
+        val noted = LinkedHashMap<Pair<String, Long>, String>()
         for (i in 0 until plays.size) {
             val from = plays.from(i)
-            if (from.isNotEmpty()) out += Triple(plays.song(i), plays.at(i), from)
+            if (from.isNotEmpty()) noted[plays.song(i) to plays.at(i)] = from
         }
-        return out
+        return noted.map { (play, from) -> Triple(play.first, play.second, from) }
     }
 
     // ---- in memory (under the object's lock) -----------------------------------------------
@@ -465,8 +479,6 @@ class PlayLog(
         const val LIMIT = 200_000
         /** How far past the limit the file may grow before the oldest lines are taken out. */
         const val SLACK = 5_000
-        /** How many of the newest plays here a play from another device is compared with. */
-        private const val ABSORB_WINDOW = 5_000
         private const val INITIAL = 256
 
         /** Where the log's writes are done: the process's, not the account's, so a play
