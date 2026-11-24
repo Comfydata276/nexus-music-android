@@ -171,4 +171,28 @@ class OrderOfChoicesTest {
         assertEquals("q0", again.get().mediaItems.firstOrNull()?.mediaId?.let { inside.player.queue.current()?.id })
         assertFalse(inside.exo.playWhenReady && inside.exo.isPlaying)
     }
+
+    @Test
+    fun aPlayWaitingForACallToEndIsDroppedByAStopMeanwhile() {
+        val inside = service.inside()
+        val songs = List(3) { Song(id = "c$it", title = "C $it") }
+        app.graph.player.play(songs, 0, "A list")
+        until("the list played") { inside.player.queue.current()?.id == "c0" }
+        controller.pause()
+        settle()
+        // Play was refused the sound for a call: it waits for the call to end.
+        service.waitForCall()
+        settle()
+        controller.stop()
+        settle()
+        service.callEnded()
+        settle()
+        assertFalse("the music started after a Stop", inside.exo.playWhenReady)
+        // With nothing in between, it plays when the call ends.
+        service.waitForCall()
+        settle()
+        service.callEnded()
+        settle()
+        assertEquals(true, inside.exo.playWhenReady)
+    }
 }

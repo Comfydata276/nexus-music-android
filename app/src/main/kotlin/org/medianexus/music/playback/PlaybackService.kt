@@ -1363,7 +1363,7 @@ class PlaybackService : MediaLibraryService() {
                 passing.end()
                 stopWaiting()
                 gaveUp = false
-                waitingForCall = false
+                waitingForCall = null
                 // What the server said in refusing something earlier is old news now.
                 graph.refusals.clear()
                 countPlaying()
@@ -1425,7 +1425,7 @@ class PlaybackService : MediaLibraryService() {
                 if (holding) standDown()
             }
             // Paused by someone: a Play waiting for a call to end is no longer wanted.
-            if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) waitingForCall = false
+            if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) waitingForCall = null
             if (playWhenReady) {
                 askedToPlayAt = clock()
                 // Play, pressed by someone: a new try at a server that was given up on.
@@ -2655,8 +2655,10 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- A call in progress -----------------------------------------------------------------
 
-    /** Play was asked for, and refused the sound because of a call: it plays when the call ends. */
-    private var waitingForCall = false
+    /** Play was asked for, and refused the sound because of a call: it plays when the call
+     *  ends, if nothing has taken a later place in the order of choices than this (a Pause, a
+     *  Stop, a choice: order of choices). Null when nothing is waiting. */
+    private var waitingForCall: Long? = null
 
     /** Whether a phone call (or a call in another app) is ringing or in progress, by the
      *  system's word: its audio mode. */
@@ -2667,24 +2669,28 @@ class PlaybackService : MediaLibraryService() {
             (Build.VERSION.SDK_INT >= 33 && mode == android.media.AudioManager.MODE_CALL_REDIRECT) || (Build.VERSION.SDK_INT >= 33 && mode == android.media.AudioManager.MODE_COMMUNICATION_REDIRECT)
     }
 
-    private fun waitForCall() {
-        waitingForCall = true
+    @androidx.annotation.VisibleForTesting
+    internal fun waitForCall() {
+        // The place as it stands once the refusal itself (the sound taken away, which is in
+        // the order) has taken its own: after this event's other listeners have run.
+        main.post { waitingForCall = Choices.latest }
     }
 
     /** Android says when the audio mode changes: that is when a Play waiting for a call to
      *  end is looked at again. */
     private fun listenForCalls() {
         runCatching {
-            getSystemService(android.media.AudioManager::class.java)?.addOnModeChangedListener(androidx.core.content.ContextCompat.getMainExecutor(this)) { if (waitingForCall && !inCall()) callEnded() }
+            getSystemService(android.media.AudioManager::class.java)?.addOnModeChangedListener(androidx.core.content.ContextCompat.getMainExecutor(this)) { if (waitingForCall != null && !inCall()) callEnded() }
         }
     }
 
     /** The call has ended, and Play was asked for during it: it plays now, if what was asked
      *  for is still what is in the player (nothing else has been chosen, nobody paused). */
-    private fun callEnded() {
-        if (!waitingForCall) return
-        waitingForCall = false
-        if (player.queue.isEmpty || exo.playWhenReady) return
+    @androidx.annotation.VisibleForTesting
+    internal fun callEnded() {
+        val place = waitingForCall ?: return
+        waitingForCall = null
+        if (!Choices.stands(place) || player.queue.isEmpty || exo.playWhenReady) return
         graph.diagnostics.note("audio focus: the call ended; playing as was asked")
         player.play()
     }
