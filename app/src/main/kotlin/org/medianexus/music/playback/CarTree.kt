@@ -131,19 +131,9 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     private fun downloadsNow(): DownloadsState = offline?.downloads?.invoke() ?: DownloadsState()
 
     /** Albums of the songs that play offline, from those songs (no page is needed). */
-    private fun playableAlbums(p: Playable): List<Album> = p.songs.filter { it.albumId.isNotEmpty() }.groupBy { it.albumId }.map { (id, of) ->
-        val first = of.first()
-        Album(id = id, name = first.album, artist = first.artist, artistId = first.artistId, displayArtist = first.displayArtist, coverArt = first.coverArt, songCount = of.size, year = first.year)
-    }.sortedBy { Voice.plain(it.name) }
+    private fun playableAlbums(p: Playable): List<Album> = org.medianexus.music.library.OnThePhone.albums(p.songs)
 
-    private fun playableArtists(p: Playable): List<Artist> {
-        val seen = LinkedHashMap<String, Artist>()
-        for (song in p.songs) {
-            val credits = song.artists.filter { it.id.isNotEmpty() }.map { it.id to it.name }.ifEmpty { listOf(song.artistId to song.artist) }
-            for ((id, name) in credits) if (id.isNotEmpty()) seen.getOrPut(id) { Artist(id = id, name = name) }
-        }
-        return seen.values.sortedBy { Voice.plain(it.name) }
-    }
+    private fun playableArtists(p: Playable): List<Artist> = org.medianexus.music.library.OnThePhone.artists(p.songs)
 
     /** An album's songs offline: the kept page's, else what plays of it, in disc order. */
     private suspend fun albumSongsOffline(id: String): Pair<List<Song>, String> {
@@ -363,12 +353,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         return albums.filter { it.id in have }
     }
 
-    private fun playableGenres(): List<CarEntry> {
-        val p = playable()
-        return p.songs.filter { it.genre.isNotEmpty() }.groupBy { it.genre }.map { (name, of) ->
-            genreEntry(Genre(name = name, albumCount = of.mapTo(HashSet()) { it.albumId }.size, songCount = of.size))
-        }.sortedBy { it.title.lowercase() }
-    }
+    private fun playableGenres(): List<CarEntry> = org.medianexus.music.library.OnThePhone.genres(playable().songs).map(::genreEntry)
 
     /** The playlists tab: offline, the downloaded ones and the kept ones with something
      *  that plays; otherwise, all of them. */

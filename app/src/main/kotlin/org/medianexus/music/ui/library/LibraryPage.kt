@@ -101,15 +101,19 @@ fun LibraryPage() {
             IconButton(R.drawable.ic_settings, stringResource(R.string.settings), { ui.open(Route.Settings) }, tint = Theme.colors.text)
         }
         ChipRow(
-            listOf(stringResource(R.string.playlists), stringResource(R.string.albums), stringResource(R.string.artists), stringResource(R.string.genres)),
+            listOf(stringResource(R.string.playlists), stringResource(R.string.albums), stringResource(R.string.artists), stringResource(R.string.genres), stringResource(R.string.downloads)),
             selected = part,
             onChoose = { part = it },
         )
+        // Offline, each part is what is on the phone: made from the songs that play, with
+        // no page needed (the car's offline tabs show the same).
+        val phone = org.medianexus.music.ui.downloads.playableOffline()
         when (part) {
-            0 -> Playlists()
-            1 -> AlbumsPart(sort to { it: Int -> sort = it }, places)
-            2 -> Artists()
-            else -> Genres()
+            0 -> Playlists(phone)
+            1 -> if (phone != null) OnPhone(phone, PhonePart.ALBUMS) else AlbumsPart(sort to { it: Int -> sort = it }, places)
+            2 -> if (phone != null) OnPhone(phone, PhonePart.ARTISTS) else Artists()
+            3 -> if (phone != null) OnPhone(phone, PhonePart.GENRES) else Genres()
+            else -> org.medianexus.music.ui.downloads.DownloadsContent(titled = false)
         }
     }
 }
@@ -127,34 +131,45 @@ fun AlbumsPage(route: Route.Albums) {
 }
 
 @Composable
-private fun Playlists() {
+private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
     val ui = LocalUi.current
     val res = LocalResources.current
     val feed = rememberPageFeed("playlists") { it.playlists() }
     val settings by ui.graph.settings.state.collectAsStateWithLifecycle()
     val liked = likedSongs()
     val pinned = settings.pinnedPlaylists
-    val playlists = remember(feed.value, pinned) {
-        feed.value?.sortedWith(compareBy<Playlist> { pinned.indexOf(it.id).let { at -> if (at < 0) Int.MAX_VALUE else at } }.thenBy { it.name.lowercase() })
+    // Offline, the playlists with something that plays: downloaded whole, or kept with a song
+    // that plays (looked at off the main thread: one kept page each).
+    val library = ui.account?.library
+    val availability = ui.account?.availability
+    val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
+    val downloadedLists by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.now.collections } }
+    val playing by androidx.compose.runtime.produceState<Set<String>?>(null, phone != null, feed.value, downloadedLists) {
+        val all = feed.value
+        value = if (phone == null || all == null || library == null || availability == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val whole = downloadedLists.mapTo(HashSet()) { it.key }
+            all.filter { playlist ->
+                "playlist:${playlist.id}" in whole || runCatching { library.pages.kept(library.playlist(playlist.id)) }.getOrNull()?.songs?.any(availability::plays) == true
+            }.mapTo(HashSet()) { it.id }
+        }
+    }
+    val playlists = remember(feed.value, pinned, playing) {
+        feed.value?.filter { playing?.contains(it.id) ?: true }
+            ?.sortedWith(compareBy<Playlist> { pinned.indexOf(it.id).let { at -> if (at < 0) Int.MAX_VALUE else at } }.thenBy { it.name.lowercase() })
     }
     Refreshable(feed.refreshing, feed::refresh) {
-        val error = feed.page.error
+        // Offline, a failure to reach the server is what offline is: the title bar's pill
+        // says it once.
+        val error = feed.page.error?.takeIf { phone == null }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
             if (error != null && playlists != null) item(key = "failed") { FailedStrip(error.message.orEmpty(), feed::refresh) }
-            item(key = "downloads", contentType = "row") {
-                val downloads = org.medianexus.music.ui.downloads.downloadsNow()
-                ListRow(stringResource(R.string.downloads), if (downloads.busy) stringResource(R.string.downloading_n_of, downloads.at, downloads.batchTotal) else songCount(res, downloads.downloaded.size), onClick = { ui.open(Route.Downloads) }) {
-                    Box(Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised), contentAlignment = Alignment.Center) {
-                        Icon(R.drawable.ic_download, size = 24.dp, tint = Theme.colors.accentBright)
-                    }
-                }
-            }
             item(key = "liked", contentType = "row") {
                 ListRow(stringResource(R.string.liked_songs), songCount(res, liked.size), onClick = { ui.open(Route.Liked) }) {
                     LikedTile(Modifier.size(56.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius))
                 }
             }
             when {
+                playlists == null && phone != null -> {}
                 playlists == null && error != null -> item(key = "error") { PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh) }
                 playlists == null -> item(key = "loading") { SkeletonRows() }
                 playlists.isEmpty() -> item(key = "empty") {
@@ -338,3 +353,23 @@ private fun Genres() {
     }
 }
 
+private enum class PhonePart { ALBUMS, ARTISTS, GENRES }
+
+/** Offline: the albums, artists or genres of the songs on the phone (see `OnThePhone`). */
+@Composable
+private fun OnPhone(phone: List<org.medianexus.music.net.Song>, part: PhonePart) {
+    val ui = LocalUi.current
+    val res = LocalResources.current
+    val cards = remember(phone, part, res) {
+        when (part) {
+            PhonePart.ALBUMS -> org.medianexus.music.library.OnThePhone.albums(phone).map { it.card() }
+            PhonePart.ARTISTS -> org.medianexus.music.library.OnThePhone.artists(phone).map { CardData(CardKind.ARTIST, it.id, it.name, "", it.coverArt) }
+            PhonePart.GENRES -> org.medianexus.music.library.OnThePhone.genres(phone).map { CardData(CardKind.GENRE, it.name, it.name, "${albumCount(res, it.albumCount)}, ${songCount(res, it.songCount)}") }
+        }
+    }
+    if (cards.isEmpty()) {
+        PageStatus(PageState.Empty(stringResource(R.string.home_offline_empty), icon = R.drawable.ic_download))
+        return
+    }
+    CardGrid(cards, card = { it }, key = { it.id }, onOpen = { ui.open(it) }, minWidth = if (part == PhonePart.GENRES) 160.dp else 150.dp)
+}

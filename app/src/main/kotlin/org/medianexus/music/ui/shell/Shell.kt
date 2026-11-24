@@ -114,6 +114,8 @@ fun Shell(graph: Graph) {
     LaunchedEffect(song == null, reported) { if (song == null && reported) ui.nowPlaying = false }
 
     androidx.compose.runtime.CompositionLocalProvider(LocalUi provides ui) {
+      ui.askToDownload = org.medianexus.music.ui.downloads.rememberDownloadAsk()
+      WithOfflinePill {
         Box(Modifier.fillMaxSize().background(colors.base)) {
             // On its side, a cut-out or the navigation bar can be at either edge: nothing is
             // drawn under them. (The page still reaches the screen's top and foot.)
@@ -171,6 +173,8 @@ fun Shell(graph: Graph) {
         }
         if (ui.queueOpen) QueueSheet(onClose = { ui.queueOpen = false })
         ui.menu?.let { menu -> SongMenuSheet(menu, onClose = { ui.menu = null }) }
+        ui.sheet?.let { sheet -> SheetHost(sheet, onClose = { if (ui.sheet === sheet) ui.sheet = null }) }
+      }
     }
 }
 
@@ -213,7 +217,7 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         Route.Home -> HomePage()
         Route.Search -> SearchPage()
         Route.Library -> LibraryPage()
-        Route.Settings -> SettingsPage(graph, onBack = navigator::back, onDiagnostics = { navigator.open(Route.Diagnostics) })
+        Route.Settings -> SettingsPage(graph, onBack = navigator::back, onDiagnostics = { navigator.open(Route.Diagnostics) }, onLicences = { navigator.open(Route.Licences) })
         Route.Diagnostics -> DiagnosticsPage(graph, onBack = navigator::back)
         is Route.Album -> AlbumPage(route)
         is Route.Artist -> ArtistPage(route)
@@ -222,6 +226,8 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         is Route.Genre -> GenrePage(route)
         is Route.Albums -> AlbumsPage(route)
         Route.Downloads -> org.medianexus.music.ui.downloads.DownloadsPage()
+        is Route.Downloaded -> org.medianexus.music.ui.downloads.DownloadedListPage(route)
+        Route.Licences -> org.medianexus.music.ui.settings.LicencesPage(onBack = navigator::back)
     }
 }
 

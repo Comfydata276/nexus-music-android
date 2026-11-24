@@ -44,9 +44,10 @@ import org.medianexus.music.ui.theme.Theme
 /**
  * A song's menu, as a sheet from the foot of the screen (the Windows right-click menu,
  * `song_menu` in src/actions.rs), with what works so far: play next, add to queue, like or
- * unlike, go to its album or artist, and take it out of the queue when opened from there.
- * The rest of Windows' menu (playlists, ratings, downloads, radio) arrives with the
- * milestones that build them; nothing is shown that does nothing yet.
+ * unlike, download it (or cancel or remove its download, as it stands), go to its album or
+ * artist, and take it out of the queue when opened from there. The rest of Windows' menu
+ * (playlists, ratings, radio) arrives with the milestones that build them; nothing is shown
+ * that does nothing yet.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,15 +97,17 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
                     ui.toast(res.getString(if (liked) R.string.removed_from_liked else R.string.added_to_liked))
                 }
             }
-            // Download, or what can be done about one under way or done (Windows' song menu).
+            // Download, or what can be done about one under way or done (Windows' song menu:
+            // its words, its icons). Asking for the notifications permission at the first
+            // download is the shell's, which is still there when the answer comes; this sheet
+            // has closed by then.
             val downloadState = org.medianexus.music.ui.downloads.downloadsNow().stateOf(song.id)
             val context = androidx.compose.ui.platform.LocalContext.current
-            val ask = org.medianexus.music.ui.downloads.rememberDownloadAsk()
             if (song.radioUrl.isEmpty() && ui.account?.downloads != null) {
                 Rule()
                 when (downloadState) {
-                    org.medianexus.music.downloads.SongState.Done -> Entry(R.drawable.ic_trash_2, stringResource(R.string.remove_download)) {
-                        choose { ui.account?.downloads?.remove(listOf(song.id)); ui.toast(res.getString(R.string.removed_from_downloads)) }
+                    org.medianexus.music.downloads.SongState.Done -> Entry(R.drawable.ic_circle_arrow_down, stringResource(R.string.remove_download)) {
+                        choose { ui.account?.downloads?.remove(listOf(song.id)); ui.toast(res.getString(R.string.download_removed)) }
                     }
                     org.medianexus.music.downloads.SongState.Waiting, is org.medianexus.music.downloads.SongState.Fetching -> Entry(R.drawable.ic_x, stringResource(R.string.cancel_download)) {
                         choose { ui.account?.downloads?.cancel(listOf(song.id)); ui.toast(res.getString(R.string.download_cancelled)) }
@@ -112,7 +115,7 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
                     else -> Entry(R.drawable.ic_download, stringResource(R.string.download)) {
                         val account = ui.account
                         choose {
-                            if (account != null) ask { ui.graph.scope.launch { org.medianexus.music.downloads.DownloadPages.songs(context, account, listOf(song))?.let(ui::toast) } }
+                            if (account != null) ui.askToDownload { ui.graph.scope.launch { org.medianexus.music.downloads.DownloadPages.songs(context.applicationContext, account, listOf(song))?.let(ui::toast) } }
                         }
                     }
                 }

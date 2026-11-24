@@ -55,7 +55,9 @@ import org.medianexus.music.ui.theme.Theme
 
 /**
  * Home, as the Windows app's: a greeting, quick tiles of what was played lately, then
- * shelves of albums that scroll sideways.
+ * shelves of albums that scroll sideways. Offline it leads with what is downloaded (the
+ * playlists and albums on the phone), and the tiles and shelves keep only the albums with
+ * something that plays.
  */
 @Composable
 fun HomePage() {
@@ -65,14 +67,25 @@ fun HomePage() {
     val frequent = rememberPageFeed("home:frequent") { it.albums(AlbumList.Frequent, 0, HomeModel.FREQUENT) }
     val random = rememberPageFeed("home:random") { it.albums(AlbumList.Random, 0, HomeModel.ROW) }
     val feeds = listOf(recent, newest, frequent, random)
-    val tiles = remember(recent.value, newest.value) { HomeModel.tiles(recent.value.orEmpty(), newest.value.orEmpty()) }
-    val shelves = remember(recent.value, newest.value, frequent.value, random.value) {
+    val phone = org.medianexus.music.ui.downloads.playableOffline()
+    val playing = remember(phone) { phone?.let { org.medianexus.music.library.OnThePhone.albumIds(it) } }
+    val tiles = remember(recent.value, newest.value, playing) { HomeModel.tiles(recent.value.orEmpty(), newest.value.orEmpty()).playable(playing) }
+    val shelves = remember(recent.value, newest.value, frequent.value, random.value, playing) {
         HomeModel.shelves(recent.value.orEmpty(), newest.value.orEmpty(), frequent.value.orEmpty(), random.value.orEmpty(), System.currentTimeMillis() / 1000)
+            .map { it.copy(albums = it.albums.playable(playing)) }.filter { it.albums.isNotEmpty() }
     }
-    val nothingYet = feeds.all { it.value == null }
+    // Offline: what is downloaded, first.
+    val res = androidx.compose.ui.platform.LocalResources.current
+    val likedName = stringResource(R.string.liked_songs)
+    val downloads = if (phone != null) org.medianexus.music.ui.downloads.downloadsNow() else null
+    val downloaded = remember(downloads?.downloaded, downloads?.collections, likedName) {
+        downloads?.let { state -> org.medianexus.music.ui.downloads.DownloadsView.of(state, likedName).let { it.playlists + it.albums } }.orEmpty()
+    }
+    val nothingYet = feeds.all { it.value == null } && downloaded.isEmpty()
     // As on Windows, what was played lately is what the page can't do without; the rest are
-    // extras whose failure doesn't blank it.
-    val error = recent.page.error
+    // extras whose failure doesn't blank it. Offline, not reaching the server is what offline
+    // is: the title bar's pill says so once.
+    val error = recent.page.error?.takeIf { phone == null }
     val refresh = { feeds.forEach { it.refresh() } }
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(HomeModel.greeting(LocalTime.now().hour))) {
@@ -81,11 +94,28 @@ fun HomePage() {
         Refreshable(feeds.any { it.refreshing }, refresh) {
             when {
                 nothingYet && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = refresh)
+                phone != null && downloaded.isEmpty() && shelves.isEmpty() && tiles.isEmpty() ->
+                    PageStatus(PageState.Empty(stringResource(R.string.home_offline_empty), icon = R.drawable.ic_download))
                 nothingYet -> SkeletonRows()
-                shelves.isEmpty() && tiles.isEmpty() && feeds.none { it.page.checking } ->
+                shelves.isEmpty() && tiles.isEmpty() && downloaded.isEmpty() && feeds.none { it.page.checking } ->
                     PageStatus(PageState.Empty(stringResource(R.string.home_empty), icon = R.drawable.ic_house))
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
                     if (error != null) item(key = "failed", contentType = "failed") { FailedStrip(error.message.orEmpty(), refresh) }
+                    if (downloaded.isNotEmpty()) item(key = "downloaded", contentType = "shelf") {
+                        Shelf(
+                            stringResource(R.string.your_downloads),
+                            remember(downloaded, res) {
+                                downloaded.map { group ->
+                                    org.medianexus.music.ui.parts.CardData(
+                                        if (group.list.startsWith("album:")) org.medianexus.music.ui.parts.CardKind.ALBUM else org.medianexus.music.ui.parts.CardKind.PLAYLIST,
+                                        group.list, group.title, group.by.ifEmpty { org.medianexus.music.ui.parts.songCount(res, group.songs) }, group.cover,
+                                    )
+                                }
+                            },
+                            onOpen = { card -> ui.open(Route.Downloaded(card.id, card.title)) },
+                            onShowAll = { ui.open(Route.Downloads) },
+                        )
+                    }
                     if (tiles.isNotEmpty()) item(key = "tiles", contentType = "tiles") { Tiles(tiles) }
                     items(shelves, key = { it.title }, contentType = { "shelf" }) { shelf ->
                         Shelf(
@@ -176,3 +206,6 @@ private const val MIN_TILE_SP = 11f
 
 /** The tile's wash, as on Windows: white at a twelfth. */
 private val TILE = Color(0x14FFFFFF)
+
+/** Offline (`playing` given), only the albums with something that plays. */
+private fun List<Album>.playable(playing: Set<String>?): List<Album> = if (playing == null) this else filter { it.id in playing }

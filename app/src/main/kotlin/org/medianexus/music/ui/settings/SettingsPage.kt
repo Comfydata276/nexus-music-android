@@ -3,6 +3,7 @@ package org.medianexus.music.ui.settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,8 +13,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -23,142 +27,265 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.medianexus.music.BuildConfig
 import org.medianexus.music.Graph
 import org.medianexus.music.R
 import org.medianexus.music.SessionState
+import org.medianexus.music.downloads.Downloads
+import org.medianexus.music.store.CACHE_AHEAD
+import org.medianexus.music.store.CACHE_LIMITS
+import org.medianexus.music.store.QUALITIES
+import org.medianexus.music.ui.parts.ChipRow
+import org.medianexus.music.ui.parts.Segmented
 import org.medianexus.music.ui.parts.TextButton
 import org.medianexus.music.ui.parts.TitleBar
+import org.medianexus.music.ui.parts.Toggle
+import org.medianexus.music.ui.shell.LocalUi
+import org.medianexus.music.ui.shell.Sheet
 import org.medianexus.music.ui.theme.THEMES
 import org.medianexus.music.ui.theme.Theme
 import org.medianexus.music.ui.theme.ThemeColors
 
-/** Settings, so far: the theme and the account. The rest of the Windows app's settings come
- *  with the features they belong to. */
+/** Settings' sections, as Windows' chips name them, less those with nothing on a phone yet
+ *  (Requests and Jam come with M6 and M7). */
+private enum class Section(val title: Int) { APPEARANCE(R.string.appearance), PLAYBACK(R.string.playback), SOUND(R.string.sound), STORAGE(R.string.storage), ACCOUNT(R.string.account), ABOUT(R.string.about) }
+
+/**
+ * Settings, as Windows' `SettingsPage` (ui/pages.slint) has them, rebuilt for a phone: the
+ * same sections in a row of chips under the title, the same rows (a name, what it does, and
+ * its control), the same headings within a section, in the same order and words; and only
+ * what does something on the phone today.
+ */
 @Composable
-fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {}) {
-    val colors = Theme.colors
-    val settings by graph.settings.state.collectAsStateWithLifecycle()
-    val session by graph.session.state.collectAsStateWithLifecycle()
+fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {}, onLicences: () -> Unit = {}) {
+    var section by rememberSaveable { mutableIntStateOf(0) }
+    val scroll = rememberScrollState()
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.settings), onBack = onBack)
+        ChipRow(Section.entries.map { stringResource(it.title) }, selected = section, onChoose = {
+            section = it
+        })
+        Box(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).height(1.dp).background(Theme.colors.line))
+        // Each section opens at its top, as on Windows.
+        androidx.compose.runtime.LaunchedEffect(section) { scroll.scrollTo(0) }
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scroll)
                 .padding(horizontal = Theme.dimens.pagePad)
-                .padding(bottom = 32.dp),
+                .padding(bottom = 56.dp),
         ) {
-            Heading(stringResource(R.string.appearance))
-            Setting(stringResource(R.string.theme), stringResource(R.string.theme_detail))
-            ThemeSwatches(settings.theme) { name ->
-                graph.settings.update { it.copy(theme = name, themeAt = System.currentTimeMillis() / 1000) }
+            when (Section.entries[section]) {
+                Section.APPEARANCE -> Appearance(graph)
+                Section.PLAYBACK -> Playback(graph)
+                Section.SOUND -> Sound(graph)
+                Section.STORAGE -> Storage(graph)
+                Section.ACCOUNT -> Account(graph)
+                Section.ABOUT -> About(onDiagnostics, onLicences)
             }
-
-            Heading(stringResource(R.string.storage))
-            StorageSettings(graph)
-
-            Heading(stringResource(R.string.account))
-            (session as? SessionState.SignedIn)?.let { signedIn ->
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Setting(
-                        signedIn.account.server,
-                        stringResource(R.string.signed_in_as, signedIn.account.username),
-                        Modifier.weight(1f),
-                    )
-                    TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
-                }
-            }
-            Box(Modifier.height(1.dp).fillMaxWidth().background(colors.line))
-
-            Heading(stringResource(R.string.about))
-            // As Windows has it under Settings, About ("Save diagnostics"): here it is shown,
-            // and shared from there.
-            Setting(stringResource(R.string.diagnostics), stringResource(R.string.diagnostics_detail))
-            TextButton(stringResource(R.string.show_diagnostics), onClick = onDiagnostics, modifier = Modifier.padding(vertical = 8.dp))
         }
     }
 }
 
+@Composable
+private fun Appearance(graph: Graph) {
+    val settings by graph.settings.state.collectAsStateWithLifecycle()
+    SettingRow(stringResource(R.string.theme), stringResource(R.string.theme_detail), stacked = true) {
+        ThemeSwatches(settings.theme) { name ->
+            graph.settings.update { it.copy(theme = name, themeAt = System.currentTimeMillis() / 1000) }
+        }
+    }
+}
+
+@Composable
+private fun Playback(graph: Graph) {
+    val settings by graph.settings.state.collectAsStateWithLifecycle()
+    val title = stringResource(R.string.report_plays)
+    SettingRow(title, stringResource(R.string.report_plays_detail)) {
+        Toggle(settings.scrobble, { on -> graph.settings.update { it.copy(scrobble = on) } }, title)
+    }
+}
+
+/** The quality names and Windows' words for each, in `QUALITIES`' order. */
+private val QUALITY_NAMES = listOf(R.string.quality_low, R.string.quality_normal, R.string.quality_high, R.string.quality_lossless)
+private val QUALITY_DETAILS = listOf(R.string.quality_low_detail, R.string.quality_normal_detail, R.string.quality_high_detail, R.string.quality_lossless_detail)
+
+@Composable
+private fun Sound(graph: Graph) {
+    val settings by graph.settings.state.collectAsStateWithLifecycle()
+    val format by graph.player.format.collectAsStateWithLifecycle()
+    val at = QUALITIES.indexOf(settings.bitrate).takeIf { it >= 0 } ?: QUALITIES.lastIndex
+    val title = stringResource(R.string.streaming_quality)
+    // As Windows says it: what the choice costs, and what is playing now. A change applies to
+    // the song playing at once (see the playback service).
+    val detail = stringResource(QUALITY_DETAILS[at]) + if (format.text.isNotEmpty()) "\n" + stringResource(R.string.playing_now_as, format.text) else ""
+    SettingRow(title, detail, stacked = true) {
+        Choices(QUALITY_NAMES.map { stringResource(it) }, at, title) { chosen -> graph.settings.update { it.copy(bitrate = QUALITIES[chosen]) } }
+    }
+}
+
+@Composable
+private fun Storage(graph: Graph) {
+    val ui = LocalUi.current
+    val res = LocalResources.current
+    val settings by graph.settings.state.collectAsStateWithLifecycle()
+    val offlineTitle = stringResource(R.string.offline_mode)
+    SettingRow(offlineTitle, stringResource(R.string.offline_mode_detail)) {
+        Toggle(settings.offline, { on ->
+            graph.settings.update { it.copy(offline = on) }
+            if (on) graph.toasts.show(res.getString(R.string.offline_mode_on))
+        }, offlineTitle)
+    }
+
+    SettingHeading(stringResource(R.string.downloads))
+    val qualityTitle = stringResource(R.string.download_quality)
+    SettingRow(qualityTitle, stringResource(R.string.download_quality_detail), stacked = true) {
+        val at = QUALITIES.indexOf(settings.downloadQuality).takeIf { it >= 0 } ?: QUALITIES.lastIndex
+        Choices(QUALITY_NAMES.map { stringResource(it) }, at, qualityTitle) { chosen -> graph.settings.update { it.copy(downloadQuality = QUALITIES[chosen]) } }
+    }
+    val wifiTitle = stringResource(R.string.wifi_only)
+    SettingRow(wifiTitle, stringResource(R.string.wifi_only_detail)) {
+        Toggle(settings.downloadWifiOnly, { on -> graph.settings.update { it.copy(downloadWifiOnly = on) } }, wifiTitle)
+    }
+    val downloads = org.medianexus.music.ui.downloads.downloadsNow()
+    val summary = org.medianexus.music.ui.downloads.summary(res, downloads)
+    SettingRow(stringResource(R.string.downloaded_songs), stringResource(R.string.downloaded_songs_detail, summary)) {
+        TextButton(stringResource(R.string.remove_all), danger = true, enabled = downloads.downloaded.isNotEmpty() || downloads.busy, onClick = {
+            // Windows removes at once. Everything downloaded is a lot to lose to a thumb that
+            // brushed the button, and fetching it back may need Wi-Fi the phone hasn't got: said
+            // first, and asked.
+            ui.sheet = Sheet.Confirm(
+                res.getString(R.string.remove_all_title),
+                res.getString(R.string.remove_all_detail, summary),
+                res.getString(R.string.remove_all),
+            ) {
+                ui.account?.downloads?.removeAll()
+                graph.toasts.show(res.getString(R.string.downloads_removed))
+            }
+        })
+    }
+
+    SettingHeading(stringResource(R.string.kept_songs))
+    // What the kept songs take now, looked up on opening (a folder's worth of files) and
+    // again when the limit changes.
+    val keptDir = ui.account?.keptSongsDir
+    val kept by produceState("0 MB", keptDir, settings.cacheLimitMb) {
+        value = withContext(Dispatchers.IO) { Downloads.sizeLabel(keptDir?.walkTopDown()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L) }
+    }
+    val keepTitle = stringResource(R.string.keep_songs)
+    SettingRow(keepTitle, stringResource(R.string.keep_songs_detail, kept), stacked = true) {
+        val at = CACHE_LIMITS.indexOf(settings.cacheLimitMb).coerceAtLeast(0)
+        Choices(CACHE_LIMITS.map { if (it == 0) stringResource(R.string.off) else stringResource(R.string.size_gb, it / 1024) }, at, keepTitle) { chosen ->
+            graph.settings.update { it.copy(cacheLimitMb = CACHE_LIMITS[chosen]) }
+        }
+    }
+    if (settings.cacheLimitMb > 0) {
+        val aheadTitle = stringResource(R.string.fetch_ahead)
+        SettingRow(aheadTitle, stringResource(R.string.fetch_ahead_detail), nested = true, stacked = true) {
+            val at = CACHE_AHEAD.indexOf(settings.cacheAhead).coerceAtLeast(0)
+            Choices(CACHE_AHEAD.map { if (it == 0) stringResource(R.string.off) else it.toString() }, at, aheadTitle) { chosen ->
+                graph.settings.update { it.copy(cacheAhead = CACHE_AHEAD[chosen]) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Account(graph: Graph) {
+    val session by graph.session.state.collectAsStateWithLifecycle()
+    val signedIn = session as? SessionState.SignedIn ?: return
+    SettingRow(signedIn.account.server, stringResource(R.string.signed_in_as, signedIn.account.username)) {
+        TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
+    }
+}
+
+@Composable
+private fun About(onDiagnostics: () -> Unit, onLicences: () -> Unit) {
+    SettingRow(stringResource(R.string.app_version, BuildConfig.VERSION_NAME), stringResource(R.string.about_detail)) {}
+    // As Windows has it under About ("Save diagnostics"): here it is shown, and shared from
+    // there.
+    SettingRow(stringResource(R.string.diagnostics), stringResource(R.string.diagnostics_detail), stacked = true) {
+        TextButton(stringResource(R.string.show_diagnostics), onClick = onDiagnostics)
+    }
+    SettingRow(stringResource(R.string.licences), stringResource(R.string.licences_detail), stacked = true) {
+        TextButton(stringResource(R.string.show_licences), onClick = onLicences)
+    }
+}
+
 /**
- * Offline mode, downloads and kept songs, as Windows' Settings has them (its wording), plus
- * the phone's own Wi-Fi only. Plain for now: the real screen comes with the next step.
+ * One setting, as Windows' `SettingRow`: its name (15, medium), what it does (13, muted), and
+ * its control, with a rule under it. A small control (a switch, a button) sits at the end of
+ * the row; a wide one (choices, swatches) goes under the words, as Windows puts it when the
+ * row is narrow. `nested`: it belongs to the setting above, set in beside a rule.
  */
 @Composable
-private fun StorageSettings(graph: Graph) {
-    val settings by graph.settings.state.collectAsStateWithLifecycle()
-    val res = androidx.compose.ui.platform.LocalResources.current
-    ToggleRow(stringResource(R.string.offline_mode), stringResource(R.string.offline_mode_detail), settings.offline) { on ->
-        graph.settings.update { it.copy(offline = on) }
-        if (on) graph.toasts.show(res.getString(R.string.offline_mode_on))
-    }
-    ToggleRow(stringResource(R.string.wifi_only), stringResource(R.string.wifi_only_detail), settings.downloadWifiOnly) { on ->
-        graph.settings.update { it.copy(downloadWifiOnly = on) }
-    }
-    Setting(stringResource(R.string.download_quality), stringResource(R.string.download_quality_detail))
-    val qualities = org.medianexus.music.store.QUALITIES
-    org.medianexus.music.ui.parts.ChipRow(
-        qualities.map { if (it == 0) stringResource(R.string.quality_original) else stringResource(R.string.quality_kbps, it) },
-        qualities.indexOf(settings.downloadQuality).coerceAtLeast(0),
-        { at -> graph.settings.update { it.copy(downloadQuality = qualities[at]) } },
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-    )
-    Setting(stringResource(R.string.kept_songs), stringResource(R.string.kept_songs_detail))
-    val limits = org.medianexus.music.store.CACHE_LIMITS
-    org.medianexus.music.ui.parts.ChipRow(
-        limits.map { if (it == 0) stringResource(R.string.none) else stringResource(R.string.size_gb, it / 1024) },
-        limits.indexOf(settings.cacheLimitMb).coerceAtLeast(0),
-        { at -> graph.settings.update { it.copy(cacheLimitMb = limits[at]) } },
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-    )
-    Setting(stringResource(R.string.fetch_ahead), stringResource(R.string.fetch_ahead_detail))
-    val ahead = org.medianexus.music.store.CACHE_AHEAD
-    org.medianexus.music.ui.parts.ChipRow(
-        ahead.map { if (it == 0) stringResource(R.string.none) else it.toString() },
-        ahead.indexOf(settings.cacheAhead).coerceAtLeast(0),
-        { at -> graph.settings.update { it.copy(cacheAhead = ahead[at]) } },
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-    )
-    Box(Modifier.padding(top = 16.dp).height(1.dp).fillMaxWidth().background(Theme.colors.line))
-}
-
-@Composable
-private fun ToggleRow(title: String, detail: String, on: Boolean, onToggle: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Setting(title, detail, Modifier.weight(1f))
-        org.medianexus.music.ui.parts.Toggle(on, onToggle, title)
+private fun SettingRow(
+    title: String,
+    detail: String,
+    nested: Boolean = false,
+    stacked: Boolean = false,
+    control: @Composable () -> Unit,
+) {
+    val colors = Theme.colors
+    Row(Modifier.fillMaxWidth()) {
+        if (nested) {
+            Box(Modifier.padding(start = 5.dp, end = 15.dp).width(2.dp).heightIn(min = 48.dp).background(colors.line))
+        }
+        Column(Modifier.weight(1f)) {
+            val words = @Composable { modifier: Modifier ->
+                Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    BasicText(title, style = Theme.type.body.copy(color = colors.text, fontSize = Theme.type.rowTitle.fontSize, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium))
+                    if (detail.isNotEmpty()) BasicText(detail, style = Theme.type.rowDetail.copy(color = colors.muted))
+                }
+            }
+            if (stacked) {
+                Column(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    words(Modifier.fillMaxWidth())
+                    control()
+                }
+            } else {
+                Row(Modifier.fillMaxWidth().heightIn(min = 61.dp).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    words(Modifier.weight(1f))
+                    control()
+                }
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(colors.line))
+        }
     }
 }
 
+/** Names a run of related settings within a section (Windows' `SettingHeading`). */
 @Composable
-private fun Heading(text: String) {
-    BasicText(
-        text,
-        Modifier.padding(top = 24.dp, bottom = 8.dp).semantics { heading() },
-        style = Theme.type.heading.copy(color = Theme.colors.text),
-    )
+private fun SettingHeading(text: String) {
+    Box(Modifier.fillMaxWidth().heightIn(min = 52.dp), contentAlignment = Alignment.BottomStart) {
+        BasicText(text, Modifier.padding(bottom = 6.dp).semantics { heading() }, style = Theme.type.heading.copy(color = Theme.colors.text))
+    }
 }
 
+/** Windows' segmented choices; on a narrow phone, with large type, they scroll sideways
+ *  rather than squeeze. */
 @Composable
-private fun Setting(title: String, detail: String, modifier: Modifier = Modifier) {
-    Column(modifier.padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        BasicText(title, style = Theme.type.rowTitle.copy(color = Theme.colors.text), maxLines = 2, overflow = TextOverflow.Ellipsis)
-        BasicText(detail, style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+private fun Choices(options: List<String>, selected: Int, label: String, onChoose: (Int) -> Unit) {
+    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Segmented(options, selected, onChoose, label)
     }
 }
 
@@ -168,13 +295,13 @@ private fun Setting(title: String, detail: String, modifier: Modifier = Modifier
 @Composable
 private fun ThemeSwatches(chosen: String, onChoose: (String) -> Unit) {
     FlowRow(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp).selectableGroup(),
+        Modifier.fillMaxWidth().selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
         maxItemsInEachRow = 3,
     ) {
         for (option in THEMES) {
-            Swatch(option, option.name == chosen, Modifier.weight(1f)) { onChoose(option.name) }
+            Swatch(option, option.name == chosen, Modifier.weight(1f).widthIn(max = 124.dp)) { onChoose(option.name) }
         }
     }
 }

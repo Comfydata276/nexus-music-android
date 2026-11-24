@@ -168,6 +168,8 @@ fun NowPlaying(onClose: () -> Unit) {
                         BasicText(queue.context, style = Theme.type.label.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
+                // Offline, the same pill as every page's title bar.
+                org.medianexus.music.ui.parts.LocalTitlePill.current()
                 // On its side the queue button sits up here, where it is always in sight.
                 val window = androidx.compose.ui.platform.LocalWindowInfo.current.containerSize
                 if (now != null && window.width > window.height) {

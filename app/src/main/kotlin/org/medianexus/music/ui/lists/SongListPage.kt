@@ -16,6 +16,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.medianexus.music.net.Song
@@ -37,7 +38,9 @@ import org.medianexus.music.ui.shell.PageFeed
 import org.medianexus.music.ui.shell.SongMenu
 import org.medianexus.music.ui.shell.likedSongs
 import org.medianexus.music.ui.theme.Theme
-import org.medianexus.music.ui.downloads.withDownload
+import org.medianexus.music.ui.downloads.ListDownload
+import org.medianexus.music.ui.downloads.rememberDownloadMarks
+import org.medianexus.music.ui.downloads.rowMark
 import kotlinx.coroutines.launch
 
 /** How a list's songs are drawn. */
@@ -73,14 +76,20 @@ fun SongListPage(
     below: LazyListScope.(columns: Int) -> Unit = {},
     /** The list can be downloaded whole (an album, a playlist, Liked songs). */
     downloadable: Boolean = false,
+    /** What the download button does instead of downloading the list as its page has it
+     *  (a list shown from the downloads: only removing). */
+    onDownload: ((ListDownload) -> Unit)? = null,
 ) {
     val ui = LocalUi.current
     val android = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val downloads = org.medianexus.music.ui.downloads.downloadsNow()
-    val reach = org.medianexus.music.ui.downloads.reachNow()
-    val ask = org.medianexus.music.ui.downloads.rememberDownloadAsk()
-    val plays = ui.account?.availability?.let { it::plays } ?: { _: Song -> true }
+    // The downloads and being offline, as state this page never reads itself: each row reads
+    // its own mark, and the download button its list's, so a song arriving redraws its row
+    // and the button, not the page.
+    val marks = rememberDownloadMarks()
+    val ids = remember(songs) { songs?.mapTo(HashSet()) { it.id } ?: emptySet<String>() }
+    val listDownload by remember(marks, ids) { derivedStateOf { ListDownload.of(marks.now, ids) } }
+    val offline by remember(marks) { derivedStateOf { marks.offline } }
     val player = ui.player
     val from by player.from.collectAsStateWithLifecycle()
     val queueShuffle by player.shuffle.collectAsStateWithLifecycle()
@@ -103,9 +112,15 @@ fun SongListPage(
         val bare = songs == null && feed.page.error != null
         TitleBar(if (scrolled || bare) hero.title else "", onBack = ui.navigator::back)
         Refreshable(feed.refreshing, feed::refresh) {
-            val error = feed.page.error
-            if (songs == null && error != null) {
-                PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
+            // Offline, a failure to reach the server is what offline is: the pill in the title
+            // bar says so, once, rather than a strip on every page.
+            val error = feed.page.error?.takeIf { !(offline && it is org.medianexus.music.net.ApiError.Network) }
+            if (songs == null && feed.page.error != null) {
+                if (error == null) {
+                    PageStatus(PageState.Empty(stringResource(org.medianexus.music.R.string.not_on_phone), stringResource(org.medianexus.music.R.string.not_on_phone_detail), org.medianexus.music.R.drawable.ic_wifi_off))
+                } else {
+                    PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
+                }
                 return@Refreshable
             }
             val width = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() }
@@ -131,16 +146,22 @@ fun SongListPage(
                     onLike = onLike,
                     inline = inline,
                     download = if (!downloadable || songs.isNullOrEmpty()) null else {
-                        val saved = songs.count { it.id in downloads.downloaded }
-                        val busy = songs.any { downloads.stateOf(it.id).let { s -> s == org.medianexus.music.downloads.SongState.Waiting || s is org.medianexus.music.downloads.SongState.Fetching } }
+                        val now = listDownload
                         org.medianexus.music.ui.parts.DownloadButton(
-                            state = if (busy) 1 else if (saved == songs.size) 2 else 0,
-                            done = saved, total = songs.size,
+                            state = now.state, done = now.done, total = now.total, progress = now.progress,
                             onClick = {
                                 val account = ui.account ?: return@DownloadButton
                                 val go = { scope.launch { org.medianexus.music.downloads.DownloadPages.toggle(android, account, key)?.let(ui::toast) }; Unit }
-                                // The first download asks for the notification it shows progress in.
-                                if (!busy && saved < songs.size) ask(go) else go()
+                                when {
+                                    onDownload != null -> onDownload(now)
+                                    // All of it downloaded: what the button offers, not done
+                                    // at once (a thumb brushes it more easily than a pointer).
+                                    now.state == 2 -> ui.sheet = org.medianexus.music.ui.shell.Sheet.RemoveList(hero.title, hero.cover, go)
+                                    now.state == 1 -> go()
+                                    // The first download asks for the notification it shows
+                                    // progress in.
+                                    else -> ui.askToDownload(go)
+                                }
                             },
                         )
                     },
@@ -164,12 +185,13 @@ fun SongListPage(
                             heading?.let { ListHeading(it) }
                             val current = from.isRow(key, index, song.id)
                             TrackRow(
-                                base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused).withDownload(downloads, reach.offline, plays, song),
+                                base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
                                 onClick = { ui.play(songs, index, context, key) },
                                 onMore = { ui.menu = SongMenu(song) },
                                 showCover = !look.album,
                                 showNumber = look.album,
                                 showDuration = true,
+                                mark = marks.rowMark(song),
                             )
                         }
                     }

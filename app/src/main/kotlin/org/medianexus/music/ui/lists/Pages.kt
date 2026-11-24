@@ -62,6 +62,10 @@ fun AlbumPage(route: Route.Album) {
     val ui = LocalUi.current
     val res = LocalResources.current
     val feed = rememberPageFeed(route.key) { it.album(route.id) }
+    if (fromDownloads(route.key, feed)) {
+        org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(route.key, route.title))
+        return
+    }
     val album = feed.value
     val hero = if (album == null) {
         HeroData(stringResource(R.string.kind_album), route.title, route.artist, cover = route.cover)
@@ -113,6 +117,10 @@ fun AlbumPage(route: Route.Album) {
 fun PlaylistPage(route: Route.Playlist) {
     val res = LocalResources.current
     val feed = rememberPageFeed(route.key) { it.playlist(route.id) }
+    if (fromDownloads(route.key, feed)) {
+        org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(route.key, route.name))
+        return
+    }
     val playlist = feed.value
     val hero = if (playlist == null) {
         HeroData(stringResource(R.string.kind_playlist), route.name, cover = route.cover, playlist = true)
@@ -137,6 +145,10 @@ fun PlaylistPage(route: Route.Playlist) {
 fun LikedPage() {
     val res = LocalResources.current
     val feed = rememberPageFeed(Route.Liked.key) { it.liked() }
+    if (fromDownloads(Route.Liked.key, feed)) {
+        org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(Route.Liked.key))
+        return
+    }
     // The server's list with what has just been liked or unliked here on top: the same
     // owner as every heart, so the two never disagree.
     val likes = LocalUi.current.account?.likes
@@ -152,6 +164,24 @@ fun LikedPage() {
         empty = stringResource(R.string.liked_empty),
         downloadable = true,
     )
+}
+
+/**
+ * Offline, with no copy of the page kept, an album or a list that is downloaded (an album
+ * with anything of it downloaded, a list downloaded whole) is shown as the downloads have it,
+ * rather than as a page that can't be had.
+ */
+@Composable
+private fun fromDownloads(key: String, feed: org.medianexus.music.ui.shell.PageFeed<*>): Boolean {
+    if (feed.value != null || feed.page.error == null) return false
+    val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
+    val has by remember(marks, key) {
+        androidx.compose.runtime.derivedStateOf {
+            val now = marks.now
+            marks.offline && (now.collections.any { it.key == key } || (key.startsWith("album:") && now.downloaded.values.any { "album:${it.song.albumId}" == key }))
+        }
+    }
+    return has
 }
 
 /** An artist: their albums, then singles and EPs, newest first, as on Windows. The play
@@ -295,6 +325,17 @@ fun GenrePage(route: Route.Genre) {
     LaunchedEffect(pages, feed.value != null, pages.generation, lifecycle) {
         if (feed.value == null) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { pages.loadAll() }
+    }
+    // Offline: its albums on the phone, from the songs of it that play.
+    val phone = org.medianexus.music.ui.downloads.playableOffline()
+    if (phone != null) {
+        val cards = remember(phone, route.name) { org.medianexus.music.library.OnThePhone.albums(phone.filter { it.genre.equals(route.name, ignoreCase = true) }).map { it.card() } }
+        Column(Modifier.fillMaxSize()) {
+            TitleBar(route.name, onBack = ui.navigator::back)
+            if (cards.isEmpty()) PageStatus(PageState.Empty(stringResource(R.string.not_on_phone), stringResource(R.string.not_on_phone_detail), R.drawable.ic_wifi_off))
+            else CardGrid(cards, card = { it }, key = { it.id }, onOpen = { ui.open(it) })
+        }
+        return
     }
     Column(Modifier.fillMaxSize()) {
         TitleBar(route.name, onBack = ui.navigator::back)

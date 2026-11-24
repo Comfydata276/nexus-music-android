@@ -34,8 +34,13 @@ import androidx.compose.ui.unit.dp
 import org.medianexus.music.R
 import org.medianexus.music.ui.theme.Theme
 
+/** What a page's title bar shows at its end, before its own buttons: the offline pill, once
+ *  the shell is there to provide it (see `OfflinePill`). */
+val LocalTitlePill = androidx.compose.runtime.staticCompositionLocalOf<@Composable () -> Unit> { {} }
+
 /** The bar across the top of a page: Back (when there's somewhere to go back to), the page's
- *  name, and a few buttons at the end. It sits below the status bar. */
+ *  name, and a few buttons at the end, after the offline pill when the app is offline. It
+ *  sits below the status bar. */
 @Composable
 fun TitleBar(
     title: String,
@@ -61,6 +66,7 @@ fun TitleBar(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        LocalTitlePill.current()
         actions()
     }
 }

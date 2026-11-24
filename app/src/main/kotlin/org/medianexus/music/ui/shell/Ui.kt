@@ -39,6 +39,18 @@ class Ui(val graph: Graph, val navigator: Navigator) {
     var queueOpen by mutableStateOf(false)
     var menu: SongMenu? by mutableStateOf(null)
 
+    /** A sheet over everything (see [Sheet]); null for none. */
+    var sheet: Sheet? by mutableStateOf(null)
+
+    /**
+     * Runs a download the person asked for, having first asked (once, on Android 13 and
+     * later) for the notifications permission its progress notification needs. The asking
+     * belongs to the shell, which outlives whatever asked (a song's menu closes as it is
+     * used, and the answer must still find its way back).
+     */
+    var askToDownload: (() -> Unit) -> Unit = { it() }
+        internal set
+
     val player get() = graph.player
 
     /** Opens a page, closing Now Playing if it's over it (its artist, say). */

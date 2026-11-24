@@ -41,7 +41,7 @@ class AlbumPages(
     val albums = mutableStateListOf<Album>()
 
     /** The refresh the pages belong to. */
-    var generation by mutableStateOf(0)
+    var generation by mutableIntStateOf(0)
         private set
 
     /** A page is being asked for. */

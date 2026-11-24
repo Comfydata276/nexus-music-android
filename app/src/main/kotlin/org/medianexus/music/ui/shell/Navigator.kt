@@ -36,6 +36,12 @@ sealed interface Route {
     @Serializable data class Albums(val sort: Int) : Route
     /** What is downloaded and on its way (reached from Library). */
     @Serializable data object Downloads : Route
+    /** An album, playlist or Liked songs as the downloads have it (`DownloadedViews`), with
+     *  no server and no kept page needed: `key` is the list's ("album:<id>", "playlist:<id>",
+     *  "liked"). */
+    @Serializable data class Downloaded(val list: String, val title: String = "") : Route
+    /** The licences of what comes with the app (Settings, About). */
+    @Serializable data object Licences : Route
 
     /** The key the Windows app files the page under ("album:<id>"): where its list's
      *  choices are remembered, and what a queue started from it is said to come from. */
@@ -47,6 +53,7 @@ sealed interface Route {
             Liked -> "liked"
             is Genre -> "genre:$name"
             Downloads -> "downloads"
+            is Downloaded -> "downloads:$list"
             else -> ""
         }
 }

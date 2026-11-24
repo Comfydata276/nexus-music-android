@@ -29,8 +29,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -222,32 +226,72 @@ fun ActionBar(
                 iconSize = 24.dp,
             )
         }
-        if (download != null) {
-            IconButton(
-                if (download.state == 0) R.drawable.ic_download else R.drawable.ic_circle_arrow_down,
-                stringResource(
-                    when (download.state) {
-                        0 -> R.string.download
-                        1 -> R.string.cancel_download
-                        else -> R.string.remove_download
-                    },
-                ),
-                download.onClick,
-                tint = if (download.state == 0) colors.muted else colors.accentBright,
-                active = download.state == 2,
-                iconSize = 24.dp,
-            )
-            if (download.state == 1) {
-                BasicText("${download.done}/${download.total}", style = Theme.type.label.copy(color = colors.muted))
-            }
-        }
+        if (download != null) DownloadButtonView(download)
         Spacer(Modifier.width(0.dp))
     }
 }
 
-/** A list's download button: 0 nothing downloaded, 1 on its way (`done` of `total`), 2 all
- *  of it downloaded (as Windows' `download_state`). */
-data class DownloadButton(val state: Int, val done: Int, val total: Int, val onClick: () -> Unit)
+/** A list's download button: 0 nothing (or only some) of it downloaded, 1 some of it on its
+ *  way, 2 all of it downloaded (Windows' `download_state`); how many of its songs are
+ *  downloaded, of how many, and how far it has got (`progress`, 0 to 1, counting songs
+ *  part-way). */
+data class DownloadButton(val state: Int, val done: Int, val total: Int, val progress: Float = 0f, val onClick: () -> Unit)
+
+/**
+ * As Windows' action bar draws it: the download arrow; a filled arrow in the accent once all
+ * of it is downloaded; and while it downloads, a ring that fills as its songs arrive with a
+ * square to stop it in the middle, and the count beside it.
+ */
+@Composable
+private fun DownloadButtonView(download: DownloadButton) {
+    val colors = Theme.colors
+    if (download.state != 1) {
+        IconButton(
+            if (download.state == 2) R.drawable.ic_circle_arrow_down else R.drawable.ic_download,
+            stringResource(if (download.state == 2) R.string.remove_from_downloads else R.string.download),
+            download.onClick,
+            tint = if (download.state == 2) colors.accentBright else colors.muted,
+            active = download.state == 2,
+            iconSize = 24.dp,
+        )
+        return
+    }
+    val label = stringResource(R.string.cancel_downloading)
+    val count = androidx.compose.ui.platform.LocalResources.current.getQuantityString(R.plurals.downloaded_count, download.total, download.done, download.total)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(
+            Modifier
+                .size(Theme.dimens.touch)
+                .clip(CircleShape)
+                .clickable(role = Role.Button, onClickLabel = label, onClick = download.onClick)
+                .semantics {
+                    contentDescription = label
+                    stateDescription = count
+                    progressBarRangeInfo = androidx.compose.ui.semantics.ProgressBarRangeInfo(download.progress.coerceIn(0f, 1f), 0f..1f)
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            val track = colors.press
+            val fill = colors.accentBright
+            val turn = download.progress.coerceIn(0.02f, 0.995f)
+            androidx.compose.foundation.Canvas(Modifier.size(28.dp)) {
+                val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
+                val inset = 1.5.dp.toPx()
+                val box = androidx.compose.ui.geometry.Size(size.width - 2 * inset, size.height - 2 * inset)
+                val at = androidx.compose.ui.geometry.Offset(inset, inset)
+                drawArc(track, 0f, 360f, false, at, box, style = stroke)
+                drawArc(fill, -90f, 360f * turn, false, at, box, style = stroke)
+            }
+            Box(Modifier.size(9.dp).clip(RoundedCornerShape(2.dp)).background(colors.muted))
+        }
+        BasicText(
+            stringResource(R.string.download_count, download.done, download.total),
+            Modifier.clearAndSetSemantics {},
+            style = Theme.type.label.copy(color = colors.muted, fontSize = 14.sp),
+            maxLines = 1,
+        )
+    }
+}
 
 /** A heading between parts of a list: "Disc 2". */
 @Composable

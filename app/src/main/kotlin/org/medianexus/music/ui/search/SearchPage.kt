@@ -22,6 +22,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -56,22 +58,35 @@ import org.medianexus.music.ui.shell.likedSongs
 import org.medianexus.music.ui.shell.open
 import org.medianexus.music.ui.shell.rememberPageFeed
 import org.medianexus.music.ui.theme.Theme
+import org.medianexus.music.ui.downloads.rowMark
 
 /**
  * Search, its own tab on the phone: results as the words are typed, in the Windows
  * sections, narrowed by its chips. With nothing typed, the genres to browse by, as on
- * Windows. (Windows keeps no list of past searches, so neither does this.)
+ * Windows. (Windows keeps no list of past searches, so neither does this.) Offline it
+ * searches only the songs on the phone (`LocalSearch`, as the car does), and says so.
  */
 @Composable
 fun SearchPage() {
     val ui = LocalUi.current
     val res = LocalResources.current
     val account = ui.account
+    val graph = ui.graph
     val model = remember(account) {
         SearchModel(null, search = { query ->
-            account?.library?.search?.find(query, LIMITS) ?: Found()
+            if (graph.watch.offline && account != null) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS)
+                }
+            } else {
+                account?.library?.search?.find(query, LIMITS) ?: Found()
+            }
         })
     }
+    val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
+    val offline by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.offline } }
+    // Offline, or back: the words in the box are looked for again, in the other place.
+    LaunchedEffect(model, offline) { model.retry() }
     // It searches only while the app is in front, as the pages' feeds fetch.
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { model.run() } }
@@ -95,6 +110,21 @@ fun SearchPage() {
                 onKeyboardAction = { keyboard?.hide() },
             )
         }
+        if (offline) {
+            // Tapped, the same as the title bars' pill: what offline means, and the way out.
+            androidx.compose.foundation.layout.Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = Theme.dimens.touch)
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { ui.sheet = org.medianexus.music.ui.shell.Sheet.Offline }
+                    .padding(horizontal = Theme.dimens.pagePad),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            ) {
+                org.medianexus.music.ui.parts.Icon(R.drawable.ic_wifi_off, size = 16.dp, tint = Theme.colors.warm)
+                androidx.compose.foundation.text.BasicText(stringResource(R.string.searching_phone), style = Theme.type.rowDetail.copy(color = Theme.colors.warm))
+            }
+        }
         if (state.query.isEmpty() && box.text.isBlank()) {
             Genres()
             return@Column
@@ -105,17 +135,24 @@ fun SearchPage() {
         // a tap plays.
         val typed = box.text.toString()
         val results = state.resultsFor(typed)
-        val view = remember(results, playlists, kind) {
-            results?.let { SearchView.of(it.query, it.found, playlists, SearchKind.entries[kind]) }
+        // Offline, the playlists are those downloaded whole.
+        val downloadedLists by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.now.collections.mapTo(HashSet()) { it.key } } }
+        val shownPlaylists = remember(playlists, offline, downloadedLists) { if (offline) playlists.filter { "playlist:${it.id}" in downloadedLists } else playlists }
+        val view = remember(results, shownPlaylists, kind) {
+            results?.let { SearchView.of(it.query, it.found, shownPlaylists, SearchKind.entries[kind]) }
         }
         val liked = likedSongs()
-        val error = state.error?.takeIf { state.query == typed.trim() }
+        val error = state.error?.takeIf { state.query == typed.trim() && !(offline && it is org.medianexus.music.net.ApiError.Network) }
         when {
             view == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = model::retry)
             view == null -> SkeletonRows()
             view.isEmpty -> PageStatus(
                 PageState.Empty(
-                    if (kind == 0) res.getString(R.string.search_nothing, state.query) else res.getString(R.string.search_nothing_of_kind, kinds[kind].lowercase(), state.query),
+                    when {
+                        offline -> res.getString(R.string.search_nothing_phone, state.query)
+                        kind == 0 -> res.getString(R.string.search_nothing, state.query)
+                        else -> res.getString(R.string.search_nothing_of_kind, kinds[kind].lowercase(), state.query)
+                    },
                 ),
             )
             else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -144,6 +181,7 @@ fun SearchPage() {
                             // What "All" shows is the first few of what was found, so the place is the same.
                             onClick = { results?.takeIf { it.query == box.text.toString().trim() }?.let { ui.play(it.found.songs, index, "“${it.query}”") } },
                             onMore = { ui.menu = SongMenu(song) },
+                            mark = marks.rowMark(song),
                         )
                     }
                 }
@@ -200,9 +238,14 @@ private fun Genres() {
     val ui = LocalUi.current
     val res = LocalResources.current
     val feed = rememberPageFeed("genres") { it.genres() }
-    val genres = remember(feed.value) { feed.value?.sortedWith(compareByDescending<org.medianexus.music.net.Genre> { it.albumCount }.thenBy { it.name }) }
+    // Offline, the genres of the songs on the phone.
+    val phone = org.medianexus.music.ui.downloads.playableOffline()
+    val genres = remember(feed.value, phone) {
+        (if (phone != null) org.medianexus.music.library.OnThePhone.genres(phone) else feed.value)
+            ?.sortedWith(compareByDescending<org.medianexus.music.net.Genre> { it.albumCount }.thenBy { it.name })
+    }
     org.medianexus.music.ui.parts.Refreshable(feed.refreshing, feed::refresh) {
-        val error = feed.page.error
+        val error = feed.page.error?.takeIf { phone == null }
         when {
             genres == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh)
             genres == null -> SkeletonRows()

@@ -55,11 +55,6 @@ data class TrackRowData(
     val current: Boolean = false,
     /** What's playing is paused: the playing mark dims. */
     val paused: Boolean = false,
-    val downloaded: Boolean = false,
-    /** Can't be played now (offline, and not downloaded). */
-    val unavailable: Boolean = false,
-    /** How far a download has got, 0 to 1; below 0 when it isn't downloading. */
-    val progress: Float = -1f,
     /** Part of a selection being built up. */
     val selected: Boolean = false,
 )
@@ -67,6 +62,13 @@ data class TrackRowData(
 /**
  * One song in a list: 56dp high, a 40dp cover, the title (in the accent when it's what's
  * playing) over the artist. Tap plays; "…" or a long press opens its menu.
+ *
+ * `mark` is where its download stands and whether it can play now, as Windows' rows show
+ * them: downloaded, a mark before the artist; waiting or arriving, a bar in place of the
+ * length, filling as it comes; couldn't be downloaded, a mark of its own in the warm colour;
+ * and offline, a song that isn't on the phone is dimmed, can't be tapped, and is said to be
+ * unavailable. `trailing`, if given, stands in for the "…" button (the Downloads page's
+ * Cancel on a song on its way).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -79,17 +81,24 @@ fun TrackRow(
     showCover: Boolean = true,
     showNumber: Boolean = false,
     showDuration: Boolean = false,
+    mark: org.medianexus.music.ui.downloads.RowMark = org.medianexus.music.ui.downloads.RowMark.NONE,
+    /** A second line of its own in place of the artist (why it couldn't be downloaded). */
+    detail: String? = null,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val colors = Theme.colors
-    // What the dimming and the accent show, said to screen readers.
+    val unavailable = mark.unavailable
+    val state = mark.state
+    // What the dimming, the accent and the marks show, said to screen readers.
     val status = when {
-        track.unavailable -> stringResource(R.string.track_unavailable)
+        unavailable -> stringResource(R.string.track_unavailable)
         track.current && track.paused -> stringResource(R.string.track_paused)
         track.current -> stringResource(R.string.track_playing)
+        state == org.medianexus.music.downloads.SongState.Waiting -> stringResource(R.string.waiting_to_download)
         else -> null
     }
     val menu by rememberUpdatedState(onLongClick ?: onMore)
-    val press = if (track.unavailable) {
+    val press = if (unavailable) {
         // Nothing to play, so no play action for a finger or a screen reader; the menu still
         // opens on a long press.
         Modifier
@@ -102,7 +111,7 @@ fun TrackRow(
         modifier
             .fillMaxWidth()
             .height(Theme.dimens.rowHeight)
-            .alpha(if (track.unavailable) 0.4f else 1f)
+            .alpha(if (unavailable) 0.4f else 1f)
             .background(if (track.selected) colors.press else androidx.compose.ui.graphics.Color.Transparent)
             .then(press)
             // Read out as its title, artist and marks; the "…" button stays a button of its own.
@@ -134,21 +143,35 @@ fun TrackRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (track.downloaded) {
-                    Icon(R.drawable.ic_circle_arrow_down, size = 13.dp, tint = colors.accentBright, contentDescription = stringResource(R.string.downloaded))
+                when (state) {
+                    org.medianexus.music.downloads.SongState.Done ->
+                        Icon(R.drawable.ic_circle_arrow_down, size = 13.dp, tint = colors.accentBright, contentDescription = stringResource(R.string.downloaded))
+                    is org.medianexus.music.downloads.SongState.Failed ->
+                        Icon(R.drawable.ic_circle_alert, size = 13.dp, tint = colors.warm, contentDescription = stringResource(R.string.couldnt_be_downloaded_short))
+                    else -> {}
                 }
                 if (track.liked) {
                     Icon(R.drawable.ic_heart_fill, size = 13.dp, tint = colors.warm, contentDescription = stringResource(R.string.liked))
                 }
-                BasicText(track.artist, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                BasicText(
+                    detail ?: track.artist,
+                    style = Theme.type.rowDetail.copy(color = if (detail != null) colors.warm else colors.muted),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
-        if (track.progress >= 0f) {
-            DownloadBar(track.progress, stringResource(R.string.downloading_named, track.title))
+        val progress = when (state) {
+            org.medianexus.music.downloads.SongState.Waiting -> 0f
+            is org.medianexus.music.downloads.SongState.Fetching -> state.fraction.coerceAtLeast(0f)
+            else -> -1f
+        }
+        if (progress >= 0f) {
+            DownloadBar(progress, stringResource(R.string.downloading_named, track.title))
         } else if (showDuration && track.duration.isNotEmpty()) {
             BasicText(track.duration, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
         }
-        IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, track.title), onMore, iconSize = 20.dp)
+        if (trailing != null) trailing() else IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, track.title), onMore, iconSize = 20.dp)
     }
 }
 

@@ -298,20 +298,23 @@ private fun Covers() {
 @Composable
 private fun Rows() {
     val base = TrackRowData("s1", "Lanterns", "Marrow & Pine", number = "1", duration = "3:41")
+    val none = org.medianexus.music.ui.downloads.RowMark.NONE
     val rows = listOf(
-        "Plain" to base,
-        "Playing" to base.copy(id = "s2", current = true),
-        "Playing, paused" to base.copy(id = "s3", current = true, paused = true),
-        "Liked and downloaded" to base.copy(id = "s4", liked = true, downloaded = true),
-        "Downloading" to base.copy(id = "s5", progress = 0.4f),
-        "Unavailable offline" to base.copy(id = "s6", unavailable = true),
-        "Selected" to base.copy(id = "s7", selected = true),
-        "Long words" to base.copy(id = "s8", title = "A song with a title far too long for any phone held upright", artist = "Marrow & Pine, Elm, and the Late Night Ensemble"),
+        Triple("Plain", base, none),
+        Triple("Playing", base.copy(id = "s2", current = true), none),
+        Triple("Playing, paused", base.copy(id = "s3", current = true, paused = true), none),
+        Triple("Liked and downloaded", base.copy(id = "s4", liked = true), org.medianexus.music.ui.downloads.RowMark(org.medianexus.music.downloads.SongState.Done)),
+        Triple("Waiting to download", base.copy(id = "s5w"), org.medianexus.music.ui.downloads.RowMark(org.medianexus.music.downloads.SongState.Waiting)),
+        Triple("Downloading", base.copy(id = "s5"), org.medianexus.music.ui.downloads.RowMark(org.medianexus.music.downloads.SongState.Fetching(0.4f))),
+        Triple("Couldn't be downloaded", base.copy(id = "s5f"), org.medianexus.music.ui.downloads.RowMark(org.medianexus.music.downloads.SongState.Failed("The disk is full."))),
+        Triple("Unavailable offline", base.copy(id = "s6"), org.medianexus.music.ui.downloads.RowMark(unavailable = true)),
+        Triple("Selected", base.copy(id = "s7", selected = true), none),
+        Triple("Long words", base.copy(id = "s8", title = "A song with a title far too long for any phone held upright", artist = "Marrow & Pine, Elm, and the Late Night Ensemble"), none),
     )
     Label("TrackRow, with covers")
-    rows.forEach { (_, track) -> TrackRow(track, {}, {}) }
+    rows.forEach { (_, track, mark) -> TrackRow(track, {}, {}, mark = mark) }
     Label("TrackRow, numbered as on an album page, with times")
-    rows.take(3).forEach { (_, track) -> TrackRow(track, {}, {}, showCover = false, showNumber = true, showDuration = true) }
+    rows.take(3).forEach { (_, track, mark) -> TrackRow(track, {}, {}, showCover = false, showNumber = true, showDuration = true, mark = mark) }
     Label("SkeletonRows")
     SkeletonRows(rows = 4)
 }
