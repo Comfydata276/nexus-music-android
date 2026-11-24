@@ -262,6 +262,8 @@ class Downloads(
             }
         }
         scope.launch(Dispatchers.Main.immediate) { reach.map { it.offline }.distinctUntilChanged().collect { gate() } }
+        // The last cover kept with the downloads done: the unmetered network may be let go.
+        scope.launch(Dispatchers.Main.immediate) { pinning.collect { if (initialized) wantsUnmetered() } }
     }
 
     /**
@@ -300,7 +302,7 @@ class Downloads(
             reach.value.manual -> Held.OFFLINE
             wifiOnly && route == null -> Held.WIFI
             // (Not yet answered on that network is not a yes.)
-            wifiOnly && !(askedOn === route && answersThere == true) -> Held.SERVER
+            wifiOnly && !(route != null && answersOn(route)) -> Held.SERVER
             !wifiOnly && reach.value.unreachable -> Held.SERVER
             !wifiOnly && !net.connected -> Held.NETWORK
             stopped -> Held.ANDROID
@@ -310,9 +312,15 @@ class Downloads(
 
     /** The unmetered network the server is being asked on (or was), and what it said there
      *  (null: it has not answered yet). */
-    private var askedOn: org.medianexus.music.net.BoundRoute? = null
-    private var answersThere: Boolean? = null
+    @Volatile private var askedOn: org.medianexus.music.net.BoundRoute? = null
+    private val answersThere = MutableStateFlow<Boolean?>(null)
     private var askingThere: Job? = null
+
+    /** Whether the server has answered on `route`, the network asked on now (from any
+     *  thread). **Nothing is sent by an unmetered network before this**: not a song, not a
+     *  cover (a worker or a cover fetch that began as the network changed used to go out on
+     *  the new one at once). */
+    private fun answersOn(route: org.medianexus.music.net.BoundRoute): Boolean = askedOn === route && answersThere.value == true
 
     /**
      * Asks our own server whether it is there, **on the unmetered network transfers are bound
@@ -324,8 +332,9 @@ class Downloads(
      */
     private fun askOn(route: org.medianexus.music.net.BoundRoute?) {
         askingThere?.cancel()
+        // (In this order: whoever sees the new network asked on sees that it hasn't answered.)
+        answersThere.value = null
         askedOn = route
-        answersThere = null
         if (route == null) return
         askingThere = scope.launch(Dispatchers.Main.immediate) {
             val began = System.nanoTime()
@@ -339,8 +348,8 @@ class Downloads(
                     e.signInRefused
                 }
                 if (askedOn !== route || released) return@launch
-                if (answersThere != there) {
-                    answersThere = there
+                if (answersThere.value != there) {
+                    answersThere.value = there
                     if (!there) note("downloads: the server didn't answer on the unmetered network; asked again there in a while (Wi-Fi only: nothing else is used)")
                     gate()
                 }
@@ -353,7 +362,7 @@ class Downloads(
     /** A transfer bound to `route` couldn't reach the server on it: asked again there before
      *  anything more is sent that way. */
     private fun lostOn(route: org.medianexus.music.net.BoundRoute) = onMain {
-        if (released || askedOn !== route || answersThere != true) return@onMain
+        if (released || !answersOn(route)) return@onMain
         askOn(route)
         gate()
     }
@@ -510,7 +519,7 @@ class Downloads(
         }
         publish()
         // Covers for the lists, kept where the system won't clear them.
-        list?.coverArt?.takeIf { it.isNotEmpty() }?.let { scope.launch { pinCover(it) } }
+        list?.coverArt?.takeIf { it.isNotEmpty() }?.let { keepCover(it) }
         return if (reach.value.offline) Asked.Offline else Asked.Started(fresh.size, fresh.first())
     }
 
@@ -781,7 +790,7 @@ class Downloads(
     /** "Remove all" is under way: nothing is kept with the downloads meanwhile. */
     @Volatile private var clearing = false
 
-    /** Covers being kept with the downloads at this moment (see [pinCover]). */
+    /** Covers being kept with the downloads at this moment (see [keepCover]). */
     private val pinning = MutableStateFlow(0)
 
     /** The lists downloaded whole: fetches whatever they have gained (Windows'
@@ -832,15 +841,13 @@ class Downloads(
      * covers of a hundred downloaded songs were two megabytes over mobile data, by the
      * phone's default route, with every song of them held to the Wi-Fi.
      */
-    private suspend fun pinCover(id: String) {
-        // (Counted before it is asked whether a "Remove all" is under way, so that one which
-        // begins now either sees this and waits for it, or is seen here.)
+    private fun keepCover(id: String) {
+        // Counted now, before anything else is done: before it is asked whether a "Remove
+        // all" is under way (so that one which begins now either sees this and waits for it,
+        // or is seen here), and before the song that asked for it is published as done (so
+        // that the unmetered network is still wanted for it: see [wantsUnmetered]).
         pinning.update { it + 1 }
-        try {
-            if (!clearing) pin(id)
-        } finally {
-            pinning.update { it - 1 }
-        }
+        scope.launch { if (!clearing) pin(id) }.invokeOnCompletion { pinning.update { it - 1 } }
     }
 
     private suspend fun pin(id: String) {
@@ -848,8 +855,10 @@ class Downloads(
             if (clearing) return@pin null
             val wifiOnly = settings.value.downloadWifiOnly
             val bound = if (wifiOnly) unmetered.now.value ?: return@pin null else null
-            // (No cover is asked of a server known to be out of reach.)
+            // (No cover is asked of a server known to be out of reach, nor sent by an
+            // unmetered network before the server has answered on it: waited for, a while.)
             if (!wifiOnly && reach.value.offline) return@pin null
+            if (bound != null && kotlinx.coroutines.withTimeoutOrNull(ANSWER_WAIT_MILLIS) { answersThere.first { answersOn(bound) } } == null) return@pin null
             withContext(Dispatchers.IO) {
                 val call = (bound?.client ?: route).newCall(okhttp3.Request.Builder().url(api.coverUrl(id, CoverStore.SIZE)).build())
                 try {
@@ -943,7 +952,7 @@ class Downloads(
                     asks.remove(id)
                     catalogue.entry(id)?.song?.coverArt?.takeIf { it.isNotEmpty() }?.let { cover ->
                         // Have the artwork kept too, for when the server can't be reached.
-                        scope.launch { pinCover(cover) }
+                        keepCover(cover)
                     }
                 }
                 Download.STATE_FAILED -> {
@@ -1017,12 +1026,20 @@ class Downloads(
         now.value = next
         // Offline by hand, nothing is to be done until it is switched off.
         keeper(active.isNotEmpty() && !reach.value.manual, settings.value.downloadWifiOnly)
-        // An unmetered network is asked of the system only while something waits for one.
-        unmetered.want(active.isNotEmpty() && settings.value.downloadWifiOnly && !reach.value.manual && !released)
+        wantsUnmetered(active.isNotEmpty())
         if (active.any { it.state is SongState.Fetching }) tick() else {
             ticking?.cancel()
             ticking = null
         }
+    }
+
+    /**
+     * An unmetered network is asked of the system only while something waits for one: a
+     * song (`songs`), or a cover kept with the downloads ([pinning]). (It used to be let go
+     * as the last song arrived, while that song's cover still needed it.)
+     */
+    private fun wantsUnmetered(songs: Boolean = now.value.active.isNotEmpty()) {
+        unmetered.want((songs || pinning.value > 0) && settings.value.downloadWifiOnly && !reach.value.manual && !released)
     }
 
     /** While something is arriving, how far it has got is looked at twice a second. */
@@ -1129,12 +1146,15 @@ class Downloads(
         private fun attempt(): SongFetch {
             val wifiOnly = settings.value.downloadWifiOnly
             val bound = if (wifiOnly) unmetered.now.value ?: throw RouteGone() else null
+            // (Nothing by a network the server hasn't answered on yet: see [gate].)
+            if (bound != null && !answersOn(bound)) throw NotAnswered()
             if (bound != null) noteIfTheJobIsElsewhere(bound)
             val client = bound?.client ?: route
             return SongFetch(
                 client, catalogue, check,
-                // (The one other thing a download may ask of the server, by the same way.)
-                refresh = { id -> asTheServerHasIt(client, id) },
+                // (The one other thing a download may ask of the server, by the same way, and
+                // cancelled as the transfer is.)
+                refresh = { id -> asTheServerHasIt(client, bound, id) },
                 mayRun = { mayStill(bound) },
                 // Half of what is always kept spare: the estimate made when this was asked
                 // for may be out, and other things fill a phone too.
@@ -1166,6 +1186,13 @@ class Downloads(
                         note("downloads: one came twice the same, with the same flaw (${wordsFor(before.fault)}): the server's own copy has it. It is kept as it is, and marked downloaded")
                     }
                     break
+                } catch (e: NotAnswered) {
+                    // The server hasn't answered yet on the network this would go by (it has
+                    // only just come): [gate] holds the downloads until it has, and Media3
+                    // stops this one; if the answer comes first, it goes on.
+                    main.post { gate() }
+                    if (called.await(STOP_WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) throw InterruptedException("Stopped")
+                    continue
                 } catch (e: Cancelled) {
                     // Stopped by Media3 (cancelled, the network went, offline): not a failure.
                     // (Only then: Media3 takes an interruption it didn't ask for as success.)
@@ -1340,13 +1367,22 @@ class Downloads(
 
     /** The song as the server's library has it now, for a download whose size or length isn't
      *  what was expected (see [SongFetch]). Null if the server has no such song. */
-    private fun asTheServerHasIt(by: OkHttpClient, id: String): Song? = try {
-        kotlinx.coroutines.runBlocking { (if (by === http) api else api.over(by)).song(id) }.takeIf { it.id == id }
+    private fun asTheServerHasIt(by: OkHttpClient, bound: org.medianexus.music.net.BoundRoute?, id: String): Song? = try {
+        kotlinx.coroutines.runBlocking {
+            val asking = coroutineContext[Job]!!
+            // Cancelled, as the transfer is, the moment its way out may no longer be used.
+            going(bound, { asking.cancel() }) { (if (by === http) api else api.over(by)).song(id) }.takeIf { it.id == id }
+        }
+    } catch (_: kotlinx.coroutines.CancellationException) {
+        throw RouteGone()
     } catch (e: org.medianexus.music.net.ApiError) {
         // It is there and says no (the song has gone): nothing newer to go by. Anything else
         // is the server not being reachable to ask.
         if (e is org.medianexus.music.net.ApiError.Server && !e.signInRefused) null else throw IOException("The server couldn't be asked", java.net.ConnectException())
     }
+
+    /** The server hasn't yet answered on the network an attempt would go by. */
+    private class NotAnswered : IOException()
 
     /** A failure that trying again won't help: passed to Media3 as final. */
     private class Final(cause: DownloadFailure) : RuntimeException(cause.reason, cause)
@@ -1400,6 +1436,10 @@ class Downloads(
         /** How long a transfer whose network has gone waits to be stopped by Media3 (which
          *  [gate] is seeing to) before it gives the try up as failed. */
         private const val STOP_WAIT_MILLIS = 5_000L
+
+        /** How long a cover waits for the server to answer on a network that has just come
+         *  (then it is not kept this time, as with no network). */
+        private const val ANSWER_WAIT_MILLIS = 60_000L
 
         /** While songs arrive, the folder is added up again every this many ticks. */
         private const val MEASURE_EVERY_TICKS = 10

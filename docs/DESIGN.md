@@ -1105,25 +1105,34 @@ for its network by what it is (`setRequiredNetwork`: carries ordinary traffic, V
 unmetered for Wi-Fi only).
 
 **"Download on Wi-Fi only" is a promise, not a look at the default route, and it holds for
-the whole life of a transfer.** With Wi-Fi and mobile data both up, the phone's default
-network can be mobile data while the Wi-Fi is there (a Wi-Fi with no internet beyond it; a
-weak one), and can change between one look and the next. So with Wi-Fi only on:
+the whole life of a transfer.** It governs what downloading fetches, and only that: **the
+songs downloaded, the covers kept with them, the one other thing a download may ask of the
+server (the song as the library has it now, when a size disagrees), and the downloads' own
+question whether the server answers on that network**. It does not govern playing a song
+that is not on the phone, fetching ahead the next songs of the queue, artwork for the
+screens and the car, or the app's own checks of whether the server is there
+(`ServerWatch`): those go by the phone's own route, whatever it is. With Wi-Fi and mobile
+data both up, the phone's default network can be mobile data while the Wi-Fi is there (a
+Wi-Fi with no internet beyond it; a weak one), and can change between one look and the
+next. So with Wi-Fi only on:
 
-- while downloads are waiting the system is asked for an unmetered network
-  (`ConnectivityManager.requestNetwork`; `CHANGE_NETWORK_STATE` is declared for it), and
-  **every transfer is bound to exactly the network it gives**: its sockets and its name
-  lookups (`BoundRoute`). Nothing else is used; the covers kept with the downloads come the
-  same way, and so does the one other thing a download may ask of the server (the song as
-  the library has it now, when a size disagrees);
+- while songs or covers of downloads are waiting the system is asked for an unmetered
+  network (`ConnectivityManager.requestNetwork`; `CHANGE_NETWORK_STATE` is declared for
+  it), and **every request of the downloads is bound to exactly the network it gives**: its
+  sockets and its name lookups (`BoundRoute`). Nothing else is used;
 - **if Android won't take that request, or reports it unavailable (which is also Android
   dropping it), it is asked again** after a pause that grows (five seconds, then twice as
   long each time, up to five minutes) for as long as something is waiting; **when nothing
-  is waiting the request is given up**, so the phone is not kept holding a second network
-  up for nothing;
+  is waiting the request is given up** (no song, and no cover still to come: the last
+  song's cover used to lose its network as the song arrived), so the phone is not kept
+  holding a second network up for nothing;
 - with no such network, nothing is transferred, whatever the default route looks like
   ("Waiting for Wi-Fi", which is then true);
 - **whether the server can be reached is asked on that network**, not on the phone's own
-  route (`Downloads.askOn`): until it has answered there nothing is sent that way, and
+  route (`Downloads.askOn`): **until it has answered there nothing is sent that way**, not
+  a song's request nor a cover's (a worker carrying on as the network changed, or a cover
+  asked for then, used to go by the new network at once; a cover waits a minute for the
+  answer, and is otherwise not kept this time), and
   while it doesn't (a sign-in page; a network the server isn't on) it is asked again there,
   less often the longer it has been, and no song is thrown at it ("Waiting for the server").
   Nothing else is tried meanwhile: that is what the setting says. What the app as a whole
@@ -1134,8 +1143,8 @@ weak one), and can change between one look and the next. So with Wi-Fi only on:
 - **a request under way is cancelled the moment its way out may no longer be used**
   (`Downloads.stopStrays`, `SongFetch.routeGone`): the network gone, turned metered, or
   given up for another; or Wi-Fi only switched on while a transfer was going by the phone's
-  own route. The HTTP call itself is cancelled, a song's or a cover's, on the thread the
-  change is heard on. (A transfer used to be asked before each read, so one on a stalled
+  own route. The HTTP call itself is cancelled, a song's, a cover's or the download's
+  question about the song, on the thread the change is heard on. (A transfer used to be asked before each read, so one on a stalled
   link was not told until its connection next gave it something, and a cover was never
   told.) **"The same way out" is the very route it began on, not the same network**: a
   network that turned metered and back, or went and came back, is another route. What had

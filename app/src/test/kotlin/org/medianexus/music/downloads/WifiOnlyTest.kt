@@ -79,14 +79,27 @@ class WifiOnlyTest {
     private val songGate = GatedServer.Gate()
     private val coverGate = GatedServer.Gate()
 
-    /** Requests the engine cancelled, by the path they were for. */
+    /** Where the server holds its answer to "are you there?" by the network `pingHeldVia`,
+     *  and to the library's word on the song (`getSong`). */
+    private val pingGate = GatedServer.Gate()
+    @Volatile private var pingHeldVia: String? = null
+    /** The library's word on the song (`getSong`) is held before anything of it is sent. */
+    private val songWordHeld = CountDownLatch(1)
+
+    /** Requests the engine cancelled, by the path they were for, and on which thread. */
     private val cancelled: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    private val cancelledOn: MutableList<Pair<String, Thread>> = Collections.synchronizedList(mutableListOf())
     private val coverCancelled = CountDownLatch(1)
 
     /** The unmetered network the system has given, as the test says it comes and goes. */
     private inner class Routes : UnmeteredRoutes {
         override val now = MutableStateFlow<BoundRoute?>(null)
-        override fun want(on: Boolean) = Unit
+
+        /** Whether an unmetered network is wanted, each time that changes. */
+        val wanted: MutableList<Boolean> = Collections.synchronizedList(mutableListOf())
+        override fun want(on: Boolean) {
+            if (wanted.lastOrNull() != on) wanted += on
+        }
 
         /** A route by the network `network`; every request made by it says `via`. */
         fun route(network: String, via: String = network) = BoundRoute(network, client(via))
@@ -99,6 +112,7 @@ class WifiOnlyTest {
             override fun canceled(call: Call) {
                 val path = call.request().url.encodedPath.substringAfterLast('/')
                 cancelled += path
+                cancelledOn += path to Thread.currentThread()
                 if ("getCoverArt" in path) coverCancelled.countDown()
             }
         })
@@ -118,7 +132,11 @@ class WifiOnlyTest {
         var songAsked = 0
         server.handler = { request ->
             when {
-                "ping" in request.path -> GatedServer.Answer(200, mapOf("Content-Type" to "application/json"), OK.toByteArray())
+                "ping" in request.path -> GatedServer.Answer(200, mapOf("Content-Type" to "application/json"), OK.toByteArray(), holdAfter = if (pingHeldVia != null && request.headers["x-via"] == pingHeldVia) 0 else -1, gate = pingGate)
+                "getSong" in request.path -> {
+                    songWordHeld.await(30, TimeUnit.SECONDS)
+                    GatedServer.song("s1", "flac", bytes.size.toLong(), 10)
+                }
                 // The first request for the song is held with 200 KB sent; later ones are not.
                 "stream" in request.path -> synchronized(this) { songAsked++ }.let { GatedServer.file(request, bytes, MONDAY, hold = if (songAsked == 1) 200_000 to songGate else null) }
                 "getCoverArt" in request.path -> GatedServer.Answer(200, mapOf("Content-Type" to "image/jpeg"), picture, holdAfter = 1_000, gate = coverGate)
@@ -131,6 +149,8 @@ class WifiOnlyTest {
     fun stop() {
         songGate.dropHere()
         coverGate.dropHere()
+        pingGate.dropHere()
+        songWordHeld.countDown()
         made.forEach { it.release() }
         idle()
         scope.cancel()
@@ -165,7 +185,7 @@ class WifiOnlyTest {
             .also { engine -> until("ready") { engine.state.value.settled } }
     }
 
-    private fun song(cover: String = "") = Song(id = "s1", title = "One", suffix = "flac", size = bytes.size.toLong(), duration = 10, coverArt = cover)
+    private fun song(cover: String = "", size: Long = bytes.size.toLong()) = Song(id = "s1", title = "One", suffix = "flac", size = size, duration = 10, coverArt = cover)
 
     /** By which way each request for the song came (null: the phone's own route). */
     private fun via(): List<String?> = synchronized(server.asked) { server.asked.filter { "stream" in it.path }.map { it.headers["x-via"] } }
@@ -308,6 +328,77 @@ class WifiOnlyTest {
         run { engine.download(listOf(song())) }
         until("again") { catalogue.has("s1") && !engine.state.value.busy }
         assertEquals(1, notes.count { "Android gave the job one unmetered network and the app another" in it })
+    }
+
+    // ---- Offline loose ends, item 6 ------------------------------------------------------------
+
+    @Test
+    fun nothingGoesByANetworkThatHasJustComeBeforeTheServerHasAnsweredOnIt() {
+        songGate.letThrough()
+        coverGate.letThrough()
+        routes.now.value = routes.route("wifi")
+        val engine = engine()
+        // Another unmetered network takes over, and the server has not yet answered on it.
+        pingHeldVia = "home"
+        routes.now.value = routes.route("home")
+        until("asked there") { synchronized(server.asked) { server.asked.any { "ping" in it.path && it.headers["x-via"] == "home" } } }
+        pingGate.awaitReached()
+        // An album is asked for meanwhile: its song waits for the server, and so does its
+        // cover. (The cover went by the new network at once, before the server had said
+        // anything there; a song's worker that was carrying on did the same.)
+        run { engine.download(listOf(song()), DownloadedList("album:al-1", "Album", coverArt = "c1", songs = listOf("s1"))) }
+        until("waiting for the server") { engine.state.value.held == Held.SERVER }
+        // (The one look here for something that must not happen: two seconds of the main
+        // thread running, in which the old code's cover request arrived within milliseconds.)
+        val looked = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < looked) {
+            idle()
+            assertTrue("sent before the server answered there", synchronized(server.asked) { server.asked.none { "getCoverArt" in it.path || "stream" in it.path } })
+            Thread.yield()
+        }
+        // It answers: the song and the cover come by it.
+        pingGate.letThrough()
+        until("downloaded, and the cover kept") { catalogue.has("s1") && !engine.state.value.busy && File(catalogue.dir, "covers").walkTopDown().any { it.isFile && it.length() > 0 } }
+        assertEquals(listOf<String?>("home"), via())
+        assertEquals(listOf("home"), synchronized(server.asked) { server.asked.filter { "getCoverArt" in it.path }.map { it.headers["x-via"] } })
+    }
+
+    @Test
+    fun askingTheServerForTheSongAgainIsCancelledWithTheNetworkThereAndThen() {
+        songGate.letThrough()
+        routes.now.value = routes.route("wifi")
+        val engine = engine()
+        // The library gives the song another size than the file the server sends: the server
+        // is asked for the song as it has it now, and holds that answer.
+        run { engine.download(listOf(song(size = bytes.size + 1L))) }
+        until("the song asked for again") { synchronized(server.asked) { server.asked.any { "getSong" in it.path } } }
+        // The Wi-Fi goes. That request is cancelled with it, on the thread that hears so, as
+        // the transfer's is. (It was left to Media3 stopping the download, later, from its
+        // own thread; and only if it did.)
+        routes.now.value = null
+        until("its request cancelled") { "getSong" in cancelled.joinToString() && InFlight.count(catalogue.dir) == 0 }
+        assertEquals(listOf(Looper.getMainLooper().thread), cancelledOn.filter { "getSong" in it.first }.map { it.second })
+        until("waiting for Wi-Fi") { engine.state.value.held == Held.WIFI }
+        assertTrue(engine.state.value.failed.isEmpty())
+        assertFalse(catalogue.has("s1"))
+    }
+
+    @Test
+    fun theUnmeteredNetworkIsKeptUntilTheLastSongsCoverHasCome() {
+        songGate.letThrough()
+        routes.now.value = routes.route("wifi")
+        val engine = engine()
+        run { engine.download(listOf(song(cover = "c1"))) }
+        until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
+        until("the cover asked for") { synchronized(server.asked) { server.asked.any { "getCoverArt" in it.path } } }
+        coverGate.awaitReached()
+        // The last song has arrived, and its cover is still on its way by the Wi-Fi: the
+        // network is still wanted. (It was let go here.)
+        repeat(10) { idle() }
+        assertEquals(true, routes.wanted.last())
+        coverGate.letThrough()
+        until("the cover kept") { File(catalogue.dir, "covers").walkTopDown().any { it.isFile && it.length() > 0 } }
+        until("let go") { routes.wanted.last() == false }
     }
 
     private companion object {
