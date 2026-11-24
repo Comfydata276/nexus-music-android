@@ -39,6 +39,8 @@ data class JamUi(
     val canHost: Boolean = false,
     /** The name this person goes by in jams. */
     val name: String = "",
+    /** What this phone is called in the person's other devices' lists. */
+    val device: String = "",
 )
 
 data class JoinedUi(
@@ -175,6 +177,7 @@ class Jams(
             if (gone != null) withContext(main) { gone(session, gone) }
         }
         place.reasonsChanged()
+        sayStatus(again = false)
         publish()
         if (own != null) {
             // Say who's asking, so the other device gives this one the run of it; and if
@@ -198,6 +201,8 @@ class Jams(
             GuestSide.leave(session.line, session.id, session.token)
         }
         place.reasonsChanged()
+        sayStatus(again = false)
+        linkDevices()
         publish()
     }
 
@@ -357,32 +362,499 @@ class Jams(
         }
     }
 
-    // ---- hosting (placeholders until the host's side is built) -----------------------------
+    // ---- hosting: this phone's own session ------------------------------------------------
 
-    private fun hostingPublic(): Boolean = false
+    /** A session this phone hosts: a jam when friends have its link (`public`), otherwise
+     *  only there for the person's other devices to steer this phone through. */
+    private inner class Hosting(
+        val serial: Long,
+        val line: RelayLine,
+        val id: String,
+        val secret: String,
+        var public: Boolean,
+        val host: HostPlace,
+    ) {
+        val link = "${line.base}/j/$id"
+        val answers = Answers(host.player, host.library, place.answerWords)
+        var guests: List<JamGuest> = emptyList()
+        var trouble = false
+        var job: Job? = null
 
-    /** "Start a jam". */
+        /** What the relay was last told: a fingerprint of it, when, and where the song was. */
+        var told = 0
+        var toldAt = 0L
+        var toldPosition = 0.0
+        var toldPlaying = false
+
+        /** What waits to go to the relay, in order; only the newest state goes. */
+        val out = kotlinx.coroutines.channels.Channel<Out>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+    }
+
+    private sealed interface Out {
+        data class State(val state: JsonObject) : Out
+        data class Reply(val ask: Long, val outcome: Answers.Outcome) : Out
+        data class Remove(val guest: String) : Out
+        data object End : Out
+    }
+
+    private var hosting: Hosting? = null
+    private var opening = false
+    private var tried = 0L
+    private var goPublic = false
+
+    private fun hostingPublic(): Boolean = hosting?.public == true
+
+    /** "Start a jam" (Windows' `start_jam`): this phone's session, if it has one open, becomes
+     *  the jam; otherwise one is opened. */
     fun start(name: String) {
         problem = null
         place.setJamName(name)
+        if (busy) return publish()
         if (joined != null) return problem(place.words.leaveFirst)
+        if (!place.hostingSetUp()) return problem(place.words.hostingNotSetUp)
+        val session = hosting
+        if (session != null) {
+            session.public = true
+            sync(session, force = true)
+        } else {
+            busy = true
+            goPublic = true
+            openSession()
+        }
+        place.reasonsChanged()
         publish()
     }
 
-    /** A device chosen under Connect. */
-    fun pick(id: String) {
+    /** Opens this phone's session at the relay (Windows' `open_session`). */
+    private fun openSession() {
+        if (opening || hosting != null) return
+        val host = place.host() ?: return
+        opening = true
+        tried = SystemClock.elapsedRealtime()
+        val mine = ++serial
+        val name = place.jamName()
+        scope.launch(io) {
+            val relay = place.relay()
+            val line = relay?.let { RelayLine(it.first, http, io) }
+            val started = if (relay == null || line == null) null else HostSide.start(line, relay.second, name)
+            withContext(main) { sessionOpened(mine, line, started, host) }
+        }
     }
 
-    /** "Play here": what the device being steered was playing carries on on this phone. */
+    private fun sessionOpened(mine: Long, line: RelayLine?, started: HostSide.Started?, host: HostPlace) {
+        if (serial != mine) return
+        opening = false
+        busy = false
+        val public = goPublic
+        goPublic = false
+        if (line == null || started !is HostSide.Started.Ok) {
+            // Only someone who pressed "Start a jam" is waiting to hear why not.
+            if (public) problem = when (started) {
+                null -> place.words.hostingNotSetUp
+                HostSide.Started.KeyRefused -> place.words.relayRefusedLink
+                HostSide.Started.NotUnderstood -> place.words.relayOdd
+                HostSide.Started.Unreachable -> place.words.unreachable
+                is HostSide.Started.Refused -> started.said ?: place.words.relayCouldntStart
+                is HostSide.Started.Ok -> null
+            }
+            place.reasonsChanged()
+            return publish()
+        }
+        val session = Hosting(mine, line, started.jam, started.secret, public, host)
+        hosting = session
+        host.hold(true)
+        session.job = scope.launch(io) {
+            launch { sendLoop(session) }
+            // What plays here, told to the relay as it changes (and the place in the song, as
+            // a guest works it out, put right after a seek or a stall).
+            launch {
+                host.changes.collect {
+                    withContext(main) {
+                        if (hosting === session) sync(session, force = false)
+                        // The person's other devices list what this phone has on.
+                        sayStatus(again = false)
+                    }
+                }
+            }
+            launch {
+                while (true) {
+                    kotlinx.coroutines.delay(2_000)
+                    withContext(main) { if (hosting === session) sync(session, force = false) }
+                }
+            }
+            val lost = HostSide.serve(
+                line, started.jam, started.secret,
+                news = { news -> withContext(main) { hostNews(session, news) } },
+                trouble = { on -> withContext(main) { if (hosting === session) { session.trouble = on; publish() } } },
+            )
+            if (lost) withContext(main) { hostLost(session) }
+        }
+        sync(session, force = true)
+        sayStatus(again = true)
+        place.reasonsChanged()
+        publish()
+    }
+
+    /** Sends what the main thread hands over, in order; of several states waiting, the newest. */
+    private suspend fun sendLoop(session: Hosting) {
+        while (true) {
+            val batch = arrayListOf(session.out.receive())
+            while (true) batch += session.out.tryReceive().getOrNull() ?: break
+            val newest = batch.indexOfLast { it is Out.State }
+            for ((i, out) in batch.withIndex()) {
+                when (out) {
+                    is Out.State -> if (i == newest) HostSide.state(session.line, session.id, session.secret, out.state)
+                    is Out.Reply -> HostSide.reply(session.line, session.id, session.secret, out.ask, out.outcome)
+                    is Out.Remove -> HostSide.removeGuest(session.line, session.id, session.secret, out.guest)
+                    Out.End -> {
+                        HostSide.end(session.line, session.id, session.secret)
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /** Tells the relay what's playing and queued, if that has changed since it was last told
+     *  (or with `force`), as Windows' `jam_sync`. */
+    private fun sync(session: Hosting, force: Boolean) {
+        val steer = place.guestsSteer()
+        val state = session.answers.state(steer)
+        val now = session.host.player.now()
+        val print = JsonObject(state - "position").toString().hashCode()
+        val since = (SystemClock.elapsedRealtime() - session.toldAt) / 1000.0
+        val expected = session.toldPosition + if (session.toldPlaying) since else 0.0
+        val moved = now.song != null && kotlin.math.abs(now.position - expected) > 2.0
+        if (!(force || print != session.told || moved || since >= RETELL_SECONDS)) return
+        session.told = print
+        session.toldAt = SystemClock.elapsedRealtime()
+        session.toldPosition = now.position
+        session.toldPlaying = now.playing
+        session.out.trySend(Out.State(state))
+    }
+
+    /** Guests have come or gone, or asked for something. */
+    private fun hostNews(session: Hosting, news: HostSide.News) {
+        if (hosting !== session) return
+        if (news.guests != session.guests) {
+            session.guests = news.guests
+            publish()
+        }
+        // Outside a jam, the only ones who come and go are the person's own devices.
+        if (session.public && news.arrivals.isNotEmpty()) place.toast(place.words.joinedToast(news.arrivals))
+        for ((cover, large) in news.covers) scope.launch(io) {
+            val found = session.host.cover(cover, large)
+            HostSide.cover(session.line, session.id, session.secret, cover, large, found?.first, found?.second ?: "")
+        }
+        for (ask in news.asks) answer(session, ask)
+    }
+
+    /** One thing a guest (or another of the person's devices) asked for. Looking things up
+     *  happens away from the main thread; changing what plays, on it. */
+    private fun answer(session: Hosting, ask: Ask) {
+        val host = session.host
+        val place = host.takePlace().takeIf { ask.action == "load" }
+        if (ask.action == "search") {
+            scope.launch(io) {
+                val songs = host.library.search(ask.data.at("q").str().orEmpty())
+                val found = buildJsonObject { put("songs", kotlinx.serialization.json.JsonArray(songs.map(::songJson))) }
+                session.out.trySend(Out.Reply(ask.id, Answers.Outcome.Done(found)))
+            }
+            return
+        }
+        scope.launch(io) {
+            val found = if (ask.action == "add") {
+                val ids = session.answers.wanted(ask.data)
+                val known = ids.mapNotNull(host.library::song)
+                val missing = ids.filter { id -> known.none { it.id == id } }
+                (known + if (missing.isEmpty()) emptyList() else host.fetchSongs(missing)).sortedBy { ids.indexOf(it.id) }
+            } else {
+                emptyList()
+            }
+            withContext(main) {
+                if (hosting !== session) return@withContext
+                val word = presence?.word
+                val outcome = session.answers.answer(ask, word, this@Jams.place.guestsSteer(), found)
+                if (outcome is Answers.Outcome.Load) {
+                    // Another device hands this phone its queue: played here as a choice made
+                    // there, in its place in the order of choices (rule 3).
+                    scope.launch(main) {
+                        val why = host.load(outcome.songs, outcome.index, outcome.positionMs, outcome.playing, outcome.context, place ?: host.takePlace())
+                        session.out.trySend(Out.Reply(ask.id, if (why == null) Answers.Outcome.Done() else Answers.Outcome.No(why)))
+                        sync(session, force = true)
+                    }
+                    return@withContext
+                }
+                if (ask.action == "add" && outcome is Answers.Outcome.Done && ask.guest.id !in session.answers.owners) {
+                    this@Jams.place.toast(this@Jams.place.words.guestAdded(ask.guest.name, found.map { it.title }))
+                }
+                session.out.trySend(Out.Reply(ask.id, outcome))
+                sync(session, force = false)
+                if (session.answers.owners.isNotEmpty()) publish()
+            }
+        }
+    }
+
+    /** The relay no longer knows the session (it restarted, or the jam ran out). */
+    private fun hostLost(session: Hosting) {
+        if (hosting !== session) return
+        val public = session.public
+        endHosting()
+        // A session that was only there for the person's own devices is quietly opened again.
+        if (public) place.toast(place.words.lost)
+        linkDevices()
+    }
+
+    /** Ends the session hosted here (Windows' `end_jam`): the relay is told, and anything still
+     *  on its way for it is for nobody now. */
+    fun endHosting() {
+        busy = false
+        opening = false
+        goPublic = false
+        serial++
+        val session = hosting ?: return publish()
+        hosting = null
+        session.out.trySend(Out.End)
+        // The goodbye is given a moment to go before the rest of the session's work stops.
+        scope.launch(io) {
+            kotlinx.coroutines.delay(1_500)
+            session.job?.cancel()
+        }
+        session.host.hold(false)
+        place.reasonsChanged()
+        publish()
+    }
+
+    /** "End jam": the jam ends; a fresh private session is opened for the person's devices,
+     *  so the old link is of no further use. */
+    fun endJam() {
+        endHosting()
+        linkDevices()
+    }
+
+    /** Takes a guest out of the jam. */
+    fun removeGuest(id: String) {
+        val session = hosting ?: return
+        session.out.trySend(Out.Remove(id))
+        session.guests = session.guests.filter { it.id != id }
+        publish()
+    }
+
+    /** "Guests can steer" was changed: the jam's guests are told. */
+    fun guestsSteerChanged() {
+        hosting?.let { sync(it, force = true) }
+    }
+
+    // ---- the person's other devices ---------------------------------------------------------
+
+    /** This phone's place in the room where the person's devices find each other. */
+    private class Presence(val serial: Long, val line: RelayLine, val key: String, val room: String, val word: String) {
+        var job: Job? = null
+    }
+
+    private var presence: Presence? = null
+    private var devices: List<Device> = emptyList()
+    private var said = 0
+    private var saidAt = 0L
+    /** There's no saved password to work the room's name out from: don't keep trying. */
+    private var noWords = false
+    private var finding = false
+
+    private var inFront = false
+    private var playing = false
+    private var stoppedAt: Long? = null
+    private var timer: Job? = null
+
+    /** The app's screens came to the front, or went. */
+    fun front(on: Boolean) {
+        inFront = on
+        linkDevices()
+    }
+
+    /** Music started or stopped on the phone. */
+    fun playingChanged(on: Boolean) {
+        if (on == playing) return
+        playing = on
+        stoppedAt = if (on) null else SystemClock.elapsedRealtime()
+        linkDevices()
+        sayStatus(again = false)
+    }
+
+    /** Whether the phone has a reason to hold a connection to the relay now (rule 1). */
+    private fun reason(): Boolean = Reasons.open(inFront, playing, stoppedAt, SystemClock.elapsedRealtime(), joined != null || hostingPublic())
+
+    /**
+     * Keeps this phone's place among the person's devices, or lets it go (Windows'
+     * `link_devices`, called here whenever something it depends on changes rather than a few
+     * times a second): in the room, with a session open that they can steer it through, and
+     * saying what it is playing; but only while there is a reason to (rule 1).
+     */
+    fun linkDevices() {
+        val wanted = place.linkingOn() && reason()
+        if (!wanted) {
+            if (presence != null) stopLinking()
+            // A private session goes too; a jam stays as long as it runs.
+            if (hosting?.public == false) endHosting()
+            scheduleRecheck()
+            return publish()
+        }
+        if (presence == null && !finding && !noWords) {
+            finding = true
+            val mine = ++serial
+            scope.launch(io) {
+                val relay = place.relay()
+                val words = place.accountWords()
+                withContext(main) { found(mine, relay, words) }
+            }
+        }
+        if (hosting == null && !opening && SystemClock.elapsedRealtime() - tried >= TRY_AGAIN_MILLIS) openSession()
+        sayStatus(again = false)
+        scheduleRecheck()
+    }
+
+    /** Looks again when the time after a pause runs out, and every half minute meanwhile
+     *  (a lost session opened again, what's said renewed). Nothing while there's no reason. */
+    private fun scheduleRecheck() {
+        timer?.cancel()
+        val stopped = stoppedAt
+        val due = when {
+            presence != null || hosting != null -> RETELL_SECONDS * 1000
+            stopped != null && place.linkingOn() -> (Reasons.PAUSED_GRACE_MILLIS - (SystemClock.elapsedRealtime() - stopped)).coerceAtLeast(1_000)
+            else -> return
+        }
+        timer = scope.launch(main) {
+            kotlinx.coroutines.delay(due)
+            linkDevices()
+        }
+    }
+
+    private fun found(mine: Long, relay: Pair<String, String>?, words: Pair<String, String>?) {
+        finding = false
+        if (presence != null || !place.linkingOn() || !reason()) return
+        if (relay == null) return
+        if (words == null) {
+            noWords = true
+            return
+        }
+        val line = RelayLine(relay.first, http, io)
+        val room = Presence(mine, line, relay.second, words.first, words.second)
+        presence = room
+        said = 0
+        saidAt = 0
+        sayStatus(again = true)
+        val device = place.device().first
+        room.job = scope.launch(io) {
+            // Give the first hello a moment to land before asking who else is there.
+            kotlinx.coroutines.delay(700)
+            RoomSide.watch(
+                line, relay.second, words.first, device,
+                seen = { body -> withContext(main) { if (presence === room) { devices = Device.list(body).filter { it.id != device }; publish() } } },
+                forgot = { withContext(main) { if (presence === room) sayStatus(again = true) } },
+            )
+        }
+        publish()
+    }
+
+    /** Tells the room what this phone is doing, if that's changed (or with `again`). */
+    private fun sayStatus(again: Boolean) {
+        val room = presence ?: return
+        val (id, name) = place.device()
+        val session = joined
+        // While this phone is steering another, or in a friend's jam, it isn't itself there
+        // to be steered.
+        val steering = session?.let { it.device?.second ?: place.words.hostsJam(it.host) }
+        val now = place.host()?.player?.now()
+        val status = RoomSide.status(
+            session = hosting?.id?.takeIf { steering == null },
+            title = now?.song?.title,
+            artist = now?.song?.artistLabel,
+            playing = now?.playing == true && now.song != null,
+            steering = steering,
+        )
+        val print = (status.toString() + name).hashCode()
+        val stale = SystemClock.elapsedRealtime() - saidAt >= RETELL_SECONDS * 1000
+        if (!(again || stale || print != said)) return
+        said = print
+        saidAt = SystemClock.elapsedRealtime()
+        scope.launch(io) { RoomSide.enter(room.line, room.key, room.room, id, name, status) }
+    }
+
+    /** Leaves the room: at sign-out, when linking is switched off, and when there's no longer
+     *  a reason to be there. */
+    fun stopLinking() {
+        devices = emptyList()
+        noWords = false
+        finding = false
+        tried = 0
+        val room = presence ?: return
+        presence = null
+        room.job?.cancel()
+        val id = place.device().first
+        scope.launch(io) { RoomSide.leave(room.line, room.key, room.room, id) }
+        publish()
+    }
+
+    /**
+     * A device chosen under Connect (Windows' `pick_device`): this phone starts steering it,
+     * and if music is playing here it carries on over there.
+     */
+    fun pick(id: String) {
+        if (id.isEmpty()) return playHere()
+        val session = joined
+        if (session?.device?.first == id) return
+        if ((session != null && session.friend) || hostingPublic()) return place.toast(place.words.leaveBeforeMoving)
+        val target = devices.firstOrNull { it.id == id }
+        val room = presence
+        val sessionThere = target?.session
+        if (target == null || room == null || sessionThere == null) return place.toast(place.words.deviceNotReady)
+        // Music playing here moves over there; otherwise that device is steered as it is.
+        val handover = if (session == null && playing) hosting?.answers?.handOver() ?: place.host()?.let { Answers(it.player, it.library, place.answerWords).handOver() } else null
+        joinSession(room.line.base, sessionThere, place.device().second, Own(room.word, target.id to target.name, handover))
+    }
+
+    /** "Play here": what the device being steered was playing carries on on this phone, and
+     *  this phone stops steering it (Windows' `play_here`). */
     fun playHere() {
+        val session = joined ?: return
+        if (session.friend) return
+        request("queue", JsonObject(emptyMap())) { answer ->
+            val queue = (answer as? Asked.Done)?.data
+            if (queue == null || queue.at("playing").bool() != true) return@request leave()
+            val host = place.host() ?: return@request leave()
+            val (songs, index) = Answers(host.player, host.library, place.answerWords).handed(queue)
+            // The other device stops as this one starts.
+            leaveSaying("pause" to JsonObject(emptyMap()))
+            val position = ((queue.at("position").f64() ?: 0.0) * 1000).toLong()
+            val context = shownText(queue.at("context").str())
+            val choice = host.takePlace()
+            scope.launch(main) {
+                host.load(songs, index, position, true, context, choice)?.let(place::toast)
+            }
+        }
+    }
+
+    /** Signed out: everything goes, and nothing of it is left for the next account. */
+    fun signedOut() {
         leave()
+        endHosting()
+        stopLinking()
+        noWords = false
+        publish()
+    }
+
+    /** Another account (or none) was taken on: the room is worked out afresh. */
+    fun accountChanged() {
+        leave()
+        endHosting()
+        stopLinking()
+        linkDevices()
     }
 
     // ---- what is shown ----------------------------------------------------------------------
 
     /** Whether the phone is in a jam or steering another device: its connection to the relay
      *  is then held, with a notification saying so (rule 1). */
-    val steeringElsewhere: Boolean get() = joined != null
+    val steeringElsewhere: Boolean get() = joined != null || hostingPublic()
 
     private fun problem(text: String) {
         problem = text
@@ -392,6 +864,7 @@ class Jams(
     /** The notification's button: leave the jam, stop steering, or end the jam hosted here. */
     fun stopFromNotification() {
         leave()
+        if (hostingPublic()) endJam()
         place.reasonsChanged()
     }
 
@@ -406,9 +879,15 @@ class Jams(
         uiNow.value = JamUi(
             joined = session?.takeIf { it.friend }?.let(::joinedUi),
             linked = session?.device?.second,
-            hosting = null,
+            hosting = hosting?.takeIf { it.public }?.let { h -> HostingUi(h.link, h.guests.filter { it.id !in h.answers.owners }, if (h.trouble) place.words.relayReconnecting else null) },
             busy = busy,
             problem = problem,
+            devices = devices.map { device ->
+                val (about, ready) = place.words.device(device)
+                DeviceUi(device.id, device.name, about, active = session?.device?.first == device.id, ready = ready)
+            },
+            linking = presence != null,
+            device = place.device().second,
             canHost = place.canHost(),
             name = place.jamName(),
         )
@@ -496,5 +975,11 @@ class Jams(
     companion object {
         /** Where the numbers of a jam's rows begin: far from any entry of the phone's own. */
         const val ROW = Long.MIN_VALUE / 2
+
+        /** The relay is told what's playing at least this often, changed or not (`RETELL`). */
+        const val RETELL_SECONDS = 30L
+
+        /** How long to leave it before trying again to open this phone's session (`TRY_AGAIN`). */
+        const val TRY_AGAIN_MILLIS = 30_000L
     }
 }

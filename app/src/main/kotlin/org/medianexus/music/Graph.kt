@@ -107,6 +107,13 @@ class Graph(context: Context) {
 
     /** Set by the playback service: something is playing, or meant to be (Play is down). */
     @Volatile var playing = false
+        set(value) {
+            field = value
+            // M6: music playing is a reason for the phone to be among the person's devices.
+            jamsIfMade()?.let { jams -> mainHandler.post { jams.playingChanged(value) } }
+        }
+
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /**
      * Whether anything wants to know, now, that the server is back: the app's screens in
@@ -284,7 +291,7 @@ class Graph(context: Context) {
     /** Jams and the person's other devices: made the first time anything asks (see
      *  `jam/JamApp`), never with the feature unused. */
     val jams: org.medianexus.music.jam.Jams by lazy {
-        org.medianexus.music.jam.JamApp(app, this, steered).jams.also { jamsNow.value = it }
+        org.medianexus.music.jam.JamApp(app, this, steered).also { it.start() }.jams.also { jamsNow.value = it }
     }
 
     /** A jam's link handed over by another app (see `jam/JamLinkActivity`), for the jam page
@@ -347,6 +354,11 @@ class Graph(context: Context) {
                 // Signed out (not "not yet read", at start-up, when the job may be what
                 // started the app): nothing of theirs is carried on, by job or service.
                 if (account == null && had) org.medianexus.music.downloads.DownloadKeeper.letGo(app)
+                // Signed out: the relay's key goes with the password (M6, rule 4).
+                if (account == null && had) {
+                    relayKey.delete()
+                    jamsIfMade()?.let { jams -> mainHandler.post { jams.signedOut() } }
+                }
                 had = account != null
                 // What was found out about one account's server is not the next account's.
                 watch.reset()
@@ -378,6 +390,10 @@ class Graph(context: Context) {
                 }
             }
         }
+        // Jams and linked devices, when hosting is switched on: made now, so that the phone
+        // can be among the person's devices while it has a reason to be (M6). Otherwise
+        // nothing of them is made until asked for.
+        if (settings.value.jamHost) mainHandler.post { jams }
         // Allowed to reach the home network: what failed tries again.
         scope.launch { localAccess.allowed.collect { if (it > 0) { reconnected(); watch.networkBack() } } }
         // A network again (after none, or another one): the same.

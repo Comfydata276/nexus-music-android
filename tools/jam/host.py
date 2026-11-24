@@ -306,6 +306,50 @@ class Host:
             self.relay.call("POST", f"api/room/{self.room}/enter", self.key, {"id": self.device_id, "name": self.device_name, "status": status})
             time.sleep(5)
 
+    there = None
+
+    def reach(self, target, how):
+        status, body = self.relay.call("GET", f"api/room/{self.room}/poll?device={self.device_id}&v=0", self.key, wait=10)
+        device = next((d for d in (body or {}).get("devices", []) if d["name"] == target or d["id"] == target), None)
+        if device is None or not device["status"].get("session"):
+            self.say("no such device ready:", target, [d["name"] for d in (body or {}).get("devices", [])])
+            return
+        session = device["status"]["session"]
+        status, joined = self.relay.call("POST", f"api/jam/{session}/join", "", {"name": self.device_name})
+        if status != 200:
+            self.say("couldn't join:", status, joined)
+            return
+        self.there = (session, joined["token"])
+        self.say("steering", device["name"])
+        if how == "send-to":
+            with self.lock:
+                handed = [{"id": s["id"], "queued": s["queued"]} for s in self.order[self.cursor:]]
+                data = {"songs": handed, "index": 0, "position": self.now_position(), "playing": True, "context": self.context}
+                self.set_playing(False)
+            self.ask_there("load", data)
+        else:
+            self.ask_there("hello", {})
+        threading.Thread(target=self.watch_there, daemon=True).start()
+
+    def ask_there(self, action, data):
+        session, token = self.there
+        data = dict(data, owner=self.word)
+        status, body = self.relay.call("POST", f"api/jam/{session}/ask", token, {"action": action, "data": data})
+        self.say("asked the device:", action, "->", status, json.dumps(body)[:200])
+
+    def watch_there(self):
+        version = 0
+        while self.there and not self.stop:
+            session, token = self.there
+            status, body = self.relay.call("GET", f"api/jam/{session}/state?v={version}", token, wait=40)
+            if status != 200:
+                self.say("the device's session:", status, body)
+                return
+            version = body.get("v", 0)
+            state = body.get("state") or {}
+            now = state.get("now") or {}
+            self.say("the device plays:", now.get("title"), "playing" if state.get("playing") else "paused", f"at {state.get('position', 0):.0f}s", f"{len(state.get('queue', []))} to come", f"volume {state.get('volume')}")
+
     def commands(self, lines):
         for line in lines:
             words = line.split()
@@ -326,6 +370,13 @@ class Host:
                     print(json.dumps(self.state(), indent=1), flush=True)
                 elif words[0] == "guests":
                     print(json.dumps(self.guests), flush=True)
+                elif words[0] in ("send-to", "steer") and len(words) > 1:
+                    # As a PC does with "Connect to a device": joins that device's session with
+                    # the word that proves it is the person's own, and hands it this queue
+                    # (send-to) or only says hello, then asks what is given after (steer).
+                    threading.Thread(target=self.reach, args=(" ".join(words[1:]) if words[0] == "steer" else " ".join(words[1:]), words[0]), daemon=True).start()
+                elif words[0] == "ask" and len(words) > 1 and self.there:
+                    threading.Thread(target=self.ask_there, args=(words[1], json.loads(" ".join(words[2:]) or "{}")), daemon=True).start()
                 elif words[0] == "end":
                     self.relay.call("POST", f"api/host/{self.jam}/end", self.secret, {})
                     self.stop = True

@@ -870,6 +870,8 @@ class PlaybackService : MediaLibraryService() {
         queueStamp = 0
         queueMark = null
         now.queueStep?.here = queueHere(next)
+        // M6: what another of the person's devices hands this phone to carry on with.
+        graph.steered.handOver = handOver(next)
         // The library copy arriving or changing: songs held that came without levelling
         // values may find them there.
         next.scope.launch { now.copy.state.collect { copy -> if (era === next) sound.songsHeld(songsHeld(), copy) } }
@@ -979,6 +981,7 @@ class PlaybackService : MediaLibraryService() {
     private fun leave() {
         val old = era ?: return
         old.account.queueStep?.here = null
+        graph.steered.handOver = null
         stopWaiting()
         outage.clear()
         current = null
@@ -1285,6 +1288,24 @@ class PlaybackService : MediaLibraryService() {
             quietly { done = player.playFor(place, next, positionMs, playNow = choice != null) }
             if (!done) queueStamp = before
             return done
+        }
+    }
+
+    /**
+     * M6, rule 3: a queue another of the person's devices hands this phone (see jam/Host). It
+     * is a choice the person made over there, and it takes its place in the order of choices
+     * (`place`, taken as it arrived): if anything here has taken a later place by the time the
+     * queue is ready, it gives way, as any start does. Not done quietly: the queue changed here
+     * because the person asked for it.
+     */
+    private fun handOver(era: Era) = object : Steered.HandOver {
+        override suspend fun take(songs: List<Song>, cursor: Int, positionMs: Long, play: Boolean, context: String, place: Long): Boolean {
+            era.restoring.await()
+            if (this@PlaybackService.era !== era || songs.isEmpty()) return false
+            val next = withContext(Dispatchers.Default) { player.prepare(songs, cursor.coerceIn(0, songs.size - 1), context = context, shuffle = false) }
+            if (this@PlaybackService.era !== era || !Choices.stands(place)) return false
+            if (play) holdForeground(why = "for a queue handed over from another device")
+            return player.playFor(place, next, positionMs, playNow = play)
         }
     }
 

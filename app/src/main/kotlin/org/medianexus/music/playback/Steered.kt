@@ -26,6 +26,20 @@ class Steered {
     @Volatile var hands: Hands? = null
         private set
 
+    /** The playback service's way to take a queue another device hands this phone; null
+     *  while there is no service, or no account in it. Set and called on the main thread. */
+    @Volatile var handOver: HandOver? = null
+
+    /** See [handOver]. */
+    interface HandOver {
+        /**
+         * Puts these songs in place of the queue, at `cursor` and `positionMs` into that song,
+         * playing if `play`, if nothing has taken a later place than `place` in the order of
+         * choices by the time it is ready ([Choices]). True if it was done.
+         */
+        suspend fun take(songs: List<Song>, cursor: Int, positionMs: Long, play: Boolean, context: String, place: Long): Boolean
+    }
+
     fun show(view: Shown, hands: Hands) {
         this.hands = hands
         shownNow.value = view

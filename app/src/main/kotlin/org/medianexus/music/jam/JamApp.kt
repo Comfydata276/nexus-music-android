@@ -3,6 +3,10 @@ package org.medianexus.music.jam
 import android.content.Context
 import java.util.WeakHashMap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.medianexus.music.Graph
 import org.medianexus.music.R
 import org.medianexus.music.library.LibrarySnapshot
@@ -22,8 +26,112 @@ class JamApp(private val app: Context, private val graph: Graph, steered: Steere
 
     val jams = Jams(this, steered, graph.http, graph.scope, Dispatchers.Main.immediate, Dispatchers.IO)
 
-    init {
+    /** The phone's own player and library, for a session hosted here. */
+    private val own by lazy { OwnPlayer(app, graph) }
+
+    /** Starts following what jams depend on; called once it is made. */
+    fun start() {
         JamCovers.http = graph.http
+        jams.playingChanged(graph.playing)
+        // The app's screens in front: a reason to be among the person's devices (rule 1).
+        graph.scope.launch(Dispatchers.Main.immediate) { graph.front.collect { jams.front(it) } }
+        // Another account taken on (or none): the room is another's, the key another's.
+        graph.scope.launch(Dispatchers.Main.immediate) {
+            var before: Any? = graph.accounts.state.value
+            graph.accounts.state.collect { account ->
+                if (account === before) return@collect
+                before = account
+                jams.accountChanged()
+            }
+        }
+        // The settings linking depends on.
+        graph.scope.launch(Dispatchers.Main.immediate) {
+            graph.settings.state.map { Triple(it.jamHost, it.jamRelay, it.linkDevices) to it.deviceName }.distinctUntilChanged().collect { jams.linkDevices() }
+        }
+    }
+
+    override fun hostingSetUp(): Boolean = graph.accounts.state.value != null && canHost()
+
+    override fun linkingOn(): Boolean = hostingSetUp() && graph.settings.value.linkDevices
+
+    override suspend fun relay(): Pair<String, String>? = withContext(Dispatchers.IO) {
+        val settings = graph.settings.value
+        val account = graph.accounts.state.value?.account ?: return@withContext null
+        if (settings.jamRelay.isEmpty()) return@withContext null
+        graph.relayKey.load(account.server, account.username)?.let { settings.jamRelay to it }
+    }
+
+    override suspend fun accountWords(): Pair<String, String>? = withContext(Dispatchers.IO) {
+        val account = graph.accounts.state.value?.account ?: return@withContext null
+        val password = org.medianexus.music.store.PasswordVault(Graph.passwordFile(app), org.medianexus.music.store.KeystoreBox()).load(account.server, account.username) ?: return@withContext null
+        RoomSide.words(account.username, password)
+    }
+
+    override fun device(): Pair<String, String> {
+        var settings = graph.settings.value
+        if (settings.deviceId.isEmpty()) {
+            val made = org.medianexus.music.sync.QueueShare.newDeviceId()
+            graph.settings.update { if (it.deviceId.isEmpty()) it.copy(deviceId = made) else it }
+            settings = graph.settings.value
+        }
+        val chosen = settings.deviceName.trim()
+        val name = chosen.ifEmpty {
+            runCatching { android.provider.Settings.Global.getString(app.contentResolver, android.provider.Settings.Global.DEVICE_NAME) }.getOrNull()?.trim()?.ifEmpty { null }
+                ?: android.os.Build.MODEL.orEmpty().ifEmpty { "This phone" }
+        }
+        return settings.deviceId to shownText(name, 24)
+    }
+
+    override fun guestsSteer(): Boolean = graph.settings.value.jamGuestsControl
+
+    override val answerWords: AnswerWords = object : AnswerWords {
+        override val ownOnly = app.getString(R.string.jam_ans_own_only)
+        override val noneOfThose = app.getString(R.string.jam_ans_no_songs)
+        override val hostChooses = app.getString(R.string.jam_ans_host_chooses)
+        override val notForGuests = app.getString(R.string.jam_ans_not_guest)
+        override val nothingPlaying = app.getString(R.string.jam_ans_nothing_playing)
+        override val notInLibrary = app.getString(R.string.jam_ans_not_in_library)
+        override val already = app.getString(R.string.jam_ans_already)
+        override val ownSongs = app.getString(R.string.jam_ans_own_songs)
+        override val gone = app.getString(R.string.jam_ans_gone)
+    }
+
+    override fun host(): HostPlace? {
+        if (graph.accounts.state.value == null) return null
+        return hostPlace
+    }
+
+    private val hostPlace = object : HostPlace {
+        override val player: HostPlayer get() = own
+        override val library: HostLibrary get() = own
+
+        override fun hold(on: Boolean) = if (on) own.connection.connect() else own.connection.release()
+
+        override suspend fun load(songs: List<Song>, index: Int, positionMs: Long, play: Boolean, context: String, place: Long): String? =
+            when (own.load(songs, index, positionMs, play, context, place)) {
+                null -> null
+                OwnPlayer.Refusal.IN_CALL -> app.getString(R.string.jam_ans_in_call)
+                OwnPlayer.Refusal.SOUND_TAKEN -> app.getString(R.string.jam_ans_sound_taken)
+                OwnPlayer.Refusal.OFFLINE -> app.getString(R.string.jam_ans_offline)
+                OwnPlayer.Refusal.NOT_READY -> app.getString(R.string.jam_didnt_work)
+            }
+
+        override fun takePlace(): Long = own.take()
+
+        override val changes = kotlinx.coroutines.flow.combine(
+            own.connection.song, own.connection.playing, own.connection.queue, own.connection.shuffle, own.connection.repeat,
+        ) { song, playing, queue, shuffle, repeat -> listOf(song?.id, playing, queue, shuffle, repeat) }
+
+        override suspend fun cover(id: String, large: Boolean): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
+            val covers = graph.accounts.state.value?.covers ?: return@withContext null
+            val file = covers.file(id) ?: return@withContext null
+            GuestCovers.cut(file.readBytes(), large)
+        }
+
+        override suspend fun fetchSongs(ids: List<String>): List<Song> = withContext(Dispatchers.IO) {
+            val api = graph.accounts.state.value?.api ?: return@withContext emptyList()
+            ids.take(MOST_ADDED).mapNotNull { id -> runCatching { api.song(id) }.getOrNull()?.takeIf { it.id == id } }
+        }
     }
 
     override fun toast(text: String) = graph.toasts.show(text)

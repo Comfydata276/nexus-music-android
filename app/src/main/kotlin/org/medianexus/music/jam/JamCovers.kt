@@ -49,3 +49,31 @@ object JamCovers {
         return bytes
     }
 }
+
+/**
+ * A cover made ready to send to guests (Windows' `cover_for_guests`): small ones cut down to
+ * what a row needs, large ones passed on as they are unless they're heavy.
+ */
+object GuestCovers {
+    fun cut(bytes: ByteArray, large: Boolean): Pair<ByteArray, String>? {
+        if (!JamCovers.isPicture(bytes)) return null
+        val kind = when {
+            bytes[0] == 0xFF.toByte() -> "image/jpeg"
+            bytes[0] == 0x89.toByte() -> "image/png"
+            else -> "image/webp"
+        }
+        if (large && bytes.size <= 300 * 1024) return bytes to kind
+        val edge = if (large) 640 else 128
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edge) sample *= 2
+        val decoded = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+        val longest = maxOf(decoded.width, decoded.height)
+        val picture = if (longest > edge) android.graphics.Bitmap.createScaledBitmap(decoded, decoded.width * edge / longest, decoded.height * edge / longest, true) else decoded
+        val out = java.io.ByteArrayOutputStream()
+        picture.compress(android.graphics.Bitmap.CompressFormat.JPEG, if (large) 86 else 80, out)
+        return out.toByteArray() to "image/jpeg"
+    }
+}

@@ -161,6 +161,10 @@ class PlayerConnection(
      *  stopped it, and the service hasn't answered). */
     val reported: StateFlow<Boolean> = shown(reportedNow) { true }
 
+    /** This phone's own player's place in its song now, in milliseconds (a session hosted here
+     *  tells the relay; M6). */
+    val positionNowMs: Long get() = controller?.currentPosition?.coerceAtLeast(0) ?: positionNow.value
+
     /** The player shows another (see [Steered]), and what it is. */
     val elsewhere: StateFlow<Steered.Shown?> get() = steered.shown
 

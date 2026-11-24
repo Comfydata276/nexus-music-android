@@ -67,7 +67,7 @@ import org.medianexus.music.ui.theme.ThemeColors
 
 /** Settings' sections, as Windows' chips name them, less those with nothing on a phone yet
  *  (Requests and Jam come with M6 and M7). */
-private enum class Section(val title: Int) { APPEARANCE(R.string.appearance), PLAYBACK(R.string.playback), SOUND(R.string.sound), STORAGE(R.string.storage), ACCOUNT(R.string.account), ABOUT(R.string.about) }
+private enum class Section(val title: Int) { APPEARANCE(R.string.appearance), PLAYBACK(R.string.playback), SOUND(R.string.sound), STORAGE(R.string.storage), JAM(R.string.settings_jam), ACCOUNT(R.string.account), ABOUT(R.string.about) }
 
 /**
  * Settings, as Windows' `SettingsPage` (ui/pages.slint) has them, rebuilt for a phone: the
@@ -99,6 +99,7 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
                 Section.PLAYBACK -> Playback(graph)
                 Section.SOUND -> Sound(graph)
                 Section.STORAGE -> Storage(graph)
+                Section.JAM -> org.medianexus.music.ui.jam.JamSettings(graph)
                 Section.ACCOUNT -> Account(graph)
                 Section.ABOUT -> About(onDiagnostics, onLicences)
             }
