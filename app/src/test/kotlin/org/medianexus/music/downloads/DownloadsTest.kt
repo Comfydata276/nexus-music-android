@@ -85,7 +85,7 @@ class DownloadsTest {
                 val bytes = files[id]
                 if (bytes == null || id in missing) return MockResponse.Builder().code(404).setHeader("Content-Type", "application/json").body("{}").build()
                 val from = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toIntOrNull() ?: 0
-                val builder = MockResponse.Builder().setHeader("Content-Type", "audio/flac").setHeader("Accept-Ranges", "bytes")
+                val builder = MockResponse.Builder().setHeader("Content-Type", "audio/flac").setHeader("Accept-Ranges", "bytes").setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT")
                 if (slow) builder.throttleBody(16 * 1024, 40, TimeUnit.MILLISECONDS)
                 return if (from > 0) {
                     builder.code(206).setHeader("Content-Range", "bytes $from-${bytes.size - 1}/${bytes.size}").body(Buffer().write(bytes, from, bytes.size - from)).build()
@@ -133,7 +133,9 @@ class DownloadsTest {
     private fun downloads(): Downloads {
         val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient())
         val covers = CoverStore(folder.newFolder(), scope, Dispatchers.IO, fetch = { _, _ -> throw ApiError.Network("none") })
-        return Downloads(context, catalogue, api, OkHttpClient(), database, "acct", settings, reach, covers, { busy, wifi -> kept += busy to wifi }, scope, spare = { spare })
+        return Downloads(context, catalogue, api, OkHttpClient(), database, "acct", settings, reach, covers, { busy, wifi -> kept += busy to wifi }, scope, spare = { spare },
+            // The songs here are not audio (what is and isn't a song is WholeDownloadTest's).
+            check = { _, _ -> Inspected("flac", true, -1) })
             .also { made += it }
             .also { idle() }
     }

@@ -148,6 +148,9 @@ class Downloads(
     /** Room always left spare on the phone (smaller in a test build, to see the refusal). */
     private val spare: () -> Long = { SPARE },
     private val note: (String) -> Unit = {},
+    /** What says whether a file that has arrived is the song (a stand-in, in tests whose
+     *  songs are not audio). */
+    private val check: AudioCheck = Media3AudioCheck,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
@@ -377,6 +380,13 @@ class Downloads(
             scope.launch(Dispatchers.IO) { catalogue.sweep(busy) }
             initialized = true
             publish()
+            // Downloads whose files were found, at sign-in, to be missing or not the length
+            // that was recorded: not downloads any more, and fetched again.
+            val again = catalogue.wanting.map { it.song }.filter { !catalogue.has(it.id) }
+            if (again.isNotEmpty()) {
+                note("downloads: ${again.size} marked whole were not, and are fetched again")
+                scope.launch(Dispatchers.Main.immediate) { download(again) }
+            }
         }
 
         override fun onDownloadChanged(downloadManager: DownloadManager, download: Download, finalException: Exception?) {
@@ -496,28 +506,39 @@ class Downloads(
     }
 
     private inner class SongDownloader(private val id: String, private val ask: Ask?) : Downloader {
-        private val fetch = SongFetch(http, catalogue)
+        private val fetch = SongFetch(http, catalogue, check, ::asTheServerHasIt)
 
         override fun download(progressListener: Downloader.ProgressListener?) {
             val ask = ask ?: throw IllegalStateException("A download with nothing to say what it is")
             val form = SavedForm(ask.bitrate, ask.suffix)
-            try {
-                fetch.fetch(ask.song, form, api.streamUrl(ask.song.id, form.bitrate)) { got, total ->
-                    progressListener?.onProgress(total, got, if (total > 0) 100f * got / total else C.PERCENTAGE_UNSET.toFloat())
+            var tries = 0
+            while (true) {
+                try {
+                    fetch.fetch(ask.song, form, api.streamUrl(ask.song.id, form.bitrate)) { got, total ->
+                        progressListener?.onProgress(total, got, if (total > 0) 100f * got / total else C.PERCENTAGE_UNSET.toFloat())
+                    }
+                    break
+                } catch (e: Cancelled) {
+                    // Stopped by Media3 (cancelled, the network went, offline): not a failure.
+                    // (Only then: Media3 takes an interruption it didn't ask for as success.)
+                    throw InterruptedException("Stopped")
+                } catch (e: DownloadFailure) {
+                    // The server can't be reached: Media3 tries again a few times, and meanwhile
+                    // the server is asked whether it is there at all (which pauses everything if
+                    // it isn't).
+                    if (e.network) {
+                        reachedFailed()
+                        throw e
+                    }
+                    // What arrived was not the song, whole: fetched afresh, a few times, by
+                    // itself (the server's next answer may be right). Anything else won't
+                    // come right by asking again at once: final.
+                    if (e.again && ++tries < VERIFY_TRIES) {
+                        note("downloads: one didn't pass its checks, and is fetched again")
+                        continue
+                    }
+                    throw Final(e)
                 }
-            } catch (e: Cancelled) {
-                // Stopped by Media3 (cancelled, the network went, offline): not a failure.
-                // (Only then: Media3 takes an interruption it didn't ask for as success.)
-                throw InterruptedException("Stopped")
-            } catch (e: DownloadFailure) {
-                // The server can't be reached: Media3 tries again a few times, and meanwhile
-                // the server is asked whether it is there at all (which pauses everything if
-                // it isn't). Anything else won't come right by asking again at once: final.
-                if (e.network) {
-                    reachedFailed()
-                    throw e
-                }
-                throw Final(e)
             }
             main.post { publish() }
         }
@@ -530,6 +551,16 @@ class Downloads(
             val stem = SongFetch.stem(id)
             catalogue.dir.listFiles()?.forEach { if (SongFetch.stemOfPart(it.name) == stem) it.delete() }
         }
+    }
+
+    /** The song as the server's library has it now, for a download whose size or length isn't
+     *  what was expected (see [SongFetch]). Null if the server has no such song. */
+    private fun asTheServerHasIt(id: String): Song? = try {
+        kotlinx.coroutines.runBlocking { api.song(id) }.takeIf { it.id == id }
+    } catch (e: org.medianexus.music.net.ApiError) {
+        // It is there and says no (the song has gone): nothing newer to go by. Anything else
+        // is the server not being reachable to ask.
+        if (e is org.medianexus.music.net.ApiError.Server && !e.signInRefused) null else throw IOException("The server couldn't be asked", java.net.ConnectException())
     }
 
     /** A failure that trying again won't help: passed to Media3 as final. */
@@ -551,6 +582,10 @@ class Downloads(
         const val SPARE = 500L * 1024 * 1024
 
         private const val TICK_MILLIS = 500L
+
+        /** How many times a download that fails its checks is fetched, in all, before it is
+         *  listed as failed. */
+        const val VERIFY_TRIES = 3
 
         /** "340 MB", "12.4 GB" (Windows' `size_label`). */
         fun sizeLabel(bytes: Long): String {

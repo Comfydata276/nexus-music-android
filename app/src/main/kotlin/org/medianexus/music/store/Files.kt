@@ -43,6 +43,24 @@ fun writeAtomically(file: File, write: (java.io.OutputStream) -> Unit) {
 }
 
 /**
+ * Makes what has just been done to a folder's list of files (one created, renamed into place,
+ * or deleted) outlast a power cut: a file's own bytes reach the disk when the file is synced,
+ * but its name is the folder's, and reaches the disk only when the folder is. Without it a
+ * rename that "happened" can be undone by the battery going, with whatever was written
+ * afterwards on the strength of it still there.
+ *
+ * False if the system wouldn't do it (nothing here can do more about that than say so).
+ */
+fun syncDir(dir: File): Boolean = try {
+    java.nio.channels.FileChannel.open(dir.toPath(), java.nio.file.StandardOpenOption.READ).use { it.force(true) }
+    true
+} catch (_: IOException) {
+    false
+} catch (_: UnsupportedOperationException) {
+    false
+}
+
+/**
  * A file beside `file` for one write to go to first, that no other write uses: two writes at
  * once (a cover's two sizes, say, or two saves of one page) each have their own, so neither
  * can write into the other's or move the other's half-written bytes into place. Named after

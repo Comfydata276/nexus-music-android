@@ -55,6 +55,8 @@ class SongFetchTest {
                 if (status != 200) return MockResponse.Builder().code(status).setHeader("Content-Type", "application/json").body("{}").build()
                 val range = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toLongOrNull()
                 val builder = MockResponse.Builder().setHeader("Content-Type", type)
+                // What says which copy of the file this is: without it nothing is carried on.
+                if (!converted) builder.setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT")
                 if (cutAfterHead) builder.onResponseBody(SocketEffect.ShutdownConnection)
                 return if (!converted && ranges && range != null && range > 0) {
                     if (range >= file.size) return MockResponse.Builder().code(416).build()
@@ -75,12 +77,19 @@ class SongFetchTest {
 
     private fun url() = server.url("/rest/stream?id=${song.id}").toString()
 
+    /** The bytes here are not audio: what is and isn't a song is WholeDownloadTest's. Here a
+     *  stand-in says each file is the kind it was asked for as, an MP3 running as long as its
+     *  bytes come to at 128 kbps. */
+    private fun fetcher() = SongFetch(http, catalogue, check = { file, suffix ->
+        if (suffix == "mp3") Inspected("mp3", true, file.length() * 1_000_000 / 16_000) else Inspected("flac", true, -1)
+    })
+
     private fun files() = catalogue.dir.listFiles()!!.filter { it.isFile }.map { it.name }.sorted()
 
     @Test
     fun theFileAsItIsArrivesWholeAndOnlyThenIsADownload() {
         var told = 0L
-        val entry = SongFetch(http, catalogue).fetch(song, SavedForm(0, "flac"), url()) { got, total ->
+        val entry = fetcher().fetch(song, SavedForm(0, "flac"), url()) { got, total ->
             // While it arrives, it isn't one.
             assertFalse(catalogue.has(song.id))
             assertEquals(file.size.toLong(), total)
@@ -98,7 +107,7 @@ class SongFetchTest {
 
     @Test
     fun stoppedPartWayItIsPickedUpWhereItStoppedByARange() {
-        val first = SongFetch(http, catalogue)
+        val first = fetcher()
         try {
             first.fetch(song, SavedForm(0, "flac"), url()) { got, _ -> if (got >= 128 * 1024) first.cancel() }
             fail("cancelled")
@@ -109,7 +118,7 @@ class SongFetchTest {
         val had = part.length()
         assertTrue(had in 1 until file.size)
         // Again: only the rest is asked for, and the two make the file.
-        SongFetch(http, catalogue).fetch(song, SavedForm(0, "flac"), url())
+        fetcher().fetch(song, SavedForm(0, "flac"), url())
         assertEquals("bytes=$had-", asked.last().headers["Range"])
         assertArrayEquals(file, catalogue.fileOf(song.id)!!.readBytes())
         assertFalse(part.exists())
@@ -118,13 +127,13 @@ class SongFetchTest {
     @Test
     fun aServerThatTakesNoRangeSendsItAllAgainAndNothingIsPiecedTogether() {
         ranges = false
-        val first = SongFetch(http, catalogue)
+        val first = fetcher()
         try {
             first.fetch(song, SavedForm(0, "flac"), url()) { got, _ -> if (got >= 128 * 1024) first.cancel() }
             fail("cancelled")
         } catch (_: Cancelled) {
         }
-        SongFetch(http, catalogue).fetch(song, SavedForm(0, "flac"), url())
+        fetcher().fetch(song, SavedForm(0, "flac"), url())
         assertArrayEquals(file, catalogue.fileOf(song.id)!!.readBytes())
     }
 
@@ -135,7 +144,7 @@ class SongFetchTest {
         // 128 kbps for ten seconds: a whole one is at least four fifths of 160,000 bytes.
         file = ByteArray(120_000) { 1 }
         try {
-            SongFetch(http, catalogue).fetch(mp3, SavedForm(128, "mp3"), server.url("/rest/stream?id=tr-2").toString())
+            fetcher().fetch(mp3, SavedForm(128, "mp3"), server.url("/rest/stream?id=tr-2").toString())
             fail("too short to be whole")
         } catch (e: DownloadFailure) {
             assertEquals("The download was cut short.", e.reason)
@@ -145,7 +154,7 @@ class SongFetchTest {
         file = ByteArray(160_000) { 2 }
         // A part from an earlier go is never joined onto: no range is asked for.
         File(catalogue.dir, SongFetch.partName("tr-2.mp3")).writeBytes(ByteArray(5_000))
-        SongFetch(http, catalogue).fetch(mp3, SavedForm(128, "mp3"), server.url("/rest/stream?id=tr-2").toString())
+        fetcher().fetch(mp3, SavedForm(128, "mp3"), server.url("/rest/stream?id=tr-2").toString())
         assertNull(asked.last().headers["Range"])
         assertArrayEquals(file, catalogue.fileOf("tr-2")!!.readBytes())
     }
@@ -154,7 +163,7 @@ class SongFetchTest {
     fun aConnectionLostPartWayIsAFailureOfTheNetworkAndNotADownload() {
         cutAfterHead = true
         try {
-            SongFetch(http, catalogue).fetch(song, SavedForm(0, "flac"), url())
+            fetcher().fetch(song, SavedForm(0, "flac"), url())
             fail("the connection went")
         } catch (e: DownloadFailure) {
             assertTrue(e.network)
@@ -167,7 +176,7 @@ class SongFetchTest {
     fun whatTheServerSaysInsteadOfASongIsNeverSaved() {
         type = "text/html"
         try {
-            SongFetch(http, catalogue).fetch(song, SavedForm(0, "flac"), url())
+            fetcher().fetch(song, SavedForm(0, "flac"), url())
             fail("an error page")
         } catch (e: DownloadFailure) {
             assertEquals("The server didn't send the song.", e.reason)
@@ -175,7 +184,7 @@ class SongFetchTest {
         type = "audio/flac"
         status = 404
         try {
-            SongFetch(http, catalogue).fetch(song, SavedForm(0, "flac"), url())
+            fetcher().fetch(song, SavedForm(0, "flac"), url())
             fail("refused")
         } catch (e: DownloadFailure) {
             assertEquals("The server refused it (HTTP 404).", e.reason)
@@ -190,7 +199,7 @@ class SongFetchTest {
         // of the right name, and no mark. It is fetched again, not taken as whole.
         File(catalogue.dir, "tr-1.flac").writeBytes(ByteArray(10))
         assertFalse(Catalogue(catalogue.dir).has(song.id))
-        SongFetch(http, catalogue).fetch(song, SavedForm(0, "flac"), url())
+        fetcher().fetch(song, SavedForm(0, "flac"), url())
         assertArrayEquals(file, catalogue.fileOf(song.id)!!.readBytes())
     }
 

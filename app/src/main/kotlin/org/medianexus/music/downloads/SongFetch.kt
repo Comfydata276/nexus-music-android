@@ -6,12 +6,15 @@ import java.io.IOException
 import java.io.InterruptedIOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.medianexus.music.net.Song
 import org.medianexus.music.playback.NATIVE_SUFFIXES
-import org.medianexus.music.playback.leastBytes
+import org.medianexus.music.store.syncDir
+import org.medianexus.music.store.writeAtomically
 
 /** The form a song is downloaded in: the bit rate asked of the server (0 for the file as it
  *  is) and the kind of file that is saved. */
@@ -40,36 +43,72 @@ fun expectedBytes(song: Song, quality: Int): Long {
     return if (!form.converted) song.size.coerceAtLeast(0) else song.duration.toLong() * form.bitrate * 125
 }
 
-/** Why a download failed, in words a person is shown (on the Downloads list, never in a log
- *  or a notification). `network`: the server couldn't be reached, which is worth trying
- *  again by itself when it is back. */
-class DownloadFailure(val reason: String, val network: Boolean = false, cause: Throwable? = null) : IOException(reason, cause)
+/**
+ * Why a download failed, in words a person is shown (on the Downloads list, never in a log
+ * or a notification). `network`: the server couldn't be reached, which is worth trying
+ * again by itself when it is back. `again`: what arrived was not the song, whole (it failed
+ * a check): worth fetching afresh a few times, as the server's next answer may be right.
+ */
+class DownloadFailure(val reason: String, val network: Boolean = false, val again: Boolean = false, cause: Throwable? = null) : IOException(reason, cause)
 
 /** The fetch was called off ([SongFetch.cancel]): not a failure, and only ever this. (A read
  *  that timed out is an `InterruptedIOException` too, and is a failure.) */
 class Cancelled : InterruptedIOException("Cancelled")
 
 /**
- * Fetches one song into the downloads folder, whole or not at all.
+ * What identifies the copy of a song a part file is part of: the server's validator for it
+ * (a strong `ETag`, else `Last-Modified`), how long the whole file is, and how much of the
+ * part is known to have reached the disk. Kept in a file of its own beside the part
+ * (".<name>.part.meta"), written before the part's first byte.
+ */
+@Serializable
+internal data class PartOf(val etag: String = "", val modified: String = "", val total: Long = 0, val synced: Long = 0) {
+    /** What a resume is made conditional on (`If-Range`). */
+    val validator: String get() = etag.ifEmpty { modified }
+}
+
+/**
+ * Fetches one song into the downloads folder: the right song, whole, or not at all.
  *
- * It arrives in a file of its own beside where it will go (".<id>.<kind>.part"), and only
- * once it has come to a clean end, and is all there, is it put in its place and entered in
- * the [Catalogue], which is what makes it a download. All there means: for the file as it is,
- * every byte the server said it has; for a conversion, which comes with no length, at least
- * as much as a whole conversion of the song must come to (the same rule kept songs follow:
- * [leastBytes]). Anything short of that is never played and is cleared away.
+ * It arrives in a file of its own beside where it will go (".<id>.<kind>.part"). Only once it
+ * has come to a clean end **and been verified** is it put in its place and entered in the
+ * [Catalogue], which is what makes it a download. Verified means all of:
  *
- * The file as it is can be picked up where it stopped (the app stopped, the network gone): the
- * part already here is kept, and the rest asked for as a byte range, if the server takes them,
- * which it says by answering with exactly the bytes asked for. A conversion is a fresh
- * stream each time, which no range can join onto: it starts again from nothing.
+ * - it is as long as the server said that answer was;
+ * - for the file as it is, that is also the size the library gives the song. If they
+ *   disagree the server is asked for the song again, once, and its newer word is gone by;
+ * - its bytes are audio, in the container it is meant to be in, as the player's own
+ *   extractors read them ([AudioCheck]): not the name, not what the server called it;
+ * - the container says it runs as long as the song is known to, within a small tolerance
+ *   (again the server's newer word, if the first disagrees). For a conversion, which comes
+ *   with no length, this is what tells a whole one from one that ended early.
  *
- * Plain Kotlin and OkHttp, so it can be tested against a stand-in server. Blocking: run it on
- * a thread of its own (Media3's download manager gives each download one).
+ * **Picking up where it stopped.** The file as it is can be carried on with after the app
+ * stopped or the network went, but only as part of the *same* file: the part's own record
+ * ([PartOf]) says which copy of the server's it is part of, and the rest is asked for on
+ * condition that the server's copy is still that one (`If-Range`), and taken only if the
+ * answer is exactly the rest of it (the range from where the part stops to the end, of a file
+ * of the same length, with the same validator). If the server's copy has changed, or the
+ * server can't say (no validator), or answers anything that doesn't fit ("no such range"
+ * included), the part is thrown away and the song fetched from nothing. A part is never made
+ * a download on the strength of its size. A conversion is a fresh stream each time, which
+ * nothing can join onto: it always starts again.
+ *
+ * Only what is known to have reached the disk is carried on from: the part is synced every
+ * megabyte and its record says how far, so after the power went a resume starts from
+ * there, never from bytes the disk may not hold.
+ *
+ * Plain Kotlin and OkHttp but for the audio check, so it can be tested against a stand-in
+ * server. Blocking: run it on a thread of its own (Media3's download manager gives each
+ * download one).
  */
 class SongFetch(
     private val http: OkHttpClient,
     private val catalogue: Catalogue,
+    private val check: AudioCheck = Media3AudioCheck,
+    /** Asks the server for the song as its library has it now; null if it has none such.
+     *  Throws an IOException if the server can't be asked. */
+    private val refresh: (id: String) -> Song? = { null },
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     @Volatile private var call: Call? = null
@@ -84,36 +123,91 @@ class SongFetch(
     /**
      * Fetches `song` in `form` from `url` (the server's address for that form, from the
      * start). `progress` hears how far it has got (bytes, and the bytes expected; -1 if not
-     * known). Returns the catalogue's new entry; throws [DownloadFailure], or an
+     * known). Returns the catalogue's new entry; throws [DownloadFailure], or a
      * [Cancelled] if called off.
      */
     @Throws(IOException::class)
     fun fetch(song: Song, form: SavedForm, url: String, progress: (Long, Long) -> Unit = { _, _ -> }): Downloaded {
-        catalogue.entry(song.id)?.let { if (File(catalogue.dir, it.file).isFile) return it }
+        catalogue.entry(song.id)?.let { if (catalogue.wholeFileOf(song.id) != null) return it }
         val stem = stem(song.id)
         if (stem.isEmpty()) throw DownloadFailure("The server gave this song an id the app can't use.")
         val name = "$stem.${form.suffix.ifEmpty { "bin" }}"
         val target = File(catalogue.dir, name)
         val part = File(catalogue.dir, partName(name))
-        // A conversion can't be picked up part-way, nor can a part of a different kind.
-        catalogue.dir.listFiles()?.forEach { if (it.name != part.name && stemOfPart(it.name) == stem) it.delete() }
-        if (form.converted) part.delete()
+        val meta = File(catalogue.dir, metaName(name))
+        // A part of a different kind is no use to this fetch.
+        catalogue.dir.listFiles()?.forEach { if (it.name != part.name && it.name != meta.name && stemOfPart(it.name) == stem) it.delete() }
+        // A conversion can't be picked up part-way.
+        if (form.converted) discard(part, meta)
         // A file left at the final name without an entry (the app stopped between the two):
         // not trusted, fetched again.
         target.delete()
 
-        var have = if (part.isFile) part.length() else 0L
-        val request = Request.Builder().url(url).apply { if (have > 0) header("Range", "bytes=$have-") }.build()
-        val response = try {
-            open(request)
-        } catch (e: IOException) {
-            throw failure(e)
-        }
-        response.use {
-            if (response.code == 416 && have > 0) {
-                // Nothing after the part: it may be the whole file. Judged below, by size.
-                return finish(song, form, part, target, name, have, total = song.size)
+        var from = resumable(part, meta)
+        if (from == null) discard(part, meta)
+        // Twice at most: carrying on, and (if what came back doesn't fit) once from nothing.
+        while (true) {
+            val arrived = try {
+                attempt(song, form, url, part, meta, from, progress)
+            } catch (e: IOException) {
+                throw failure(e)
             }
+            if (arrived != null) return finish(song, form, part, meta, target, name, arrived)
+            if (from == null) throw DownloadFailure("The server didn't send the whole song.", again = true)
+            discard(part, meta)
+            from = null
+        }
+    }
+
+    /** What arrived: how many bytes the part now holds, and how long the server said the
+     *  whole answer was (-1: it didn't say, as for a conversion). */
+    private class Arrived(val bytes: Long, val said: Long)
+
+    /** Where a fetch can carry on from: the part's record, and how much of the part to keep. */
+    private class From(val of: PartOf, val have: Long)
+
+    /** The part and its record, if together they can be carried on from. */
+    private fun resumable(part: File, meta: File): From? {
+        if (!part.isFile || !meta.isFile) return null
+        val of = try {
+            json.decodeFromString(PartOf.serializer(), meta.readText())
+        } catch (_: IOException) {
+            return null
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+        // Only what is known to be on the disk, of a copy the server can be asked about.
+        val have = minOf(part.length(), of.synced)
+        if (of.validator.isEmpty() || of.total <= 0 || have <= 0 || have >= of.total) return null
+        return From(of, have)
+    }
+
+    private fun discard(part: File, meta: File) {
+        part.delete()
+        meta.delete()
+    }
+
+    private fun save(meta: File, of: PartOf) = writeAtomically(meta, json.encodeToString(PartOf.serializer(), of).toByteArray())
+
+    /**
+     * One request and what comes of it. Null: the answer didn't fit the part (the server's
+     * copy has changed, or it has no such range): the part must go and the song be asked for
+     * from nothing.
+     */
+    private fun attempt(song: Song, form: SavedForm, url: String, part: File, meta: File, from: From?, progress: (Long, Long) -> Unit): Arrived? {
+        val request = Request.Builder().url(url)
+            // The length a server states must be the length of what it sends: not a compressed
+            // copy's, which OkHttp would ask for and unpack out of sight.
+            .header("Accept-Encoding", "identity")
+            .apply {
+                if (from != null) {
+                    header("Range", "bytes=${from.have}-")
+                    // Only if its copy is still the one the part is part of.
+                    header("If-Range", from.of.validator)
+                }
+            }.build()
+        open(request).use { response ->
+            if (response.code == 416 && from != null) return null
             if (!response.isSuccessful) {
                 throw DownloadFailure(
                     if (response.code in 400..499) "The server refused it (HTTP ${response.code})." else "The server couldn't send it (HTTP ${response.code}).",
@@ -125,21 +219,55 @@ class SongFetch(
                 // An error page, or the server's own error in place of the song.
                 throw DownloadFailure("The server didn't send the song.")
             }
-            val range = response.header("Content-Range")
-            val resumed = have > 0 && response.code == 206 && range != null && range.trim().lowercase().removePrefix("bytes").trim().startsWith("$have-")
-            if (!resumed) have = 0
             val length = response.body.contentLength()
-            // How long the whole file is: from the range's total, or the answer's length.
-            val total = when {
-                resumed -> range?.substringAfterLast('/')?.trim()?.toLongOrNull() ?: if (length >= 0) have + length else -1
-                else -> length
+            val said: Long
+            /** The part's record as it stands; null when it can't be carried on from. */
+            var record: PartOf?
+            var arrived: Long
+            when {
+                response.code == 206 -> {
+                    // Part of the file. Taken only if it was asked for, and is exactly the
+                    // rest of the copy the part is part of.
+                    if (from == null || !fits(response, from, length)) return null
+                    said = from.of.total
+                    record = from.of
+                    arrived = from.have
+                }
+                response.code == 200 -> {
+                    // The whole of it, from its start (asked for so; or the server's copy has
+                    // changed, or it takes no ranges): whatever was here goes.
+                    said = length
+                    arrived = 0
+                    discard(part, meta)
+                    val of = PartOf(strongTag(response), response.header("Last-Modified").orEmpty().trim(), length, 0)
+                    // Its record first, on the disk, and only then its first byte. (Nothing
+                    // to carry on with later if the server gave no validator or no length.)
+                    record = of.takeIf { !form.converted && it.validator.isNotEmpty() && length > 0 }
+                    record?.let {
+                        save(meta, it)
+                        syncDir(catalogue.dir)
+                    }
+                }
+                // Any other "success" is not a song.
+                else -> throw DownloadFailure("The server didn't send the song.")
             }
-            val expected = if (total > 0) total else expectedBytes(song, form.bitrate.takeIf { form.converted } ?: 0).takeIf { it > 0 } ?: -1
-            try {
-                FileOutputStream(part, resumed).use { out ->
+            val expected = if (said > 0) said else expectedBytes(song, form.bitrate.takeIf { form.converted } ?: 0).takeIf { it > 0 } ?: -1
+            java.io.RandomAccessFile(part, "rw").use { out ->
+                // Carried on from what the disk is known to hold, and no further.
+                out.setLength(arrived)
+                out.seek(arrived)
+                var synced = arrived
+                /** This much is on the disk now, and the record says so. */
+                fun mark() {
+                    val of = record ?: return
+                    if (arrived == synced) return
+                    out.fd.sync()
+                    synced = arrived
+                    record = of.copy(synced = synced).also { save(meta, it) }
+                }
+                try {
                     val source = response.body.byteStream()
                     val buffer = ByteArray(BUFFER)
-                    var arrived = have
                     var told = 0L
                     while (true) {
                         if (cancelled) throw Cancelled()
@@ -151,36 +279,59 @@ class SongFetch(
                             told = arrived
                             progress(arrived, expected)
                         }
+                        if (arrived - synced >= SYNC_EVERY) mark()
                     }
-                    out.flush()
                     out.fd.sync()
-                    have = arrived
+                } catch (e: IOException) {
+                    // Stopped, or the connection went: what did arrive is kept to carry on
+                    // from, once it is on the disk and the record says how much.
+                    runCatching { mark() }
+                    throw e
                 }
-            } catch (e: IOException) {
-                throw failure(e)
             }
-            progress(have, expected)
-            return finish(song, form, part, target, name, have, total)
+            progress(arrived, expected)
+            return Arrived(arrived, said)
         }
     }
 
-    /** Judges what arrived, and if it is whole puts it in place and enters it. */
-    private fun finish(song: Song, form: SavedForm, part: File, target: File, name: String, bytes: Long, total: Long): Downloaded {
+    /** Whether a `206` is exactly the rest of the copy the part is part of. */
+    private fun fits(response: okhttp3.Response, from: From, length: Long): Boolean {
+        // "bytes 1000-417072/417073"
+        val range = response.header("Content-Range")?.trim()?.lowercase()?.removePrefix("bytes")?.trim() ?: return false
+        val first = range.substringBefore('-').trim().toLongOrNull() ?: return false
+        val last = range.substringAfter('-').substringBefore('/').trim().toLongOrNull() ?: return false
+        val total = range.substringAfter('/', "").trim().toLongOrNull() ?: return false
+        if (first != from.have || total != from.of.total || last != total - 1) return false
+        if (length >= 0 && length != total - first) return false
+        // And the server says, in this answer, that its copy is the one the part came from.
+        // (One that ignores the condition would send the rest of whatever it has now.)
+        return if (from.of.etag.isNotEmpty()) strongTag(response) == from.of.etag else response.header("Last-Modified").orEmpty().trim() == from.of.modified
+    }
+
+    /** The answer's `ETag` if it is a strong one (a weak one can't vouch for bytes). */
+    private fun strongTag(response: okhttp3.Response): String =
+        response.header("ETag").orEmpty().trim().takeIf { it.startsWith("\"") && it.length > 2 }.orEmpty()
+
+    /** Verifies what arrived, and if it is the song, whole, puts it in place and enters it. */
+    private fun finish(song: Song, form: SavedForm, part: File, meta: File, target: File, name: String, arrived: Arrived): Downloaded {
         if (cancelled) throw Cancelled()
-        val whole = when {
-            bytes <= 0 -> throw cut(part, "The server sent nothing.")
-            // The file as it is: every byte the server said there is.
-            !form.converted -> total <= 0 && song.size <= 0 || bytes == (if (total > 0) total else song.size)
-            // A conversion: as much as a whole one must come to.
-            else -> bytes >= leastBytes(song.duration, form.bitrate, song.bitRate)
+        val verified = try {
+            verify(song, form, part, arrived)
+        } catch (e: DownloadFailure) {
+            // Not the song, whole: nothing of it is kept to be carried on from.
+            discard(part, meta)
+            throw e
         }
-        if (!whole) throw cut(part, "The download was cut short.")
+        if (cancelled) throw Cancelled()
         try {
             Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            meta.delete()
+            // Its name must be on the disk before the mark that vouches for it.
+            syncDir(catalogue.dir)
         } catch (e: IOException) {
             throw failure(e)
         }
-        val entry = Downloaded(song.copy(queued = false), name, bytes, clock(), form.suffix, form.bitrate)
+        val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate)
         try {
             // The mark: only now is it a download.
             catalogue.add(entry)
@@ -191,9 +342,62 @@ class SongFetch(
         return entry
     }
 
-    private fun cut(part: File, reason: String): DownloadFailure {
-        part.delete()
-        return DownloadFailure(reason)
+    /**
+     * The checks a download passes before it is marked (see the class). Returns the song as
+     * it is entered: as asked for, or as the server has it now if that had to be asked.
+     */
+    private fun verify(asked: Song, form: SavedForm, part: File, arrived: Arrived): Song {
+        val bytes = arrived.bytes
+        if (bytes <= 0 || part.length() != bytes) throw DownloadFailure("The server sent nothing.", again = true)
+        if (arrived.said >= 0 && arrived.said != bytes) throw DownloadFailure("The download was cut short.", again = true)
+        var song = asked
+        var fresh = false
+        /** The server's newer word on the song, asked for once. */
+        fun newer(): Boolean {
+            if (fresh) return false
+            fresh = true
+            val now = try {
+                refresh(asked.id)
+            } catch (e: IOException) {
+                throw failure(e)
+            } ?: return false
+            song = now
+            return true
+        }
+        if (!form.converted && song.size != bytes) {
+            // Not the size the library gives it: perhaps the library's word here is old.
+            newer()
+            // (A library that gives the song no size at all can't disagree: then the length
+            // the server stated for the answer, checked above, is all there is to go by.)
+            if (song.size != bytes && (song.size > 0 || arrived.said != bytes)) {
+                throw DownloadFailure(
+                    if (song.size > bytes) "The download was cut short." else "The server sent a different file from the one in its library.",
+                    again = true,
+                )
+            }
+        }
+        val seen = try {
+            check.inspect(part, form.suffix)
+        } catch (e: IOException) {
+            if (cancelled) throw Cancelled()
+            Inspected(null, false, -1)
+        }
+        val container = seen.container
+        if (container == null || !seen.audio || !Media3AudioCheck.fits(form.suffix, container)) {
+            throw DownloadFailure("What the server sent isn't a song the phone can play.", again = true)
+        }
+        // A conversion comes with no length: how long it runs is the only word on whether it
+        // is whole, so it must say.
+        if (form.converted && seen.durationUs <= 0) throw DownloadFailure("The download was cut short.", again = true)
+        if (seen.durationUs > 0 && !runsAsLongAs(song, seen.durationUs)) {
+            if (!newer() || !runsAsLongAs(song, seen.durationUs) || (!form.converted && song.size > 0 && song.size != bytes)) {
+                throw DownloadFailure(
+                    if (seen.durationUs < song.duration * 1_000_000L) "The download was cut short." else "The server sent a different file from the one in its library.",
+                    again = true,
+                )
+            }
+        }
+        return song
     }
 
     private fun open(request: Request): okhttp3.Response {
@@ -225,13 +429,43 @@ class SongFetch(
         private const val BUFFER = 64 * 1024
         private const val TELL_EVERY = 128 * 1024L
 
+        /** How much may arrive between one sync of the part and the next: what a power cut
+         *  can cost a download that is then carried on with. */
+        const val SYNC_EVERY = 1024L * 1024
+
+        private val json = Json { ignoreUnknownKeys = true }
+
+        /**
+         * Whether a file that says it runs `durationUs` is the whole of `song`: no more than
+         * a second (and a two-hundredth of its length) short of what the library says, and
+         * no more than two seconds (and a hundredth) over. The library gives a length in
+         * whole seconds, rounded or cut down, and an encoder adds a few hundredths at the
+         * ends; nothing else is allowed for. A song the library gives no length for can't be
+         * judged by it.
+         */
+        fun runsAsLongAs(song: Song, durationUs: Long): Boolean {
+            if (song.duration <= 0) return true
+            val expected = song.duration * 1_000_000L
+            return durationUs >= expected - 1_000_000L - expected / 200 && durationUs <= expected + 2_000_000L + expected / 100
+        }
+
         /** A song id as part of a file name: letters, digits, '-' and '_' (Windows' rule). */
         fun stem(id: String): String = id.filter { it.isLetterOrDigit() && it.code < 128 || it == '-' || it == '_' }
 
         fun partName(name: String): String = ".$name.part"
 
-        /** The stem a part file belongs to, or null if it isn't one. */
-        fun stemOfPart(fileName: String): String? =
-            if (fileName.startsWith(".") && fileName.endsWith(".part")) fileName.removePrefix(".").removeSuffix(".part").substringBeforeLast('.') else null
+        /** The record beside a part file (see [PartOf]). */
+        fun metaName(name: String): String = ".$name.part.meta"
+
+        /** The stem a part file, or its record, belongs to; null if it is neither. */
+        fun stemOfPart(fileName: String): String? {
+            if (!fileName.startsWith(".")) return null
+            val inner = when {
+                fileName.endsWith(".part") -> fileName.removePrefix(".").removeSuffix(".part")
+                fileName.endsWith(".part.meta") -> fileName.removePrefix(".").removeSuffix(".part.meta")
+                else -> return null
+            }
+            return inner.substringBeforeLast('.')
+        }
     }
 }

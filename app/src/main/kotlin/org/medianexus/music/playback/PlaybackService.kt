@@ -921,8 +921,9 @@ class PlaybackService : MediaLibraryService() {
         val api = era.account.api
         val song = player.songFor(songId)
         // A downloaded copy first (unless this session found it won't play: then it is set
-        // aside and streamed), then the kept copy, then the server.
-        val downloaded = if (era.account.availability.isDownloaded(songId)) era.account.catalogue.fileOf(songId)?.takeIf { it.isFile } else null
+        // aside and streamed; and only a file still as long as the one that was verified),
+        // then the kept copy, then the server.
+        val downloaded = if (era.account.availability.isDownloaded(songId)) era.account.catalogue.wholeFileOf(songId) else null
         val suffix = song?.suffix?.lowercase().orEmpty()
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting
         val form = streamForm(native, graph.settings.value.bitrate, suffix, song?.bitRate ?: 0)

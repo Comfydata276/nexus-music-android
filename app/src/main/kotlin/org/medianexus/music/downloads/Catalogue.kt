@@ -95,6 +95,11 @@ class Catalogue(val dir: File) {
         val ids: Set<String> get() = songs.keys
     }
 
+    /** Downloads that were marked whole and whose files were found, when the catalogue was
+     *  read, to be missing or not the length recorded: no longer downloads, and to be fetched
+     *  again. */
+    val wanting: List<Downloaded>
+
     init {
         dir.mkdirs()
         org.medianexus.music.store.sweepTemporaries(dir)
@@ -114,8 +119,12 @@ class Catalogue(val dir: File) {
             } catch (_: IOException) {
             }
         }
-        // Trust the folder over the list: a file that has gone is simply not downloaded.
-        songs.values.removeAll { !File(dir, it.file).isFile }
+        // Trust the folder over the list: a file that has gone, or is not the length that was
+        // recorded when it was verified, is not a download. It is fetched again (see
+        // Downloads), and what is left of it is cleared away by the sweep.
+        val found = songs.values.filter { File(dir, it.file).length() != it.bytes || it.bytes <= 0 }
+        found.forEach { songs.remove(it.song.id) }
+        wanting = found
         read(LISTS_FILE, ListSerializer(DownloadedList.serializer())).forEach { lists[it.key] = it }
         read(FAILED_FILE, ListSerializer(Failed.serializer())).forEach { failures[it.song.id] = it }
         publish()
@@ -136,6 +145,10 @@ class Catalogue(val dir: File) {
 
     /** The downloaded copy of a song, if there is one. */
     fun fileOf(id: String): File? = entry(id)?.let { File(dir, it.file) }
+
+    /** The downloaded copy of a song, if it is there and as long as it was when it was
+     *  marked whole: anything else is not the download that was verified. */
+    fun wholeFileOf(id: String): File? = entry(id)?.let { entry -> File(dir, entry.file).takeIf { entry.bytes > 0 && it.length() == entry.bytes } }
 
     fun collection(key: String): DownloadedList? = synchronized(lock) { lists[key] }
 
