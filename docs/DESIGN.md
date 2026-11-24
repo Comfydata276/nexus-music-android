@@ -1791,8 +1791,13 @@ How it is built (M3a, finding music):
   refreshed 50,000-song copy would be compared with the queue on the main thread. It plays on
   as started.
 - **Details**: "On this phone" is the phone's own line (Windows has only "Downloaded as");
-  the play count, last play and rating are the newest the app has seen (`Freshest`: a page
-  from the server since, or what the app itself just reported), not asked of the server again.
+  the play count, last play and rating are the newest the app has seen (`Freshest`), not asked
+  of the server again: of two things the server said, the one read later (a page, by when it
+  was asked for; a newer copy of the library over pages read before it); on top, a play
+  reported here until the server is seen to have it, and a rating made here until the sender
+  says it settled (taken: then the server's word, which is that rating; refused: forgotten).
+  A rating held for later settles in a later pass, which says nothing of each change: it
+  stays shown until the account goes (small fixes, item 7).
 
 ### What the finding-music fixes decided
 

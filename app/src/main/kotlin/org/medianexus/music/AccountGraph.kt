@@ -226,7 +226,10 @@ class AccountGraph(
         }
         // Every page from the server says how often its songs have been played, and how
         // they are rated, now: newer than the copy of the library a song may be shown from.
-        scope.launch { pages.changes.collect { (_, value) -> freshest.sawPage(value) } }
+        // (When each was asked for: the later reading wins; and a newer copy of the library
+        // is newer than what was read before it.)
+        scope.launch { pages.heard.collect { freshest.sawPage(it.value, it.askedAt) } }
+        scope.launch { copy.state.collect { snap -> snap?.let { freshest.copyArrived(it.stamp.fetched * 1000) } } }
         // Covers past their limit go, oldest first, once a start: it reads the whole folder.
         scope.launch { covers.trim() }
         // Changes held from an earlier run are read at once (they are part of what is liked,
@@ -274,7 +277,18 @@ class AccountGraph(
      */
     suspend fun submit(change: Pending) {
         freshest.reported(change)
-        held.submit(change)
+        // Settled when the server has it, or has refused it: what is shown follows the server
+        // again. (Held for later, it settles in a later pass, which says nothing of each
+        // change: until then, and for this run, the change made here is what is shown.)
+        val outcome = try {
+            held.submit(change)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            freshest.settled(change, taken = false)
+            throw e
+        }
+        if (outcome == org.medianexus.music.store.HeldChanges.Outcome.TAKEN) freshest.settled(change, taken = true)
     }
 
     private suspend fun send(change: Pending) = when (change) {
