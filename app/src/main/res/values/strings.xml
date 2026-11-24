@@ -46,7 +46,7 @@
     <!-- Settings -->
     <string name="appearance">Appearance</string>
     <string name="theme">Theme</string>
-    <string name="theme_detail">Colours for the whole app.</string>
+    <string name="theme_detail">Colours for the whole app, including the phone\'s status and navigation bars.</string>
     <string name="theme_named">%1$s theme</string>
     <string name="account">Account</string>
     <string name="signed_in_as">Signed in as %1$s</string>
@@ -224,50 +224,134 @@
     <string name="remove_download">Remove download</string>
     <string name="cancel_download">Cancel download</string>
     <string name="downloading_song">Downloading “%1$s”</string>
-    <string name="downloading_songs">Downloading %1$d songs</string>
+    <plurals name="downloading_songs">
+        <item quantity="one">Downloading %1$d song</item>
+        <item quantity="other">Downloading %1$d songs</item>
+    </plurals>
     <string name="downloading_n_of">Downloading %1$d of %2$d</string>
     <string name="already_downloaded">Already downloaded</string>
     <string name="download_finished">Download finished</string>
-    <string name="songs_downloaded">%1$d songs downloaded</string>
-    <string name="some_downloaded">%1$d songs downloaded; %2$d couldn\'t be. See Downloads.</string>
+    <plurals name="songs_downloaded">
+        <item quantity="one">%1$d song downloaded</item>
+        <item quantity="other">%1$d songs downloaded</item>
+    </plurals>
+    <plurals name="some_downloaded">
+        <item quantity="one">%1$d song downloaded; %2$d couldn\'t be. See Downloads.</item>
+        <item quantity="other">%1$d songs downloaded; %2$d couldn\'t be. See Downloads.</item>
+    </plurals>
     <string name="download_cancelled">Download cancelled</string>
     <string name="downloads_cancelled">Downloads cancelled</string>
     <string name="removed_from_downloads">Removed from downloads</string>
+    <string name="download_removed">Download removed</string>
     <string name="downloads_removed">Downloads removed</string>
     <string name="no_room">Not enough room: that needs about %1$s, and this phone has %2$s free. (Half a gigabyte is always left spare.)</string>
     <string name="downloads_wait_offline">Offline mode is on: the download starts when you\'re back online</string>
     <string name="couldnt_be_downloaded">%1$s couldn\'t be downloaded. %2$s</string>
     <string name="and_one_other">%1$s and 1 other song</string>
-    <string name="and_others">%1$s and %2$d other songs</string>
+    <plurals name="and_others">
+        <item quantity="one">%1$s and %2$d other song</item>
+        <item quantity="other">%1$s and %2$d other songs</item>
+    </plurals>
     <string name="retry_failed">Retry failed</string>
     <string name="cancel_all">Cancel all</string>
-    <string name="remove_all_downloads">Remove all downloads</string>
     <string name="nothing_downloaded">Nothing downloaded</string>
     <string name="downloads_empty">Songs you download are kept here, ready to play even when your server can\'t be reached. Use the download button on an album or playlist, or a song\'s menu.</string>
-    <string name="downloads_summary">%1$d songs, %2$s</string>
-    <string name="downloads_summary_one">1 song, %1$s</string>
-    <string name="on_its_way">and 1 more on its way</string>
-    <string name="on_their_way">and %1$d more on their way</string>
+    <plurals name="downloads_summary">
+        <item quantity="one">%1$d song, %2$s</item>
+        <item quantity="other">%1$d songs, %2$s</item>
+    </plurals>
+    <plurals name="on_their_way">
+        <item quantity="one">%1$s, and %2$d more on its way</item>
+        <item quantity="other">%1$s, and %2$d more on their way</item>
+    </plurals>
     <string name="waiting_for_wifi">Waiting for Wi-Fi</string>
     <string name="waiting_for_network">Waiting for a connection</string>
     <string name="waiting_for_server">Can\'t reach server</string>
     <string name="offline_mode">Offline mode</string>
-    <string name="offline_mode_detail">Don\'t contact the server; play downloaded songs only.</string>
+    <string name="offline_mode_detail">Plays only what\'s on this phone and doesn\'t contact your server. Likes, ratings and plays are kept and sent when you turn it off.</string>
     <string name="offline_mode_on">Offline mode: only downloaded songs will play</string>
     <string name="back_online">Back online</string>
     <string name="download_quality">Download quality</string>
-    <string name="download_quality_detail">The quality songs are saved in when you download them. Original keeps the files as they are on your server.</string>
+    <string name="download_quality_detail">What new downloads are saved as. Lossless keeps each file exactly as it is on your server; the others save smaller MP3 copies.</string>
     <string name="wifi_only">Download on Wi-Fi only</string>
     <string name="wifi_only_detail">Downloads wait for Wi-Fi rather than use mobile data.</string>
-    <string name="kept_songs">Keep played songs</string>
-    <string name="kept_songs_detail">Songs you play are kept on this phone, up to this much, so playing them again costs nothing.</string>
+    <string name="kept_songs">Kept songs</string>
+    <string name="keep_songs">Keep songs as they play</string>
+    <string name="keep_songs_detail">Replays then start at once and need no connection. This is the space they may take; when it\'s used, the ones played longest ago make way. %1$s kept now.</string>
     <string name="fetch_ahead">Fetch ahead</string>
-    <string name="fetch_ahead_detail">How many songs after the one playing are fetched ahead of time, so a dead spot costs nothing. On mobile data, only the next one.</string>
-    <string name="quality_original">Original</string>
-    <string name="quality_kbps">%1$d kbps</string>
-    <string name="none">None</string>
+    <string name="fetch_ahead_detail">How many songs after the one playing are fetched in advance. If your connection drops, the music carries on through those. On mobile data, only the next one is.</string>
+    <string name="off">Off</string>
     <string name="size_gb">%1$d GB</string>
     <string name="storage">Storage</string>
     <string name="notice_sign_in_gone">Your saved sign-in no longer works. Sign in again.</string>
     <string name="bad_download">The downloaded copy of “%1$s” wouldn\'t play, so it\'s being streamed. If that keeps happening, remove the download and fetch it again.</string>
+
+    <!-- Download marks and the download button (Windows' TrackRow and ActionBar) -->
+    <string name="waiting_to_download">Waiting to download</string>
+    <string name="couldnt_be_downloaded_short">Couldn\'t be downloaded</string>
+    <string name="cancel_downloading">Cancel downloading</string>
+    <string name="remove_from_downloads">Remove from downloads</string>
+    <string name="download_count">%1$d / %2$d</string>
+    <plurals name="downloaded_count">
+        <item quantity="one">%1$d of %2$d song downloaded</item>
+        <item quantity="other">%1$d of %2$d songs downloaded</item>
+    </plurals>
+
+    <!-- The Downloads page (Windows' show_downloads) -->
+    <string name="on_this_phone">On this phone</string>
+    <string name="downloading_now">Downloading</string>
+    <string name="couldnt_download_heading">Couldn\'t be downloaded</string>
+    <string name="downloaded_songs_heading">Songs</string>
+    <string name="list_facts_size">%1$s, %2$s</string>
+    <string name="downloads_offline_mode">Offline mode is on: downloads carry on when you\'re back online</string>
+
+    <!-- Offline, as Windows' top bar and offline.rs say it -->
+    <string name="cant_reach_server_short">Can\'t reach server</string>
+    <string name="offline_on_title">Offline mode is on</string>
+    <string name="turn_off_offline">Turn off offline mode</string>
+    <string name="unreachable_title">Can\'t reach your server</string>
+    <string name="unreachable_detail">Only what\'s on this phone plays until it answers again, and likes, ratings and plays are kept until then. It\'s asked again every 15 seconds.</string>
+    <string name="offline_named">%1$s. Shows what you can do about it</string>
+    <string name="search_nothing_phone">Nothing on this phone matches “%1$s”. Offline, only songs that are downloaded, or kept whole as they played, can be found.</string>
+    <string name="searching_phone">Offline: searching only what\'s on this phone</string>
+    <string name="your_downloads">Your downloads</string>
+    <string name="home_offline_empty">Nothing on this phone to play yet. Download albums and playlists while your server can be reached, and they play here with no signal.</string>
+    <string name="not_on_phone">Not on this phone</string>
+    <string name="not_on_phone_detail">This hasn\'t been opened while your server could be reached, so there\'s no copy of it here. What you\'ve downloaded is in Library, Downloads.</string>
+    <plurals name="held_sent">
+        <item quantity="one">The change you made offline has been sent to your server</item>
+        <item quantity="other">The %1$d changes you made offline have been sent to your server</item>
+    </plurals>
+    <plurals name="back_online_held_sent">
+        <item quantity="one">Back online. The change you made offline has been sent to your server</item>
+        <item quantity="other">Back online. The %1$d changes you made offline have been sent to your server</item>
+    </plurals>
+
+    <!-- Settings (Windows' SettingsPage) -->
+    <string name="playback">Playback</string>
+    <string name="sound">Sound</string>
+    <string name="report_plays">Report plays to Navidrome</string>
+    <string name="report_plays_detail">Keeps play counts and Recently played up to date, and feeds Last.fm or ListenBrainz if you linked them in Navidrome.</string>
+    <string name="streaming_quality">Streaming quality</string>
+    <string name="quality_low">Low</string>
+    <string name="quality_normal">Normal</string>
+    <string name="quality_high">High</string>
+    <string name="quality_lossless">Lossless</string>
+    <string name="quality_low_detail">96 kbps MP3, about 0.04 GB an hour</string>
+    <string name="quality_normal_detail">160 kbps MP3, about 0.07 GB an hour</string>
+    <string name="quality_high_detail">320 kbps MP3, about 0.14 GB an hour</string>
+    <string name="quality_lossless_detail">Your files exactly as stored, at their own sample rate and bit depth. About 0.4 GB an hour for CD-quality FLAC, more for hi-res.</string>
+    <string name="playing_now_as">Playing now: %1$s</string>
+    <string name="downloaded_songs">Downloaded songs</string>
+    <string name="downloaded_songs_detail">%1$s. They play without the server, and from the phone even when it\'s reachable.</string>
+    <string name="remove_all">Remove all</string>
+    <string name="remove_all_title">Remove all downloads?</string>
+    <string name="remove_all_detail">%1$s will be deleted from this phone, and the albums and playlists downloaded whole won\'t be kept up to date any more.</string>
+    <string name="cancel">Cancel</string>
+    <string name="app_version">Nexus Music %1$s</string>
+    <string name="about_detail">A native player for Navidrome. Fonts: Bricolage Grotesque and Hanken Grotesk (SIL Open Font License). Icons: Lucide (ISC License).</string>
+    <string name="licences">Licences</string>
+    <string name="licences_detail">The licences of the fonts, the icons and the list of known car and assistant apps that come with Nexus Music.</string>
+    <string name="show_licences">Show licences</string>
+    <string name="licence_known_hosts">Known media apps</string>
 </resources>

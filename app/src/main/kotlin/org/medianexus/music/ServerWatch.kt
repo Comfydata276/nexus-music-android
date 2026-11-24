@@ -33,7 +33,10 @@ data class Reach(val manual: Boolean = false, val unreachable: Boolean = false) 
  * Windows, which then asks for the password again.
  *
  * Offline mode switched on by hand asks nothing at all. Switched off, the server is asked
- * whether it is really there before it is assumed to be.
+ * whether it is really there before it is assumed to be; if it is, `caughtUp` runs (held
+ * changes are sent, downloads carry on), as Windows' `check_connection` catches up after any
+ * check that finds the server, but nothing says "Back online": the switch was in the
+ * person's hand. If it isn't, it is out of reach, and its coming back is the usual one.
  */
 class ServerWatch(
     private val scope: CoroutineScope,
@@ -45,6 +48,7 @@ class ServerWatch(
      *  permission to reach it: it can't; asking resumes when it is allowed). */
     private val mayAsk: () -> Boolean = { true },
     private val againMillis: Long = AGAIN_MILLIS,
+    private val caughtUp: () -> Unit = {},
 ) {
     private val now = MutableStateFlow(Reach())
     val state: StateFlow<Reach> = now.asStateFlow()
@@ -55,11 +59,15 @@ class ServerWatch(
     private var loop: Job? = null
     private val lock = Any()
 
+    /** Offline mode has just been switched off, and the server not yet heard from. */
+    @Volatile private var switchedOff = false
+
     /** Offline mode, by hand, as Settings has it. */
     fun manual(on: Boolean) {
         val was = now.value
         if (was.manual == on) return
         now.value = was.copy(manual = on)
+        switchedOff = !on
         if (!on) check()
     }
 
@@ -104,16 +112,31 @@ class ServerWatch(
         }
         try {
             ping()
-            if (now.value.unreachable) back()
+            answered()
         } catch (e: ApiError) {
             when {
                 e.signInRefused -> signInGone()
                 // No answer, an error page from something in front of the server, or the
                 // server unable to answer properly: carry on with what's on the phone and
                 // keep trying. (An error the server itself gives is an answer: it is there.)
-                e is ApiError.Server -> if (now.value.unreachable) back()
-                else -> gone()
+                e is ApiError.Server -> answered()
+                else -> {
+                    switchedOff = false
+                    gone()
+                }
             }
+        }
+    }
+
+    /** The server answered a ping: back, if it was out of reach; caught up with, if offline
+     *  mode has just been switched off. */
+    private fun answered() {
+        if (now.value.unreachable) {
+            switchedOff = false
+            back()
+        } else if (switchedOff && !now.value.manual) {
+            switchedOff = false
+            caughtUp()
         }
     }
 

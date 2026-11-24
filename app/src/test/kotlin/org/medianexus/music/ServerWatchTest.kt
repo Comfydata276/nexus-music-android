@@ -21,6 +21,7 @@ class ServerWatchTest {
     private var answer: () -> Unit = {}
     private var pings = 0
     private var online = 0
+    private var caughtUp = 0
     private var signedOut = 0
     private var mayAsk = true
 
@@ -30,6 +31,7 @@ class ServerWatchTest {
         cameOnline = { online++ },
         signInGone = { signedOut++ },
         mayAsk = { mayAsk },
+        caughtUp = { caughtUp++ },
     )
 
     @Test
@@ -156,5 +158,42 @@ class ServerWatchTest {
         val asked = pings
         advanceTimeBy(ServerWatch.AGAIN_MILLIS * 3)
         assertEquals(asked, pings)
+    }
+
+    @Test
+    fun offlineModeSwitchedOffCatchesUpWithTheServerWithoutSayingItIsBack() = runTest {
+        val watch = watch()
+        watch.manual(true)
+        runCurrent()
+        assertEquals(0, pings)
+        // Switched off by hand: the server is asked whether it is there, and it is. What was
+        // held while offline goes to it now (Windows' check_connection catches up after any
+        // check that finds the server), where it used to wait for the next start of the app.
+        // Nothing is said: the switch was in the person's own hand.
+        watch.manual(false)
+        runCurrent()
+        assertEquals(1, pings)
+        assertEquals(1, caughtUp)
+        assertEquals(0, online)
+        // A later ordinary check that finds it there is not a catching up.
+        watch.check()
+        runCurrent()
+        assertEquals(1, caughtUp)
+    }
+
+    @Test
+    fun offlineModeSwitchedOffWithTheServerGoneCatchesUpWhenItIsBack() = runTest {
+        val watch = watch()
+        watch.manual(true)
+        answer = { throw ApiError.Network("gone") }
+        watch.manual(false)
+        runCurrent()
+        assertTrue(watch.state.value.unreachable)
+        assertEquals(0, caughtUp)
+        answer = {}
+        advanceTimeBy(ServerWatch.AGAIN_MILLIS + 1)
+        // Back from being out of reach: that is the usual coming back, said as such.
+        assertEquals(1, online)
+        assertEquals(0, caughtUp)
     }
 }

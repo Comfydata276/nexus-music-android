@@ -147,12 +147,14 @@ class AccountGraph(
     }
 
     /** Sends what was held back (Windows' `flush_pending`). What the server dealt with goes;
-     *  if it stopped answering part-way, it is asked whether it is there. */
-    suspend fun flush() {
-        val sent = held.flush(::send) ?: return
+     *  if it stopped answering part-way, it is asked whether it is there. Says how many the
+     *  server took (or turned down for good: dealt with, either way). */
+    suspend fun flush(): Int {
+        val sent = held.flush(::send) ?: return 0
         // What the server now has (likes made offline) is asked for again.
         if (sent.done > 0) likes.refresh()
         if (sent.lostTouch) suspect()
+        return sent.done
     }
 
     fun close() {

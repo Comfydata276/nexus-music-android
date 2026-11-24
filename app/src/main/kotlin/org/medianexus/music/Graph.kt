@@ -79,8 +79,9 @@ class Graph(context: Context) {
     val watch: ServerWatch = ServerWatch(
         scope,
         ping = { accounts.state.value?.api?.ping() },
-        cameOnline = ::cameOnline,
+        cameOnline = { caughtUp(back = true) },
         signInGone = ::signInGone,
+        caughtUp = { caughtUp(back = false) },
         // Not a server on the home network while the app isn't allowed to reach it: it can't
         // answer, so asking is for nothing. Allowed, asking resumes (see localAccess.allowed).
         mayAsk = { !localAccess.certain.value },
@@ -131,16 +132,24 @@ class Graph(context: Context) {
         if (watch.state.value.unreachable) watch.check()
     }
 
-    /** The server answers again (see [ServerWatch]): what was held back is sent, downloads
-     *  that failed for want of it are tried again, downloaded playlists are topped up. */
-    private fun cameOnline() {
+    /**
+     * The server answers again after being out of reach (`back`), or offline mode has been
+     * switched off and the server found there (see [ServerWatch]): what was held back is
+     * sent, and said once when it has been; downloads that failed for want of it are tried
+     * again; downloaded playlists are topped up; pages and covers that failed ask again.
+     */
+    private fun caughtUp(back: Boolean) {
         reconnected()
-        // As Windows says it; not after offline mode is switched off by hand, which says
-        // nothing (the switch was in the person's own hand).
-        if (!settings.value.offline) toasts.show(app.getString(R.string.back_online))
+        // As Windows says it, when it was out of reach; not after offline mode is switched off
+        // by hand, which says nothing (the switch was in the person's own hand).
+        val said = back && !settings.value.offline
+        if (said) toasts.show(app.getString(R.string.back_online))
         val account = accounts.state.value ?: return
         account.scope.launch {
-            account.flush()
+            val sent = account.flush()
+            // Said once. (A toast takes the place of one still showing, so after "Back online"
+            // it says both.)
+            if (sent > 0) toasts.show(app.resources.getQuantityString(if (said) R.plurals.back_online_held_sent else R.plurals.held_sent, sent, sent))
             account.downloads?.let { downloads ->
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
                     downloads.retryFailed(onlyNetwork = true)
@@ -189,9 +198,9 @@ class Graph(context: Context) {
         val (done, failed) = state.batchDone to state.batchFailed
         val said = when {
             failed == 0 && done == 1 -> context.getString(R.string.download_finished)
-            failed == 0 && done > 1 -> context.getString(R.string.songs_downloaded, done)
+            failed == 0 && done > 1 -> context.resources.getQuantityString(R.plurals.songs_downloaded, done, done)
             done == 0 && failed > 0 -> org.medianexus.music.downloads.DownloadPages.trouble(context, state.failed)
-            failed > 0 -> context.getString(R.string.some_downloaded, done, failed)
+            failed > 0 -> context.resources.getQuantityString(R.plurals.some_downloaded, done, done, failed)
             else -> null
         }
         said?.let(toasts::show)

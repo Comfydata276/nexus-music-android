@@ -53,7 +53,7 @@ object DownloadPages {
 
     /** Windows' words for what became of asking. */
     fun said(context: Context, asked: Asked): String = when (asked) {
-        is Asked.Started -> if (asked.count == 1) context.getString(R.string.downloading_song, asked.first.title) else context.getString(R.string.downloading_songs, asked.count)
+        is Asked.Started -> if (asked.count == 1) context.getString(R.string.downloading_song, asked.first.title) else context.resources.getQuantityString(R.plurals.downloading_songs, asked.count, asked.count)
         Asked.AlreadyDownloaded -> context.getString(R.string.already_downloaded)
         is Asked.NoRoom -> context.getString(R.string.no_room, Downloads.sizeLabel(asked.needed), Downloads.sizeLabel(asked.free))
         Asked.Offline -> context.getString(R.string.downloads_wait_offline)
@@ -65,7 +65,7 @@ object DownloadPages {
         val which = when (failed.size) {
             1 -> "“${last.song.title}”"
             2 -> context.getString(R.string.and_one_other, "“${last.song.title}”")
-            else -> context.getString(R.string.and_others, "“${last.song.title}”", failed.size - 1)
+            else -> context.resources.getQuantityString(R.plurals.and_others, failed.size - 1, "“${last.song.title}”", failed.size - 1)
         }
         return context.getString(R.string.couldnt_be_downloaded, which, last.reason)
     }
