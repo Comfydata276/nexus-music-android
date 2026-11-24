@@ -59,6 +59,40 @@ object Recovery {
         known && !onPhone && !heard && meansToPlay
 
     /**
+     * One run of passing over songs that won't play with no server (a download that fails
+     * to open, or a song not on the phone in offline mode), each failure sending the player
+     * to the next that is on the phone: **a song that has failed in the run is not tried
+     * again in it**, so that two broken downloads with repeat on can't send the player from
+     * one to the other for ever (a stale download still counts as on the phone). The run
+     * goes on while each failure is of the entry it last passed to; any other entry failing
+     * (one the person chose, say) begins a new one. [end] when something plays, or the
+     * person presses Play: a deliberate play of a song that failed is tried again.
+     */
+    class PassingOver {
+        private var at: Long? = null
+        private val failed = HashSet<String>()
+
+        /** The song `id`, at the queue entry `uid`, has failed. */
+        fun failed(uid: Long?, id: String) {
+            if (uid == null || uid != at) failed.clear()
+            failed += id
+        }
+
+        /** Whether the song `id` may still be tried in this run. */
+        fun mayTry(id: String): Boolean = id !in failed
+
+        /** The run has passed to the entry `uid`. */
+        fun passedTo(uid: Long?) {
+            at = uid
+        }
+
+        fun end() {
+            at = null
+            failed.clear()
+        }
+    }
+
+    /**
      * The place, **in the order the queue will play**, of the next entry after the one at
      * `cursor` that plays with no server; null if none does. `count` places in the playing
      * order (which is the shuffled order when shuffle is on, and all of the queue, not the

@@ -111,4 +111,52 @@ class PassOverTest {
         assertEquals(expected.value, exo.currentMediaItem!!.mediaId)
         assertEquals(order, player.queue.playingOrder().map { it.id })
     }
+
+    // ---- Two broken downloads, offline, with repeat on (offline loose ends, item 2) ----------
+
+    /** What the service does as each song fails with no server (`passOverToThePhone`):
+     *  the next that is on the phone and hasn't failed in this run; null when none is. */
+    private fun failsHere(passing: Recovery.PassingOver, onPhone: Set<String>): String? {
+        passing.failed(player.queue.currentUid(), playing())
+        val queue = player.queue
+        val next = Recovery.nextThatPlays(queue.cursor, queue.order.size, queue.repeat) { queue.songs[queue.order[it]].id.let { id -> id in onPhone && passing.mayTry(id) } } ?: return null
+        player.passTo(next)
+        passing.passedTo(player.queue.currentUid())
+        settle()
+        return playing()
+    }
+
+    @Test
+    fun twoDownloadsThatWontOpenAreEachTriedOnceAndThenItStops() {
+        val list = songs.take(4)
+        player.play(list, 1, "A list", playNow = false)
+        player.setRepeat(Repeat.ALL)
+        settle()
+        // Only the second and fourth are on the phone (stale copies, which still count), and
+        // neither opens.
+        val onPhone = setOf("s1", "s3")
+        // (Looked for by what is on the phone alone, the two send the player from one to the
+        // other for ever.)
+        assertEquals(3, nextOnThePhone(onPhone))
+        player.passTo(3)
+        settle()
+        assertEquals(1, nextOnThePhone(onPhone))
+        player.passTo(1)
+        settle()
+        val passing = Recovery.PassingOver()
+        assertEquals("s3", failsHere(passing, onPhone))
+        // Every song on the phone has failed in this run: it stops there, and says so.
+        assertEquals(null, failsHere(passing, onPhone))
+        assertEquals("s3", playing())
+        // Chosen again by the person, a stale copy is tried again (one more round, which
+        // ends as this one did).
+        player.play(list, 1, "A list", playNow = false)
+        player.setRepeat(Repeat.ALL)
+        settle()
+        assertEquals("s3", failsHere(passing, onPhone))
+        assertEquals(null, failsHere(passing, onPhone))
+        // And once something has played, a run starts afresh.
+        passing.end()
+        assertEquals("s1", failsHere(passing, onPhone))
+    }
 }

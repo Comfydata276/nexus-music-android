@@ -156,6 +156,10 @@ class PlaybackService : MediaLibraryService() {
     private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::scrobble)
     private var failures = 0
 
+    /** The songs passed over, with no server, since something last played (see
+     *  [passOverToThePhone]). */
+    private val passing = Recovery.PassingOver()
+
     /** The try at the server that has been put off (see [Recovery.Retry]); null when the
      *  player isn't waiting for the server. */
     private var waitingFor: Recovery.Retry? = null
@@ -873,6 +877,7 @@ class PlaybackService : MediaLibraryService() {
         era = null
         reading.clear()
         triedAgain.clear()
+        passing.end()
         ahead.want(emptyList())
         old.scope.cancel()
         // Off the main thread: closing writes the cache's index.
@@ -1123,6 +1128,7 @@ class PlaybackService : MediaLibraryService() {
             if (isPlaying) {
                 heardUid = player.queue.currentUid()
                 failures = 0
+                passing.end()
                 stopWaiting()
                 gaveUp = false
                 waitingForCall = false
@@ -1194,6 +1200,7 @@ class PlaybackService : MediaLibraryService() {
                 if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) {
                     goingWell()
                     gaveUp = false
+                    passing.end()
                 }
             } else if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) {
                 // Noted for Diagnostics: straight after Play, this is Android declining to let
@@ -1451,11 +1458,11 @@ class PlaybackService : MediaLibraryService() {
     /** The place of the next entry that plays with no server, in the order the queue will
      *  play it (see [Recovery.nextThatPlays]): asked of the queue itself, which has all of
      *  it, its shuffled order and its repeat, and not of the player's part of it. */
-    private fun nextOnThePhone(): Int? {
+    private fun nextOnThePhone(mayTry: (String) -> Boolean = { true }): Int? {
         val availability = era?.account?.availability ?: return null
         val queue = player.queue
         return Recovery.nextThatPlays(queue.cursor, queue.order.size, queue.repeat) { place ->
-            queue.songs[queue.order[place]].let { it.radioUrl.isEmpty() && availability.plays(it) }
+            queue.songs[queue.order[place]].let { it.radioUrl.isEmpty() && availability.plays(it) && mayTry(it.id) }
         }
     }
 
@@ -1486,16 +1493,19 @@ class PlaybackService : MediaLibraryService() {
 
     /**
      * With no server to be had, the song at the cursor can't be played: on to the next in
-     * the queue that is on the phone, in the order the queue will play ([nextOnThePhone]);
-     * with none, it stays where it is, stopped, and says so.
+     * the queue that is on the phone, in the order the queue will play ([nextOnThePhone]),
+     * and not one that has already failed in this run of passing over ([passing]); with
+     * none, it stays where it is, stopped, and says so.
      */
     private fun passOverToThePhone() {
-        val next = nextOnThePhone()
+        player.queue.current()?.let { passing.failed(player.queue.currentUid(), it.id) }
+        val next = nextOnThePhone(passing::mayTry)
         if (next == null) {
             say(getString(R.string.cant_play_offline))
             return
         }
         player.passTo(next)
+        passing.passedTo(player.queue.currentUid())
         exo.prepare()
     }
 
