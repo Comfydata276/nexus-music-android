@@ -517,6 +517,17 @@ class Queue internal constructor(order: MutableList<Int>) {
         return true
     }
 
+    /** What is playing and everything after it, in the order it will play, as the queue
+     *  stands now: two arrays copied, and the songs made from them only when the function
+     *  given back is called (away from the main thread: a queue can be 50,000 long). */
+    fun fromNowOn(): () -> List<Song> {
+        if (isEmpty) return { emptyList() }
+        val songs = songs.snapshot()
+        val order = IntList(order)
+        val from = cursor
+        return { List(order.size - from) { songs[order[from + it]] } }
+    }
+
     /** A copy of the queue as it stands, for saving. */
     fun saved(position: Double, stamp: Long): SavedQueue = SavedQueue(
         // Two small arrays, not a song each: the songs are made one at a time as it is written.

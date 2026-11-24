@@ -370,7 +370,7 @@ class PlayerConnection(
 
     private fun enqueue(songs: List<Song>, playNext: Boolean) {
         chosen++
-        send(AppCommands.ENQUEUE, Bundle().apply { putString("songs", AppCommands.songsArg(songs)); putBoolean("playNext", playNext) })
+        send(AppCommands.ENQUEUE, AppCommands.enqueueArgs(songs, playNext))
     }
 
     // Each of these names the queue entry it means by the entry's own number (`UpNext.uids`),

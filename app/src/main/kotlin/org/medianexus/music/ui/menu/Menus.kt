@@ -339,10 +339,14 @@ fun Ui.undoPlaylist(record: Playlist) {
     if (account?.playlists?.undoLast(record) == true) toast(graph.resources.getString(R.string.put_back))
 }
 
-/** "Save queue as playlist": the songs in the queue now, in the order they play. */
-fun Ui.saveQueueAsPlaylist(songs: List<Song>) {
-    val wanted = songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }
-    if (wanted.isNotEmpty()) askNewPlaylist(wanted)
+/** "Save queue as playlist": the songs in the queue at the tap, in the order they play
+ *  (`fromNowOn`, taken then), made into songs away from the main thread. */
+fun Ui.saveQueueAsPlaylist(fromNowOn: () -> List<Song>) {
+    val who = account
+    graph.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+        val wanted = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { fromNowOn().filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() } }
+        if (wanted.isNotEmpty() && account === who) askNewPlaylist(wanted)
+    }
 }
 
 /** A question with a name to type (Windows' prompt with text). */

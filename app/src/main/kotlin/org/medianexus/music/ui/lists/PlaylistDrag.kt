@@ -33,13 +33,16 @@ import org.medianexus.music.ui.theme.Theme
  * the playlist as shown, so nothing else is disturbed), and only the drop is a change: the song
  * at one place moved to another, which goes to the playlist's owner as a move by the song and
  * the one it now follows (see `Playlists.move`). A drag that is cancelled changes nothing.
- * Only the rows are reordered; nothing on a page of five thousand songs is rebuilt for it but
- * the rows that move.
+ * Only the rows are reordered; nothing on a page of five thousand songs is rebuilt or copied
+ * for it, and a row crossed costs the same however long the playlist.
  */
 @Stable
 class PlaylistDrag {
-    /** The playlist's places in the order being made, while a song is dragged. */
-    private var order: IntArray? by mutableStateOf(null)
+    /** Where the dragged song was (`from`) and where it has been taken (`to`), as rows: the
+     *  rows in the order being made are the playlist's with that one song moved, so a row
+     *  crossed is one number changed, whatever the playlist's length. Null while nothing is
+     *  dragged (or a drop is waiting for the playlist to have it). */
+    private var moved: Pair<Int, Int>? by mutableStateOf(null)
 
     /** The place (in the playlist as shown) of the song being dragged. */
     var lifted: Int? by mutableStateOf(null)
@@ -49,26 +52,38 @@ class PlaylistDrag {
     var offset by mutableFloatStateOf(0f)
 
     /** The place of the song at `row`: as `shown` has it, or as the drag has made it. */
-    fun at(shown: IntArray, row: Int): Int = order?.getOrNull(row) ?: shown[row]
+    fun at(shown: IntArray, row: Int): Int {
+        val (from, to) = moved ?: return shown[row]
+        return shown[
+            when {
+                row == to -> from
+                from < to && row in from until to -> row + 1
+                from > to && row in to + 1..from -> row - 1
+                else -> row
+            },
+        ]
+    }
 
-    fun start(place: Int, count: Int) {
-        order = IntArray(count) { it }
+    /** A drag starts on the song at `place` (only a playlist in its own order is dragged, so
+     *  its place is its row). */
+    fun start(place: Int) {
+        moved = place to place
         lifted = place
         offset = 0f
     }
 
-    /** The dragged song is over the row of the song at `place`: they change places. */
+    /** The dragged song is over the row of the song at `place`: it takes that row. */
     fun over(place: Int): Boolean {
-        val now = order ?: return false
-        val moving = lifted ?: return false
-        val from = now.indexOf(moving)
-        val to = now.indexOf(place)
-        if (from < 0 || to < 0 || from == to) return false
-        val next = now.copyOf()
-        val song = next[from]
-        if (from < to) System.arraycopy(now, from + 1, next, from, to - from) else System.arraycopy(now, to, next, to + 1, from - to)
-        next[to] = song
-        order = next
+        val (from, to) = moved ?: return false
+        if (lifted == null || place == from) return false
+        // That song's row now: its own place, give or take the one the dragged song left.
+        val row = when {
+            from < to && place in from + 1..to -> place - 1
+            from > to && place in to until from -> place + 1
+            else -> place
+        }
+        if (row == to) return false
+        moved = from to row
         return true
     }
 
@@ -77,8 +92,8 @@ class PlaylistDrag {
      *  don't spring back for a frame. */
     fun drop(): Pair<Int, Int>? {
         val moving = lifted
-        val to = order?.indexOf(moving ?: -1) ?: -1
-        if (moving == null || to < 0 || to == moving) {
+        val to = moved?.second
+        if (moving == null || to == null || to == moving) {
             reset()
             return null
         }
@@ -88,7 +103,7 @@ class PlaylistDrag {
     }
 
     fun reset() {
-        order = null
+        moved = null
         lifted = null
         offset = 0f
     }
@@ -109,11 +124,10 @@ fun DragHandle(title: String, modifier: Modifier) {
  * Song rows are told apart from the rest of the page by their keys ("<place>/<id>").
  */
 @Composable
-fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, count: Int, moved: (Int, Int) -> Boolean): Modifier {
+fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, moved: (Int, Int) -> Boolean): Modifier {
     val scope = rememberCoroutineScope()
     val edge = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
     val onMoved by rememberUpdatedState(moved)
-    val size by rememberUpdatedState(count)
     fun placeOf(key: Any): Int? = (key as? String)?.substringBefore('/', "")?.toIntOrNull()
     fun dragBy(amount: Float) {
         val moving = drag.lifted ?: return
@@ -138,7 +152,7 @@ fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, count
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             down.consume()
-            drag.start(place, size)
+            drag.start(place)
             var finished = false
             try {
                 while (true) {

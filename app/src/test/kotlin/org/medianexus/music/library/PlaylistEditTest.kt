@@ -1,6 +1,7 @@
 package org.medianexus.music.library
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.medianexus.music.library.PlaylistEdits.apply
 import org.medianexus.music.library.PlaylistEdits.moving
@@ -74,6 +75,47 @@ class PlaylistEditTest {
     }
 
     // ---- The phone's own --------------------------------------------------------------------
+
+    @Test
+    fun songsPutBackGoBesideTheSongsThatStayedNotAnotherCopyAddedSince() {
+        val before = songs("a b c")
+        val undo = restoring(before, listOf(1, 2))
+        // Someone else put another "b" at the top meanwhile: "c" still goes back after "b" as
+        // it was, beside "a", not after the new copy.
+        assertEquals(list("b a b c"), apply(list("b a"), undo))
+        // Both after a song that's gone: last, in their order.
+        assertEquals(list("x b c"), apply(list("x"), undo))
+    }
+
+    /** A list that counts how many times its songs are read. */
+    private class Counted<T>(private val items: List<T>) : AbstractList<T>(), RandomAccess {
+        var reads = 0
+        override val size get() = items.size
+        override fun get(index: Int): T {
+            reads++
+            return items[index]
+        }
+    }
+
+    @Test
+    fun takingOutAndPuttingBackHalfALongPlaylistLooksAlongItOnceNotOnceForEachSong() {
+        // The long list of the test server: its 100 songs over and over, 5,000 in all.
+        val library = songs((0 until 100).joinToString(" ") { "s$it" })
+        val long = List(5_000) { library[it % 100] }
+        val ids = Counted(long.map { it.id })
+        val half = (0 until 5_000 step 2).toList()
+        val remove = PlaylistEdits.removing(ids, half)
+        val left = Counted(apply(ids, remove))
+        assertEquals(2_500, positions(ids, remove.spots).size)
+        val before = Counted(long)
+        val undo = restoring(before, half)
+        assertEquals(long.map { it.id }, apply(left, undo))
+        // A few looks along each list (at most four reads of each song), where a look for
+        // each song taken out or put back would be thousands.
+        assertTrue("${ids.reads} reads of 5,000", ids.reads <= 4 * 5_000)
+        assertTrue("${left.reads} reads of 2,500", left.reads <= 4 * 2_500)
+        assertTrue("${before.reads} reads of 5,000", before.reads <= 4 * 5_000)
+    }
 
     @Test
     fun aPlaylistAsShownCarriesTheEditWithEachSongsDetails() {

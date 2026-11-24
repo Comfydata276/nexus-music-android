@@ -372,4 +372,18 @@ class QueueTest {
         q.replace(listOf(named("z")), 0, context = ""); assertTrue(changed())
         q.clear(); assertTrue(changed())
     }
+
+    @Test
+    fun whatIsSavedAsAPlaylistIsTheQueueAtTheTapMadeIntoSongsLaterElsewhere() {
+        val q = queueOf("a", "b", "c", "d")
+        q.cursor = 1
+        val later = q.fromNowOn()
+        // The queue goes on changing after the tap.
+        q.queueUp(listOf(named("x")), playNext = true)
+        q.cursor = 3
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val made = try { pool.submit<List<Song>> { later() }.get() } finally { pool.shutdown() }
+        assertEquals(listOf("b", "c", "d"), made.map { it.id })
+        assertEquals(emptyList<Song>(), Queue().fromNowOn()())
+    }
 }

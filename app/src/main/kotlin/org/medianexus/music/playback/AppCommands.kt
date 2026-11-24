@@ -72,6 +72,18 @@ object AppCommands {
     /** The number of the list a PLAY's screen left for the player (see [Drawn]); 0 if none. */
     fun drawnOf(args: Bundle): Long = args.getLong("drawn")
 
+    /** An ENQUEUE's arguments. The songs are left for the player (see [Drawn]), not written
+     *  out and read back on the main thread at both ends; only a few are written out as well,
+     *  in case they aren't there to take. */
+    fun enqueueArgs(list: List<Song>, playNext: Boolean): Bundle = Bundle().apply {
+        putLong("drawn", Drawn.leave(DrawnList(list, null)))
+        if (list.size <= MOST_SENT) putString("songs", songsArg(list))
+        putBoolean("playNext", playNext)
+    }
+
+    /** The songs an ENQUEUE asks for. */
+    fun enqueuedOf(args: Bundle): List<Song> = Drawn.take(drawnOf(args))?.songs ?: songsOf(args)
+
     /**
      * The queue a PLAY asks for, made ready to play. `drawn` is the list as the screen drew
      * it, taken from [Drawn]: what plays. Without it (the app's process started again since
@@ -159,7 +171,7 @@ object AppCommands {
     ): Boolean {
         when (command.customAction) {
             PLAY.customAction -> player.play((queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor), plays, dates) as? Started.Ready)?.queue ?: return false)
-            ENQUEUE.customAction -> player.enqueue(songsOf(args), args.getBoolean("playNext"))
+            ENQUEUE.customAction -> player.enqueue(enqueuedOf(args), args.getBoolean("playNext"))
             // Each of these names the entry it means by the entry's own number (see
             // Queue.dropUid), not by where it was on the screen when it was tapped.
             MOVE.customAction -> player.moveEntry(args.getLong("uid", NONE), args.getLong("after", NONE).takeIf { it != NONE }, args.getBoolean("queued"))

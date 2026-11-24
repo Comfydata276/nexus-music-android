@@ -10,6 +10,12 @@ import org.medianexus.music.net.Song
 // another app, can add or remove songs after that. So a change made on the page is never sent
 // as "song number 7" or as the page's whole list: it is described by the songs themselves, and
 // carried out on the playlist as the server has it at that moment.
+//
+// One difference from Windows: songs put back (Undo of a removal, an Insert) each go after a
+// song that stayed, not after the one put back before them, and all go in on one pass along
+// the list. So putting back half of a long playlist doesn't look along it once for each song;
+// and a song put back can't be sent after another copy of its neighbour that someone else
+// added in the meantime, ahead of the one it was beside.
 
 /** One song's place in a list where the same song can appear more than once: the song, and
  *  which of its appearances this is (0 for the first). */
@@ -33,7 +39,8 @@ sealed interface PlaylistEdit {
     
     data class Move(val song: Spot, val after: Spot?) : PlaylistEdit
 
-    /** Put songs in, each straight after another (or first), in the order given. */
+    /** Put songs in, each straight after a song of the list as it was before any of them
+     *  went in (or first); several after the same song go in the order given. */
     
     data class Insert(val songs: List<Placed>) : PlaylistEdit
 
@@ -78,28 +85,59 @@ object PlaylistEdits {
     private fun following(list: List<String>, after: Spot?): Int =
         if (after == null) 0 else place(list, after)?.let { it + 1 } ?: list.size
 
+    /** Each song of a list in turn, as the spot it is: one pass along the list names them all
+     *  (where [spot] for each would look back along the list each time). */
+    private class Spots {
+        private val seen = HashMap<String, Int>()
+
+        fun next(id: String): Spot {
+            val nth = seen.getOrDefault(id, 0)
+            seen[id] = nth + 1
+            return Spot(id, nth)
+        }
+    }
+
     /** The positions of these songs in the list as it is now, lowest first. A song that's no
-     *  longer there (or whose second copy is no longer there) is left out. */
-    fun positions(now: List<String>, spots: List<Spot>): List<Int> = spots.mapNotNull { place(now, it) }.distinct().sorted()
+     *  longer there (or whose second copy is no longer there) is left out. Like [apply],
+     *  [restoring] and [removing], one pass along the list however many songs: half of a
+     *  playlist of thousands taken out is a look through it once, not once for each song. */
+    fun positions(now: List<String>, spots: List<Spot>): List<Int> {
+        val wanted = spots.toHashSet()
+        val spot = Spots()
+        return now.indices.filter { wanted.isNotEmpty() && wanted.remove(spot.next(now[it])) }
+    }
 
     /** Carries out an edit on the list as it is now (Windows' `apply`). Rename and Delete
      *  leave the songs as they are. */
-    fun apply(now: List<String>, edit: PlaylistEdit): List<String> {
-        val list = now.toMutableList()
-        when (edit) {
-            is PlaylistEdit.Remove -> for (index in positions(now, edit.spots).reversed()) list.removeAt(index)
-            is PlaylistEdit.Move -> {
-                // A song that has been taken out elsewhere isn't put back by moving it.
-                place(list, edit.song)?.let { from ->
-                    val id = list.removeAt(from)
-                    list.add(following(list, edit.after), id)
-                }
-            }
-            is PlaylistEdit.Insert -> for (placed in edit.songs) list.add(following(list, placed.after), placed.song.id)
-            is PlaylistEdit.Append -> edit.songs.mapTo(list) { it.id }
-            is PlaylistEdit.Rename, PlaylistEdit.Delete, is PlaylistEdit.Create -> {}
+    fun apply(now: List<String>, edit: PlaylistEdit): List<String> = when (edit) {
+        is PlaylistEdit.Remove -> {
+            val gone = positions(now, edit.spots).toHashSet()
+            now.filterIndexed { index, _ -> index !in gone }
         }
-        return list
+        is PlaylistEdit.Move -> now.toMutableList().apply {
+            // A song that has been taken out elsewhere isn't put back by moving it.
+            place(this, edit.song)?.let { from ->
+                val id = removeAt(from)
+                add(following(this, edit.after), id)
+            }
+        }
+        is PlaylistEdit.Insert -> {
+            // Each after the song it follows, all on one pass along the list; those whose
+            // song has gone, last, in the order given.
+            val after = LinkedHashMap<Spot?, MutableList<String>>()
+            for (placed in edit.songs) after.getOrPut(placed.after) { ArrayList() } += placed.song.id
+            val out = ArrayList<String>(now.size + edit.songs.size)
+            after.remove(null)?.let(out::addAll)
+            val spot = Spots()
+            for (id in now) {
+                out += id
+                if (after.isNotEmpty()) after.remove(spot.next(id))?.let(out::addAll)
+            }
+            after.values.forEach(out::addAll)
+            out
+        }
+        is PlaylistEdit.Append -> now + edit.songs.map { it.id }
+        is PlaylistEdit.Rename, PlaylistEdit.Delete, is PlaylistEdit.Create -> now
     }
 
     /** The edit that moves the song at `from` to `to` in `list`. */
@@ -109,15 +147,25 @@ object PlaylistEdits {
         return PlaylistEdit.Move(song, if (to > 0) spot(without, to - 1) else null)
     }
 
-    /** The edit that puts back the songs that were at these places in `before` (lowest first). */
-    fun restoring(before: List<Song>, places: List<Int>): PlaylistEdit.Insert {
-        val ids = before.map { it.id }
-        return PlaylistEdit.Insert(places.map { index -> Placed(before[index], if (index > 0) spot(ids, index - 1) else null) })
+    /** The edit that puts back the songs that were at these places in `before`: each after
+     *  the nearest song before it that stayed (or first, with none). */
+    fun restoring(before: List<Song>, places: Collection<Int>): PlaylistEdit.Insert {
+        val back = places.toHashSet()
+        val spot = Spots()
+        var stayed: Spot? = null
+        val songs = ArrayList<Placed>(back.size)
+        for ((index, song) in before.withIndex()) {
+            if (index in back) songs += Placed(song, stayed) else stayed = spot.next(song.id)
+        }
+        return PlaylistEdit.Insert(songs)
     }
 
     /** The edit that takes out the songs at these rows of `list`. */
-    fun removing(list: List<String>, rows: Collection<Int>): PlaylistEdit.Remove =
-        PlaylistEdit.Remove(rows.distinct().sorted().map { spot(list, it) })
+    fun removing(list: List<String>, rows: Collection<Int>): PlaylistEdit.Remove {
+        val out = rows.toHashSet()
+        val spot = Spots()
+        return PlaylistEdit.Remove(list.mapIndexedNotNull { index, id -> spot.next(id).takeIf { index in out } })
+    }
 
     /**
      * A playlist as the phone shows it with `edit` carried out: its songs (each song's details

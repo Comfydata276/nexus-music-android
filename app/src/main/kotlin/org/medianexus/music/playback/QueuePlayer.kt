@@ -691,8 +691,8 @@ class QueuePlayer(
     }
 
     /** What is playing and everything after it, in the order it will play (what Windows'
-     *  "Save queue as playlist" saves). On the main thread. */
-    fun fromNowOn(): List<Song> = if (queue.isEmpty) emptyList() else List(queue.order.size - queue.cursor) { queue.songs[queue.order[queue.cursor + it]] }
+     *  "Save queue as playlist" saves): taken on the main thread, made off it (see Queue). */
+    fun fromNowOn(): () -> List<Song> = queue.fromNowOn()
 
     // ---- Internet radio ---------------------------------------------------------------------
 

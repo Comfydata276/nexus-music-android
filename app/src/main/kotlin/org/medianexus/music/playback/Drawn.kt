@@ -15,7 +15,8 @@ class DrawnList(val songs: List<Song>, val shown: IntArray?)
  * of the library arriving, can have changed it in between). The screens and the playback
  * service run in one process (the service has no `android:process`), so nothing is copied:
  * the screen leaves the object here and sends its number with the PLAY; the service takes it
- * out. A few at most, each taken once; nothing is written anywhere. A number that isn't here
+ * out. Songs queued by hand (an ENQUEUE) come the same way, so that a selection of thousands
+ * isn't written out and read back on the main thread. A few at most, each taken once; nothing is written anywhere. A number that isn't here
  * (the app's process was started again in between) is played the way it was before: by
  * reading the list again.
  */

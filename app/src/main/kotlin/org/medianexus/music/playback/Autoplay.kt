@@ -158,6 +158,7 @@ class Rejoins {
 object QueueNow {
     @Volatile internal var player: java.lang.ref.WeakReference<QueuePlayer>? = null
 
-    /** What is playing and everything after it, in the order it will play. */
-    fun fromNowOn(): List<org.medianexus.music.net.Song> = player?.get()?.fromNowOn().orEmpty()
+    /** What is playing and everything after it, in the order it will play, as it is now; the
+     *  songs are made when the function given back is called, which can be off this thread. */
+    fun fromNowOn(): () -> List<org.medianexus.music.net.Song> = player?.get()?.fromNowOn() ?: { emptyList() }
 }
