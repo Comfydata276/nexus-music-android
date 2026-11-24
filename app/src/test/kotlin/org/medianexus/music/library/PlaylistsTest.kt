@@ -264,6 +264,20 @@ class PlaylistsTest {
         assertEquals("a c d e", ids(playlists.shown(pages.kept(spec("p1"))!!)))
     }
 
+    /** What the page draws while a move is still on its way, which is what a tap on a row
+     *  hands the player (D2): the playlist as shown, with the move. */
+    @Test
+    fun aMoveStillOnItsWayIsInWhatThePageShows() = runBlocking<Unit> {
+        val page = opened()
+        val (reached, open) = server.hold("replace")
+        playlists.move(page, 4, 0)
+        reached.await()
+        assertEquals("e a b c d", ids(playlists.shown(pages.kept(spec("p1"))!!)))
+        open.complete(Unit)
+        settled()
+        assertEquals("e a b c d", ids(playlists.shown(pages.kept(spec("p1"))!!)))
+    }
+
     @Test
     fun aRefreshThatCrossesAnAddShowsTheSongOnce() = runBlocking<Unit> {
         val page = opened()

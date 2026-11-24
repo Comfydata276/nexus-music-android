@@ -283,7 +283,7 @@ fun SongListPage(
                                     showDuration = true,
                                     mark = marks.rowMark(song),
                                     handle = if (!canDrag) null else ({
-                                        DragHandle(song.title, Modifier.dragRows(drag, list, index, songs.size) { from, to -> editable?.let { ui.movePlaylistSong(it, from, to) } })
+                                        DragHandle(song.title, Modifier.dragRows(drag, list, index, songs.size) { from, to -> editable?.let { ui.movePlaylistSong(it, from, to) } ?: false })
                                     }),
                                     actions = if (!canDrag) emptyList() else buildList {
                                         val playlist = editable ?: return@buildList

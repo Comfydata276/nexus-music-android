@@ -325,12 +325,13 @@ fun Ui.removeFromPlaylist(playlist: Playlist, rows: List<Int>) {
 }
 
 /** Moves a playlist's song from one row to another (the playlist in its own order), with
- *  "Undo" on the toast (Windows' `move_playlist_track`). */
-fun Ui.movePlaylistSong(playlist: Playlist, from: Int, to: Int) {
-    val account = account ?: return
+ *  "Undo" on the toast (Windows' `move_playlist_track`). False if it wasn't made (and said why). */
+fun Ui.movePlaylistSong(playlist: Playlist, from: Int, to: Int): Boolean {
+    val account = account ?: return false
     val res = graph.resources
-    if (from == to || !said(account.playlists.move(playlist, from, to))) return
+    if (from == to || !said(account.playlists.move(playlist, from, to))) return false
     graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(playlist) }
+    return true
 }
 
 /** Windows' `undo_last`: "Put back". */

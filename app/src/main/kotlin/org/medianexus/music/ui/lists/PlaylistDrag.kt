@@ -109,7 +109,7 @@ fun DragHandle(title: String, modifier: Modifier) {
  * Song rows are told apart from the rest of the page by their keys ("<place>/<id>").
  */
 @Composable
-fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, count: Int, moved: (Int, Int) -> Unit): Modifier {
+fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, count: Int, moved: (Int, Int) -> Boolean): Modifier {
     val scope = rememberCoroutineScope()
     val edge = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
     val onMoved by rememberUpdatedState(moved)
@@ -153,7 +153,9 @@ fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, count
                     if (dy != 0f) dragBy(dy)
                 }
             } finally {
-                if (finished) drag.drop()?.let { (from, to) -> onMoved(from, to) } else drag.reset()
+                // A move that isn't made lets the rows go back: what is drawn is always what a tap
+                // would play (the playlist as shown, with the move once it is made).
+                if (finished) drag.drop()?.let { (from, to) -> if (!onMoved(from, to)) drag.reset() } else drag.reset()
             }
         }
     }
