@@ -61,6 +61,13 @@ class DownloadsTest {
     private val settings = MutableStateFlow(Settings(downloadWifiOnly = false))
     private val reach = MutableStateFlow(Reach())
     private val asked: MutableList<RecordedRequest> = Collections.synchronizedList(mutableListOf())
+
+    /** The size the server's library gives a song, where that is not its file's. */
+    private val librarySize = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** By which network the server was asked whether it is there, each time (null: the
+     *  phone's default route). */
+    private val pings: MutableList<String?> = Collections.synchronizedList(mutableListOf())
     private val kept = mutableListOf<Pair<Boolean, Boolean>>()
     private var spare = 0L
 
@@ -80,8 +87,19 @@ class DownloadsTest {
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
+                // "Are you there?", asked by whichever way the downloads will go out.
+                if (request.url.encodedPath.endsWith("/ping") || request.url.encodedPath.endsWith("/ping.view")) {
+                    pings += request.headers["X-Via"]
+                    return MockResponse.Builder().code(200).setHeader("Content-Type", "application/json")
+                        .body("""{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.58.0"}}""").build()
+                }
                 asked += request
                 val id = request.url.queryParameter("id").orEmpty()
+                // The library's own word on a song: as it was asked for, here.
+                if (request.url.encodedPath.contains("getSong")) {
+                    return MockResponse.Builder().code(200).setHeader("Content-Type", "application/json")
+                        .body(String(GatedServer.song(id, "flac", librarySize[id] ?: (files[id]?.size?.toLong() ?: 0), 10).body)).build()
+                }
                 val bytes = files[id]
                 if (bytes == null || id in missing) return MockResponse.Builder().code(404).setHeader("Content-Type", "application/json").body("{}").build()
                 val from = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toIntOrNull() ?: 0
@@ -934,37 +952,90 @@ class DownloadsTest {
     }
 
     @Test
-    fun anUnmeteredNetworkThatDoesNotReachTheServerIsLeftAloneNotHammered() {
+    fun anUnmeteredNetworkThatDoesNotReachTheServerIsAskedOnceInAWhileAndNoSongIsThrownAtIt() {
         settings.value = Settings(downloadWifiOnly = true)
         network.value = mobileData
         val both = FakeRoutes().also { routes = it }
         // A Wi-Fi that is up and on which the server can't be reached (a sign-in page, a
         // network the server isn't on). Mobile data would reach it; Wi-Fi only says not to.
-        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val reaches = java.util.concurrent.atomic.AtomicBoolean(false)
+        val attempts: MutableList<String> = Collections.synchronizedList(mutableListOf())
         both.now.value = org.medianexus.music.net.BoundRoute(
             "cafe",
-            OkHttpClient.Builder().addInterceptor { attempts.incrementAndGet(); throw java.net.ConnectException("refused") }.build(),
+            OkHttpClient.Builder().addInterceptor { chain ->
+                attempts += chain.request().url.encodedPath.substringAfterLast('/')
+                if (!reaches.get()) throw java.net.ConnectException("refused")
+                chain.proceed(chain.request().newBuilder().header("X-Via", "cafe").build())
+            }.build(),
         )
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download((1..8).map { song("s$it") }) }
-        until("left alone") { engine.state.value.held == Held.WIFI && engineNotes.any { "the unmetered network didn't reach the server" in it } }
-        until("its threads have let go") { InFlight.count(catalogue.dir) == 0 }
-        val tried = attempts.get()
-        repeat(100) { idle() }
-        Thread.sleep(300)
-        idle()
-        // A try or two, and then none: not every song thrown at it until all have failed.
-        assertTrue("it was tried $tried times", tried in 1..4)
-        assertEquals(tried, attempts.get())
+        // The server is asked whether it is there, on that network, and doesn't answer.
+        until("held for the server") { engine.state.value.held == Held.SERVER && engineNotes.any { "the server didn't answer on the unmetered network" in it } }
+        // One question, and nothing else: no song was sent that way, nothing has failed,
+        // and nothing at all went by the default route. (Every waiting song used to be
+        // thrown at it, a minute apart, until all had failed.)
+        until("all eight waiting") { engine.state.value.active.size == 8 }
+        assertEquals(listOf("ping"), attempts.toList())
         assertTrue(engine.state.value.failed.isEmpty())
-        assertEquals(8, engine.state.value.active.size)
-        // Nothing went by the default route.
-        assertTrue(asked.isEmpty())
-        engine.cancelAll()
+        assertTrue(engine.state.value.active.all { it.state == SongState.Waiting })
+        assertTrue(asked.isEmpty() && pings.isEmpty())
+        // Asked again after a pause, by the engine's own clock (the main looper's, which
+        // only the test moves on): not before the pause is up, and still only the question.
+        val clock = shadowOf(Looper.getMainLooper())
+        clock.idleFor(org.medianexus.music.ServerWatch.AGAIN_MILLIS - 1_000, TimeUnit.MILLISECONDS)
+        repeat(20) { idle() }
+        assertEquals(listOf("ping"), attempts.toList())
+        until("asked again") { clock.idleFor(1, TimeUnit.SECONDS); attempts.size >= 2 }
+        until("and again") { clock.idleFor(1, TimeUnit.SECONDS); attempts.size >= 3 }
+        assertTrue(attempts.all { it == "ping" })
+        assertTrue(engine.state.value.failed.isEmpty())
+        // The Wi-Fi now reaches the server (signed in to its page): the next question is
+        // answered, and the songs go by it.
+        reaches.set(true)
+        until("all downloaded") { clock.idleFor(1, TimeUnit.SECONDS); engine.state.value.downloaded.size == 8 && !engine.state.value.busy }
+        assertTrue(asked.all { it.headers["X-Via"] == "cafe" })
+        assertEquals(listOf<String?>("cafe"), pings.toList())
     }
 
-    // ---- Room, as bytes arrive; and all of it given back (offline hardening 2, item 5) -------
+    @Test
+    fun withWifiOnlyTheServerIsAskedOnTheUnmeteredNetworkNotThePhonesOwnRoute() {
+        settings.value = Settings(downloadWifiOnly = true)
+        // Wi-Fi and mobile data are both up, the phone's own route is mobile data, and by
+        // that route the server can't be reached: the app as a whole is out of reach of it.
+        network.value = mobileData
+        reach.value = Reach(unreachable = true)
+        val both = FakeRoutes().also { routes = it }
+        both.now.value = both.network("wifi")
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1"))) }
+        // On the Wi-Fi it answers, and that is the network the download will use: it runs.
+        // (It used to wait for the server to answer on a route it was never going to use.)
+        until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
+        assertEquals(listOf<String?>("wifi"), via("s1"))
+        assertEquals(listOf<String?>("wifi"), pings.toList())
+    }
+
+    @Test
+    fun whatADownloadAsksOfTheLibraryGoesByItsOwnNetwork() {
+        settings.value = Settings(downloadWifiOnly = true)
+        network.value = mobileData
+        val both = FakeRoutes().also { routes = it }
+        both.now.value = both.network("wifi")
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        // The library's size for the song is not the file's: the server is asked for the
+        // song again, once (it has no newer word here, and the download fails for that).
+        val song = song("s1").copy(size = 123)
+        librarySize["s1"] = 123
+        run { engine.download(listOf(song)) }
+        until("settled") { !engine.state.value.busy && engine.state.value.failed.isNotEmpty() }
+        val again = synchronized(asked) { asked.filter { it.url.encodedPath.contains("getSong") } }
+        assertTrue(again.isNotEmpty())
+        assertTrue("it went by ${again.map { it.headers["X-Via"] }}", again.all { it.headers["X-Via"] == "wifi" })
+    }
 
     @Test
     fun aDownloadIsStoppedCleanlyBeforeThePhoneIsFull() {

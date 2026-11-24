@@ -37,22 +37,71 @@ interface UnmeteredRoutes {
  * wanted, the system is asked for a network that is unmetered (`requestNetwork`, so the
  * system also keeps one up for the app if it can), and transfers are bound to exactly the
  * network it gives ([BoundRoute]). When that network goes, or the system says it has turned
- * metered, there is no route, at once, on the thread the system says so on.
+ * metered, there is no route, at once, on the thread the system says so on. **Each time a
+ * network is taken it is a new route**: the same network gone and back, or metered and
+ * unmetered again, is not the route a transfer began on.
  *
  * What the phone's *default* network is does not come into it: with Wi-Fi and mobile data
  * both up, the default can flip to mobile data (a Wi-Fi with no internet beyond it, a weak
  * one) while the Wi-Fi is still there; a connection made on the default route then goes out
  * over mobile data with nothing to say so. A connection bound to the Wi-Fi cannot.
  *
+ * **If Android won't take the request, or says it can't be met, it is asked again**, after a
+ * pause that grows (five seconds, then twice as long each time, up to five minutes), for as
+ * long as it is wanted: there is no route meanwhile, which is "Waiting for Wi-Fi", and is
+ * true. (A request Android refused used to be asked again only when something next
+ * happened to the downloads, and one it reported unavailable, which Android then drops,
+ * never: Wi-Fi coming back later was not heard of.) **When it is no longer wanted the
+ * request is given up**, so the phone is not kept holding a second network up for nothing.
+ *
  * Whether Android has "validated" the network is not asked (see [NetworkWatch]).
  */
-class UnmeteredNetwork(context: Context, private val http: OkHttpClient, private val note: (String) -> Unit = {}) : UnmeteredRoutes {
-    private val connectivity: ConnectivityManager? = context.getSystemService(ConnectivityManager::class.java)
+class UnmeteredNetwork(
+    private val http: OkHttpClient,
+    private val system: Asking,
+    private val note: (String) -> Unit = {},
+    /** A client whose connections all go by `network` (a test's own, where there is none). */
+    private val bind: (OkHttpClient, Network) -> OkHttpClient = ::boundTo,
+) : UnmeteredRoutes {
+    constructor(context: Context, http: OkHttpClient, note: (String) -> Unit = {}) : this(http, OfTheSystem(context), note)
+
+    /** Android's side of it: asking for a network, watching for one, and letting go. */
+    interface Asking {
+        /** Asks the system for a network that meets `request` (and to keep one up if it
+         *  can). Throws what Android throws when it won't take the request. */
+        fun request(request: NetworkRequest, callback: ConnectivityManager.NetworkCallback, on: Handler)
+
+        /** Only watches for one that is already there. Throws likewise. */
+        fun watch(request: NetworkRequest, callback: ConnectivityManager.NetworkCallback, on: Handler)
+
+        fun release(callback: ConnectivityManager.NetworkCallback)
+    }
+
+    private class OfTheSystem(context: Context) : Asking {
+        private val connectivity: ConnectivityManager? = context.getSystemService(ConnectivityManager::class.java)
+        private val manager get() = connectivity ?: throw IllegalStateException("No connectivity service")
+
+        override fun request(request: NetworkRequest, callback: ConnectivityManager.NetworkCallback, on: Handler) = manager.requestNetwork(request, callback, on)
+
+        override fun watch(request: NetworkRequest, callback: ConnectivityManager.NetworkCallback, on: Handler) = manager.registerNetworkCallback(request, callback, on)
+
+        override fun release(callback: ConnectivityManager.NetworkCallback) {
+            runCatching { connectivity?.unregisterNetworkCallback(callback) }
+        }
+    }
+
     private val main = Handler(Looper.getMainLooper())
     private val route = MutableStateFlow<BoundRoute?>(null)
     override val now: StateFlow<BoundRoute?> = route.asStateFlow()
 
-    private var asked = false
+    /** Whether a network is wanted, and whether the system is holding a request for one. */
+    private var wanted = false
+    private var held = false
+
+    /** How long before the system is asked again, after it wouldn't or couldn't. */
+    private var pause = FIRST_PAUSE_MILLIS
+    private var said = false
+    private val again = Runnable { if (wanted && !held) ask() }
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
@@ -64,14 +113,23 @@ class UnmeteredNetwork(context: Context, private val http: OkHttpClient, private
         override fun onLost(network: Network) = drop(network)
 
         override fun onUnavailable() {
+            // The system can't meet the request, **and has let go of it** (as if it had been
+            // unregistered): nothing more will be heard on this callback. Asked again later.
             route.value?.let { drop(it.network) }
+            if (!wanted) return
+            held = false
+            later("Android has no unmetered network to give")
         }
     }
 
     private fun take(network: Network) {
+        if (!wanted) return
         if (route.value?.network == network) return
         route.value?.let { drop(it.network) }
-        route.value = BoundRoute(network, boundTo(http, network))
+        route.value = BoundRoute(network, bind(http, network))
+        // (It works: the next time it doesn't, the asking starts from a short pause again.)
+        pause = FIRST_PAUSE_MILLIS
+        said = false
     }
 
     private fun drop(network: Any) {
@@ -82,32 +140,51 @@ class UnmeteredNetwork(context: Context, private val http: OkHttpClient, private
     }
 
     override fun want(on: Boolean) = onMain {
-        if (on == asked) return@onMain
-        asked = on
-        val manager = connectivity ?: return@onMain
+        if (on == wanted) return@onMain
+        wanted = on
+        main.removeCallbacks(again)
         if (!on) {
-            runCatching { manager.unregisterNetworkCallback(callback) }
+            // Given up: the system holds no network for the app that nothing is waiting for.
+            if (held) system.release(callback)
+            held = false
+            pause = FIRST_PAUSE_MILLIS
+            said = false
             route.value?.let { drop(it.network) }
             return@onMain
         }
+        ask()
+    }
+
+    private fun ask() {
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
             // A VPN counts, as it does for the job (see DownloadKeeper.job).
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
-        try {
-            manager.requestNetwork(request, callback, main)
+        held = try {
+            system.request(request, callback, main)
+            true
         } catch (e: RuntimeException) {
             // Not to be had that way (too many requests; a system that won't allow it):
             // watched for instead, which gives the same network when there is one.
             try {
-                manager.registerNetworkCallback(request, callback, main)
+                system.watch(request, callback, main)
+                true
             } catch (e: RuntimeException) {
-                asked = false
-                note("downloads: Android would not say which network is unmetered (${e.javaClass.simpleName}); Wi-Fi only waits")
+                false
             }
         }
+        if (!held) later("Android would not say which network is unmetered")
+    }
+
+    /** Asked again after the pause, which then grows. Said once for each spell of it. */
+    private fun later(why: String) {
+        if (!said) note("downloads: $why; Wi-Fi only waits, and it is asked again after a pause that grows")
+        said = true
+        main.removeCallbacks(again)
+        main.postDelayed(again, pause)
+        pause = minOf(pause * 2, MOST_PAUSE_MILLIS)
     }
 
     private fun onMain(block: () -> Unit) {
@@ -115,6 +192,9 @@ class UnmeteredNetwork(context: Context, private val http: OkHttpClient, private
     }
 
     companion object {
+        const val FIRST_PAUSE_MILLIS = 5_000L
+        const val MOST_PAUSE_MILLIS = 5 * 60_000L
+
         /** `http`, with every connection made on `network` and none shared with any other
          *  client's. */
         fun boundTo(http: OkHttpClient, network: Network): OkHttpClient = http.newBuilder()

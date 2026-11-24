@@ -79,6 +79,11 @@ class Subsonic private constructor(
     /** The same sign-in, under another offline switch. */
     fun sharing(offline: OfflineSwitch): Subsonic = Subsonic(server, username, salt, token, http, offline, io)
 
+    /** The same sign-in, asked by another way out (a client bound to one network: see
+     *  `BoundRoute`). What it finds says nothing about the phone's own route, and is not
+     *  told to [onReached]. */
+    fun over(client: OkHttpClient): Subsonic = Subsonic(server, username, salt, token, client, offline, io)
+
     /** In offline mode nothing is sent: requests fail straight away. */
     fun setOffline(on: Boolean) {
         offline.on = on

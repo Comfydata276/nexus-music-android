@@ -199,10 +199,22 @@ class SongFetch(
 
     @Volatile private var call: Call? = null
     @Volatile private var cancelled = false
+    @Volatile private var gone = false
 
     /** Stops the fetch from another thread: what has arrived stays for next time. */
     fun cancel() {
         cancelled = true
+        call?.cancel()
+    }
+
+    /**
+     * The way this fetch went out may no longer be used (its network has gone or turned
+     * metered; Wi-Fi only was switched on): **its request is cancelled now**, from whatever
+     * thread says so, not when a read next returns to notice. It ends as [RouteGone], with
+     * what had arrived kept.
+     */
+    fun routeGone() {
+        gone = true
         call?.cancel()
     }
 
@@ -386,8 +398,10 @@ class SongFetch(
                     while (true) {
                         if (cancelled) throw Cancelled()
                         // The network this is on has gone, or may no longer be used:
-                        // nothing more is taken from it.
-                        if (!mayRun()) throw RouteGone()
+                        // nothing more is taken from it. (Its request is cancelled as that
+                        // happens, see [routeGone]; this is the same question, asked again
+                        // before each read.)
+                        if (gone || !mayRun()) throw RouteGone()
                         val got = source.read(buffer)
                         if (got < 0) break
                         out.write(buffer, 0, got)
@@ -505,6 +519,8 @@ class SongFetch(
             if (fresh) return false
             fresh = true
             val now = try {
+                // (By the way this fetch went out, if it may still be used.)
+                if (gone || !mayRun()) throw RouteGone()
                 refresh(asked.id)
             } catch (e: IOException) {
                 throw failure(e)
@@ -576,9 +592,10 @@ class SongFetch(
 
     private fun open(request: Request): okhttp3.Response {
         if (cancelled) throw Cancelled()
+        if (gone) throw RouteGone()
         val made = http.newCall(request)
         call = made
-        if (cancelled) made.cancel()
+        if (cancelled || gone) made.cancel()
         return made.execute()
     }
 
@@ -586,6 +603,7 @@ class SongFetch(
      *  server's address. */
     private fun failure(e: IOException): IOException {
         if (cancelled) return Cancelled()
+        if (gone) return RouteGone()
         if (e is DownloadFailure || e is Cancelled || e is RouteGone) return e
         val chain = generateSequence<Throwable>(e) { it.cause }.take(8).toList()
         val full = chain.any { (it.message.orEmpty()).contains("ENOSPC") || it.message.orEmpty().contains("No space left", ignoreCase = true) }

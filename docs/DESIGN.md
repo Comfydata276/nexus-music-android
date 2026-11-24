@@ -1052,44 +1052,72 @@ runs ten minutes at a time and is then put off by Android's quotas, so a long do
 the app on screen is held up by a foreground service there.
 
 **When downloads may run, and on what** (`Downloads.gate`, `NetworkWatch`,
-`UnmeteredNetwork`). Decided in one place, from: offline mode; whether our own server answers
-(`ServerWatch`); whether Android has stopped the job; and the network. **Never from whether
-Android has "validated" the network as reaching the internet**: a music server on a home
-Wi-Fi with no internet beyond it is there all the same. Media3's own network requirement
+`UnmeteredNetwork`). Decided in one place, from: offline mode; the network; whether our own
+server answers **on that network**; and whether Android has stopped the job. **Never from
+whether Android has "validated" the network as reaching the internet**: a music server on a
+home Wi-Fi with no internet beyond it is there all the same. Media3's own network requirement
 waits for a validated network and re-checks on validation changing, so Media3 is asked for
 none; and `JobInfo.setRequiredNetworkType` asks for a validated network too, so the job asks
 for its network by what it is (`setRequiredNetwork`: carries ordinary traffic, VPN or not;
 unmetered for Wi-Fi only).
 
-**"Download on Wi-Fi only" is a promise, not a look at the default route.** With Wi-Fi and
-mobile data both up, the phone's default network can be mobile data while the Wi-Fi is
-there (a Wi-Fi with no internet beyond it; a weak one), and can change between one look and
-the next. So with Wi-Fi only on:
+**"Download on Wi-Fi only" is a promise, not a look at the default route, and it holds for
+the whole life of a transfer.** With Wi-Fi and mobile data both up, the phone's default
+network can be mobile data while the Wi-Fi is there (a Wi-Fi with no internet beyond it; a
+weak one), and can change between one look and the next. So with Wi-Fi only on:
 
 - while downloads are waiting the system is asked for an unmetered network
   (`ConnectivityManager.requestNetwork`; `CHANGE_NETWORK_STATE` is declared for it), and
-  **every attempt at a transfer is bound to exactly the network it gives**: its sockets and
-  its name lookups (`BoundRoute`). Nothing else is used; the covers kept with the downloads
-  come the same way;
-- with none, nothing is transferred, whatever the default route looks like ("Waiting for
-  Wi-Fi");
-- a transfer in flight takes no more bytes once its network has gone or turned metered
-  (asked at every read), and waits; it carries on, from where it stopped, by the next
-  unmetered network. Switching Wi-Fi only on stops a transfer that was going by the default
-  route;
-- each attempt takes its route as it begins (a downloader that had been running used to
-  keep the client it was made with);
-- an unmetered network that is up and doesn't reach the server (a sign-in page) is left
-  alone for a minute, rather than having every waiting song thrown at it until all have
-  failed. Nothing else is tried meanwhile: that is what the setting says.
+  **every transfer is bound to exactly the network it gives**: its sockets and its name
+  lookups (`BoundRoute`). Nothing else is used; the covers kept with the downloads come the
+  same way, and so does the one other thing a download may ask of the server (the song as
+  the library has it now, when a size disagrees);
+- **if Android won't take that request, or reports it unavailable (which is also Android
+  dropping it), it is asked again** after a pause that grows (five seconds, then twice as
+  long each time, up to five minutes) for as long as something is waiting; **when nothing
+  is waiting the request is given up**, so the phone is not kept holding a second network
+  up for nothing;
+- with no such network, nothing is transferred, whatever the default route looks like
+  ("Waiting for Wi-Fi", which is then true);
+- **whether the server can be reached is asked on that network**, not on the phone's own
+  route (`Downloads.askOn`): until it has answered there nothing is sent that way, and
+  while it doesn't (a sign-in page; a network the server isn't on) it is asked again there,
+  less often the longer it has been, and no song is thrown at it ("Waiting for the server").
+  Nothing else is tried meanwhile: that is what the setting says. What the app as a whole
+  knows of the server (`ServerWatch`, asked on the phone's own route) decides nothing here:
+  downloads used to wait for a server the Wi-Fi reached perfectly well because mobile data
+  didn't, and used to be thrown at a Wi-Fi the server wasn't on, a minute apart, because
+  mobile data did;
+- **a request under way is cancelled the moment its way out may no longer be used**
+  (`Downloads.stopStrays`, `SongFetch.routeGone`): the network gone, turned metered, or
+  given up for another; or Wi-Fi only switched on while a transfer was going by the phone's
+  own route. The HTTP call itself is cancelled, a song's or a cover's, on the thread the
+  change is heard on. (A transfer used to be asked before each read, so one on a stalled
+  link was not told until its connection next gave it something, and a cover was never
+  told.) **"The same way out" is the very route it began on, not the same network**: a
+  network that turned metered and back, or went and came back, is another route. What had
+  arrived is kept, and carried on from by the next unmetered network, at once if the system
+  has already given one;
+- each attempt takes its route as it begins.
 
-With Wi-Fi only off: any network, as the system reports it (there or not), and transfers go
-out on the network Android gave the job (followed when Android gives it another:
-`onNetworkChanged`), falling back to the phone's own route if that network doesn't reach the
-server. **When Android stops the job** (`onStopJob`: the network it was given went, its time
-is up) the transfers stop with it, there and then ("Paused by Android for now"), and resume
-when the job runs again or the app is opened. Signed out, the job is cancelled, running or
-not, and the service stopped; a schedule Android rejects is asked for again.
+**With Wi-Fi only on, the network the app asked for governs, not the job's.** Android also
+gives the job a network (its own choice of one that meets the job's requirement). Transfers
+are bound to the one `requestNetwork` gave the app, because that is the one the app is told
+about the instant it goes or turns metered, and holds only while something waits; the job's
+network is Android's condition for running the job, and when it goes Android stops the job
+and the transfers with it. The two are usually the same. When they are not (two unmetered
+networks up at once), that is written in Diagnostics, once for each pair, so that it is
+never so without our knowing.
+
+With Wi-Fi only off: any network, as the system reports it (there or not); whether the
+server answers is what the app as a whole knows (`ServerWatch`, on the phone's own route);
+and transfers go out on the network Android gave the job (followed when Android gives it
+another: `onNetworkChanged`), falling back to the phone's own route, which is the one that
+was asked, if the job's network doesn't reach the server. **When Android stops the job**
+(`onStopJob`: the network it was given went, its time is up) the transfers stop with it,
+there and then ("Paused by Android for now"), and resume when the job runs again or the app
+is opened. Signed out, the job is cancelled, running or not, and the service stopped; a
+schedule Android rejects is asked for again.
 
 What was seen on the emulators (docs/TESTING.md, "Downloads"): on 16 and 17 the app killed
 mid-download by `am kill` is not killed at all (a user-initiated job ranks it as perceptible,
