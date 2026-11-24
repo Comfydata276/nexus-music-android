@@ -219,5 +219,49 @@ class LyricsTest {
         assertTrue(long.timed)
         assertTrue(long.seekable(0, songMs = 20_000))
         assertFalse(long.seekable(1, songMs = 20_000))
+        // With the song's length not known (to the player nor the library), no line is.
+        assertFalse(long.seekable(0, songMs = 0))
+    }
+
+    // ---- The second round of fixes, item 3 ------------------------------------------------
+
+    /** A downloaded song's lyrics that arrive while its panel is open are shown there (they
+     *  were written to the phone and shown only when it was opened again). */
+    @Test
+    fun a_downloaded_songs_lyrics_arriving_while_its_panel_is_open_are_shown() = runTest {
+        var online = false
+        val lyrics = book({ timed }, offline = { !online })
+        val shown = lyrics.forSong("s")
+        advanceUntilIdle()
+        assertEquals(LyricsShown.None(offline = true), shown.value)
+        online = true
+        lyrics.downloaded(setOf("s")) { true }
+        advanceUntilIdle()
+        assertTrue(File(folder.root, "data/s.json").exists())
+        assertEquals(LyricsShown.of(timed), shown.value)
+    }
+
+    /** Whether the network may be used is asked immediately before the request: here it
+     *  stops being allowed while the kept copy is read, and nothing is asked. */
+    @Test
+    fun fetching_ahead_asks_about_the_network_after_reading_what_is_kept() = runTest {
+        val asked = mutableListOf<String>()
+        var allowed = true
+        val inner = StandardTestDispatcher(testScheduler)
+        // Reading the kept copy (on the io dispatcher) is where the network changes.
+        val io = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                allowed = false
+                inner.dispatch(context, block)
+            }
+        }
+        val lyrics = LyricsBook(File(folder.root, "cache"), File(folder.root, "data"), { asked += it; timed }, this, io, { false })
+        lyrics.ahead(listOf("a")) { allowed }
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), asked)
+        // Allowed again: it is fetched (it wasn't counted as asked).
+        lyrics.ahead(listOf("a")) { true }
+        advanceUntilIdle()
+        assertEquals(listOf("a"), asked)
     }
 }

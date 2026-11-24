@@ -199,6 +199,10 @@ fun LyricsPanel(song: Song, modifier: Modifier = Modifier) {
     val ui = LocalUi.current
     val account = ui.account ?: return
     val shown by remember(account, song.id) { account.lyrics.forSong(song.id) }.collectAsStateWithLifecycle()
+    // The song's length as the player reports it; where it doesn't know, as the library has it.
+    val playing by ui.player.song.collectAsStateWithLifecycle()
+    val reported by ui.player.duration.collectAsStateWithLifecycle()
+    val songMs = if (playing?.id == song.id && reported > 0) reported else song.duration * 1000L
     Box(modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.radius)).background(Theme.colors.panel.copy(alpha = 0.6f))) {
         when (val s = shown) {
             LyricsShown.Looking -> Status(stringResource(R.string.looking_for_lyrics), null)
@@ -206,7 +210,7 @@ fun LyricsPanel(song: Song, modifier: Modifier = Modifier) {
                 Status(stringResource(R.string.no_lyrics), stringResource(if (s.offline) R.string.no_lyrics_offline else R.string.no_lyrics_detail), Modifier.fillMaxWidth())
                 UpNextList()
             }
-            is LyricsShown.Lines -> Lines(s, song.duration * 1000L)
+            is LyricsShown.Lines -> Lines(s, songMs)
         }
     }
 }

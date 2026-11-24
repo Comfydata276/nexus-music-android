@@ -28,8 +28,9 @@ sealed interface LyricsShown {
     class Lines(val lines: List<String>, val times: LongArray) : LyricsShown {
         val timed: Boolean get() = times.isNotEmpty()
 
-        /** Whether line `i` is a place to seek to: timed, and inside the song. */
-        fun seekable(i: Int, songMs: Long): Boolean = timed && (songMs <= 0 || times[i] < songMs)
+        /** Whether line `i` is a place to seek to: timed, and inside the song's length
+         *  (`songMs`; 0 where it isn't known, and then no line is). */
+        fun seekable(i: Int, songMs: Long): Boolean = timed && songMs > 0 && times[i] < songMs
 
         override fun equals(other: Any?) = other is Lines && other.lines == lines && other.times.contentEquals(times)
         override fun hashCode() = lines.hashCode() * 31 + times.contentHashCode()
@@ -132,7 +133,7 @@ class LyricsBook(
     /**
      * Fetches the lyrics of these songs (the one playing, then the next few) so they're on
      * hand before anyone opens them. Whether the network allows the one at each place is
-     * asked just before its request (`mayFetch`), not once for the batch. Each song is asked
+     * asked immediately before its request (`mayFetch`), not once for the batch. Each song is asked
      * about once a run; one asked lately (a day) that had some isn't asked again, and one
      * that had none is, since lyrics get added to a library after the songs do (Windows'
      * `fetch_lyrics_ahead`).
@@ -143,10 +144,14 @@ class LyricsBook(
         aheadJob = scope.launch {
             before?.join()
             for ((place, id) in ids.withIndex()) {
-                if (id.isEmpty() || offline() || !mayFetch(place)) continue
-                if (!synchronized(asked) { asked.add(id) }) continue
+                if (id.isEmpty() || synchronized(asked) { id in asked }) continue
                 val had = withContext(io) { kept(id) }
-                if (had != null && had.lyrics != null && had.ageMs < FRESH_MS) continue
+                if (had != null && had.lyrics != null && had.ageMs < FRESH_MS) {
+                    synchronized(asked) { asked.add(id) }
+                    continue
+                }
+                if (offline() || !mayFetch(place)) continue
+                if (!synchronized(asked) { asked.add(id) }) continue
                 runCatching { ask(id) }.onSuccess { found(id, it) }
             }
         }
@@ -177,10 +182,10 @@ class LyricsBook(
                     }
                     if (offline() || !mayAsk()) continue
                     runCatching { ask(id) }.onSuccess { lyrics ->
-                        withContext(io) {
-                            write(File(dataDir, fileName(id)), lyrics)
-                            write(File(cacheDir, fileName(id)), lyrics)
-                        }
+                        // Kept with the download, then as anything the server says is: kept
+                        // in the cache too, and shown wherever it is being looked at.
+                        withContext(io) { write(File(dataDir, fileName(id)), lyrics) }
+                        found(id, lyrics)
                     }
                 }
             }
