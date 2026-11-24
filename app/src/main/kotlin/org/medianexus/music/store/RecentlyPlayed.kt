@@ -37,13 +37,27 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
     @Volatile private var opened = false
     @Volatile private var version = 0L
 
-    /** Reads the account's list from the phone (off the main thread). Plays noted before it
-     *  has been read are put in front of what is read. */
-    suspend fun open() = writing.withLock {
-        if (opened) return@withLock
-        val read = kotlinx.coroutines.withContext(io) { load(file) }
-        songs.update { mine -> (mine + read).take(HISTORY_LENGTH) }
-        opened = true
+    /**
+     * Reads the account's list from the phone (off the main thread). Plays noted before it
+     * had been read go in front of what is read, the same song once at the join (the song
+     * playing when the app was stopped, still playing as it starts again, is one play), and
+     * the list as merged is saved: nothing played meanwhile was saved, since nothing may be
+     * written over the list on the phone before it has been read.
+     */
+    suspend fun open() {
+        val early = writing.withLock {
+            if (opened) return
+            val read = kotlinx.coroutines.withContext(io) { load(file) }
+            var early = false
+            songs.update { mine ->
+                early = mine.isNotEmpty()
+                val joined = if (early && read.isNotEmpty() && mine.last().song.id == read.first().song.id) mine + read.drop(1) else mine + read
+                joined.take(HISTORY_LENGTH)
+            }
+            opened = true
+            early
+        }
+        if (early) save()
     }
 
     /** A song has started playing. */

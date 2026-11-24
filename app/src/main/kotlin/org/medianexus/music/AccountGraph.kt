@@ -158,8 +158,9 @@ class AccountGraph(
     )
 
     /** When songs were added to playlists, as far as this phone has seen (Windows'
-     *  `added.json`): "Date added" sorts by it. */
-    val added = org.medianexus.music.store.Added(File(account.dirs.data, "added.json"), scope, io)
+     *  `playlist-added.json`, the name it has there; kept as `added.json` before): "Date
+     *  added" sorts by it. */
+    val added = org.medianexus.music.store.Added(File(account.dirs.data, "playlist-added.json"), scope, io, formerly = File(account.dirs.data, "added.json"))
 
     /** The last hundred songs played (Windows' `history.json`). */
     val recentlyPlayed = org.medianexus.music.store.RecentlyPlayed(File(account.dirs.data, "history.json"), scope, io)

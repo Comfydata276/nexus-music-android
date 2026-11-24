@@ -104,4 +104,29 @@ class RecentlyPlayedTest {
         // The same song on both devices back to back is one entry.
         assertEquals(listOf("a" to 12L), RecentlyPlayed.mergeHistory(listOf("a" to 12L), listOf("a" to 10L)))
     }
+
+    @Test
+    fun aPlayBeforeTheFileIsReadIsSavedAndNotDoubled() {
+        val file = File(folder.root, "history.json")
+        // On the phone from before: b, then a (a the newest).
+        val earlier = played(file)
+        openNow(earlier)
+        earlier.played(Song(id = "b"))
+        clock++
+        earlier.played(Song(id = "a"))
+        // Started again: "a" carries on playing and is noted before the file has been read,
+        // then "c" starts, all before the read.
+        val history = played(file)
+        clock++
+        history.played(Song(id = "a"))
+        clock++
+        history.played(Song(id = "c"))
+        openNow(history)
+        // One "a" at the join, not two; nothing dropped.
+        assertEquals(listOf("c", "a", "b"), history.ids())
+        // And saved once read, with nothing more played: read again, the same.
+        val again = played(file)
+        openNow(again)
+        assertEquals(listOf("c", "a", "b"), again.ids())
+    }
 }

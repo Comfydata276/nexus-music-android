@@ -126,12 +126,12 @@ object AppCommands {
         args.putBoolean("view", true)
         args.putInt("sort", view.sort)
         args.putBoolean("descending", view.descending)
-        args.putString("filter", view.filter)
+        args.putString("filter", view.filter.take(org.medianexus.music.library.ListView.MOST_FILTER))
     }
 
     fun viewOf(args: Bundle): org.medianexus.music.library.ListView? =
         if (!args.getBoolean("view")) null
-        else org.medianexus.music.library.ListView(args.getInt("sort").coerceIn(0, org.medianexus.music.library.ListView.SORTS - 1), args.getBoolean("descending"), args.getString("filter").orEmpty())
+        else org.medianexus.music.library.ListView(args.getInt("sort").coerceIn(0, org.medianexus.music.library.ListView.SORTS - 1), args.getBoolean("descending"), args.getString("filter").orEmpty().take(org.medianexus.music.library.ListView.MOST_FILTER))
 
     /** Carries out one, on the main thread. Returns false if it isn't one of these. (A PLAY
      *  that names a page is the service's to carry out: it has to read the page.) */

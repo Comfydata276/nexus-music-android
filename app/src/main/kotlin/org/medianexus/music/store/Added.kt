@@ -25,8 +25,8 @@ typealias AddedNotes = Map<String, Map<String, AddedNote>>
 
 /**
  * When songs were added to playlists, a port of the Windows app's `src/added.rs`, with its
- * file in the same form (`added.json`: `lists` and `seen`), ready to be shared between
- * devices with the sync milestone.
+ * file named and written as Windows' is (`playlist-added.json`: `lists` and `seen`; the
+ * notes go between devices inside the sync milestone's own file, under `added`).
  *
  * The server doesn't record this, so the app keeps its own note. The first time it sees a
  * playlist, the songs already in it have no known date. From then on, a song that turns up in
@@ -36,7 +36,13 @@ typealias AddedNotes = Map<String, Map<String, AddedNote>>
  * Safe from any thread. Written off the main thread, whole, the newest state each time; read
  * when first needed.
  */
-class Added(private val file: File, private val scope: CoroutineScope?, private val io: CoroutineDispatcher) {
+class Added(
+    private val file: File,
+    private val scope: CoroutineScope?,
+    private val io: CoroutineDispatcher,
+    /** Where an earlier version of the app kept it (`added.json`): moved to `file` when found. */
+    private val formerly: File? = null,
+) {
     private var lists = HashMap<String, HashMap<String, AddedNote>>()
     private var seen = HashSet<String>()
     private var loaded = false
@@ -50,6 +56,7 @@ class Added(private val file: File, private val scope: CoroutineScope?, private 
     private fun load() {
         if (loaded) return
         loaded = true
+        if (!file.isFile && formerly?.isFile == true) formerly.renameTo(file)
         val bytes = try { if (file.isFile) file.readBytes() else return } catch (_: java.io.IOException) { return }
         val text = bytes.decodeToString()
         val stored = runCatching { json.decodeFromString(Stored.serializer(), text) }.getOrNull()?.takeIf { it.lists.isNotEmpty() || it.seen.isNotEmpty() }

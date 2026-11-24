@@ -39,6 +39,10 @@ data class ListView(val sort: Int = OWN, val descending: Boolean = false, val fi
         const val ADDED = 5
         const val SORTS = 6
 
+        /** The most characters a find box takes, and so the most of them a list is narrowed
+         *  by: on screen and in what is handed to the player alike. */
+        const val MOST_FILTER = 200
+
         /** Whether an order starts out reversed when first chosen: dates do, newest first. */
         fun startsDescending(sort: Int): Boolean = sort == ADDED
 

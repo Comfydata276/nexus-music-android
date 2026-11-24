@@ -92,4 +92,18 @@ class AddedTest {
         File(folder.root, "broken.json").writeText("{not json")
         assertEquals(listOf(0L), added("broken.json").dates("p", songs("a")).list())
     }
+
+    @Test
+    fun theFileIsNamedAsWindowsNamesItAndAnEarlierOneIsMovedThere() {
+        // Windows keeps it as playlist-added.json; the phone kept it as added.json at first.
+        val old = java.io.File(folder.root, "added.json")
+        val earlier = Added(old, null, kotlinx.coroutines.Dispatchers.Unconfined)
+        earlier.observe("p", listOf(org.medianexus.music.net.Song(id = "a")), 100)
+        earlier.observe("p", listOf(org.medianexus.music.net.Song(id = "a"), org.medianexus.music.net.Song(id = "b")), 200)
+        val now = java.io.File(folder.root, "playlist-added.json")
+        val added = Added(now, null, kotlinx.coroutines.Dispatchers.Unconfined, formerly = old)
+        org.junit.Assert.assertArrayEquals(longArrayOf(0, 200), added.dates("p", listOf(org.medianexus.music.net.Song(id = "a"), org.medianexus.music.net.Song(id = "b"))))
+        org.junit.Assert.assertTrue(now.isFile)
+        org.junit.Assert.assertFalse(old.exists())
+    }
 }

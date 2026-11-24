@@ -454,9 +454,9 @@ internal object CopyFile {
     fun writePage(file: File, stamp: CopyStamp, part: LibraryCopy.Part) = writeChecked(file, PAGE) { out ->
         writeStamp(out, stamp)
         out.int(part.page)
-        out.int(part.asked.artists)
-        out.int(part.asked.albums)
-        out.int(part.asked.songs)
+        out.count(part.asked.artists)
+        out.count(part.asked.albums)
+        out.count(part.asked.songs)
         val songs = SongTable.Builder().apply { part.found.songs.forEach { add(it) } }.build()
         songs.write(out)
         writeAlbums(out, part.found.albums)
@@ -526,14 +526,14 @@ internal object CopyFile {
     private fun readStamp(input: Unpacker) = CopyStamp(input.long(), SongTable.readText(input), input.long())
 
     private fun writeAlbums(out: Packer, albums: List<Album>) {
-        out.int(albums.size)
+        out.count(albums.size)
         for (a in albums) {
             for (text in listOf(a.id, a.name, a.artist, a.artistId, a.displayArtist, a.coverArt, a.genre, a.starred.orEmpty(), a.played)) SongTable.writeText(out, text)
             out.bool(a.starred != null)
             out.int(a.songCount)
             out.int(a.duration)
             out.int(a.year)
-            out.int(a.releaseTypes.size)
+            out.count(a.releaseTypes.size)
             for (type in a.releaseTypes) SongTable.writeText(out, type)
         }
     }
@@ -550,7 +550,7 @@ internal object CopyFile {
     }
 
     private fun writeArtists(out: Packer, artists: List<Artist>) {
-        out.int(artists.size)
+        out.count(artists.size)
         for (a in artists) {
             for (text in listOf(a.id, a.name, a.coverArt, a.starred.orEmpty())) SongTable.writeText(out, text)
             out.bool(a.starred != null)

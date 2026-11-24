@@ -103,12 +103,12 @@ class SongTable private constructor(
     /** Writes the table (see [read]). */
     @Throws(IOException::class)
     fun write(out: Packer) {
-        out.int(size)
-        out.int(texts.size)
+        out.count(size)
+        out.count(texts.size)
         for (text in texts) writeText(out, text)
-        out.int(credits.size)
+        out.count(credits.size)
         for (list in credits) {
-            out.int(list.size)
+            out.count(list.size)
             for (credit in list) {
                 writeText(out, credit.id)
                 writeText(out, credit.name)
@@ -122,7 +122,7 @@ class SongTable private constructor(
         for (i in 0 until size * NUMBERS) out.int(numbers[i])
         for (i in 0 until size * TIMES) out.long(times[i])
         for (i in 0 until size * 4) out.float(gains[i])
-        out.int(oddTimes.size)
+        out.count(oddTimes.size)
         for ((key, text) in oddTimes) {
             out.long(key)
             writeText(out, text)
@@ -346,7 +346,7 @@ class SongTable private constructor(
             return n
         }
 
-        private const val MOST = 5_000_000
+        private const val MOST = MOST_COUNT
 
         internal fun writeText(out: Packer, text: String) = out.text(text)
 

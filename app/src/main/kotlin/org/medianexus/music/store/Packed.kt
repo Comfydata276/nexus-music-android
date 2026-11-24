@@ -62,9 +62,18 @@ class Packer(initial: Int = 64 * 1024, private val sink: java.io.OutputStream? =
         bytes[size++] = if (value) 1 else 0
     }
 
-    /** Text as its length in bytes and then its UTF-8. */
+    /** How many of something follow. Refused, as [Unpacker] would refuse it on the way back
+     *  in, if it is more than [MOST_COUNT]: nothing is written that wouldn't read back. */
+    fun count(n: Int) {
+        if (n !in 0..MOST_COUNT) throw java.io.IOException("$n of something: more than can be read back")
+        int(n)
+    }
+
+    /** Text as its length in bytes and then its UTF-8. Refused if it is longer than
+     *  [MOST_TEXT] bytes, which [Unpacker] wouldn't read back. */
     fun text(value: String) {
         val utf8 = value.toByteArray(Charsets.UTF_8)
+        if (utf8.size > MOST_TEXT) throw java.io.IOException("text of ${utf8.size} bytes: more than can be read back")
         int(utf8.size)
         room(utf8.size)
         System.arraycopy(utf8, 0, bytes, size, utf8.size)
@@ -117,6 +126,12 @@ class Unpacker(private val bytes: ByteArray, from: Int = 0, private val end: Int
     }
 
     private companion object {
-        const val MOST_TEXT = 1 shl 20
+        const val MOST_TEXT = org.medianexus.music.store.MOST_TEXT
     }
 }
+
+/** The most bytes a piece of text may have, written or read (a mebibyte). */
+const val MOST_TEXT = 1 shl 20
+
+/** The most of anything a count may say, written or read: no library comes near it. */
+const val MOST_COUNT = 5_000_000

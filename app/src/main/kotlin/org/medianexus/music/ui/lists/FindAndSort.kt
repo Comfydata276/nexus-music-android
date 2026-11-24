@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.input.TextFieldDecorator
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.maxLength
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -126,6 +127,8 @@ private fun FindBox(state: TextFieldState, modifier: Modifier = Modifier) {
     BasicTextField(
         state = state,
         modifier = modifier.semantics { contentDescription = label },
+        // The one limit on what narrows a list, on screen and handed to the player alike.
+        inputTransformation = androidx.compose.foundation.text.input.InputTransformation.maxLength(ListView.MOST_FILTER),
         textStyle = style,
         lineLimits = TextFieldLineLimits.SingleLine,
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Search),
