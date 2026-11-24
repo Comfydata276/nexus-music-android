@@ -211,7 +211,7 @@ class AccountGraph(
 
     /** The "Made for you" mixes, kept up to date off the main thread (see [org.medianexus.music.library.MixBook]). */
     val mixes = org.medianexus.music.library.MixBook(
-        scope, copy.state, likes.liked, recentlyPlayed.state, ruleMixes.state,
+        scope, copy.state, likes.liked, likes.known, recentlyPlayed.state, ruleMixes.state,
         took = { mixes, songs, millis -> if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusMixes", "$mixes mixes from $songs songs in ${"%.1f".format(millis)} ms") },
     )
 

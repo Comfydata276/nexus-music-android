@@ -112,6 +112,13 @@ class Likes(
     /** The ids of the songs liked, as shown. */
     val liked: StateFlow<Set<String>> = songsNow.asStateFlow()
 
+    private val wholeHeard = MutableStateFlow(false)
+
+    /** Whether the whole of Liked songs has been heard (the kept copy, or the server's): until
+     *  it has, what is liked is known only song by song, from the songs themselves (Windows'
+     *  `is_liked` with no list of likes yet). */
+    val known: StateFlow<Boolean> = wholeHeard.asStateFlow()
+
     private val refusals = MutableSharedFlow<LikeRefused>(extraBufferCapacity = 8)
     val refused: SharedFlow<LikeRefused> = refusals.asSharedFlow()
 
@@ -185,6 +192,7 @@ class Likes(
                 albums = albums.keepingNewer(server.albums, StarTarget.ALBUM, askedAt),
             )
             listed = songs
+            wholeHeard.value = true
             // A song with a change still on its way keeps its place at the head: what the
             // server listed was asked for before that change is settled.
             justLiked.keys.retainAll { it !in songs || Item(StarTarget.SONG, it) in unsent }
