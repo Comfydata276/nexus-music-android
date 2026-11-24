@@ -313,16 +313,35 @@ class Catalogue(
         }
     }
 
-    /** These songs are no longer wanted for themselves. */
-    fun unsingle(ids: Collection<String>) = synchronized(lock) {
-        val was = lists[SINGLES]?.songs ?: return@synchronized
+    /**
+     * These songs are no longer wanted for themselves. **On the disk first** (see [forget]):
+     * false, and nothing changed, if that could not be written.
+     */
+    fun unsingle(ids: Collection<String>): Boolean = synchronized(lock) {
+        val was = lists[SINGLES]?.songs ?: return@synchronized true
         val gone = ids.toSet()
         val now = was.filter { it !in gone }
-        if (now.size != was.size) {
-            if (now.isEmpty()) lists.remove(SINGLES) else lists[SINGLES] = DownloadedList(SINGLES, songs = now)
-            writeLists()
-            publish()
+        if (now.size == was.size) return@synchronized true
+        val next = LinkedHashMap(lists)
+        if (now.isEmpty()) next.remove(SINGLES) else next[SINGLES] = DownloadedList(SINGLES, songs = now)
+        if (!withdrawn(next)) return@synchronized false
+        publish()
+        true
+    }
+
+    /** Writes what is wanted, as it is to be from now on, durably; only then is it so in
+     *  memory. False if it could not be written: then nothing has changed, here or on the
+     *  disk. */
+    private fun withdrawn(next: LinkedHashMap<String, DownloadedList>): Boolean {
+        try {
+            writeAtomically(File(dir, LISTS_FILE), json.encodeToString(ListSerializer(DownloadedList.serializer()), next.values.toList()).toByteArray(), durable = true)
+        } catch (e: IOException) {
+            note("downloads: what is wanted downloaded couldn't be changed on the phone (${e.javaClass.simpleName}): nothing was removed")
+            return false
         }
+        lists.clear()
+        lists.putAll(next)
+        return true
     }
 
     /**
@@ -446,15 +465,31 @@ class Catalogue(
         File(dir, LISTS_FILE).delete()
         File(dir, FAILED_FILE).delete()
         runCatching { syncDirOrFail(dir) }
-        dir.listFiles()?.forEach { file ->
+        fun sweep() = dir.listFiles()?.forEach { file ->
             if (file.isDirectory) {
                 file.deleteRecursively()
-            } else if (file.name !in OWN_FILES && !(file.name.startsWith(".") && file.name.endsWith(".tmp"))) {
+            } else if (file.name !in KEPT_THROUGH_A_CLEAR && !(file.name.startsWith(".") && file.name.endsWith(".tmp"))) {
                 file.delete()
             }
         }
+        sweep()
+        // **Looked at afterwards, not taken on trust**: what is still in the folder that
+        // should have gone (a file that would not delete; one that landed as the others
+        // went) is tried once more, and if any of it is still there, that is said, and the
+        // answer is no. What the person was told the downloads take must have been given back.
+        var left = leftAfterClear()
+        if (left.isNotEmpty()) {
+            sweep()
+            left = leftAfterClear()
+        }
         publish()
-        true
+        if (left.isNotEmpty()) note("downloads: ${left.size} of the files in the downloads' folder could not be removed")
+        left.isEmpty()
+    }
+
+    /** What is in the folder that a clear should have taken. */
+    private fun leftAfterClear(): List<File> = dir.listFiles().orEmpty().filter { file ->
+        file.isDirectory || (file.name !in KEPT_THROUGH_A_CLEAR && !(file.name.startsWith(".") && file.name.endsWith(".tmp")))
     }
 
     /** Remembers a list as downloaded (or with its songs as they are now), or forgets it. */
@@ -464,11 +499,17 @@ class Catalogue(
         publish()
     }
 
-    fun forget(key: String) = synchronized(lock) {
-        if (lists.remove(key) != null) {
-            writeLists()
-            publish()
-        }
+    /**
+     * A list is no longer wanted downloaded whole. **On the disk first, and only then so**:
+     * false, and it is still wanted, if that could not be written. (It used to be forgotten
+     * in memory whatever became of the write: the removal was reported done, and the list
+     * came back, and fetched itself again, the next time the app was started.)
+     */
+    fun forget(key: String): Boolean = synchronized(lock) {
+        if (key !in lists) return@synchronized true
+        if (!withdrawn(LinkedHashMap(lists).apply { remove(key) })) return@synchronized false
+        publish()
+        true
     }
 
     fun failed(failure: Failed) = synchronized(lock) {
@@ -647,6 +688,10 @@ class Catalogue(
          *  not one, and is never shown as one). */
         const val SINGLES = "songs"
         private val OWN_FILES = setOf(SONGS_FILE, BACKUP_FILE, LOG_FILE, LISTS_FILE, FAILED_FILE, CONVERT_FILE)
+
+        /** What "Remove all" leaves in the folder: the (now empty) list and its log, and
+         *  what is known of the phone's decoders. */
+        private val KEPT_THROUGH_A_CLEAR = setOf(SONGS_FILE, LOG_FILE, CONVERT_FILE)
         private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     }
 }

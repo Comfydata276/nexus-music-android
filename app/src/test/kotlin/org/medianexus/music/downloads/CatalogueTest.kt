@@ -198,4 +198,57 @@ class CatalogueTest {
         assertTrue(File(dir, "a.flac").exists())
         assertTrue(notes.any { "couldn't be removed" in it })
     }
+
+    // ---- Withdrawing a wish, and "Remove all" (offline hardening 3, item 4) ----------------------
+
+    @Test
+    fun aListIsForgottenOnlyOnceThatIsOnTheDisk() {
+        val notes = mutableListOf<String>()
+        val catalogue = Catalogue(folder.root, note = { notes += it })
+        catalogue.keep(DownloadedList("album:a", "A", songs = listOf("s1")))
+        catalogue.single(listOf("s9"))
+        folder.root.setWritable(false)
+        try {
+            // It can't be written: it is still wanted, here and for an app started again.
+            assertFalse(catalogue.forget("album:a"))
+            assertFalse(catalogue.unsingle(listOf("s9")))
+            assertEquals("album:a", catalogue.collection("album:a")?.key)
+            assertEquals(setOf("s9"), catalogue.state.value.singles)
+            assertEquals(2, notes.count { "nothing was removed" in it })
+        } finally {
+            folder.root.setWritable(true)
+        }
+        assertEquals(listOf("album:a"), Catalogue(folder.root).state.value.collections.map { it.key })
+        // Written, it is gone, and stays gone. Forgetting what isn't wanted is no failure.
+        assertTrue(catalogue.forget("album:a"))
+        assertTrue(catalogue.unsingle(listOf("s9")))
+        assertTrue(catalogue.forget("album:never"))
+        assertTrue(Catalogue(folder.root).state.value.let { it.collections.isEmpty() && it.singles.isEmpty() })
+    }
+
+    @Test
+    fun removeAllSaysWhetherEverythingWent() {
+        val notes = mutableListOf<String>()
+        val catalogue = Catalogue(folder.root, note = { notes += it })
+        File(folder.root, "s1.flac").writeBytes(ByteArray(10))
+        catalogue.add(Downloaded(Song(id = "s1", title = "One"), "s1.flac", 10, 1, "flac"))
+        File(folder.root, ".s2.flac.part").writeBytes(ByteArray(5))
+        // A cover kept with the downloads, in a folder nothing can be taken out of.
+        val covers = File(folder.root, "covers").apply { mkdirs() }
+        File(covers, "c1.jpg").writeBytes(ByteArray(7))
+        covers.setWritable(false)
+        try {
+            // The downloads are unmarked and their files go; the cover would not: it says
+            // no. (It said yes whatever became of each file.)
+            assertFalse(catalogue.clear())
+            assertTrue(catalogue.state.value.ids.isEmpty())
+            assertFalse(File(folder.root, "s1.flac").exists())
+            assertEquals(1, notes.count { "could not be removed" in it })
+        } finally {
+            covers.setWritable(true)
+        }
+        // Asked again with nothing in the way: everything has gone.
+        assertTrue(catalogue.clear())
+        assertTrue(folder.root.listFiles()!!.all { it.isFile && it.name in setOf(Catalogue.SONGS_FILE, Catalogue.LOG_FILE) })
+    }
 }

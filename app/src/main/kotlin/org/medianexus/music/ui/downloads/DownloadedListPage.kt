@@ -112,11 +112,13 @@ fun DownloadedListPage(route: Route.Downloaded) {
                 download = DownloadButton(if (now.state == 1) 1 else 2, now.done, now.total, now.progress) {
                     val account = ui.account ?: return@DownloadButton
                     val shown = songs.map { it.id }
-                    val go = {
-                        account.scope.launch { DownloadPages.removeGroup(context, account, route.list, shown)?.let(ui::toast) }
+                    // What was offered is what is done, to every song of the group, arrived
+                    // or not: a Cancel stops what is on its way; a Remove takes it all.
+                    val go = { cancelOnly: Boolean ->
+                        account.scope.launch { DownloadPages.removeGroup(context, account, route.list, shown, cancelOnly)?.let(ui::toast) }
                         Unit
                     }
-                    if (now.state == 1) go() else ui.sheet = Sheet.RemoveList(name, hero.cover) { go() }
+                    if (now.state == 1) go(true) else ui.sheet = Sheet.RemoveList(name, hero.cover) { go(false) }
                 },
             )
         }

@@ -897,7 +897,20 @@ How it is built (M1a):
     downloaded whole (an album made of songs downloaded one at a time) *is* those songs' own
     downloads, and removing it removes them. A list's button is a Cancel only when that list
     is itself on its way; with one of its songs arriving for another list, it downloads the
-    list.
+    list. **A group action covers every member of the group, arrived or not**
+    (`Downloads.membersOf`): the engine works the members out (a list's songs as recorded;
+    for an album that is no such list, every song of it downloaded or on its way), because
+    the Downloads page can only name the songs it shows, which are the ones that have
+    arrived. Removed, a half-arrived album is all removed: what has arrived is deleted and
+    what is on its way is stopped. (The page's ids were all that was acted on: the one
+    arrived song went, and the rest carried on arriving for a list just forgotten.)
+  - **The wish goes first, on the disk, or nothing goes** (`Catalogue.forget`, `unsingle`).
+    That a list is wanted whole, or a song for itself, is withdrawn durably before a file is
+    deleted or a transfer stopped; if the phone won't take that write nothing else is done,
+    and the person is told ("Nothing was removed: the phone wouldn't save the change"). It
+    used to be forgotten in memory whatever became of the write: "Removed" was said, and at
+    the next start the list was back and fetched its songs again. A song removed or
+    cancelled by hand goes the same way, in its turn with every other asking.
   - **A Cancel stays cancelled.** Cancelling, one song or everything, stops what is waiting
     and in flight and withdraws the wish to keep whole the lists those songs were for (as
     removing a song by hand does), so the next look at the list, or the server coming back,
@@ -905,7 +918,13 @@ How it is built (M1a):
     that arrives while the list is being cancelled asks for nothing.
   - **Remove all** gives back everything in the downloads' folder (`Catalogue.clear`): the
     songs, parts of downloads cut short and their records, the covers kept with the
-    downloads, the list before the present one, anything left lying.
+    downloads, the list before the present one, anything left lying (all but the empty
+    list itself and what is known of the phone's decoders). **It looks at the folder
+    afterwards and says whether everything went**: what is still there is tried once more,
+    and if any of it stays, the answer is no and the person is told ("Some downloads
+    couldn't be removed"). **And a cover still arriving cannot undo it**: from the moment it
+    begins no cover is kept with the downloads, the requests for covers under way are
+    cancelled, and one already being written is waited for before the folder is emptied.
   - **Nothing is started that won't fit**: what the server says each file is (or its length at
     the rate asked), **with what is already queued and arriving still needs**, and half a
     gigabyte to spare, against the space free (Windows' check and words). Requests take turns,

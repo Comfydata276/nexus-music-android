@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -550,15 +551,41 @@ class Downloads(
 
     /**
      * A group as the Downloads page shows it (an album with anything downloaded, a playlist
-     * or Liked songs downloaded whole: `key` is its list's, `ids` the songs shown), by its
-     * button there: cancelled if any of it is on its way, else removed. The same path as a
-     * list's own button, so the same rule about who else wants each song.
+     * or Liked songs downloaded whole: `key` is its list's, `shown` the songs the page
+     * shows, which are the ones that have arrived), by its button there. **The action covers
+     * every member of the group, arrived or not** ([membersOf]): removed, it is all removed
+     * (what has arrived is deleted, what is on its way is stopped); with `cancelOnly`, which
+     * is what the button offers while what it shows is itself on its way, everything on its
+     * way is stopped and what has arrived stays. The same path as a list's own button, so
+     * the same rule about who else wants each song.
+     *
+     * (The page used to pass the songs it showed, and those were all that was acted on: an
+     * album removed with one of its ten songs arrived lost that one, and the other nine
+     * went on arriving, for a list that had just been forgotten.)
      */
-    suspend fun removeGroup(key: String, ids: List<String>): Toggled = asking.withLock {
+    suspend fun removeGroup(key: String, shown: List<String>, cancelOnly: Boolean = false): Toggled = asking.withLock {
         ready.await()
         onDisk {}
-        val waiting = ids.filter { it in asks }
-        if (waiting.isNotEmpty()) withdraw(key, waiting, files = false) else withdraw(key, ids, files = true)
+        val members = membersOf(key, shown)
+        if (cancelOnly) withdraw(key, members.filter { it in asks }, files = false) else withdraw(key, members, files = true)
+    }
+
+    /**
+     * Every song of the group `key`, arrived or not: a list downloaded whole is its songs as
+     * recorded; an album that is no such list is every song of that album that is
+     * downloaded or on its way; and whatever the page showed of it besides.
+     */
+    private fun membersOf(key: String, shown: List<String>): List<String> {
+        val out = LinkedHashSet<String>(shown)
+        catalogue.collection(key)?.let { out += it.songs }
+        if (key.startsWith("album:")) {
+            val album = key.removePrefix("album:")
+            if (album.isNotEmpty()) {
+                catalogue.state.value.songs.values.filter { it.song.albumId == album }.mapTo(out) { it.song.id }
+                asks.values.filter { it.song.albumId == album }.mapTo(out) { it.song.id }
+            }
+        }
+        return out.toList()
     }
 
     /**
@@ -574,13 +601,19 @@ class Downloads(
      * *is* those songs' own downloads, and it is those that are withdrawn: otherwise its
      * button could never remove anything.
      *
+     * **The wish is withdrawn on the disk before anything else is done, and if that can't be
+     * written nothing else is done**: no file is deleted, nothing on its way is stopped, and
+     * the answer is [Toggled.Failed], which the person is told. (It was withdrawn in memory
+     * whatever became of the write: "Removed" was said, and the list was back, fetching its
+     * songs again, the next time the app started.)
+     *
      * Decided on the disk's own thread, in turn with every other change, under [asking].
      */
     private suspend fun withdraw(key: String, ids: List<String>, files: Boolean): Toggled {
         val others = onDisk {
-            if (catalogue.collection(key) != null) forgetList(key) else catalogue.unsingle(ids)
-            catalogue.wantedBesides(key)
-        }
+            val gone = if (catalogue.collection(key) != null) forgetList(key) else catalogue.unsingle(ids)
+            if (gone) catalogue.wantedBesides(key) else null
+        } ?: return Toggled.Failed
         val going = ids.filter { it !in others }
         if (!files) {
             stop(going)
@@ -597,6 +630,9 @@ class Downloads(
 
         /** Asked to be removed, and all of its songs stay: other downloads hold them. */
         data object HeldElsewhere : Toggled
+
+        /** Nothing was done: the phone would not record that it is no longer wanted. */
+        data object Failed : Toggled
         data class Asked(val asked: org.medianexus.music.downloads.Asked) : Toggled
     }
 
@@ -610,11 +646,22 @@ class Downloads(
      */
     fun cancel(ids: Collection<String>) = onMain {
         val asked = ids.toSet()
-        later {
-            for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) forgetList(list.key)
-            catalogue.unsingle(asked)
+        // (The wish first, on the disk: only then are they stopped. See [withdraw]. In its
+        // turn with every other asking, so that what is asked next finds it done.)
+        scope.launch(Dispatchers.Main.immediate) {
+            asking.withLock {
+                ready.await()
+                if (onDisk { unwanted(asked) }) stop(asked)
+            }
         }
-        stop(asked)
+    }
+
+    /** These songs are no longer wanted, by themselves or by any list downloaded whole that
+     *  holds one of them: written, or (false) not, and then nothing is to be done to them.
+     *  (Off the main thread.) */
+    private fun unwanted(ids: Set<String>): Boolean {
+        for (list in catalogue.state.value.collections) if (list.songs.any { it in ids } && !forgetList(list.key)) return false
+        return catalogue.unsingle(ids)
     }
 
     /** Stops these songs' downloads, and nothing more. */
@@ -650,11 +697,12 @@ class Downloads(
      */
     fun remove(ids: Collection<String>) = onMain {
         val asked = ids.toSet()
-        later {
-            for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) forgetList(list.key)
-            catalogue.unsingle(ids)
+        scope.launch(Dispatchers.Main.immediate) {
+            asking.withLock {
+                ready.await()
+                if (onDisk { unwanted(asked) }) drop(asked)
+            }
         }
-        drop(ids)
     }
 
     /** Deletes these songs' downloaded copies and stops any on their way, and nothing more:
@@ -685,23 +733,40 @@ class Downloads(
         ready.await()
         onDisk {}
         if (!::manager.isInitialized || released) return@withLock false
-        for (download in manager.currentDownloads) manager.removeDownload(download.request.id)
-        for (id in asks.keys.toList()) manager.removeDownload(id)
-        asks.clear()
-        batch.clear()
-        publish()
-        if (!manager.isIdle) {
-            val idle = kotlinx.coroutines.CompletableDeferred<Unit>()
-            whenIdle += idle
-            kotlinx.coroutines.withTimeoutOrNull(LET_GO_MILLIS) { idle.await() }
-            whenIdle -= idle
+        // No cover is kept from here on, the requests for covers under way are cancelled,
+        // and the ones already being written are waited for: a cover still arriving used to
+        // land in the folder after it had been emptied.
+        clearing = true
+        try {
+            for (request in out) request.stop()
+            for (download in manager.currentDownloads) manager.removeDownload(download.request.id)
+            for (id in asks.keys.toList()) manager.removeDownload(id)
+            asks.clear()
+            batch.clear()
+            publish()
+            if (!manager.isIdle) {
+                val idle = kotlinx.coroutines.CompletableDeferred<Unit>()
+                whenIdle += idle
+                kotlinx.coroutines.withTimeoutOrNull(LET_GO_MILLIS) { idle.await() }
+                whenIdle -= idle
+            }
+            kotlinx.coroutines.withTimeoutOrNull(LET_GO_MILLIS) { pinning.first { it == 0 } }
+            // (Whether everything went is asked of the folder afterwards: see Catalogue.clear.)
+            val done = onDisk { catalogue.clear() }
+            demoted.clear()
+            publish()
+            measure()
+            done
+        } finally {
+            clearing = false
         }
-        val done = onDisk { catalogue.clear() }
-        demoted.clear()
-        publish()
-        measure()
-        done
     }
+
+    /** "Remove all" is under way: nothing is kept with the downloads meanwhile. */
+    @Volatile private var clearing = false
+
+    /** Covers being kept with the downloads at this moment (see [pinCover]). */
+    private val pinning = MutableStateFlow(0)
 
     /** The lists downloaded whole: fetches whatever they have gained (Windows'
      *  `sync_collections`). `fresh` gets a list as the server has it now, with its songs. */
@@ -752,7 +817,19 @@ class Downloads(
      * phone's default route, with every song of them held to the Wi-Fi.
      */
     private suspend fun pinCover(id: String) {
+        // (Counted before it is asked whether a "Remove all" is under way, so that one which
+        // begins now either sees this and waits for it, or is seen here.)
+        pinning.update { it + 1 }
+        try {
+            if (!clearing) pin(id)
+        } finally {
+            pinning.update { it - 1 }
+        }
+    }
+
+    private suspend fun pin(id: String) {
         covers.pin(id) {
+            if (clearing) return@pin null
             val wifiOnly = settings.value.downloadWifiOnly
             val bound = if (wifiOnly) unmetered.now.value ?: return@pin null else null
             // (No cover is asked of a server known to be out of reach.)
@@ -777,13 +854,15 @@ class Downloads(
         }
     }
 
-    /** A list is no longer downloaded whole: forgotten, and its own cover (kept with the
-     *  downloads when it was asked for) let go if nothing downloaded still uses it. (Off the
-     *  main thread.) */
-    private fun forgetList(key: String) {
+    /** A list is no longer downloaded whole: forgotten, on the disk (false: it couldn't be
+     *  written, and the list is still wanted), and its own cover (kept with the downloads
+     *  when it was asked for) let go if nothing downloaded still uses it. (Off the main
+     *  thread.) */
+    private fun forgetList(key: String): Boolean {
         val cover = catalogue.collection(key)?.coverArt
-        catalogue.forget(key)
+        if (!catalogue.forget(key)) return false
         if (!cover.isNullOrEmpty()) unpin(listOf(cover))
+        return true
     }
 
     /** Lets go of the covers nothing downloaded uses any more. (Off the main thread.) */

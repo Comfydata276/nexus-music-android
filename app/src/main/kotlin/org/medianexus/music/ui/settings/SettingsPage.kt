@@ -183,7 +183,7 @@ private fun Storage(graph: Graph) {
                 val account = ui.account
                 account?.downloads?.let { downloads ->
                     account.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
-                        if (downloads.removeAll()) graph.toasts.show(res.getString(R.string.downloads_removed))
+                        graph.toasts.show(res.getString(if (downloads.removeAll()) R.string.downloads_removed else R.string.couldnt_remove_all_downloads))
                     }
                 }
             }

@@ -351,7 +351,7 @@ class DownloadsTest {
         // One of its songs removed by hand: the list is no longer downloaded whole, so the
         // next look at it doesn't fetch the song straight back.
         engine.remove(listOf("s2"))
-        until("forgotten") { catalogue.collection("playlist:p1") == null }
+        until("forgotten, and removed") { catalogue.collection("playlist:p1") == null && !catalogue.has("s2") }
         run { engine.follow(DownloadedList("playlist:p1", "Mix"), now) }
         idle()
         assertFalse(engine.state.value.busy)
@@ -693,6 +693,115 @@ class DownloadsTest {
         // Asked again, there is nothing of the album's own to remove, and it says so.
         assertEquals(Downloads.Toggled.HeldElsewhere, run { engine.removeGroup("album:al-1", listOf("s1", "s2")) })
         assertTrue(catalogue.has("s1") && catalogue.has("s2"))
+    }
+
+    // ---- A group action covers every member, and fails if it can't be recorded (offline hardening 3, item 4)
+
+    /** Nothing of these songs is on the phone or on its way, and nothing arrives later. */
+    private fun assertGoneForGood(engine: Downloads, ids: List<String>) {
+        slow = false
+        until("nothing on its way") { !engine.state.value.busy }
+        until("no parts left") { catalogue.dir.listFiles()!!.none { it.name.endsWith(".part") || it.name.endsWith(".part.meta") } }
+        run { engine.download(emptyList()) }
+        repeat(30) { idle() }
+        for (id in ids) {
+            assertFalse("$id is downloaded", catalogue.has(id))
+            assertEquals(SongState.None, engine.state.value.stateOf(id))
+            assertFalse("$id has a file", File(catalogue.dir, "$id.flac").exists())
+        }
+    }
+
+    @Test
+    fun removingAGroupFromTheDownloadsPageTakesEverySongOfItArrivedOrNot() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val songs = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000), song("s3", size = 2_400_000), song("s4"))
+        run { engine.toggle(list("album:al-1", songs), songs) }
+        // One song of the album has arrived, and the others are on their way.
+        until("one arrived") { engine.state.value.downloaded.size == 1 && engine.state.value.active.size == 3 }
+        // The Downloads page shows the album with what has arrived of it, and its button is
+        // Remove: the page can only name the songs it shows.
+        val shown = DownloadedViews.album(engine.state.value, "al-1")!!.songs.map { it.id }
+        assertEquals(listOf("s1"), shown)
+        assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("album:al-1", shown) })
+        // All of the album goes: what had arrived, and what was on its way. (Only the one
+        // went, and the other three carried on arriving, for a list just forgotten.)
+        assertGoneForGood(engine, songs.map { it.id })
+        assertTrue(engine.state.value.collections.isEmpty())
+        assertTrue(Catalogue(catalogue.dir).state.value.let { it.ids.isEmpty() && it.collections.isEmpty() })
+    }
+
+    @Test
+    fun aGroupThatIsNoListIsRemovedWholeToo() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        // Songs of one album downloaded one at a time, and one of another album beside them.
+        val album = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000), song("s3", size = 2_400_000))
+        val other = song("s4", size = 20_000).copy(albumId = "al-2")
+        run { engine.download(album + other, own = true) }
+        until("the small ones arrived") { catalogue.has("s1") && catalogue.has("s4") }
+        assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("album:al-1", listOf("s1")) })
+        assertGoneForGood(engine, album.map { it.id })
+        // The other album's song is no part of it.
+        assertTrue(catalogue.has("s4"))
+        assertEquals(setOf("s4"), catalogue.state.value.singles)
+    }
+
+    @Test
+    fun aCancelFromTheDownloadsPageStopsEverythingOnItsWayAndLeavesWhatHasArrived() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val songs = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000), song("s3", size = 2_400_000))
+        run { engine.toggle(list("album:al-1", songs), songs) }
+        until("one arrived") { engine.state.value.downloaded.size == 1 && engine.state.value.active.size == 2 }
+        // (What the page's button offers while a song it shows is itself on its way.)
+        assertEquals(Downloads.Toggled.Cancelled, run { engine.removeGroup("album:al-1", listOf("s1"), cancelOnly = true) })
+        assertGoneForGood(engine, listOf("s2", "s3"))
+        assertTrue(catalogue.has("s1"))
+        assertTrue(engine.state.value.collections.isEmpty())
+    }
+
+    @Test
+    fun ifThePhoneWillNotRecordThatAListIsNoLongerWantedNothingIsRemovedAndItSaysSo() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2) = listOf(song("s1"), song("s2"))
+        run { engine.toggle(list("album:al-1", listOf(s1, s2)), listOf(s1, s2)) }
+        run { engine.download(listOf(song("s3").copy(albumId = "al-2")), own = true) }
+        until("downloaded") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
+        // The phone will take no new file in the downloads' folder (its storage is failing).
+        catalogue.dir.setWritable(false)
+        try {
+            // The list's own button, the group's button on the Downloads page, a song's own
+            // Remove, and a song downloaded by itself: none of them is done, and each says so
+            // where there is someone to tell.
+            assertEquals(Downloads.Toggled.Failed, run { engine.toggle(list("album:al-1", listOf(s1, s2)), listOf(s1, s2)) })
+            assertEquals(Downloads.Toggled.Failed, run { engine.removeGroup("album:al-1", listOf("s1", "s2")) })
+            assertEquals(Downloads.Toggled.Failed, run { engine.removeGroup("album:al-2", listOf("s3")) })
+            engine.remove(listOf("s1"))
+            run { engine.download(emptyList()) }
+            repeat(30) { idle() }
+            // Everything is as it was: downloaded, its files there, the list still wanted
+            // whole. And so it is for an app started again: nothing was reported removed that
+            // would come back. (It was forgotten in memory and "Removed" was said; the list
+            // was read back at the next start and fetched its songs again.)
+            assertEquals(setOf("s1", "s2", "s3"), catalogue.state.value.ids)
+            assertTrue(listOf("s1", "s2", "s3").all { catalogue.fileOf(it)!!.isFile })
+            assertEquals(listOf("album:al-1"), engine.state.value.collections.map { it.key })
+            val restarted = Catalogue(catalogue.dir)
+            assertEquals(listOf("album:al-1"), restarted.state.value.collections.map { it.key })
+            assertEquals(setOf("s3"), restarted.state.value.singles)
+            assertTrue(notes.any { "nothing was removed" in it.first })
+        } finally {
+            catalogue.dir.setWritable(true)
+        }
+        // The phone takes writes again: removed, and still removed after a restart.
+        assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("album:al-1", listOf("s1", "s2")) })
+        until("gone") { !catalogue.has("s1") && !catalogue.has("s2") }
+        assertTrue(Catalogue(catalogue.dir).state.value.collections.isEmpty())
     }
 
     @Test

@@ -264,6 +264,30 @@ class WifiOnlyTest {
     }
 
     @Test
+    fun removeAllCannotBeUndoneByACoverStillArriving() {
+        // (Offline hardening 3, item 4.) A song is downloaded, and its cover is on its way
+        // to be kept beside it: held by the server with a kilobyte sent.
+        songGate.letThrough()
+        routes.now.value = routes.route("wifi")
+        val engine = engine()
+        run { engine.download(listOf(song(cover = "c1"))) }
+        until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
+        until("the cover asked for") { synchronized(server.asked) { server.asked.any { "getCoverArt" in it.path } } }
+        coverGate.awaitReached()
+        // "Remove all", now. It says everything has gone, and it has: the cover's request is
+        // cancelled, and nothing lands in the folder afterwards. (The cover used to arrive
+        // after the folder had been emptied, and stay there.)
+        assertTrue(run { engine.removeAll() })
+        assertTrue("the cover's request was not cancelled", coverCancelled.await(30, TimeUnit.SECONDS))
+        coverGate.letThrough()
+        run { engine.download(emptyList()) }
+        repeat(30) { idle() }
+        assertTrue(catalogue.state.value.ids.isEmpty())
+        val left = catalogue.dir.walkTopDown().filter { it.isFile && it.length() > 0 }.map { it.name }.toList()
+        assertTrue("left in the folder: $left", left.all { it == Catalogue.SONGS_FILE })
+    }
+
+    @Test
     fun theJobOnAnotherNetworkThanTheTransfersIsWrittenDown() {
         songGate.letThrough()
         val wifi = org.robolectric.shadows.ShadowNetwork.newInstance(7)

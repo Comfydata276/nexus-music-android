@@ -42,17 +42,21 @@ object DownloadPages {
             Downloads.Toggled.Cancelled -> context.getString(R.string.download_cancelled)
             Downloads.Toggled.Removed -> context.getString(R.string.removed_from_downloads)
             Downloads.Toggled.HeldElsewhere -> context.getString(R.string.still_downloaded_elsewhere)
+            Downloads.Toggled.Failed -> context.getString(R.string.couldnt_change_downloads)
             is Downloads.Toggled.Asked -> said(context, done.asked)
         }
     }
 
     /** A group's button on the Downloads page (an album, a playlist, Liked songs, with the
-     *  songs shown): removed, or cancelled if any of it is on its way, and what to say. */
-    suspend fun removeGroup(context: Context, account: AccountGraph, key: String, ids: List<String>): String? {
+     *  songs shown): removed, all of it, arrived or not; or, with `cancelOnly` (what the
+     *  button offers while what is shown is itself on its way), what is on its way stopped.
+     *  And what to say. */
+    suspend fun removeGroup(context: Context, account: AccountGraph, key: String, shown: List<String>, cancelOnly: Boolean = false): String? {
         val downloads = account.downloads ?: return null
-        return when (withContext(Dispatchers.Main.immediate) { downloads.removeGroup(key, ids) }) {
+        return when (withContext(Dispatchers.Main.immediate) { downloads.removeGroup(key, shown, cancelOnly) }) {
             Downloads.Toggled.Cancelled -> context.getString(R.string.download_cancelled)
             Downloads.Toggled.HeldElsewhere -> context.getString(R.string.still_downloaded_elsewhere)
+            Downloads.Toggled.Failed -> context.getString(R.string.couldnt_change_downloads)
             else -> context.getString(R.string.removed_from_downloads)
         }
     }
