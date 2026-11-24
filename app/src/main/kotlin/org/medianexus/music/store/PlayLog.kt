@@ -378,7 +378,25 @@ class PlayLog(
         base += extra
         rewrite = true
         lines = size
+        // The song ids and playlists only the plays taken out used go with them: the names are
+        // made again from what is kept (in new arrays: what has been handed out keeps the old).
+        val was = names
+        val renumbered = IntArray(nameCount) { -1 }
+        names = arrayOfNulls(64)
+        nameCount = 0
+        nameRefs.clear()
+        fun again(old: Int): Int {
+            if (renumbered[old] < 0) renumbered[old] = ref(was[old]!!)
+            return renumbered[old]
+        }
+        for (i in 0 until size) {
+            songs[i] = again(songs[i])
+            if (froms[i] >= 0) froms[i] = again(froms[i])
+        }
     }
+
+    /** How many song ids and playlists the log holds names for (for tests). */
+    internal val namesHeld: Int get() = synchronized(this) { nameCount }
 
     private fun publish() {
         current.value = Plays(size, songs, ats, froms, names)

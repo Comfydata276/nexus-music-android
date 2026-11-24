@@ -262,4 +262,29 @@ class PlayLogTest {
         assertEquals(4, plays.size)
         assertEquals(log.sources(), sources)
     }
+
+    // ---- the M5b fixes, item 4 ----------------------------------------------------------------
+
+    /** When the oldest plays go at the limit, the song ids and playlists only they named go
+     *  too (they used to be kept for the life of the log). */
+    @Test
+    fun theNamesOnlyTheOldestUsedGoWithThem() {
+        val path = File(folder.root, "plays.log")
+        val text = StringBuilder()
+        val gone = PlayLog.SLACK + 1
+        for (i in 0 until PlayLog.LIMIT + PlayLog.SLACK) {
+            if (i < gone) text.append(PlayLog.line("gone$i", i.toLong(), "playlist:old$i"))
+            else text.append(PlayLog.line("k${i % 10}", i.toLong(), if (i % 2 == 0) "playlist:p" else ""))
+        }
+        path.writeText(text.toString())
+        val log = log(path)
+        log.add("new", 1_000_000)
+        assertEquals(PlayLog.LIMIT, log.state.value.size)
+        // k0 to k9, playlist:p, new.
+        assertEquals(12, log.namesHeld)
+        val plays = log.state.value
+        assertEquals("k${gone % 10}", plays.song(0))
+        assertEquals("new", plays.song(plays.size - 1))
+        assertEquals(listOf(Triple("k${gone % 10 + 1}", gone + 1L, "playlist:p")), log.sources().take(1))
+    }
 }
