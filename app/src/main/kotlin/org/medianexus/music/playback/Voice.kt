@@ -76,8 +76,7 @@ object Voice {
     data class Understood(val words: String, val focus: VoiceRequest.Focus, val by: String = "")
 
     fun understood(query: String): Understood {
-        var q = query.trim().replace(Regex("\\s+"), " ")
-        q = q.replace(Regex("\\s+on nexus music$", RegexOption.IGNORE_CASE), "").replace(Regex("^play\\s+", RegexOption.IGNORE_CASE), "").trim()
+        val q = spoken(query)
         val lower = q.lowercase()
         fun after(prefix: String) = q.substring(prefix.length).trim()
         for (prefix in listOf("songs by ", "music by ", "anything by ", "something by ", "the artist ", "artist ")) {
@@ -99,6 +98,16 @@ object Voice {
         if (by > 0) return Understood(q.substring(0, by).trim(), VoiceRequest.Focus.ANY, q.substring(by + 4).trim())
         return Understood(q, VoiceRequest.Focus.ANY)
     }
+
+    /** The words of a request, without "play" before them or "on Nexus Music" after. */
+    fun spoken(query: String): String =
+        query.trim().replace(Regex("\\s+"), " ")
+            .replace(Regex("\\s+on nexus music$", RegexOption.IGNORE_CASE), "").replace(Regex("^play\\s+", RegexOption.IGNORE_CASE), "").trim()
+
+    /** The artist a request names besides what it asks for ("Duke by Paper Lanterns"; the
+     *  Assistant's artist field), if any. */
+    fun artistNamed(request: VoiceRequest): String? =
+        (if (request.focus == VoiceRequest.Focus.ANY) understood(request.query).by.ifBlank { null } else null) ?: request.artist.ifBlank { null }
 
     /** How well `name` matches what was said, from 0 (not at all) to 1 (exactly). */
     fun score(said: String, name: String): Double {
@@ -140,21 +149,31 @@ object Voice {
 
     /**
      * The best match for the request among `found` (what the server's search gave for
-     * [VoiceRequest.searchWords]) and the account's playlists and genres.
+     * [VoiceRequest.searchWords]) and the account's playlists and genres. A request that
+     * names an artist besides a song or album ("Duke by Paper Lanterns") is never given a
+     * song or album by another. `exactOnly`: only a name said exactly (what the phone may
+     * play at once before it is known whether the server is there). `plain`: the words as
+     * said, any kind, nothing read into them (no "by").
      */
-    fun choose(request: VoiceRequest, found: Found, playlists: List<Playlist>, genres: List<Genre>): VoiceChoice {
-        val understood = if (request.focus == VoiceRequest.Focus.ANY) understood(request.query) else null
+    fun choose(request: VoiceRequest, found: Found, playlists: List<Playlist>, genres: List<Genre>, exactOnly: Boolean = false, plain: Boolean = false): VoiceChoice {
+        val understood = if (plain) Understood(spoken(request.query), VoiceRequest.Focus.ANY) else if (request.focus == VoiceRequest.Focus.ANY) understood(request.query) else null
         val focus = understood?.focus ?: request.focus
         val words = understood?.words ?: request.searchWords()
-        val by = understood?.by?.ifBlank { null } ?: request.artist.ifBlank { null }
+        val by = if (plain) null else artistNamed(request)
 
         // Each candidate's score, and a little extra when the artist named is theirs.
-        fun artistBonus(name: String) = if (by != null && score(by, name) >= 0.7) 0.25 else 0.0
+        fun theirs(name: String) = by != null && score(by, name) >= 0.7
+        fun artistBonus(name: String) = if (theirs(name)) 0.25 else 0.0
         // The words said, as search folds them: what search's own terms are judged on.
         val said = SearchRank.words(words)
         val candidates = mutableListOf<Pair<Double, VoiceChoice>>()
-        fun consider(kind: VoiceRequest.Focus, rank: Double, choice: VoiceChoice) {
+        // Said exactly: the name is the words, as understood or as said whole ("Song 4" is a
+        // title said exactly, though it is also understood as "the song 4").
+        val whole = spoken(request.query)
+        fun exactly(asked: String, name: String) = score(asked, name) >= 1.0 || score(whole, name) >= 1.0
+        fun consider(kind: VoiceRequest.Focus, rank: Double, choice: VoiceChoice, exact: Boolean) {
             if (focus != VoiceRequest.Focus.ANY && focus != kind) return
+            if (exactOnly && !exact) return
             if (rank >= ENOUGH) candidates += rank to choice
         }
         // A tie goes to the first kind considered: an artist, then an album, a playlist, a
@@ -163,24 +182,27 @@ object Voice {
         // better of the two: search's match is never turned down here.
         for (artist in found.artists) {
             val asked = if (focus == VoiceRequest.Focus.ARTIST) request.artist.ifBlank { words } else words
-            consider(VoiceRequest.Focus.ARTIST, maxOf(score(asked, artist.name), matched(SearchRank.words(asked), artist.name)), VoiceChoice.OfArtist(artist))
+            consider(VoiceRequest.Focus.ARTIST, maxOf(score(asked, artist.name), matched(SearchRank.words(asked), artist.name)), VoiceChoice.OfArtist(artist), exactly(asked, artist.name))
         }
         for (album in found.albums) {
+            // By another artist than the one named: not what was asked for.
+            if (by != null && !theirs(album.artistLabel)) continue
             // (Search's terms for an album: its name, or its artist's at 0.85.)
-            consider(VoiceRequest.Focus.ALBUM, maxOf(score(words, album.name), matched(said, album.name, listOf(album.artistLabel to 0.85f))) + artistBonus(album.artistLabel), VoiceChoice.OfAlbum(album))
+            consider(VoiceRequest.Focus.ALBUM, maxOf(score(words, album.name), matched(said, album.name, listOf(album.artistLabel to 0.85f))) + artistBonus(album.artistLabel), VoiceChoice.OfAlbum(album), exactly(words, album.name))
         }
         for (playlist in playlists) {
             // Not found by search, but judged as search judges a playlist's name.
-            consider(VoiceRequest.Focus.PLAYLIST, maxOf(score(words, playlist.name), matched(said, playlist.name)), VoiceChoice.OfPlaylist(playlist))
+            consider(VoiceRequest.Focus.PLAYLIST, maxOf(score(words, playlist.name), matched(said, playlist.name)), VoiceChoice.OfPlaylist(playlist), exactly(words, playlist.name))
         }
         for (song in found.songs) {
+            if (by != null && !theirs(song.artistLabel) && song.artists.none { theirs(it.name) }) continue
             val album = if (request.album.isNotBlank() && score(request.album, song.album) >= 0.7) 0.1 else 0.0
             // (A song's: its title, its artist's name at 0.9, its album's at 0.8.)
             val rank = maxOf(score(words, song.title), matched(said, song.title, listOf(song.artistLabel to 0.9f, song.album to 0.8f)))
-            consider(VoiceRequest.Focus.SONG, rank + artistBonus(song.artistLabel) + album, VoiceChoice.OfSong(song))
+            consider(VoiceRequest.Focus.SONG, rank + artistBonus(song.artistLabel) + album, VoiceChoice.OfSong(song), exactly(words, song.title))
         }
         for (genre in genres) {
-            consider(VoiceRequest.Focus.GENRE, score(words, genre.name), VoiceChoice.OfGenre(genre.name))
+            consider(VoiceRequest.Focus.GENRE, score(words, genre.name), VoiceChoice.OfGenre(genre.name), exactly(words, genre.name))
         }
         // maxBy keeps the first of equals, which is the order above.
         return candidates.maxByOrNull { it.first }?.second ?: VoiceChoice.Nothing

@@ -634,7 +634,9 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
     of its three pages by itself (it used to wait for all three if any one was not kept);
     the artist and genre branches, each place asked for by id, a song chosen, search (never
     held up for the list of playlists) and a spoken request (a downloaded playlist asked for
-    by name counts as on the phone) all go the same way. Only where the phone has nothing at
+    by name counts as on the phone; but only a name said exactly: a near match on the phone,
+    a slip forgiven, waits to know, and then the server's answers decide, where its exact
+    match beats the phone's near one) all go the same way. Only where the phone has nothing at
     all is anything waited for, and then only to *know* (those few seconds): after which it
     is the server's answer, or the phone's nothing. No cover is fetched while the server is
     known to be out of reach. **A kept list of songs with nothing in it that plays, of
@@ -1830,7 +1832,10 @@ How it is built (M3a, finding music):
 - **A spoken request is never turned down for what search matched**: a match on search's
   terms (`SearchRank.rate`) is worth at least the voice scorer's cutoff; the voice scorer
   chooses between kinds. Playlists are judged on the same terms. The car's searches of the
-  phone put liked songs first.
+  phone put liked songs first. A request that names an artist as well as a song or album
+  ("Duke by Paper Lanterns") is never given one by another artist; with nothing by them that
+  matches, it plays that artist's music if the artist is known, else what the words as said
+  find (small fixes, item 6).
 - **Long lists have a fast-scroll handle** (`ui/parts/FastScroll`, Compose only): shown while
   the list moves, draggable then, a bubble with the letter of the sort, the month songs were
   added, the year or the place. Only the handle itself takes touches, and only while it

@@ -3,6 +3,7 @@ package org.medianexus.music.playback
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -92,6 +93,74 @@ class VoiceMisspeltTest {
         assertEquals(VoiceChoice.Nothing, heard(VoiceRequest("play zzqx qxzz")))
         // Found, but not for these words (a search's leftovers): not a match.
         assertEquals(VoiceChoice.Nothing, Voice.choose(VoiceRequest("play zzqx qxzz"), org.medianexus.music.net.Found(artists = listOf(lanterns), albums = listOf(firstLight), songs = listOf(season)), playlists, emptyList()))
+    }
+
+    @Test
+    fun aSongOrAlbumByAnotherArtistIsNeverChosenForOneNamed() {
+        // Juniper Vale have no "Tidal": Paper Lanterns' is not played for it (it was).
+        assertEquals(VoiceChoice.Nothing, heard(VoiceRequest("play tidal by juniper vale")))
+        assertEquals(VoiceChoice.Nothing, heard(VoiceRequest("tidal by juniper vale", VoiceRequest.Focus.SONG, title = "Tidal", artist = "Juniper Vale")))
+        assertEquals(VoiceChoice.Nothing, heard(VoiceRequest("slow rivers", VoiceRequest.Focus.ALBUM, album = "Slow Rivers", artist = "Paper Lanterns")))
+        // By the artist named, it is.
+        assertEquals(VoiceChoice.OfSong(tidal), heard(VoiceRequest("play tidal by paper lanterns")))
+        assertEquals(VoiceChoice.OfAlbum(slowRivers), heard(VoiceRequest("slow rivers", VoiceRequest.Focus.ALBUM, album = "Slow Rivers", artist = "Juniper Vale")))
+    }
+
+    /** A car's tree over what is on this phone: the album First Light by Paper Lanterns,
+     *  downloaded. With `unsure`, it isn't known yet whether the server is there; `server` is
+     *  its search, and `settle` the wait to know. */
+    private fun phoneTree(server: org.medianexus.music.library.Search = org.medianexus.music.library.Search { _, _ -> org.medianexus.music.net.Found() }, unsure: () -> Boolean = { false }, offline: () -> Boolean = { true }, settle: suspend () -> Unit = {}, also: List<Song> = emptyList()): CarTree {
+        val catalogue = Catalogue(folder.newFolder())
+        for (song in listOf(season, tidal) + also) {
+            java.io.File(catalogue.dir, "${song.id}.flac").writeBytes(ByteArray(4))
+            catalogue.add(Downloaded(song.copy(artistId = if (song.artist == "Paper Lanterns") "ar1" else song.artistId), "${song.id}.flac", 4, at = 1, suffix = "flac"))
+        }
+        val kept = KeptIndex(java.io.File(folder.newFolder(), "kept.json"), scope, Dispatchers.IO)
+        val api = Subsonic("http://127.0.0.1:9", "ada", "sesame", OkHttpClient(), OfflineSwitch(true))
+        val library = Library(api, PageCache(folder.newFolder(), scope, Dispatchers.IO), search = server)
+        val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+        val state = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) }
+        return CarTree(library, CarWords(), CarOffline(now = offline, availability = availability, downloads = state, unsure = unsure, settle = settle))
+    }
+
+    @Test
+    fun aNamedArtistWithNoSuchSongGetsTheirOwnMusicOrThePlainSearch() = runBlocking {
+        val tree = phoneTree()
+        // Paper Lanterns have no "Lullaby" on the phone (Juniper Vale's isn't here at all):
+        // their music, shuffled, rather than nothing.
+        val theirs = tree.forVoice(VoiceRequest("play lullaby by paper lanterns"))!!
+        assertEquals("artist:ar1", theirs.source)
+        assertEquals(setOf("s1", "s2"), theirs.songs.map { it.id }.toSet())
+        // Nobody of that name on the phone: the words as said, and nothing matches them. It
+        // used to play Paper Lanterns' "Tidal".
+        assertEquals(null, tree.forVoice(VoiceRequest("play tidal by juniper vale")))
+    }
+
+    @Test
+    fun beforeItIsKnownWhetherTheServerIsThereOnlyAnExactMatchOnThePhonePlaysAtOnce() = runBlocking {
+        // "Dune" is on the phone; "Duke" is only on the server.
+        val dune = Song(id = "dune", title = "Dune", artist = "Sand Choir", album = "Desert", suffix = "flac")
+        val duke = Song(id = "duke", title = "Duke", artist = "Royal Brass", album = "Court")
+        var unsure = true
+        val waiting = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val known = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val server = org.medianexus.music.library.Search { q, _ -> org.medianexus.music.net.Found(songs = listOf(dune, duke).filter { it.title.equals(q.trim(), ignoreCase = true) }) }
+        val tree = phoneTree(server, unsure = { unsure }, offline = { false }, settle = { waiting.complete(Unit); known.await() }, also = listOf(dune))
+        // Said exactly, on the phone: played from it at once, with no wait to know.
+        assertEquals(listOf("dune"), tree.forVoice(VoiceRequest("play dune"))!!.songs.map { it.id })
+        assertEquals(false, waiting.isCompleted)
+        // "Duke": the phone's "Dune" is only a near match. It waits to know (it used to play
+        // "Dune" at once)...
+        val asked = scope.async { tree.forVoice(VoiceRequest("play duke")) }
+        kotlinx.coroutines.selects.select<Unit> {
+            waiting.onAwait {}
+            asked.onAwait { org.junit.Assert.fail("answered without waiting to know: ${it?.songs?.map { s -> s.id }}") }
+        }
+        assertEquals(false, asked.isCompleted)
+        // ...and the server is there: its exact match is played.
+        unsure = false
+        known.complete(Unit)
+        assertEquals(listOf("duke"), asked.await()!!.songs.map { it.id })
     }
 
     @Test

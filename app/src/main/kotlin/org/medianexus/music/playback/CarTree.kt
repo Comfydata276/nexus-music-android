@@ -856,14 +856,18 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     suspend fun forVoice(request: VoiceRequest): PlayList? {
         // Offline, only what is on the phone is looked in. And so it is when it isn't yet
         // known whether the server is there (just after start-up) and something on the phone
-        // answers to the words: that plays now, rather than after a wait to find out.
-        // The playlists the phone knows of count as something on the phone too: a playlist
-        // asked for by name, and downloaded, used to wait out the not-knowing first.
+        // is named exactly by the words: that plays now, rather than after a wait to find
+        // out. A near match on the phone (a slip forgiven: "Duke" finding "Dune") waits to
+        // know, and then, with the server there, its search answers, where an exact match
+        // beats the phone's near one. The playlists the phone knows of count as something on
+        // the phone too: a playlist asked for by name, and downloaded, used to wait out the
+        // not-knowing first.
         val offlineNow = isOffline || (isUnsure && (playable().let { p ->
             val local = LocalSearch.find(request.searchWords(), p.songs, SearchLimits(artists = 3, albums = 3, songs = 3), likedNow)
             val lists = playlistsKnown(wait = false, phoneOnly = true) { emptyList() }
             val genres = p.songs.filter { it.genre.isNotEmpty() }.map { it.genre }.distinct().map { Genre(name = it) }
-            Voice.choose(request, local, lists, genres) != VoiceChoice.Nothing || Voice.choose(request.copy(focus = VoiceRequest.Focus.ANY, query = request.searchWords()), local, lists, genres) != VoiceChoice.Nothing
+            Voice.choose(request, local, lists, genres, exactOnly = true) != VoiceChoice.Nothing ||
+                Voice.choose(request.copy(focus = VoiceRequest.Focus.ANY, query = request.searchWords()), local, lists, genres, exactOnly = true) != VoiceChoice.Nothing
         } || settled()))
         val here = if (offlineNow) playable() else null
         // Offline, only what is on the phone is looked in.
@@ -885,6 +889,19 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             val any = request.copy(focus = VoiceRequest.Focus.ANY, query = request.searchWords())
             val more = find(any.searchWords(), SearchLimits(artists = 10, albums = 10, songs = 25))
             choice = Voice.choose(any, more, playlists, genres)
+        }
+        val named = Voice.artistNamed(request)
+        if (choice == VoiceChoice.Nothing && named != null) {
+            // Nothing by the artist named matches what was asked for ("Duke by Paper
+            // Lanterns", and they have no "Duke"): never something by another artist. That
+            // artist's music, if the artist is known; otherwise the words as said, searched
+            // as they are.
+            val artist = VoiceRequest(query = named, focus = VoiceRequest.Focus.ARTIST, artist = named)
+            choice = Voice.choose(artist, find(named, SearchLimits(artists = 10, albums = 0, songs = 0)), emptyList(), emptyList())
+            if (choice == VoiceChoice.Nothing) {
+                val words = Voice.spoken(request.query).ifBlank { request.searchWords() }
+                choice = Voice.choose(VoiceRequest(query = words), find(words, SearchLimits(artists = 10, albums = 10, songs = 25)), playlists, genres, plain = true)
+            }
         }
         return when (choice) {
             is VoiceChoice.OfAlbum -> if (offlineNow) albumSongsOffline(choice.album.id).let { (songs, name) -> PlayList(songs, 0, name, "album:${choice.album.id}") }
