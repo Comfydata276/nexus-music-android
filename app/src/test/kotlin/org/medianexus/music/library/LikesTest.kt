@@ -49,7 +49,7 @@ class LikesTest {
 
     private fun setUp(send: suspend (StarTarget, String, Boolean) -> Unit): Pair<Likes, PageCache> {
         val pages = PageCache(folder.root, scope, Dispatchers.IO, clock = { now })
-        return Likes(pages, likedSpec, send, scope, clock = { now }) to pages
+        return Likes(pages, likedSpec, { target, id, liked, _ -> send(target, id, liked) }, scope, clock = { now }) to pages
     }
 
     private suspend fun Likes.waitFor(set: Set<String>) = withTimeout(5_000) { liked.first { it == set } }
@@ -365,7 +365,7 @@ class LikesTest {
         val pages = PageCache(folder.root, scope, Dispatchers.IO, clock = { now })
         val likes = Likes(
             pages, likedSpec,
-            send = { target, id, liked -> held.value += org.medianexus.music.store.Pending.Star(target.name.lowercase(), id, liked) },
+            send = { target, id, liked, song -> held.value += org.medianexus.music.store.Pending.Star(target.name.lowercase(), id, liked, song = song) },
             scope, clock = { now }, held = held,
         )
         return likes to pages

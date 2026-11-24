@@ -56,7 +56,9 @@ data class Liked(val songs: Set<String> = emptySet(), val albums: Set<String> = 
 class Likes(
     private val pages: PageCache,
     private val spec: PageSpec<Found>,
-    private val send: suspend (target: StarTarget, id: String, liked: Boolean) -> Unit,
+    /** Sends a like or unlike; `song` is the song liked, as shown (null for an album or an
+     *  unlike), kept with the change while it is held. */
+    private val send: suspend (target: StarTarget, id: String, liked: Boolean, song: Song?) -> Unit,
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
     /** The account's changes still waiting to be sent to the server, oldest first. */
@@ -137,7 +139,19 @@ class Likes(
 
     /** The held changes are not what they were (what an earlier run left has been read; one
      *  that had waited has gone): what is shown is worked out again. */
-    fun heldChanged() = synchronized(lock) { publish() }
+    fun heldChanged() = synchronized(lock) {
+        // A song whose like is held, and which the server's list doesn't have yet, heads
+        // Liked songs with what was shown of it when it was liked: after a restart as well,
+        // when nothing else here remembers it (the kept list may by then be the server's,
+        // fetched while the like was held).
+        val likedNow = waiting()
+        for (change in held.value) {
+            val song = (change as? Pending.Star)?.song ?: continue
+            if (likedNow[Item(StarTarget.SONG, song.id)] != true) continue
+            if (song.id !in listed && song.id !in justLiked) justLiked[song.id] = song
+        }
+        publish()
+    }
 
     /**
      * A like or unlike that had been held has had its answer: the server took it, or (not
@@ -278,7 +292,7 @@ class Likes(
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             turn.withLock {
                 val error = try {
-                    send(item.target, item.id, liked)
+                    send(item.target, item.id, liked, if (liked) song else null)
                     null
                 } catch (e: ApiError) {
                     e

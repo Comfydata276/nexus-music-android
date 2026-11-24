@@ -146,9 +146,14 @@ class HeldOrderTest {
         // Offline mode is on before the account is taken on, as when the app is started with
         // it on: nothing of the account's start-up goes to the server.
         watch.manual(true)
+        account = build(AccountDirs(folder.newFolder("data"), folder.newFolder("cache")))
+    }
+
+    /** The account as the app builds it, on these folders. */
+    private fun build(dirs: AccountDirs): AccountGraph {
         val api = Subsonic(web.url("/").toString(), "tester", "pass", OkHttpClient(), switch)
-        account = AccountGraph(
-            Account(api.server, api.username, "key", AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))), api, Dispatchers.IO,
+        return AccountGraph(
+            Account(api.server, api.username, "key", dirs), api, Dispatchers.IO,
             AccountWiring(
                 kotlinx.coroutines.flow.MutableStateFlow(Settings()), watch.state, suspect = { watch.check() },
                 pause = { millis ->
@@ -171,7 +176,7 @@ class HeldOrderTest {
     private val heldFile get() = File(account.account.dirs.data, "held.json")
 
     /** What is held, without when each was made. */
-    private fun heldNow(): List<Pending> = account.held.all().map { if (it is Pending.Star) it.copy(at = 0) else it }
+    private fun heldNow(): List<Pending> = account.held.all().map { if (it is Pending.Star) it.copy(at = 0, song = null) else it }
 
     /**
      * Likes or unlikes the song, and returns once that has been acknowledged to whoever made
@@ -294,5 +299,24 @@ class HeldOrderTest {
         assertEquals("[]", heldFile.readText())
         assertEquals(listOf("star s1", "star s2", "star s2"), server.asked.toList())
         assertTrue(account.likes.isLiked("s2"))
+    }
+
+    @Test
+    fun aLikeStillHeldIsInLikedSongsAfterARestart() = runBlocking {
+        likedInOfflineMode()
+        // The server's Liked songs, fetched while the like is held, doesn't have the song: the
+        // phone's copy of the list is now the server's.
+        account.pages.put(account.library.liked(), Found())
+        // The app is started again before the like is delivered.
+        val dirs = account.account.dirs
+        account.close()
+        org.medianexus.music.store.HeldChanges.restarted(heldFile)
+        account = build(dirs)
+        account.likes.liked.first { song.id in it }
+        // The heart, and the song in Liked songs, as it was shown when it was liked. (Only
+        // the heart used to show until the like was delivered.)
+        val shown = account.library.likedShown(account.pages.kept(account.library.liked()))
+        assertEquals(listOf(song.id), shown!!.map { it.id })
+        assertEquals(song.title, shown.single().title)
     }
 }

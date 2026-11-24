@@ -28,8 +28,16 @@ sealed interface Pending {
     /** What the change is about. Changes to the same thing reach the server in order. */
     val id: String
 
+    /** `song`: a liked song as it was shown, so that Liked songs can list it while the like
+     *  is held, across a restart too (the server's list doesn't have it until it is sent). */
     @Serializable @SerialName("star")
-    data class Star(val kind: String, override val id: String, val starred: Boolean, val at: Long = 0) : Pending
+    data class Star(
+        val kind: String,
+        override val id: String,
+        val starred: Boolean,
+        val at: Long = 0,
+        val song: org.medianexus.music.net.Song? = null,
+    ) : Pending
 
     @Serializable @SerialName("rating")
     data class Rating(override val id: String, val rating: Int, val at: Long = 0) : Pending

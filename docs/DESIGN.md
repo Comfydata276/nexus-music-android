@@ -1093,11 +1093,10 @@ How it is built (M1a):
   made, then what is being sent this moment; what an earlier run left held is read as the
   account is taken on. (A held like used to be taken as if the server had it, so the
   server's Liked songs, asked for as it came back and before the like was delivered, turned
-  the heart off until the next refresh.) One gap is left: a like held, the server's own
-  list fetched while it is still held, and the app then started again before it is
-  delivered, shows the heart everywhere but does not list the song in Liked songs until
-  the like has gone (the phone's copy of the list is then the server's, and the song's
-  details are not in the held change).
+  the heart off until the next refresh.) **A held like keeps the song as it was shown**
+  (`Pending.Star.song`), so Liked songs lists it while it waits, across a restart too, when
+  the phone's copy of the list may by then be the server's, fetched while it was held (it
+  used to show only the heart until the like was delivered; M3b, item 8).
 - **What plays offline** is known in memory (`Availability`): downloaded (and not set aside
   this run), or kept whole in the form it would be streamed in now (`KeptIndex`). Rows ask it
   and the car asks it; it never looks at the disk.
@@ -1350,7 +1349,8 @@ described where it belongs above; what was decided, and what was taken out:
 - **Left as it is**: with Wi-Fi only off, transfers still go out on the network Android gave
   the job and fall back to the phone's own route; a like held, the server's list fetched
   while it is held, and the app restarted before it is delivered shows the heart but not
-  the song in Liked songs until it is delivered.
+  the song in Liked songs until it is delivered (put right in M3b: the held like keeps the
+  song).
 
 ### What the offline loose ends decided
 

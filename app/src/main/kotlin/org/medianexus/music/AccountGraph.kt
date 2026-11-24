@@ -153,7 +153,7 @@ class AccountGraph(
 
     val likes: Likes = Likes(
         pages, library.liked(),
-        send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked, at = System.currentTimeMillis())) },
+        send = { target, id, liked, song -> submit(Pending.Star(target.name.lowercase(), id, liked, at = System.currentTimeMillis(), song = song)) },
         scope, held = held.queued,
     )
 
