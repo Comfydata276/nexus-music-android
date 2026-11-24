@@ -161,7 +161,9 @@ data class SearchView(
             val matching = SearchRank.playlistsMatching(query, playlists)
             return when (kind) {
                 SearchKind.ALL -> SearchView(
-                    artistsFirst = SearchRank.artistFirst(query, found.songs, found.artists),
+                    // As the phone's own search found it, over everything it rated; the
+                    // server's search says nothing of it, so it is judged from what came back.
+                    artistsFirst = found.artistFirst ?: SearchRank.artistFirst(query, found.songs, found.artists),
                     songs = found.songs.take(TOP_SONGS),
                     moreSongs = found.songs.size > TOP_SONGS,
                     artists = found.artists,

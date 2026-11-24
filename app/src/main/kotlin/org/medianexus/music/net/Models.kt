@@ -182,6 +182,10 @@ data class Found(
     @SerialName("artist") val artists: List<Artist> = emptyList(),
     @SerialName("album") val albums: List<Album> = emptyList(),
     @SerialName("song") val songs: List<Song> = emptyList(),
+    /** Set by the phone's own search, never read from the server: an artist matches the
+     *  words at least as well as any song's title does (Windows' `artist_first`). Null when
+     *  the server searched, which says nothing of the kind. */
+    @kotlinx.serialization.Transient val artistFirst: Boolean? = null,
 )
 
 @Serializable

@@ -48,16 +48,18 @@ object SearchRank {
     fun words(text: String): List<String> = fold(text).split(' ').filter { it.isNotEmpty() }
 
     /** How many single-letter slips separate two words; over `limit` comes back as
-     *  `limit + 1` (`slips`). */
-    fun slips(a: String, b: String, limit: Int): Int {
-        if (kotlin.math.abs(a.length - b.length) > limit) return limit + 1
-        var before = IntArray(b.length + 1)
-        var previous = IntArray(b.length + 1) { it }
-        var current = IntArray(b.length + 1)
+     *  `limit + 1` (`slips`). `bLength` takes only the start of `b` (Windows' `&word[..n]`),
+     *  without making a string of it: this is asked of every word in the library at each
+     *  keystroke. */
+    fun slips(a: String, b: String, limit: Int, bLength: Int = b.length): Int {
+        if (kotlin.math.abs(a.length - bLength) > limit) return limit + 1
+        var before = IntArray(bLength + 1)
+        var previous = IntArray(bLength + 1) { it }
+        var current = IntArray(bLength + 1)
         for (i in 1..a.length) {
             current[0] = i
             var least = current[0]
-            for (j in 1..b.length) {
+            for (j in 1..bLength) {
                 val cost = if (a[i - 1] != b[j - 1]) 1 else 0
                 var best = minOf(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
                 if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) best = minOf(best, before[j - 2] + 1)
@@ -70,7 +72,7 @@ object SearchRank {
             previous = current
             current = swap
         }
-        return minOf(previous[b.length], limit + 1)
+        return minOf(previous[bLength], limit + 1)
     }
 
     /** How well a typed word matches a word of a name, from 0 to 1 (`likeness`). */
@@ -90,7 +92,7 @@ object SearchRank {
         var best = limit + 1
         val from = (typed.length - 1).coerceAtLeast(0)
         val to = minOf(typed.length + 1, (word.length - 1).coerceAtLeast(0))
-        for (length in from..to) best = minOf(best, slips(typed, word.substring(0, length), limit))
+        for (length in from..to) best = minOf(best, slips(typed, word, limit, length))
         return when {
             best == 1 -> 0.4f
             best == 2 && limit == 2 -> 0.3f

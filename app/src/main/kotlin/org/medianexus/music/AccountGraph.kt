@@ -9,6 +9,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.medianexus.music.downloads.Catalogue
@@ -40,6 +41,11 @@ class AccountWiring(
     val downloads: ((AccountGraph) -> Downloads)? = null,
     /** Something for the Diagnostics page (no names, no addresses). */
     val note: (String) -> Unit = {},
+    /** The phone's network: the library copy's daily refresh waits for one that isn't metered. */
+    val network: StateFlow<org.medianexus.music.net.NetworkNow>? = null,
+    /** Whether anyone is using the app now (its screens in front, or something playing): the
+     *  copy of the library is checked against the server only then. */
+    val inUse: () -> Boolean = { true },
 )
 
 /**
@@ -60,6 +66,7 @@ class AccountGraph(
     private val settings: StateFlow<Settings> = wiring?.settings ?: MutableStateFlow(Settings())
     private val reach: StateFlow<Reach> = wiring?.reach ?: MutableStateFlow(Reach())
     private val suspect: () -> Unit = wiring?.suspect ?: {}
+    private val inUse: () -> Boolean = wiring?.inUse ?: { true }
 
     /** The account's name in its covers' addresses (see [artworkIdOf]). */
     val artwork: String = org.medianexus.music.store.artworkIdOf(account.dirs.data)
@@ -81,7 +88,21 @@ class AccountGraph(
         pinned = File(downloadsDir, "covers"),
     )
 
-    val library = Library(api, pages)
+    /** The copy of the whole library kept on the phone (see [LibraryCopy]): search and the
+     *  Songs page. In the cache, as the pages are: it can always be fetched again. */
+    val copy = org.medianexus.music.library.LibraryCopy(
+        File(account.dirs.cache, "library"),
+        object : org.medianexus.music.library.LibraryServer {
+            override suspend fun scanStatus() = api.scanStatus()
+            override suspend fun page(artists: Int, albums: Int, songs: Int, offset: Int) = api.libraryPage(artists, albums, songs, offset)
+        },
+        io,
+        unmetered = { wiring?.network?.value?.unmetered ?: true },
+        note = wiring?.note ?: {},
+        pageKept = { org.medianexus.music.downloads.CrashPoints.reached("library-page-$it") },
+    )
+
+    val library: Library = Library(api, pages, org.medianexus.music.library.PhoneSearch(copy, org.medianexus.music.library.ServerSearch(api)) { id -> likes.isLiked(id) }, copy)
 
     /** Likes, ratings and plays on their way to the server, and the one sender they all go
      *  through, in order (see [HeldChanges] and [submit]). */
@@ -95,7 +116,7 @@ class AccountGraph(
         note = wiring?.note ?: {},
     )
 
-    val likes = Likes(pages, library.liked(), send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked)) }, scope)
+    val likes: Likes = Likes(pages, library.liked(), send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked)) }, scope)
 
     /** The files the play queue is saved in, with the account's own data. What the player
      *  does with them belongs to the playback service, each time one is made (`KeptQueue`):
@@ -127,6 +148,21 @@ class AccountGraph(
         // by hand, which starts the sender just as the server returning does).
         scope.launch {
             reach.map { it.offline }.distinctUntilChanged().collect { offline -> if (!offline) flush() }
+        }
+        // The copy of the library: read from the phone at once, then checked with the server
+        // (Windows' `load_library`): now, every five minutes while the app is in use (Windows'
+        // timer), and whenever the server can be asked again.
+        scope.launch {
+            copy.open()
+            var first = true
+            while (true) {
+                if (first || inUse()) checkCopy()
+                first = false
+                kotlinx.coroutines.delay(COPY_CHECK_MILLIS)
+            }
+        }
+        scope.launch {
+            reach.map { it.offline }.distinctUntilChanged().drop(1).collect { offline -> if (!offline) launch { checkCopy() } }
         }
         // A list downloaded whole follows its kept page: its order, and the songs it gains.
         downloads?.let { downloads ->
@@ -167,6 +203,21 @@ class AccountGraph(
         return sent
     }
 
+    /** Asks whether the copy of the library is out of date, and fetches it if it is. Not
+     *  offline; a server that can't be reached is tried again at the next check. */
+    private suspend fun checkCopy() {
+        if (reach.value.offline) return
+        try {
+            copy.check()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: org.medianexus.music.net.ApiError) {
+            // Out of reach, or refused: what had arrived is kept, and asked for again later.
+        } catch (_: java.io.IOException) {
+            // The phone's storage wouldn't take a page: tried again at the next check.
+        }
+    }
+
     fun close() {
         downloads?.release()
         scope.cancel()
@@ -174,5 +225,9 @@ class AccountGraph(
 
     private companion object {
         const val MOST_COVER_BYTES = 16L * 1024 * 1024
+
+        /** How often the copy of the library is checked against the server while the app is
+         *  in use (Windows' five minutes). */
+        const val COPY_CHECK_MILLIS = 5 * 60 * 1000L
     }
 }

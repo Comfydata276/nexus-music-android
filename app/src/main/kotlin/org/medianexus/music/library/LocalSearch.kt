@@ -6,36 +6,53 @@ import org.medianexus.music.net.Found
 import org.medianexus.music.net.Song
 
 /**
+ * Songs, albums and artists held as lists, made ready for searching with the same index and
+ * scores as the phone's copy of the library ([SearchIndex]).
+ */
+class ListIndex(val songs: List<Song>, val albums: List<Album>, val artists: List<Artist>) {
+    private val index: SearchIndex = SearchIndex.Builder().apply {
+        for (song in songs) song(song.title, song.artistLabel, song.album)
+        for (album in albums) album(album.name, album.artistLabel)
+        for (artist in artists) artist(artist.name)
+    }.build()
+
+    /** What matches `query`, best first (null if `cancelled` said stop part-way). */
+    fun find(query: String, limits: SearchLimits, liked: (String) -> Boolean = { false }, cancelled: () -> Boolean = { false }): Found? {
+        val hits = index.search(query, { liked(songs[it].id) }, limits.artists, limits.albums, limits.songs, cancelled = cancelled) ?: return null
+        return Found(
+            artists = hits.artists.map { artists[it] },
+            albums = hits.albums.map { albums[it] },
+            songs = hits.songs.map { songs[it] },
+            artistFirst = hits.artistFirst,
+        )
+    }
+}
+
+/**
  * Searching what is on the phone, for when the server can't be asked (offline, by hand or
  * because it is out of reach): the songs that play offline, and the albums and artists they
- * belong to, ranked by the same word matching as the rest of search ([SearchRank]). The car's
+ * belong to, found and ranked exactly as the phone's copy of the library is searched
+ * (Windows' search, [SearchIndex]), limited to what can be played. The Search tab, the car's
  * search and spoken requests use it offline.
  */
 object LocalSearch {
-    fun find(query: String, songs: List<Song>, limits: SearchLimits): Found {
-        val typed = SearchRank.words(query)
-        if (typed.isEmpty()) return Found()
+    fun find(query: String, songs: List<Song>, limits: SearchLimits, liked: (String) -> Boolean = { false }): Found {
+        if (SearchRank.words(query).isEmpty()) return Found()
+        return indexOf(songs).find(query, limits, liked) ?: Found()
+    }
 
-        val songHits = songs.mapNotNull { song ->
-            SearchRank.rate(typed, SearchRank.words(song.title), listOf(SearchRank.words(song.artistLabel) to 0.6f, SearchRank.words(song.album) to 0.5f))?.let { it.score to song }
-        }.sortedByDescending { it.first }.take(limits.songs).map { it.second }
+    /** The last index made, and the songs it was made of: the songs that play change only
+     *  when something is downloaded or kept, and every keystroke searches them. */
+    @Volatile private var last: Pair<List<String>, ListIndex>? = null
 
-        val albums = songs.filter { it.albumId.isNotEmpty() }.groupBy { it.albumId }.map { (id, of) ->
-            val first = of.first()
-            Album(id = id, name = first.album, artist = first.artist, artistId = first.artistId, displayArtist = first.displayArtist, coverArt = first.coverArt, songCount = of.size, year = first.year, genre = first.genre)
-        }
-        val albumHits = albums.mapNotNull { album ->
-            SearchRank.rate(typed, SearchRank.words(album.name), listOf(SearchRank.words(album.artistLabel) to 0.6f))?.let { it.score to album }
-        }.sortedByDescending { it.first }.take(limits.albums).map { it.second }
+    private fun indexOf(songs: List<Song>): ListIndex {
+        val ids = songs.map { it.id }
+        last?.let { (had, index) -> if (had == ids) return index }
+        return ListIndex(songs, OnThePhone.albums(songs), OnThePhone.artists(songs)).also { last = ids to it }
+    }
 
-        val artists = LinkedHashMap<String, Artist>()
-        for (song in songs) {
-            val credits = song.artists.filter { it.id.isNotEmpty() }.map { it.id to it.name }.ifEmpty { listOf(song.artistId to song.artist) }
-            for ((id, name) in credits) if (id.isNotEmpty() && id !in artists) artists[id] = Artist(id = id, name = name)
-        }
-        val artistHits = artists.values.mapNotNull { artist ->
-            SearchRank.rate(typed, SearchRank.words(artist.name))?.let { it.score to artist }
-        }.sortedByDescending { it.first }.take(limits.artists).map { it.second }
-        return Found(artists = artistHits, albums = albumHits, songs = songHits)
+    /** Forgets the index kept (an account has gone: its songs are not the next one's). */
+    fun forget() {
+        last = null
     }
 }

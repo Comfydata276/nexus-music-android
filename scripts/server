@@ -14,6 +14,11 @@
 #   scripts/server manyalbums [N]
 #                             add a genre, "Paging test", of N one-song albums (80 unless
 #                             told), for checking paging; --remove (or remove) takes it away
+#   scripts/server biglibrary [N]
+#                             add a large library of N tiny made-up songs (50,000 unless
+#                             told) in a folder of its own, for measuring the phone's copy of
+#                             the library, its search and the Songs page; --remove (or
+#                             remove) takes it away again
 #   scripts/server sweepcheck <recording>
 #                             find gaps in a recording of the "Continuous Sweep" album
 #   scripts/server joincheck <recording>[,<recording-2>...] <song file>...
@@ -106,6 +111,12 @@ case "${1:-}" in
     arg="${2:-80}"; [ "$arg" = "--remove" ] && arg=remove
     rig_run python3 /work/tools/library/manyalbums.py "$base" /cache/library "$arg"
     ;;
+  biglibrary)
+    # Tens of thousands of distinct songs in half-kilobyte files (tools/library/biglibrary.py).
+    container_running "$name" || die "the test server isn't running (scripts/server start)"
+    arg="${2:-50000}"; [ "$arg" = "--remove" ] && arg=remove
+    rig_run python3 /work/tools/library/biglibrary.py "$base" /cache/library "$arg"
+    ;;
   sweepcheck)
     # Look for gaps in a recording of the "Continuous Sweep" album (tools/library/sweepcheck.py).
     file="${2:?sweepcheck: which recording?}"; [ -f "$file" ] || die "sweepcheck: no such file: $file"
@@ -140,5 +151,5 @@ case "${1:-}" in
     rig_run curl -sS -G "$base/rest/$method" -d u=tester -d p=tester-pass-1 -d v=1.16.1 -d c=rig -d f=json "${args[@]}"
     echo
     ;;
-  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

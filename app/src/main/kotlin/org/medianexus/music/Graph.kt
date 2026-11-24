@@ -123,6 +123,8 @@ class Graph(context: Context) {
                 suspect = { watch.check() },
                 downloads = { account -> downloadsFor(context.applicationContext, account) },
                 note = { diagnostics.note(it) },
+                network = network.state,
+                inUse = { org.medianexus.music.downloads.DownloadKeeper.visible || playing },
             ),
         )
     }

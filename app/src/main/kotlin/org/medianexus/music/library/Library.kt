@@ -24,7 +24,13 @@ import org.medianexus.music.store.PageSpec
  * Each method returns a [PageSpec]; [page] gives it to a screen (kept copy, then the
  * server's), [quick] to the car (one answer as soon as possible).
  */
-class Library(private val api: Subsonic, val pages: PageCache, val search: Search = ServerSearch(api)) {
+class Library(
+    private val api: Subsonic,
+    val pages: PageCache,
+    val search: Search = ServerSearch(api),
+    /** The phone's copy of the whole library (the Songs page; search), where there is one. */
+    val copy: LibraryCopy? = null,
+) {
     fun <T> page(spec: PageSpec<T>): Flow<Page<T>> = pages.page(spec)
 
     /** A page as a screen shows it: the kept copy, the server's, then any change made here
@@ -101,6 +107,8 @@ class Library(private val api: Subsonic, val pages: PageCache, val search: Searc
      * the screen shows the kept copy, so this is the same list.
      */
     suspend fun keptSongs(source: String): List<Song>? = when {
+        // Every song, newest first, from the phone's copy of the library (the Songs page).
+        source == SONGS -> copy?.state?.value?.let { copy -> copy.newestFirst.map { copy.songs.song(it) } }
         // As the page shows it: with the likes and unlikes still being sent (see [likedShown]).
         source == "liked" -> likedShown(pages.kept(liked()))
         source.startsWith("album:") -> pages.kept(album(source.removePrefix("album:")))?.songs
@@ -128,6 +136,10 @@ class Library(private val api: Subsonic, val pages: PageCache, val search: Searc
         /** Albums asked for at a time when fetching a whole list. */
         const val ALL_PAGE = 500
 
+        /** The Songs page's key: every song in the library, as the copy on the phone has
+         *  them (Windows' route key for its Songs page). */
+        const val SONGS = "songs"
+
         /** A list is fetched no further than this. */
         const val MOST_ALBUMS = 20_000
 
@@ -150,12 +162,35 @@ class Library(private val api: Subsonic, val pages: PageCache, val search: Searc
 data class SearchLimits(val artists: Int = 20, val albums: Int = 20, val songs: Int = 50)
 
 /**
- * Searching the library. For now the server does it (`search3`); a later version searches
- * the copy of the library kept on the phone, forgiving typos as Windows does
- * (src/search.rs), behind this same interface.
+ * Searching the library: the phone's copy of it once there is one ([PhoneSearch], forgiving
+ * typing mistakes as Windows does, src/search.rs), the server's search (`search3`) until
+ * then. The Search tab, the car's search and spoken requests all come here.
  */
 fun interface Search {
     suspend fun find(query: String, limits: SearchLimits): Found
+
+    /** Whether an answer comes at once, with no server to wait for: typing needn't pause
+     *  before it is asked. */
+    val instant: Boolean get() = false
+}
+
+/**
+ * Searching the phone's copy of the library ([LibraryCopy]), with Windows' index and
+ * scores, once the first copy is whole; until then, the server (`server`), as Windows does.
+ * Off the main thread; a search that more typing has replaced stops part-way (its caller
+ * cancels it). `liked` says whether a song is liked now: those rank above others.
+ */
+class PhoneSearch(private val copy: LibraryCopy, private val server: Search, private val liked: (String) -> Boolean) : Search {
+    override suspend fun find(query: String, limits: SearchLimits): Found {
+        val ready = copy.ready ?: return server.find(query, limits)
+        if (query.isBlank()) return Found()
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val job = coroutineContext[kotlinx.coroutines.Job]
+            ready.find(query.trim(), limits, liked) { job?.isActive == false } ?: throw kotlinx.coroutines.CancellationException("a newer search replaced it")
+        }
+    }
+
+    override val instant: Boolean get() = copy.ready != null
 }
 
 /** Searching by asking the server. */
