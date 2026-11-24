@@ -153,6 +153,26 @@ album's songs as two albums when only some of them carry a release date, and it 
 M4A's single date as a release date too. The generator writes a release date to every
 file for that reason.
 
+**A real collection's vocabulary.** `biglibrary 50000 --vocabulary` makes the names those of
+a real library rather than of a few word lists: made-up words handed out as a library uses
+them (a new one now and then, otherwise a used one, the commoner the likelier), 65,600
+distinct words for 50,000 songs, in eight scripts (Latin with accents, Cyrillic, Greek,
+Japanese, Korean, Chinese, Arabic), long titles ("(feat. …)", "- 2011 Remaster", "Part III"),
+and a third of the songs credited to two or three artists (written as Picard writes them:
+"A feat. B & C" and a multi-valued ARTISTS tag, which Navidrome lists one by one). What a
+keystroke's search has to get through: each typed word against every distinct word.
+`biglibrary churn N` adds N songs and deletes N others, then starts a scan without waiting:
+for changing the library while a phone is fetching its copy.
+
+**A second server, for the large library.** The ordinary server must keep its 100 songs (other
+checks rely on them). `scripts/server --instance big <command>` runs a second Navidrome of its
+own: container `nexus-test-navidrome-big`, port 4534 (another name needs `NEXUS_TEST_PORT`),
+its own database and its own music folder (`library-big`, which starts as the ordinary
+library hard-linked, so it costs nothing and has the same songs, playlists and likes). Every
+command works on it (`start`, `stop`, `api`, `biglibrary`, `manyalbums`, ...). The phone
+reaches it through `scripts/emu adb reverse tcp:4534 tcp:4534`, at `http://127.0.0.1:4534`;
+`NEXUS_TEST_PORT=4534 scripts/slowlink start 40` slows that link.
+
 ## The emulators
 
 ```sh
@@ -1286,10 +1306,63 @@ on its side, `android17/`, `android9/`; reports under `reports/m3a/`):
 
 **Not measured or not checked here**: TalkBack read aloud (the names are in `scripts/emu ui`:
 "Find in this list", "Sort: Title, ascending", each order in the sheet with its way round,
-"Recently played"); a real library's vocabulary (the made-up one has a few hundred distinct
-words, a real one tens of thousands: each typed word is compared with each distinct word, so
-expect a keystroke's search to take several times longer there, still a few milliseconds on
-a phone); a real phone's speed; the first fetch over mobile data (only the rig's local link).
+"Recently played"); a real phone's speed; the first fetch over mobile data (only the rig's
+local link). (A real library's vocabulary was measured by the fixes below.)
+
+### The finding-music fixes: what was checked
+
+Measured on the second server with the realistic library (`biglibrary 50000 --vocabulary`:
+50,697 songs, 4,222 albums, 704 artists, about 65,600 distinct words), Android 17 emulator.
+Every number "before" is the build at fa69b91; reports and samples are in
+`reports/m3a-fixes/` (`baseline.txt` has them all).
+
+| What | Before | After |
+|---|---|---|
+| A keystroke's search (`library search`, debug, nine phrases typed through five times) | median 11 to 65 ms, slowest 116 ms | median 7.5 to 12.5 ms, slowest 17 ms |
+| Keystroke to results on the screen (`NexusSearch`, debug, 112 keystrokes) | median 137 ms, 90% within 182, slowest 238 | median 71 ms, 90% within 97, slowest 220 |
+| The search index | 4.2 MB, made in 398 ms | 4.5 MB (characters as code points, in one array), 478 ms; made as soon as the copy is read at start-up |
+| A search of 40,000 distinct words (`SearchSpeedTest`, JVM) | 11 MB allocated | under 2 MB |
+| A song tapped on the Songs page: queue of 50,697 started and saved (release, peak) | 141.8 MB PSS, heap 55.8 | 125.7 MB, heap 45.6 |
+| That queue restored at a cold start (release, peak; settled) | 152.4 MB, heap 91.5; 143.4 / 80.6 | 138.1 MB, heap 69.7; 127.2 / 57.8 |
+| A refresh of the 50,697-song copy (release, peak) | 242.8 MB, heap 175.8; 9.1 s | 164.1 MB, heap 100.1; 8.2 s |
+| `scripts/measure`, release, ordinary library, no saved queue, three runs each alternately | idle 71.5 to 75.3 MB; cold start median 815 to 892 ms | idle 71.4 to 79.6 MB; cold start 880 to 1,011 ms (with the third offline hardening's commits as well) |
+| The APK (`scripts/check --release`) | 6,250,842 bytes | 6,191,574 bytes |
+
+The memory the reviewer found 5 MB higher after the second offline hardening (89.0 against
+82.9 MB idle, one run each) is not: five valid runs each of the two release builds, signed in
+afresh to the ordinary server, gave 67.7 to 75.1 MB (mean 69.4) after and 65.3 to 76.9 (mean
+72.4) before. Nearly all the spread is the native heap (38.8 to 47.3 MB for one build), which
+follows what the renderer has drawn. Compare builds over several alternating runs.
+
+The walk (pictures in `shots/m3a-fixes/`: `walk/` numbered, `default/`, `narrow/` at 360dp
+and 1.3 font, `side/`):
+
+- A first fetch slowed to 40 KB/s, with 30 songs added and 30 deleted on the server while it
+  ran (`biglibrary churn 30`): the copy was used and noted "the server's library changed
+  while it was fetched; it is used, and fetched again at the next check"; the next start
+  fetched it again in 9.5 s, and it was whole: 50,695 songs, the server's count, the 30 new
+  songs found by search. (On the phone the marked copy was whole too; losing a song between
+  pages and repeating one are forced in `LibraryFetchTest`.)
+- The Songs page found ("brousgr") and sorted by title; a row tapped played that song, and
+  the queue was the found songs in title order from it.
+- Search with two slips ("lantren sesaon") found Lantern Season among 50,695 songs.
+- The fast-scroll handle dragged through 50,695 songs, its bubble saying the month (own
+  order) or the letter (by title); two-line titles at 1.3 font; on its side the header shares
+  a line with the play button and find box.
+- The car, release build, on the second server with the ordinary library (the large one taken
+  away first: its songs are three silent frames, which `play.sound` rightly fails, and the
+  car's player shows no cover for them):
+
+      scripts/carcheck org.medianexus.music --nexus --query "lantren" --voice "artist:Paper Lanterns=>Paper Lanterns;album:Slow Rivers=>Slow Rivers;song:Lantern Season|artist=Paper Lanterns=>Lantern Season;playlist:Morning mix=>Morning mix;any:nordlys=>Nordlys;song:Lantern Sesaon=>Lantern Season;artist:Papr Lanterns=>Paper Lanterns;album:Slow Rivrs=>Slow Rivers;playlist:Mornig mix=>Morning mix;any:lantern sesaon=>Lantern Season"
+
+  57 passed, none failed, one warning (empty folders: Downloads, the empty playlist, and
+  artist letters kept from the 50,000-song artist list a minute before); every misspelt
+  request played the right thing. Offline (the server stopped, Slow Rivers downloaded):
+  `--mode offline` 25 passed, none failed. (The offline mode picks its own words from what is
+  downloaded; misspelt requests against what is on the phone are in `VoiceMisspeltTest`.)
+
+Not checked here: TalkBack with the fast-scroll handle (it is hidden from screen readers,
+which scroll the list as before); the Android 16 emulator (in use by the other engineer).
 
 ## What is not covered
 

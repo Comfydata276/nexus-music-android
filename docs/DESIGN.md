@@ -1714,13 +1714,53 @@ How it is built (M3a, finding music):
   page of its own (`Route.Songs`) for anything that opens it.
 - **Recently played** is reached from Home's title bar and from Library's list under Liked
   songs (Windows has it as a tab beside the queue).
-- **The Songs page's header** is its count ("50100 songs, newest first", Windows' words and
-  number form) without a cover or a second title: the chip, or the title bar, names it.
+- **The Songs page's header** is its count and the order shown ("50100 songs, newest first",
+  "…, by title, Z to A": Windows' words and number form; Windows' page has only its own
+  order) without a cover or a second title: the chip, or the title bar, names it.
 - **A queue started from the Songs page doesn't follow a newer copy of the library**: a
   refreshed 50,000-song copy would be compared with the queue on the main thread. It plays on
   as started.
 - **Details**: "On this phone" is the phone's own line (Windows has only "Downloaded as");
-  the play count is the one the song was shown with, not asked of the server again.
+  the play count, last play and rating are the newest the app has seen (`Freshest`: a page
+  from the server since, or what the app itself just reported), not asked of the server again.
+
+### What the finding-music fixes decided
+
+- **A copy fetched while the library moved is used, and fetched again** (as Windows now
+  does): after the last page the scan status is read again; if it moved, couldn't be read, or
+  a song came twice, the copy is stamped out of date (count -1) and the next ordinary check
+  fetches it. No refusing, no retries, no comparison with the server's count. Nothing is
+  fetched while the server scans. A copy Android cleared is written again from memory; a
+  resumed fetch uses only pages kept under its own scan.
+- **A tap hands over the arrangement on screen**: the list, the find text and order it was
+  arranged with, the song tapped and its place. The service plays that arrangement from that
+  song, wherever it now is; if it isn't there, nothing plays and the person is told ("That
+  song isn't in the list as it was shown any more"), never a neighbour. Rows of an
+  arrangement that a newer one is replacing are drawn but don't respond. A queue from a
+  narrowed list follows its list narrowed the same way (Windows' follows it unnarrowed); the
+  saved queue keeps the find text in a field of its own (`list_filter`) Windows reads past.
+- **A queue holds places, not songs**: a list from the copy is places in its table
+  (`PlacedSongs`), a saved queue is read back into a table of its own, and the queue's play
+  order, entry numbers and places are arrays of numbers. A song is made only for what is
+  shown or played. The saved queue's file is Windows' form, written a song at a time.
+- **A refresh holds the copy as far as it has got**: pages go into the packed table as they
+  arrive, what is shown while the first copy arrives shares its arrays, and the file is
+  written through a buffer.
+- **Search folds as Rust does**, a code point at a time (each lower-cased alone, kept if Rust
+  calls it alphanumeric); playlists found are listed pinned first, then by name.
+- **A spoken request is never turned down for what search matched**: a match on search's
+  terms (`SearchRank.rate`) is worth at least the voice scorer's cutoff; the voice scorer
+  chooses between kinds. Playlists are judged on the same terms. The car's searches of the
+  phone put liked songs first.
+- **Long lists have a fast-scroll handle** (`ui/parts/FastScroll`, Compose only): shown while
+  the list moves, draggable then, a bubble with the letter of the sort, the month songs were
+  added, the year or the place; hidden, it leaves the edge to the list.
+- **Sorted by date added** (and the Songs page's own order), a row shows its date where the
+  length goes, as Windows' date-added column writes it (Today, Yesterday, "3 Mar 2024").
+- **In large type** (font scale 1.3 and up) a title on the Songs page may take two lines.
+- **The find box takes at most 200 characters**, the same limit as what is handed to the
+  player. **Dates added** are kept in `playlist-added.json`, Windows' name (an `added.json`
+  from before is moved there). The packed writer refuses what its reader would.
 
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed
