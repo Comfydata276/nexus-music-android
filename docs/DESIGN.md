@@ -802,8 +802,9 @@ How it is built (M1a):
   comes back; a cover listens for that only while it has failed and the app is in front. Covers of downloaded
   music are kept where the system won't clear them.
 - **Saved queue**: `queue.json` and `queue-place.json` in the account's data folder, in
-  the Windows app's form (`SavedQueue`, `QueuePlace` and its `queue_shape`), ready for
-  "Continue here" in M5. It stays saved through signing out.
+  the Windows app's form (`SavedQueue`, `QueuePlace` and its `queue_shape`). It stays saved
+  through signing out. (How it stands beside the queue saved on the server for the person's
+  other devices: "How it is built (M5a…)".)
 - **Downloads** (`downloads/`; how they are kept going is "Downloads: what Android allows"
   below), in the account's own data folder (`files/accounts/<key>/downloads`), which needs
   no permission and which the system never clears; no choice of folder.
@@ -1493,13 +1494,13 @@ be a copy the phone had written itself. These are the rules now.
   change. Check the playlist.", and the playlist is read again); or provably never sent (the
   connection was never made, or the read before it failed: "Couldn't reach your server. The
   playlist wasn't changed.").
-- **A change that fails, or can't be confirmed, drops every change to that playlist waiting
+- *(Replaced in the second round, below: there is no queue.)* **A change that fails, or can't be confirmed, drops every change to that playlist waiting
   behind it**, unsent, reads the playlist again, and says so once. Undo is the reverse change,
   waiting behind the one it undoes, under the same rule. Remembering how to undo a change,
   queuing it, dropping changes on a failure, and taking the undo and queuing the reverse each
   happen under one lock, so a refusal however quick leaves no Undo, and a reverse never goes
   out without what it undoes.
-- **What a page shows is the server's copy with the changes still waiting on top**
+- *(Replaced in the second round.)* **What a page shows is the server's copy with the changes still waiting on top**
   (`Playlists.shown`), worked out each time it is drawn and never written into the kept
   page: the kept page holds only what the server sent. A fetch and a change to the same
   playlist take turns (one lock per playlist); a done change leaves the waiting list only once
@@ -1513,7 +1514,7 @@ be a copy the phone had written itself. These are the rules now.
   moved into the position. Windows has the same window. `PlaylistsTest.aChangeElsewhere…
   IsTheKnownWindow` holds the write after the read, changes the playlist, and shows the result.
 - **Whose it is, positively**: a playlist can be changed only when the account is known to own
-  it (the owner is the account, or the server didn't say, and it isn't `readonly`); checked in
+  it (the owner is the account, and it isn't `readonly`; *second round*: one whose owner isn't given is not the account's); checked in
   the menus and again on the copy read just before the write.
 - **Adding**: the "already in this playlist" question is asked of a fresh copy from the
   server; Recommended's tick appears only once the server has the song, and Recommended is
@@ -1521,7 +1522,7 @@ be a copy the phone had written itself. These are the rules now.
 - **A selection belongs to the list it was made on** (`rememberSelection`, by the list's
   identity): a refresh, another search answer, another order or find, another account, or
   leaving the page drops it, so what is done to it is done to the rows that were ticked.
-- **Nothing starts music after the person stops it.** The player keeps one counter
+- **Nothing starts music after the person stops it.** *(Second round: the counters are now one order, `Choices`.)* The player keeps one counter
   (`QueuePlayer.intent`) that every pause, stop, sleep-timer pause, loss of audio focus and new
   choice moves on, read on the player's thread; a station's rejoin and autoplay's songs each
   note it when asked for and act only if it hasn't moved. A rejoin is also asked for only
@@ -1539,13 +1540,82 @@ be a copy the phone had written itself. These are the rules now.
 - **Touch**: the drag handles keep clear of the fast-scroll strip (the row ends where the strip
   begins, on any list long enough to have one); after a drop, the rows stay in the new order
   until the playlist has it, so a tap plays what is on screen.
-- **Big lists cost what one song costs**: a drag is the playlist with one song moved (where it
+- **Big lists cost what one song costs** *(the second round removed the matching by song and copy this bullet's last sentences describe)*: a drag is the playlist with one song moved (where it
   was, where it is), so a row crossed changes one number; taking out, finding and putting back
   many songs go along the list once; "Save queue as playlist" copies two arrays on the main
   thread and makes the songs off it; songs queued by hand are left for the player (`Drawn`),
   not written out and read back. Songs put back by Undo each go after a song that stayed
   (Windows: after the one put back before it), which is what lets them go in on one pass, and
   keeps them beside their own neighbour if someone added another copy of it meanwhile.
+
+### What the second round of M3b fixes decided
+
+Twice the reviews found the same shape of fault: a change described by the song and which copy
+of it, queued, and carried out later on a playlist that was not the one the person was looking
+at. Each round closed some cases and the next review found another. That idea came from the
+Windows app (`src/playlists.rs`). **The phone departs from Windows here on purpose**: Windows
+carries a change out on a playlist that has changed since, finding the songs it meant; the
+phone refuses and asks the person to do it again on what they now see. The port of the
+matching by song and copy (`library/PlaylistEdit.kt`) is gone.
+
+- **On the playlist exactly as it was drawn, or not at all** (`library/Playlists.kt`). Every
+  change that depends on what the playlist holds (remove, move, Undo, rename, delete) carries
+  the copy it was drawn from: its songs in order, and its name. The playlist is read fresh
+  just before the write; only if the two are the same is the change written, and then the
+  rows the person chose are simply those rows. Otherwise nothing is sent, the page shows the
+  fresh copy, and the person is told once: "This playlist was changed somewhere else. Nothing
+  was changed here." A card's menu (from the list of playlists) has seen only the name, so for
+  its rename and delete only the name must be the same. Songs added at the end go whatever
+  the playlist holds (the "already added" question is asked of a fresh read; if that read
+  fails, nothing is added and the person is told). A new playlist (including "Save queue as
+  playlist" and a mix's "Save as playlist") has nothing to compare.
+- **One change at a time, nothing waiting behind it.** While a change to a playlist is on its
+  way, the playlist is busy: its drag handles are dimmed and do nothing, a recommendation's
+  button is disabled, and every other change (Remove, the selection's Remove, Rename, Delete,
+  Add, Undo) says "Still saving the last change to this playlist." and does nothing. There is
+  no queue, so nothing to drop when one fails, and nothing carried out on top of a change
+  that did not happen. The page is the server's copy, with the one change on its way shown as
+  made.
+- **After the server says yes, the page is what was sent**: the drawn copy with the change
+  carried out is kept at once, not learnt from a read afterwards (which may not succeed).
+  After an answer that never came, the playlist is read again to show what the server has.
+- **Undo is the reverse of what the server confirmed**, offered only after it said yes,
+  within a minute, on the playlist exactly as that change left it, under the same rule: if it
+  is no longer that, nothing is sent ("Can't undo: the playlist has changed since."). With the
+  server out of reach, Undo says so and is kept for later.
+- **Nothing sends a playlist change twice, OkHttp included** (`Subsonic.once`): no retry on a
+  dead connection, no redirect followed, and any reply but a plain success ends the call
+  where it is (OkHttp would otherwise send again for a 503 with `Retry-After: 0`, a 408 or a
+  421), taken as "nobody knows whether it was done". A Subsonic answer, "ok" or the server's
+  own error, always comes as a success.
+- **Gone, wherever it is learnt**: the server's error 70 on any read of a playlist (a page's
+  refresh, the read before a write, a catch-up) removes its page and its row in Library and
+  says so, decided in one place (`Playlists.fetched`). After a new playlist's answer never
+  came, the list of playlists is asked for again.
+- **The window that remains**: between the fresh read and the write, a change another device
+  makes can still be overwritten (Subsonic can't make the write conditional). Nothing comes
+  between the two but comparing them. `PlaylistsTest.aChangeElsewhereBetweenThePhonesReadAnd
+  ItsWriteIsTheKnownWindow` shows it.
+- **One order for the person's choices** (`playback/Choices`): a choice of music takes its
+  place in it at the moment it is made (a tap whose songs are being looked up, a list played,
+  songs queued, a start in the service, on the phone or in the car), and so do a pause, a
+  stop, the sleep timer's pause, the sound taken away and offline mode switched on. Whatever
+  acts later than it was asked for (a lookup's result, a start being prepared, a station's
+  rejoin, autoplay's songs) acts only if nothing has taken a later place: the newest choice
+  wins, and a stop beats everything before it. The phone's "chosen" counter and the player's
+  start and intent counters were three; they are one. Autoplay takes its place when it starts
+  looking, so a pause while it looks stops it.
+- **A station has one thing retrying it, and it gives up.** Only the service's rejoin (1, 2,
+  4, 8 seconds) tries a station again; Media3's load policy (`RideOut`) leaves stations alone.
+  After the fourth rejoin fails too, the station is passed over as a song that can't be
+  played ("Couldn't play this song"), and nothing tries it again until the person chooses it.
+  One that played and drops later starts a fresh count of four. The general recovery for an
+  ordinary song makes no try while the person has paused or stopped: Play tries.
+- **Smaller**: an artist page's Play plays the albums as the page draws them (albums, then
+  singles and EPs), and only if nothing was chosen meanwhile. The name sheet asks for its
+  buttons to be brought into view when the keyboard opens, but in landscape they still sit
+  under the keyboard (the bottom sheet's window doesn't make room for it): left open, with the
+  keyboard's tick as the way to confirm.
 
 ## Working with the Windows app
 
@@ -2330,6 +2400,202 @@ Known, and accepted (the M5b fixes):
   repeat's sake, which follows Recently played): not worth splitting the mixes by what each
   depends on.
 
+How it is built (M5a, in step with the person's other devices):
+
+Everything the phone had written to the server before this was the phone's own. This writes
+into a record the Windows app on the person's PCs reads and trusts, where the newer value wins
+on every device: a phone that puts "now" on something the person did not change overwrites
+the real thing everywhere, and the PCs cannot defend themselves. So the rules below come
+before any feature, and each has a test that fails with the rule's code taken out
+(docs/TESTING.md, "In step with other devices").
+
+- **What is shared, and where** (a port of the Windows app's src/sync.rs). The pins, each
+  list's shuffle and sort, the theme, when songs were added to playlists, Recently played and
+  the latest 500 plays live as text in the comment of one playlist, "Nexus Music sync"
+  (`sync/Shared.kt`: Windows' `Shared`, field for field). The play queue and the place in it go
+  through the server's own saved queue. Both under one setting, "Keep my devices in step"
+  (Settings, Account: where Windows has it, in Windows' words; on unless switched off). Off,
+  the phone neither reads nor writes any of it, and makes no playlist.
+- **One function puts the two records together** (`sync/Settle.kt`: `Settler.settle(server
+  text, this phone's record as text, now)` gives the record to hold and whether to write it).
+  Nothing else in the app knows how it is done, so that it can be the Windows app's own Rust
+  compiled into the phone app if that is decided: one object to replace. Behind it now is a
+  Kotlin port (`sync/Merge.kt`), which is not trusted on its ported tests alone: `tools/instep`
+  compiles the Windows source itself (by path, read-only) and writes what `merge`,
+  `merge_history`, `merge_plays`, `merge_notes` and serde make of 86 texts and 51 pairs of
+  records, and the Kotlin is held to every one (`InStepCasesTest`); the same tool reads back
+  what the Kotlin wrote, and plays the PC in an end-to-end exchange.
+- **Read neither more kindly nor more strictly than Windows** (`SharedText`). A general JSON
+  reader differs from serde both ways: it takes `"12"` and `1e3` for a number, a field named
+  twice, half a pair of escapes; and it would refuse what serde reads (a record written as a
+  list of its fields in order). Either difference matters: a text the phone reads and
+  Windows can't is one Windows would overwrite; a text Windows reads and the phone can't is
+  one the phone would never exchange with again. So the reader is the app's own, written
+  against what serde does and held to the Rust-written cases. Text is compared by its bytes,
+  as Rust compares it (Kotlin compares UTF-16 units, which orders some characters
+  differently), and a list's choices in Windows' order of fields.
+- **Written byte for byte as serde_json writes it**: the same field names and order, whole
+  numbers, pairs and triples as lists, only the quote, the backslash and control characters
+  escaped; a map's entries by key (Windows writes them in no particular order).
+
+**The rules that keep the PCs safe.**
+
+1. **No time on what the person did not change on this phone.** A value the phone merely
+   holds is shared with the time it came with, or Windows' "long ago" (1) where it has none,
+   never now. Every place a time is put on something shared, and what reaches it:
+
+   | Where | Reached only by |
+   |---|---|
+   | `Ui.togglePin` (pins) | "Pin to top" / "Unpin" in a playlist's menu |
+   | `SettingsPage` (theme) | a theme swatch tapped |
+   | `Ui.rememberSort`, `Ui.toggleListShuffle` (a list's choices) | the sort sheet; a list page's shuffle button |
+   | `PlaybackService.queueChanged` (the playing list's shuffle) | the shuffle button pressed while it plays (`QueuePlayer.shufflePresses`): the app's, the notification's, a car's |
+   | `PlaybackService.rememberShuffle` | "Shuffle" at the top of a list in the car (`PlayList.shuffleChosen`) |
+   | `Added.changed`, `Added.create` (when a song was added) | the person adding to, removing from or making a playlist on this phone, once the server has taken it (`Playlists.send`) |
+   | `RecentlyPlayed.played` (history), `PlayLog.add` (plays) | a song starting to play here; a play that counted here |
+   | `PlaybackService.save` (the queue's own time) | the queue changed or played on here; never while one is put back, follows its list, or is taken from another device (`quietly`) |
+
+   Three of these used to put "now" on what had merely been found different, and were
+   changed. **A list's shuffle** was stamped whenever the queue's shuffle and the list's
+   remembered choice disagreed, which is also the case when the choice was changed on a PC,
+   the queue was put back from the last run, or the app itself chose (a spoken "play
+   <artist>" is shuffled): the phone would have overwritten the PC's choice at the next song.
+   **When a song was added**: Windows dates what it notices in a playlist with "now" and
+   shares it (`observe`), so a device that looks late overwrites the day the song really was
+   added, on every device. The phone keeps what it notices for its own "Date added" in a
+   note with no time on it, which is never shared and gives way to any dated note
+   (`Added.sawCopy`); a dated note changes only by the person's own change here or by a newer
+   one from another device. **The saved queue's time** was "now" at every save, a restore
+   included.
+2. **Nothing it has not loaded.** No exchange until the choices in the settings are this
+   account's own (`Belongs.ready`), and Recently played and the log of plays have been read
+   from the phone for it (`AccountGraph.historyRead`; the notes of when songs were added are
+   read as they are first asked for): `PhoneShared.record` gives nothing before, and the
+   exchange then asks the server nothing. Notes are passed on for every playlist unless the
+   list of playlists is known and not empty (an empty list is "not loaded", not "none exist").
+3. **Only what Windows understands.** What the phone has, against Windows' `ListPrefs` and
+   its neighbours, field by field:
+
+   | Windows' field | The phone has | Shared | Kept on the phone |
+   |---|---|---|---|
+   | `pins` (playlist ids, in order) | the same | as they are | — |
+   | `theme` (one of Violet, Green, Ember, Ocean, Rose, Graphite) | the same six, by the same names | the name, if it was chosen under this account or came from its record | a look left by another account on this phone; a name Windows doesn't have (none today) is never written, and one the phone doesn't have is not taken in |
+   | a list's key (Windows' route keys) | `playlist:<id>`, `album:<id>`, `artist:<id>`, `genre:<name>`, `liked`, `songs`, `downloads`, `mix:<id>` | under the same key | `downloads:album:<id>`, `downloads:playlist:<id>`, `downloads:liked` (a list as the downloads have it), `radio` (a song's radio; Windows' `radio` is its stations page), `mix:rule:<id>` (a mix of one's own: the id is this device's) |
+   | `shuffle` | the same | as it is | — |
+   | `sort` (0 Custom order, 1 Title, 2 Artist, 3 Album, 4 Duration, 5 Date added) | the same six, by the same numbers (`ListView`), on a playlist, Liked songs and the Songs page | 0 to 5 | anything else: the list's whole entry stays on the phone and the shared one is left as it was (none today: the guard is for an order added later) |
+   | `descending`, `sort_chosen` | the same | as they are | — |
+   | `at` | the time of the choice | as it is; "long ago" for none | — |
+
+   A list's choices taken in from the record are kept whatever their key and number (as
+   Windows keeps them); only what this table allows is shared back.
+4. **What it doesn't understand is preserved.** A record in a later layout is read and never
+   written (as Windows). A comment that is not empty and is not a record is left exactly as
+   it is, with a line in Diagnostics, and nothing is exchanged until it is one (Windows takes
+   it for "nothing shared yet" and writes over it). Fields this version doesn't know are
+   written back, exactly as they were written, after the ones it does (Windows drops them).
+5. **Byte for byte**: see above, and `scripts/instep-check`.
+6. **Two exchanges never cross.** One at a time for an account in the whole process
+   (`InStep.turnOf`, by the account's key: signing out and straight back in makes a second
+   set of objects while the first may still be writing); one asked for meanwhile does
+   nothing but ask for another when the first is back. What the phone has is read as the
+   exchange begins; what comes back is taken in against what is here *then*, not what was
+   sent, so a choice made meanwhile is newer and stays, and goes out with the next. When the
+   account goes its work is cancelled; an answer that comes back afterwards changes nothing
+   (the settings are no longer that account's: `PhoneShared.take`), and the choices
+   themselves are put away with the account (below). Two *devices* can still cross: the
+   server has no way to make a write conditional on what was read, so the later of two
+   crossed writes can be made without the other's part. Nothing is lost for it (each device
+   still holds its own, and the next look by either puts it right); `InStepTest` crosses two
+   at every step.
+7. **The playlist that holds the record** is found as Windows finds it: by name and owner,
+   the lowest id when there are several (by bytes). A remembered id is used only if it is
+   still that (Windows checks only its name). It is made only when the server has just listed
+   the playlists and there is none, sharing is on, and the server may be asked; with a
+   request that is sent once. It is nowhere among the playlists: `Library.playlists()`, which
+   everything that lists playlists reads (Library, the car, search, the picker, Your stats,
+   spoken requests), leaves it out of what the server sends and of a copy kept by a version
+   that didn't know of it; asked for by id it is "not found" (`Library.playlist`); the
+   downloads' own list leaves it out; and `Playlists.canEdit` is false for it.
+
+- **Whose the choices are** (`sync/Belongs.kt`). Pins, list choices, the theme's time and the
+  sync playlist's id are in the phone's settings, where every screen reads them, and are
+  shared into an account's record. So they belong to one account at a time
+  (`Settings.sharedFor`): when another is taken on, before anything of it exists, they are
+  put away with the account they belong to (`in-step.json` in its data) and its own brought
+  out. The theme stays the phone's look; an account that has chosen none takes the look as
+  it is and has nothing to say about it (`Settings.themeOwn`). Windows keeps all of this in
+  its one settings file and shares it with whoever is signed in.
+- **When an exchange runs on a phone, and what it costs.** At start (once the account's
+  stores are read); **each minute while the app's screens are in front**; when they come to
+  the front (not within ten seconds of the last); when the server comes back or sharing is
+  switched on; and three seconds after something shared changes here (Windows' `share_soon`:
+  a pin, a list's choice, the theme, a song added or removed, a song starting). **Not on a
+  timer in the background**: with music playing and the screen off, the record still goes out
+  as each song starts (a change), which also brings in what changed elsewhere, and nothing
+  runs when nothing is playing; no wake lock, alarm or job is used. A look is two requests:
+  the record's playlist (the record is at most about 40 KB, a few KB compressed; 1.6 KB
+  for the test account's) and the saved queue, of which the server sends every song in full
+  (119 KB for a hundred songs, 11 KB compressed as Navidrome sends it; about five times that
+  for the 500 a long queue is cut to). The record is written only when the phone adds
+  something. The list of playlists is not fetched again each minute as Windows does: pages
+  check with the server when they are looked at.
+- **The record's write goes beside `library/Playlists.kt`, not through it.** That is the way
+  the person's own changes to a playlist go: queued behind their other changes, shown on the
+  page while they wait, refused with words, sent once and never again. None of that is
+  wanted for a write that is the app's own: it must never be shown, toast, or hold up an
+  edit. And it is the whole value, safe to make again: a write that gets no answer is
+  followed, at the next exchange, by a read of what the server has, and written again only
+  if it still adds something (`InStepTest.aWriteThatGetsNoAnswerIsSafeToMakeAgain`). It
+  shares only the account's client.
+- **Taking in** (`PhoneShared.take`, Windows' `take_shared`): pins, the theme and each list's
+  choices where the record's are newer; dated notes of when songs were added; the plays into
+  the log (each once; if the phone can't keep them the exchange has failed as a whole, and
+  they are offered again at the next); Recently played merged with the record's, the songs
+  it names looked up in the phone's copy of the library and otherwise asked of the server
+  one at a time, as Windows asks (one the server says is gone is not asked for again this
+  run; Windows asks at every exchange).
+- **The queue** (`sync/QueueStep.kt`; Windows' `upload_queue`, `check_server_queue`,
+  `note_elsewhere`, `adopt_queue`, `continue_here`). Saved on the server under the phone's
+  own device name (`NexusMusic-<eight hex digits>`, made once) three seconds after the
+  person changes it, and once a minute while a song simply plays on (Windows: every twenty
+  seconds; each save sends the ids again): 50 songs behind the one playing and 450 from it
+  on, stations left out, nothing while a station plays. At each look the saved queue is
+  read: if another device saved it after this phone's queue last changed and nothing is
+  playing here, it takes this one's place, paused; otherwise, if another device has been
+  playing something else in the last half hour, the queue sheet offers it ("Playing on
+  another device", the song, "Continue here": Windows' card and words), and a tap picks it
+  up where it had got to and plays. Nothing starts playing by itself.
+- **The phone's own saved queue and the server's, at start-up.** The phone's own is put
+  back first, as it was, with the time it last changed. The server's takes its place only
+  if another device saved it after that time and nothing is playing here, and never before
+  the phone's own is back (`QueueHere.replace` waits for it). So the two can't fight: the
+  local file is how this phone remembers its queue; the server's is how the queue moves
+  between devices; and which one stands is decided by which was changed last, exactly as
+  between two PCs.
+
+### What the design left open, and what was decided (M5a)
+
+- **The minute's look is for the screens in front only**; in the background the record moves
+  with each song (above). The brief allowed "on screen or music playing".
+- **The phone's theme follows the account** signed in, when that account has one of its own.
+- **A song noticed in a playlist is not dated for other devices** (rule 1). What it costs:
+  a song added in another app (Navidrome's own page) and seen only by the phone gets its
+  shared date when a PC first sees it; and a dated note is not cleared when its song is
+  noticed gone, so a song taken out and put back elsewhere, seen by no PC in between, keeps
+  its old date.
+- **An unreadable comment stops the exchange** until someone puts it right (a PC running
+  Windows' app will, by writing over it).
+- **Unknown fields are written back** although the Windows app would drop them; if the merge
+  becomes Windows' own code, that is lost unless it is done there too.
+- **The saved queue is sent once a minute while a song plays**, not every twenty seconds: a
+  PC that continues from a phone still playing starts up to a minute behind it.
+- **A queue taken from another device plays in its own order, unshuffled**, with no list
+  behind it, as on Windows.
+- **Not built**: Windows looks at the theme alone before its window opens (`preload_theme`);
+  the phone's first exchange comes a moment after start, and a newer theme shows then. A
+  list on screen sorted by date added is not drawn again when another device's dates arrive
+  (it is right the next time it is arranged).
+
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed
 on release builds only.
@@ -2359,7 +2625,9 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
   M4b: crossfade (not on this path: see "Crossfade (M4b) is not built on this path").
 - **M5 In step with your other devices.** Saved queue and "Continue here", the sync
   playlist, "Your stats", "Made for you" and mixes of your own. M5b (built): the log of
-  plays, "Your stats", "Made for you", mixes of one's own, the mixes in the car.
+  plays, "Your stats", "Made for you", mixes of one's own, the mixes in the car. M5a (built):
+  the sync playlist, the saved queue and "Continue here", and the rules that keep the PCs
+  safe from the phone.
 - **M6 Jams and linked devices.**
 - **M7 Requests.** Lidarr, MusicBrainz, ListenBrainz, browser sign-in through Authentik,
   "Artists you might like", bringing playlists over from Spotify.

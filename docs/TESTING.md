@@ -1712,6 +1712,62 @@ timer while buffering, whose load then failed, was joined again and played (`ccc
 rejoin is asked for only while playing is wanted and checked again when it acts:
 `AutoplayTest.aStationWhoseLoadFailsAfterThePauseIsNotJoinedAgain`).
 
+## The second round of M3b fixes: what was checked
+
+**Unit tests**, each rule's seen to fail on the code before it where the old code could run it
+(the order of events forced with gates):
+
+- `PlaylistsTest`, rewritten for the strict rule: each change made on the playlist as drawn,
+  the page then what was sent (no read afterwards needed); the other device changing the
+  playlist after it was drawn: for a removal, a move, a rename and a delete, nothing sent, the
+  page showing the fresh copy, "changed somewhere else" once; a rename elsewhere counting as
+  a change; songs added at the end going whatever the playlist holds; a card's rename (only
+  the name seen); the bulk sheet left open over a replaced list refused; busy (a change held at
+  the server's gate: every other change to the playlist refused, nothing sent, shown as made
+  meanwhile); a failure leaving nothing behind; Undo only after the server's yes, and refused
+  on a playlist changed since; Undo out of reach kept; a lost answer read again; a failed read
+  before the write meaning nothing was sent; ownership (no owner given is not the account's);
+  gone (70) on a refresh and before a write; a new playlist whose answer never came having the
+  list asked for again; the known window. Against the old code: changed elsewhere (a removal
+  was sent), busy (two writes), Undo after a change elsewhere (put back a song removed there)
+  and an owner not given all failed.
+- `OnceTest`: a removal carried out by the stand-in and answered 503 with `Retry-After: 0`, or
+  with a redirect: one request, the other copy of the song still there (both failed before).
+- `MenuLookupTest`: of two taps whose lookups are out, the later wins though the earlier
+  finishes first; `AutoplayTest`: Stop and a pause beat a start being prepared (B1); a pause
+  while autoplay looks, before the queue ends, stops it carrying on (B2); the rejoin count and
+  giving up after four; a station's load not retried by `RideOut`; `StartingTest`: a song
+  waiting for the server is not tried while paused (B3); `ArtistHeaderTest`.
+
+**On the Android 16 emulator** (`phone36`, debug build, the other device being
+`scripts/server api`; pictures `shots/m3b/fix2-*`), on a playlist of the test's own:
+
+- Removal, unchanged: done on the server, "Removed from the playlist" with Undo only then; Undo
+  put it back. Changed underneath (the other device added a song): "This playlist was changed
+  somewhere else. Nothing was changed here.", nothing removed, the page showing the other
+  device's song.
+- Move by dragging, unchanged: done on the server, "Moved" with Undo.
+- Undo with the playlist changed since: "Can't undo: the playlist has changed since.", the
+  song left out, the other device's song kept.
+- Rename from the page's menu: unchanged, done; changed underneath, refused with the message.
+- Delete: changed underneath, refused with the message, the playlist still there; unchanged,
+  deleted. (One delete went through after the other device's change: the page had refreshed
+  in between, a pull at the top of the list, so it was drawn from the new copy. Right.)
+- Add (a recommendation's +) with the playlist changed underneath: added at the end.
+- Busy: with a relay of the test's own swallowing the answer to the first removal (a change
+  on its way for 30 s), the handles dimmed, the change shown as made, a second removal said
+  "Still saving the last change to this playlist." and sent nothing (one `updatePlaylist` in
+  the relay's log, the song still on the server); after 30 s, "Couldn't confirm that change.
+  Check the playlist."
+- A dead station (a listener of the test's own that takes each connection and closes it):
+  tried at the start, then 1, 2, 4 and 8 seconds apart, then "Couldn't play this song" and
+  nothing more in 40 s.
+- Two albums' Play in turn from their card menus: the second is what played.
+- The name sheet in landscape with the keyboard up: **not put right**. The sheet scrolls its
+  buttons towards view when the keyboard opens, but they stay under the keyboard (only their
+  top edges show): the bottom sheet's own window does not give room for the keyboard, and
+  padding its content for the keyboard changed nothing. The keyboard's tick still creates.
+
 ## Sound and lyrics (M4a)
 
 **Songs of its own, on a server of its own.** The ordinary server keeps its hundred songs.
