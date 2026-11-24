@@ -190,7 +190,9 @@ class QueuePlayer(
                     // off: round to the top by hand.
                     queue.moveTo(0)
                     sync(0)
-                    startPlaying()
+                    // (Only if it was playing: paused, by the person or the sleep timer, it is
+                    // lined up at the top and stays paused.)
+                    if (carryOn) startPlaying()
                 } else if (queue.repeat == Repeat.OFF && !(carryOn && end?.ended(queue) == true)) {
                     // Park on the first song, ready to go again, as Windows does (unless
                     // autoplay is to carry on: then it waits, at the end, for what follows).

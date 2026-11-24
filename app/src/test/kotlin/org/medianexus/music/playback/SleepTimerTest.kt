@@ -1,6 +1,8 @@
 package org.medianexus.music.playback
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -14,7 +16,7 @@ import org.junit.Test
 class SleepTimerTest {
     @Test
     fun minutes_pause_once_at_the_time_and_count_down_in_whole_minutes() = runTest {
-        val timer = SleepTimer(backgroundScope) { testScheduler.currentTime }
+        val timer = SleepTimer(backgroundScope, { testScheduler.currentTime }, StandardTestDispatcher(testScheduler))
         var slept = 0
         timer.player = SleepTimer.Sleeper { slept++ }
         timer.set(15)
@@ -32,7 +34,7 @@ class SleepTimerTest {
 
     @Test
     fun a_new_choice_replaces_the_old_and_off_is_off() = runTest {
-        val timer = SleepTimer(backgroundScope) { testScheduler.currentTime }
+        val timer = SleepTimer(backgroundScope, { testScheduler.currentTime }, StandardTestDispatcher(testScheduler))
         var slept = 0
         timer.player = SleepTimer.Sleeper { slept++ }
         timer.set(5)
@@ -50,7 +52,7 @@ class SleepTimerTest {
 
     @Test
     fun the_end_of_the_song_ends_it_once() = runTest {
-        val timer = SleepTimer(backgroundScope) { testScheduler.currentTime }
+        val timer = SleepTimer(backgroundScope, { testScheduler.currentTime }, StandardTestDispatcher(testScheduler))
         timer.endOfSong()
         assertTrue(timer.songEnded())
         assertEquals(SleepTimer.State.Off, timer.state.value)
@@ -61,7 +63,7 @@ class SleepTimerTest {
      *  it pauses once, whichever comes first, and nothing plays on past it. */
     @Test
     fun with_the_song_ending_as_it_fires_it_pauses_once() = runTest {
-        val timer = SleepTimer(backgroundScope) { testScheduler.currentTime }
+        val timer = SleepTimer(backgroundScope, { testScheduler.currentTime }, StandardTestDispatcher(testScheduler))
         var slept = 0
         timer.player = SleepTimer.Sleeper { slept++ }
         timer.set(1)
@@ -71,5 +73,32 @@ class SleepTimerTest {
         runCurrent()
         assertEquals(1, slept)
         assertEquals(SleepTimer.State.Off, timer.state.value)
+    }
+
+    /** Rule 6 of the fixes: the timer counts and pauses on the player's thread, in turn with
+     *  the person's choices there; nothing of it happens on another thread. */
+    @Test
+    fun the_pause_is_carried_out_on_the_players_thread_and_only_for_the_timer_still_set() {
+        val player = TestCoroutineScheduler()
+        val elsewhere = TestCoroutineScheduler()
+        val timer = SleepTimer(kotlinx.coroutines.CoroutineScope(StandardTestDispatcher(elsewhere)), { player.currentTime }, StandardTestDispatcher(player))
+        var slept = 0
+        timer.player = SleepTimer.Sleeper { slept++ }
+        timer.set(1)
+        // Time passing anywhere but on the player's thread does nothing.
+        elsewhere.advanceTimeBy(10 * 60_000L)
+        elsewhere.runCurrent()
+        assertEquals(0, slept)
+        // On the player's thread, Off made just before the minute is up: no pause.
+        player.advanceTimeBy(59_000)
+        timer.set(0)
+        player.advanceTimeBy(60_000)
+        player.runCurrent()
+        assertEquals(0, slept)
+        // A timer set again and left: it pauses, there.
+        timer.set(1)
+        player.advanceTimeBy(60_000)
+        player.runCurrent()
+        assertEquals(1, slept)
     }
 }

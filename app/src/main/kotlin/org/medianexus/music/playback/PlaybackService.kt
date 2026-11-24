@@ -265,9 +265,11 @@ class PlaybackService : MediaLibraryService() {
         )
         exo.addListener(watcher)
         exo.addListener(sleepWatch)
-        // The sleep timer: the time is up (told on another thread), or the song it was waiting
-        // for has ended (the player pauses at the end of each song while it waits).
-        graph.sleep.player = SleepTimer.Sleeper { main.post(::sleepNow) }
+        // The sleep timer: the time is up (told on this, the player's thread, while that timer
+        // is still the one set), or the song it was waiting for has ended (the player pauses
+        // at the end of each song while it waits; a song that fails is passed over to the
+        // next, paused: see passTo).
+        graph.sleep.player = SleepTimer.Sleeper(::sleepNow)
         scope.launch { graph.sleep.state.collect { exo.pauseAtEndOfMediaItems = it == SleepTimer.State.EndOfSong } }
         // Debug builds log what the player does (track joins, underruns, errors): how
         // gapless joins and seeking are checked on the emulator, which can't record sound.
@@ -726,6 +728,17 @@ class PlaybackService : MediaLibraryService() {
         if (!exo.playWhenReady) return
         player.pause()
         graph.toasts.show(getString(R.string.sleep_paused))
+    }
+
+    /** A song that failed is passed over to the queue's `place`. With "End of this song" set,
+     *  that was the song's end: the next is lined up, paused (as on Windows, the timer is
+     *  for the song playing however it ends). */
+    private fun passTo(place: Int) {
+        player.passTo(place)
+        if (graph.sleep.songEnded()) {
+            player.pause()
+            graph.toasts.show(getString(R.string.sleep_paused))
+        }
     }
 
     /** "End of this song": the player paused at its end by itself (it was asked to), which is
@@ -1505,7 +1518,7 @@ class PlaybackService : MediaLibraryService() {
         }
         graph.diagnostics.note("a song chosen with the server out of reach is not on the phone: passed over for the next that is")
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "out of reach: passed over to place $next of the queue")
-        player.passTo(next)
+        passTo(next)
         exo.prepare()
         say(getString(R.string.passed_over_out_of_reach))
         return true
@@ -1543,7 +1556,7 @@ class PlaybackService : MediaLibraryService() {
         // player's own playlist is only part of a long queue, and ends where that part does.
         val step = player.queue.next() ?: return
         if (!step.carriesOn || step.place == player.queue.cursor) return
-        player.passTo(step.place)
+        passTo(step.place)
         exo.prepare()
     }
 
@@ -1560,7 +1573,7 @@ class PlaybackService : MediaLibraryService() {
             say(getString(R.string.cant_play_offline))
             return
         }
-        player.passTo(next)
+        passTo(next)
         passing.passedTo(player.queue.currentUid())
         exo.prepare()
     }

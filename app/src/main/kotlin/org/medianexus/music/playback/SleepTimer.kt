@@ -1,7 +1,9 @@
 package org.medianexus.music.playback
 
 import android.os.SystemClock
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,7 +18,12 @@ import kotlinx.coroutines.launch
  * closed while music plays; the playback service does the pausing ([player]). Pausing keeps
  * the queue and the place, as any pause does. Off again once it has paused.
  */
-class SleepTimer(private val scope: CoroutineScope, private val clock: () -> Long = { SystemClock.elapsedRealtime() }) {
+class SleepTimer(
+    private val scope: CoroutineScope,
+    private val clock: () -> Long = { SystemClock.elapsedRealtime() },
+    /** The player's thread, where the person's choices are made and the music is paused. */
+    private val main: CoroutineDispatcher = Dispatchers.Main.immediate,
+) {
     sealed interface State {
         data object Off : State
 
@@ -28,7 +35,9 @@ class SleepTimer(private val scope: CoroutineScope, private val clock: () -> Lon
     }
 
     /** What the playback service does when the time is up: pause, if anything is playing.
-     *  Set while the service runs; with no service nothing is playing, and nothing need be. */
+     *  Called on the player's thread, and only while the timer that asked is still the one
+     *  set. Set while the service runs; with no service nothing is playing, and nothing need
+     *  be. */
     fun interface Sleeper {
         fun sleep()
     }
@@ -51,7 +60,10 @@ class SleepTimer(private val scope: CoroutineScope, private val clock: () -> Lon
         }
         val at = State.At(clock() + minutes * 60_000L, minutes)
         current.value = at
-        job = scope.launch {
+        // Counted, and carried out, on the player's thread, in turn with everything the
+        // person does there (Off, another timer, Play): a pause goes ahead only if this timer
+        // is still the one set at that moment.
+        job = scope.launch(main) {
             delay(minutes * 60_000L)
             if (current.value === at) fire()
         }
@@ -64,8 +76,10 @@ class SleepTimer(private val scope: CoroutineScope, private val clock: () -> Lon
         current.value = State.EndOfSong
     }
 
-    /** The song ended with "end of this song" set, and the player has paused there (the
-     *  service asks the player to pause at the end of each song while it is). */
+    /** The song ended with "end of this song" set, however it ended: played to its end (the
+     *  player pauses there by itself: the service asks it to while this is set) or failed
+     *  and passed over (the service pauses with the next one lined up). Returns whether the
+     *  timer was waiting for it; it is done now. */
     fun songEnded(): Boolean {
         if (current.value != State.EndOfSong) return false
         current.value = State.Off
