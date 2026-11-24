@@ -378,8 +378,9 @@ class AccountGraph(
         likes.load()
         scope.launch {
             recentlyPlayed.open()
-            // With no log yet, it starts from what Recently played remembers (Windows' `load`).
-            playLog.open { recentlyPlayed.state.value.map { it.song.id to it.at } }
+            // With no log yet it starts empty: Recently played is not taken for plays that
+            // counted (see PlayLog).
+            playLog.open()
             historyRead.complete(Unit)
             // In step with the person's other devices: now (Windows' `start_sync`); when
             // the app's screens come to the front (unless a look was made a moment ago); and

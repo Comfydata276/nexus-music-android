@@ -103,7 +103,9 @@ class Plays internal constructor(
  * **Kept as Windows keeps it.** A file that is only ever added to, a line at a time, so
  * noting a play costs the same however long the log has grown; past 205,000 plays the oldest
  * go, down to 200,000 (more than anyone plays in ten years), and the file is written whole.
- * With no file at all it is started from Recently played, so it isn't empty on day one.
+ * With no file at all it starts empty. (Windows, when its log was new, started it from
+ * Recently played. On the phone Recently played holds every song that was started, even one
+ * skipped at once: taken in, it would count plays that never counted.)
  *
  * **Written safely.** Off the main thread, in the order the plays were noted: whatever write
  * runs next writes everything not yet in the file (each play has a number, and the file is
@@ -186,11 +188,10 @@ class PlayLog(
     }
 
     /**
-     * Reads the log (off the main thread). With no file, it is started from `recent`, what
-     * Recently played remembers (song and seconds, in any order), and written. Plays noted
-     * before it had been read are kept after what is read.
+     * Reads the log (off the main thread). With no file, it starts empty, and is written.
+     * Plays noted before it had been read are kept after what is read.
      */
-    suspend fun open(recent: suspend () -> List<Pair<String, Long>> = { emptyList() }) {
+    suspend fun open() {
         synchronized(this) {
             if (started || closed) {
                 if (closed) {
@@ -214,13 +215,12 @@ class PlayLog(
                         Found(emptyList(), 0, false)
                     }
                 }
-                val afresh = if (read == null) recent().sortedBy { it.second }.map { Triple(it.first, it.second, "") } else null
                 synchronized(this) {
                     // What was noted before the file had been read goes after what is in it.
                     val early = List(size) { Triple(names[songs[it]]!!, ats[it], froms[it].let { f -> if (f < 0) "" else names[f]!! }) }
                     size = 0
                     base = 0
-                    for ((song, at, from) in read?.plays ?: afresh!!) put(song, at, from)
+                    for ((song, at, from) in read?.plays.orEmpty()) put(song, at, from)
                     lines = size
                     written = size.toLong()
                     // A log started afresh is written whole.

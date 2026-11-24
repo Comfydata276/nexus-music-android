@@ -49,6 +49,31 @@ class AccountPlaysTest {
         assertFalse("s2" in held.readText())
     }
 
+    /**
+     * A phone upgraded from 0.3.0 has a Recently played (`history.json`) and no log of plays.
+     * Recently played holds every song that was started, even one skipped at once, so it is
+     * not taken for plays that counted: the log starts empty, and Recently played is as it was.
+     */
+    @Test
+    fun recentlyPlayedIsNotTakenForPlaysThatCounted() = runBlocking {
+        val dirs = AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))
+        val history = File(dirs.data, "history.json")
+        history.writeText("""[{"song":{"id":"skipped"},"at":2000},{"song":{"id":"heard"},"at":1000}]""")
+        val api = Subsonic("http://127.0.0.1:9", "ada", "sesame", OkHttpClient(), OfflineSwitch(true))
+        val account = AccountGraph(Account(api.server, api.username, "key", dirs), api, Dispatchers.IO)
+        try {
+            account.playLog.flushed()
+            val until = System.currentTimeMillis() + 10_000
+            while (account.recentlyPlayed.state.value.size < 2 && System.currentTimeMillis() < until) Thread.sleep(20)
+            assertEquals(listOf("skipped", "heard"), account.recentlyPlayed.state.value.map { it.song.id })
+            assertEquals(0, account.playLog.state.value.size)
+            assertEquals("", File(dirs.data, "plays.log").takeIf { it.isFile }?.readText().orEmpty())
+        } finally {
+            account.close()
+            account.playLog.close().join()
+        }
+    }
+
     /** The account's dispatcher, which holds what is sent to it while [held]. */
     private class Gate : kotlinx.coroutines.CoroutineDispatcher() {
         @Volatile var held = false

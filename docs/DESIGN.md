@@ -2345,8 +2345,11 @@ How it is built (M5b, the log of plays, Your stats and the mixes):
   from one place, one straight after the other (`AccountGraph.played`, under a lock the
   account's `close` takes too): signing out can't come between them. Where a play was made from is taken as its
   queue entry begins: the queue's source if it is a playlist and the song is one of that
-  list's, not queued by hand (Windows' `tick`). With no file it starts from Recently played,
-  as Windows does. Bounded as Windows bounds it (200,000; past 205,000 the oldest go and the
+  list's, not queued by hand (Windows' `tick`). With no file it starts empty. (Windows
+  started its log from Recently played; on the phone Recently played holds every song that
+  was started, even one skipped at once, so a phone upgraded from 0.3.0 would have counted
+  those as plays in Your stats. `AccountPlaysTest.recentlyPlayedIsNotTakenForPlaysThatCounted`.)
+  Bounded as Windows bounds it (200,000; past 205,000 the oldest go and the
   file is written whole, and the names only the oldest used go with them). **Its interface**
   is Windows': `add`, `absorb` (plays from other devices: a play is a song and a second, taken
   in at most once, whether offered twice or already held anywhere in the log), `shared`,

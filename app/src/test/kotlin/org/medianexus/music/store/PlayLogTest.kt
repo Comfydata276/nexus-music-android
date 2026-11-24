@@ -20,9 +20,9 @@ class PlayLogTest {
      *  when it is let go. */
     private var last: PlayLog? = null
 
-    private fun log(file: File, recent: List<Pair<String, Long>> = emptyList()): PlayLog {
+    private fun log(file: File): PlayLog {
         last?.let { runBlocking { it.close().join() } }
-        return PlayLog(file, io).also { runBlocking { it.open { recent } } }.also { last = it }
+        return PlayLog(file, io).also { runBlocking { it.open() } }.also { last = it }
     }
 
     private fun PlayLog.settle() = runBlocking { flushed() }
@@ -45,7 +45,8 @@ class PlayLogTest {
         path.delete()
 
         // Plays from another device are taken in once each, oldest first.
-        log = log(path, listOf("c" to 300L))
+        log = log(path)
+        log.add("c", 300, "")
         val elsewhere = listOf("z" to 350L, "c" to 300L, "y" to 320L, "z" to 350L)
         val from = listOf(Triple("y", 320L, "playlist:p"))
         assertEquals(2, runBlocking { log.absorb(elsewhere, from) })
@@ -61,11 +62,12 @@ class PlayLogTest {
         assertEquals(4, log.shared().size)
         path.delete()
 
-        // No log at all: it starts from what Recently played has, which is newest first.
-        log = log(path, listOf("y" to 20L, "x" to 10L))
-        assertEquals(listOf("x" to 10L, "y" to 20L), log.shared())
+        // No log at all: it starts empty (Windows started it from Recently played, which on
+        // the phone holds songs skipped at once: see AccountPlaysTest).
+        log = log(path)
+        assertEquals(emptyList<Pair<String, Long>>(), log.shared())
         log.settle()
-        assertEquals("[\"x\",10]\n[\"y\",20]\n", path.readText())
+        assertEquals("", path.readText())
     }
 
     @Test
@@ -123,7 +125,7 @@ class PlayLogTest {
         val path = File(folder.root, "plays.log").also { it.mkdirs() }
         val notes = mutableListOf<String>()
         val log = PlayLog(path, io) { notes += it }
-        runBlocking { log.open { listOf("x" to 1L) } }
+        runBlocking { log.open() }
         log.add("a", 100)
         // Said, not hidden.
         assertTrue(runCatching { log.settle() }.exceptionOrNull() is java.io.IOException)
@@ -237,7 +239,8 @@ class PlayLogTest {
     @Test
     fun eachPlayIsTakenInAtMostOnce() = runBlocking {
         val path = File(folder.root, "plays.log")
-        val log = log(path, listOf("old" to 1L))
+        val log = log(path)
+        log.add("old", 1L)
         for (i in 0 until 5_001) log.add("s$i", 10L + i)
         assertEquals(2, log.absorb(listOf("z" to 9_000_000L, "y" to 9_000_000L, "z" to 9_000_000L), emptyList()))
         // "old" is the first play of more than 5,000.
