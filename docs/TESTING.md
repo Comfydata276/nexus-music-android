@@ -1873,6 +1873,87 @@ tests each time, none failed; `scripts/check --release` failed once on
 another thread, which passed in both runs of the suite: a timing failure under load, not the
 sound's), and passed run again (its tests then up to date from the second run of the suite).
 
+## Your stats and the mixes (M5b): what was checked
+
+**The answers are Windows'.** `MixesTest` ports `builds_mixes_from_listening` (src/mixes.rs)
+and pins, for one made-up library of 80 songs, a set of plays and two days, the exact songs
+every mix chooses, in order: On repeat, Your top songs, Rediscover, the two genre mixes, and six
+mixes of one's own (each order, genre words folded, years, ratings, liked, never played). Those
+answers were not worked out by hand: the functions of src/mixes.rs were copied, as they are,
+into a small Rust program on a song of only the fields they read, built against fastrand
+2.5.0 (Windows' Cargo.lock) with the Windows dev image's offline registry, and run on the same
+library. Its output is in the test; `WyRand` is also checked against fastrand's first numbers
+and its `usize` below n. To run it again: a Cargo project with `fastrand = "=2.5.0"`, built
+with `docker run --rm -v "$PWD":/w -w /w -v ~/.cache/nexus-music-dev/registry:/opt/cargo/registry
+nexus-music-dev:latest cargo run --offline` (the program is not in the repository: it is the
+Windows code, copied). `StatsTest` ports `stats_cover_the_right_stretch_of_time` (in a zone
+with summer time) and checks the page; `PlayLogTest` ports `keeps_plays_between_runs` and
+adds a line cut short, plays noted before the file is read, the limit, an unreadable file;
+`PlayCountTest` a play's playlist and a station never counting; `RuleMixesTest`,
+`MixTextTest` (the summaries from the app's strings), `IntSortTest`, `CarMixesTest` (the
+car's Home, a mix's folder, Shuffle and a song chosen, offline).
+
+**What it costs** (`DebugControl --es library mixes`, debug build, Android 17 emulator, the
+`big` instance: 50,120 songs, 400 of them given 1,990 plays through the API; seven runs each,
+the median):
+
+| What | Time | Allocated |
+|---|---|---|
+| Every mix (eight: four of one's own, Your top songs, Rediscover, two genres) | 16.5 ms (slowest 21.8) | 2.9 MB |
+| Stats, a period, the account's own (empty) log | 0.4 to 3.6 ms | 0.5 to 0.7 MB |
+| Stats, a full log (200,000 plays over three years, a third from playlists): today, this week, this month, all time | 7.5 to 15.6 ms | 1.7 to 2.1 MB |
+| The same: the last 12 months, a calendar year | 50 ms (slowest 55.5) | 2.9 MB |
+
+Before the counting was moved onto arrays the same runs were 16.8 ms and 7.2 MB for the mixes
+and 146 ms and 9.5 MB for a year with a full log. In the app (debug log `NexusMixes`) the mixes
+from 50,120 songs took 81 ms the first time, as the copy was first read.
+
+**On the Android 17 emulator** (pictures in `~/.cache/nexus-music-android/shots/m5b/`:
+`default/`, `narrow/` at 360dp and 1.3 font, `side/`, `offline/`; reports in `reports/m5b/`):
+
+- The `big` instance: Home's "Made for you" (Your top songs, Rediscover, Metal and Hip-Hop
+  mixes); Your top songs' page; its "…", Save as playlist, named, made on the server with its
+  50 songs (this found the second sheet opening hidden: fixed in the shell); Library's "New mix
+  from rules", "Old metal" made, its rules set from its "…" (Genre "metal", Order "Most played
+  first"; the line under its name followed: "metal, most played first"); a song tapped in it
+  played, its row marked. Your stats with no log (Today: Windows' sentence; All time: the
+  server's counts and the note) and with a full log pushed onto the phone (200,000 lines in
+  Windows' form): This month, All time with its years (2026 to 2023), 2025.
+- At 360dp and 1.3 font: Home, the mix page and its rule menu, Your stats; all hold. On its
+  side: the stats chips stood still above the page and left it a strip (now they scroll with
+  it), and a period chosen kept the last one's scroll (now each opens at its top).
+- The ordinary server: two albums downloaded, offline mode on: Home kept the mixes with songs
+  that play (Your top songs: 4 songs, 2 min); one played from there was in the log (from a mix:
+  no playlist named) and in Today's stats, offline. With nothing downloaded, Home offline
+  showed no mixes (none plays).
+- The car, release build, Android 17: the whole check 48 passed, none failed, one warning
+  (the empty playlist), as before; Shuffle of Your top songs (`shuffle/mix/top`) and of the
+  Indie mix played them (queues of 33 and 20); offline (`--mode offline`, the server cut with
+  `scripts/slowlink cut`) 24 passed and none failed three times running; the first run, started
+  five seconds after the cut, failed `offline.play_elsewhere.1-3` (songs listed while the app
+  didn't yet know the server had gone, the "not yet known" behaviour of the offline engine, no
+  part of this work). With offline mode on by hand, Shuffle of a mix played from what is on
+  the phone. Note: an `adb reverse` of port 4533 made by hand goes round `scripts/slowlink`'s
+  relay, and the app is then not offline at all.
+- `scripts/measure` (release, the ordinary server, signed in, kept), the build before the
+  milestone (03f897f) and with it, alternately: cold start median 1,243 and 1,366 ms before,
+  1,202 and 1,228 ms after; idle 86.9 and 80.0 MB before, 90.1 and 79.2 MB after. Nothing moved.
+
+**The checks**: `scripts/check --release` passed (896 tests, lint clean, release APK 6,582,042
+bytes; 6,458,194 before the milestone). The whole suite three times with `--no-build-cache
+--rerun-tasks`: 896 tests each; runs 1 and 3 failed one test,
+`DownloadsTest.aGroupThatIsNoListIsRemovedWholeToo` ("s3 has a file": an album removed while a
+2.4 MB song is still arriving), run 2 failed none. That test passed run alone, twice here and
+once at the build before the milestone; nothing on its path was changed by this work. It looks
+like a timing failure under the full suite's load (the machine's load average was 5), and is
+left for whoever owns the downloads.
+
+**Not checked here**: `scripts/cartour` of "Made for you" in the car's own screens (the car
+emulator was another engineer's); TalkBack read aloud (the names are in `scripts/emu ui`:
+"More options for <mix>", each rule entry by its words, each figure merged into one); a real
+phone's speed; a new install's mix page before any copy of the library exists ("Your library is
+still being read", by reading, not on screen).
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account

@@ -589,7 +589,8 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
 - **Tabs**: Home, Playlists, Library, Downloads, always four (a tab that comes and goes
   would move the others under the driver's thumb; Downloads is empty until something is
   downloaded).
-  - Home: Liked songs, then what was played and added lately.
+  - Home: Liked songs, then "Made for you" (each mix a list of songs), then what was played
+    and added lately.
   - Library: Albums, Artists, Genres, Radio (the internet radio stations; there offline too,
     and empty, so nothing moves under the driver's thumb).
   - Downloads: what is on the phone; this tab must work with no signal. "Songs" (every
@@ -1678,7 +1679,8 @@ How it is built (M1b):
   Play next and Add to queue. Nothing that does nothing is shown (M3b).
 - **Home**: the greeting, four quick tiles (two lines of two, as Windows on a narrow window),
   then Recently added, Recently played, Most played, It's been a while and Something
-  different, each sideways. "Made for you" and "Artists you might like" come later.
+  different, each sideways. "Made for you" comes first of the shelves (M5b); "Artists you
+  might like" comes with M7.
 - **Library**: chips for Playlists, Albums, Artists, Songs, Genres and Downloads (Windows'
   sidebar order). Liked songs heads the playlists, then Recently played, then the pinned ones,
   then the rest by name. Albums have Windows' seven sorts
@@ -2200,6 +2202,98 @@ How it is built (M4a, sound and lyrics):
   this phone, and your server can't be asked while you're offline"), not Windows' "Your music
   server doesn't have any for it", which would not be known.
 
+How it is built (M5b, the log of plays, Your stats and the mixes):
+
+- **The log of plays** (`store/PlayLog.kt`, a port of src/plays.rs with its test, in its file
+  form: `plays.log` in the account's data folder, `["<song>",<seconds>]` a line, with the
+  playlist's route key as a third field for a play made from one). **One place decides "this
+  was a play"**: `PlayReporter` (half the song or four minutes; an internet radio station
+  never, as Windows' `radio_url.is_empty()`: it used to be reported to the server after four
+  minutes). What it reports goes to the log always and to the server if plays are reported,
+  at the same moment (`PlaybackService.counted`). Where a play was made from is taken as its
+  queue entry begins: the queue's source if it is a playlist and the song is one of that
+  list's, not queued by hand (Windows' `tick`). With no file it starts from Recently played,
+  as Windows does. Bounded as Windows bounds it (200,000; past 205,000 the oldest go and the
+  file is written whole). **Its interface** is Windows': `add`, `absorb` (plays from other
+  devices, each once, compared with the newest 5,000 here), `shared`, `sources`, and `state`,
+  the same as one value that shares the log's arrays (`Plays`) for whatever reads every play.
+- **Written safely.** Appended off the main thread, in order: each play has a number, the file
+  is known to hold up to a number, and whatever write runs next writes what is missing, so
+  none is written twice or skipped. Lines are synced. A line cut short is passed over when
+  read (as Windows) and cut off before the next is added (Windows would join the next play to
+  it and lose both). A file that is there but can't be read is never written over: that run's
+  plays are kept in memory and Diagnostics says so. One writer per file for the process, as for
+  held changes; writes carry on after the account goes. What is in memory goes with the
+  account (`AccountGraph.playLog`).
+- **The mixes** (`library/Mixes.kt`, a port of src/mixes.rs with its test): On repeat (from
+  Recently played, as Windows: what was played twice or more in thirty days), Your top songs
+  (the server's counts), Rediscover, the two genres played most, and mixes of one's own made to
+  rules (Windows' `Rules`, `PLAYED`, `ADDED`, `ORDERS`, `SIZES`, the summary in its words). **The
+  day's shuffle is Windows' own**: fastrand 2.5's generator (wyrand and its way of taking a
+  number below n) reproduced bit for bit, seeded with the UTC day and the mix's id as Windows
+  seeds it, so the phone and the PC show the same mix on the same day when they know the same
+  plays. Chosen from the copy of the library on the phone, read by column without making a
+  song (new accessors on `SongTable`), sorted as places with a stable sort of its own that
+  boxes nothing (`IntSort.kt`). `MixBook` (`AccountGraph.mixes`) works them out again off the
+  main thread whenever the copy, the likes, Recently played, the rules or the UTC day change;
+  null until there is a whole copy.
+- **Mixes of one's own** (`store/RuleMixes.kt`, `rule-mixes.json` in the account's data
+  folder, in Windows' `Rules` form): each change written atomically and durably before it is
+  shown; a change the phone won't keep is not made, and said ("That didn't save…"); a file
+  that can't be read is set aside, not written over. Not shared between devices: Windows
+  keeps them with its settings and doesn't.
+- **Home** puts "Made for you" first of the shelves, filled in when the mixes are ready (Home
+  never waits for them). **A mix's page** (`Route.Mix`, `ui/mixes`) is a list of songs like
+  any other: played and shuffled from it, its rows marked as the queue plays them (its source is
+  Windows' `mix:<id>`), its "…" Windows' `mix_menu`: Save as playlist (through the playlists'
+  own way, `askNewPlaylist`: only with the server there), and for a mix of one's own its rules,
+  Rename and Delete mix, each rule a sheet of Windows' choices or a question in its words.
+  Library has "New mix from rules" (Windows' "+" menu beside Playlists).
+- **Your stats** (`library/Stats.kt`, a port of `stats_span`, `stats_counts`, `stats_filters`
+  and `stats` in src/pages.rs with its test; `Route.Stats`, `ui/stats`), from Library's list
+  (Windows has it in its sidebar under Radio). Windows' chips, the finer choices under All time
+  (Everything, the last 3, 6 or 12 months, each calendar year the log reaches into), the four
+  figures, the note on where the numbers come from, Top artists, Top songs (playing as "Your
+  top songs"), Top albums, Top genres, Top playlists. All time is the server's counts in the
+  copy plus what the log has since that copy was fetched; the rest is the log. Days, weeks
+  (from Monday) and months by the phone's clock. Counted into arrays by place in the table and
+  by the log's number for a name, not maps of boxed counts. From the phone alone, so the same
+  offline (a song that doesn't play is dimmed, as anywhere).
+- **In the car**: under Home, after Liked songs, a group "Made for you", each mix a folder
+  (`mix/<id>`) of Shuffle and its songs, playing the mix from the song chosen; nothing asked
+  of the server. Offline a mix lists what plays, each song keeping its place in the whole mix,
+  and one with nothing that plays isn't listed. The car is told to look again at Home only
+  when the row's mixes or covers change, and at an open mix only when its songs do. Stats
+  don't go to the car.
+- **Cost** (Android 17 emulator, debug build, 50,120 songs; `DebugControl --es library
+  mixes`): every mix (four of one's own among them) 17 ms, allocating 2.9 MB; the slowest
+  stats period with a full 200,000-play log 50 ms, allocating 2.9 MB (before the arrays, 146
+  ms and 9.5 MB). See TESTING.md.
+
+### What the design left open, and what was decided (M5b)
+
+- **"Newest first" in a mix of one's own compares the time, to the millisecond**; Windows
+  compares the server's text. The two agree except between songs added in the same second
+  that the server wrote with different numbers of decimals (Navidrome drops trailing zeros),
+  where Windows' order is the text's, not the time's. The phone's copy keeps times, not their
+  text, so matching it would mean changing the copy's file.
+- **Offline, a mix is the day's mix with only what plays**, each song in its place, not a mix
+  chosen afresh from the songs on the phone (the brief allowed either): the same mix as on the
+  PC, less what can't be played; a mix with none that plays is left off Home and the car.
+- **Your stats is reached from Library's list** (beside Liked songs, Recently played and Radio),
+  as Windows has it in the sidebar; its chips are page state, not pages of their own, and
+  scroll with the page.
+- **The playlists' names in Your stats** come from the account's list of playlists as the phone
+  keeps it, so they show offline too (Windows asks the server and does without them offline).
+- **The note's date** ("which start on 1 November 2026") is written in English whatever the
+  phone's language, as the rest of the app's words are.
+- **A day that begins in a summer-time gap** begins at its first moment (Windows' `day_began`
+  would give 1970 there).
+- **Deleting a mix of one's own** goes back from its page (Windows goes Home), with Windows'
+  toast and no question, as on Windows.
+- **One sheet opening another** (a menu's "Save as playlist") used to open hidden: every sheet
+  now has its own bottom sheet state (the shell keys its host on the sheet).
+
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed
 on release builds only.
@@ -2228,7 +2322,8 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
   M4a (built): levelling, the equaliser, mono, the quality switch, the sleep timer, lyrics.
   M4b: crossfade (not on this path: see "Crossfade (M4b) is not built on this path").
 - **M5 In step with your other devices.** Saved queue and "Continue here", the sync
-  playlist, "Your stats", "Made for you" and mixes of your own.
+  playlist, "Your stats", "Made for you" and mixes of your own. M5b (built): the log of
+  plays, "Your stats", "Made for you", mixes of one's own, the mixes in the car.
 - **M6 Jams and linked devices.**
 - **M7 Requests.** Lidarr, MusicBrainz, ListenBrainz, browser sign-in through Authentik,
   "Artists you might like", bringing playlists over from Spotify.
