@@ -324,6 +324,28 @@ class Queue internal constructor(order: MutableList<Int>) {
         while (origins.size < songs.size) origins += null
     }
 
+    /**
+     * Autoplay's songs, after the last of the queue (Windows' `autoplay_loaded`): they join it
+     * as songs of no list, at the end of the playing order. What follows no longer comes from
+     * the album or playlist that was chosen, so the queue's name goes, unless it is a radio
+     * (`radio`: more of the same is what it is).
+     */
+    fun carryOn(list: List<Song>, radio: Boolean) {
+        if (list.isEmpty()) return
+        revision++
+        val first = songs.size
+        for (song in list) {
+            songs += song.copy(queued = false)
+            uids += newUid()
+        }
+        order.addAll((first until songs.size).toList())
+        while (origins.size < songs.size) origins += null
+        if (!radio) context = ""
+    }
+
+    /** The entry number of the last song in the playing order, or null for an empty queue. */
+    fun lastUid(): Long? = order.lastOrNull()?.let { uids.getOrNull(it) }
+
     /** Moves the entry `from` places after the current track to `to` places after it, into
      *  "Next in queue" or out of it as `queued` says. */
     fun moveAhead(from: Int, to: Int, queued: Boolean) {

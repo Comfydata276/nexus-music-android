@@ -60,6 +60,10 @@ class Library(
     /** The same for the list of playlists (renames and deletions on their way). */
     @Volatile var playlistsShown: (List<Playlist>) -> List<Playlist> = { it }
 
+    /** The internet radio stations set up on the server, as entries that play (Windows'
+     *  Radio page). */
+    fun stations() = PageSpec("radio", ListSerializer(Song.serializer())) { api.radioStations() }
+
     // ---- Albums ---------------------------------------------------------------------------
 
     /** One page of an album list: `size` albums from `offset` on. */
@@ -133,6 +137,15 @@ class Library(
 
     /** One song, from the server. */
     suspend fun song(id: String): Song = api.song(id)
+
+    /** Songs the server reckons like this one (it needs Last.fm or the like: none without). */
+    suspend fun similarSongs(id: String, count: Int): List<Song> = api.similarSongs(id, count)
+
+    /** An artist's most popular songs that the library has, by the server's word (Last.fm). */
+    suspend fun topSongs(artistName: String, count: Int): List<Song> = api.topSongs(artistName, count)
+
+    /** What the server knows about an artist besides their albums: similar artists above all. */
+    suspend fun artistInfo(id: String): org.medianexus.music.net.ArtistInfo = api.artistInfo(id)
 
     /** Random songs, optionally of one genre: never kept, as they're different each time. */
     suspend fun randomSongs(count: Int, genre: String? = null): List<Song> = api.randomSongs(count, genre)

@@ -140,6 +140,19 @@ class PlaybackService : MediaLibraryService() {
         /** Done once the saved queue has been read and put back (see [restore]). */
         val restoring = CompletableDeferred<Unit>()
 
+        /** When the queue ends, music like its last song carries on (see [AutoplayRunner]):
+         *  this account's, with this account's server, and dropped with it. */
+        val autoplay = AutoplayRunner(
+            enabled = { graph.settings.value.autoplay },
+            source = object : AutoplaySource {
+                override suspend fun similarSongs(id: String, count: Int) = account.library.similarSongs(id, count)
+                override suspend fun randomSongs(count: Int, genre: String?) = account.library.randomSongs(count, genre)
+            },
+            scope = scope,
+            offline = { graph.watch.offline },
+            found = { seed, songs, resume -> if (era === this) player.carriedOn(seed, songs, resume) },
+        ).also { player.end = it }
+
         /** The account's opaque key: what its covers' addresses carry. */
         /** The account's name in its covers' addresses (never its storage key). */
         val key: String get() = account.artwork
@@ -201,6 +214,7 @@ class PlaybackService : MediaLibraryService() {
             albums = getString(R.string.albums),
             artists = getString(R.string.artists),
             genres = getString(R.string.genres),
+            radio = getString(R.string.radio),
             likedSongs = getString(R.string.liked_songs),
             recentlyPlayed = getString(R.string.recently_played),
             recentlyAdded = getString(R.string.recently_added),
@@ -1268,6 +1282,10 @@ class PlaybackService : MediaLibraryService() {
             val copy = reading[song.id]
             val download = copy as? SongCopy.Download
             when {
+                // An internet radio station is somewhere else on the internet, not the music
+                // server: joined again a few times (see QueuePlayer.rejoinStation), then
+                // passed over, as Windows does. Nothing is asked of the server about it.
+                song.radioUrl.isNotEmpty() -> if (!player.rejoinStation()) passOver()
                 // The copy the song was playing from has gone (its download removed or
                 // replaced), or a download has arrived while its stream failed: made ready
                 // again from where it is, by time, on whatever is best now. Nothing failed.

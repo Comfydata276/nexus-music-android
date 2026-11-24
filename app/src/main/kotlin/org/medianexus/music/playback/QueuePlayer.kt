@@ -138,8 +138,20 @@ class QueuePlayer(
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = followPlayer()
 
+            override fun onMetadata(metadata: androidx.media3.common.Metadata) {
+                // What a station announces it is playing (its ICY title).
+                for (i in 0 until metadata.length()) {
+                    val icy = metadata[i] as? androidx.media3.extractor.metadata.icy.IcyInfo ?: continue
+                    val uid = queue.currentUid() ?: return
+                    announced = uid to icy.title?.trim().orEmpty()
+                    invalidateState()
+                }
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState != Player.STATE_ENDED || queue.isEmpty) return
+                // A station's stream that ends has dropped: joined again (see rejoinStation).
+                if (queue.current()?.radioUrl?.isNotEmpty() == true && exo.playWhenReady && rejoinStation()) return
                 // The end of the queue (the window moves along with the song playing, so the
                 // player only runs out when the queue has).
                 if (queue.repeat == Repeat.ALL) {
@@ -148,8 +160,9 @@ class QueuePlayer(
                     queue.moveTo(0)
                     sync(0)
                     startPlaying()
-                } else if (queue.repeat == Repeat.OFF) {
-                    // Park on the first song, ready to go again, as Windows does.
+                } else if (queue.repeat == Repeat.OFF && end?.ended(queue) != true) {
+                    // Park on the first song, ready to go again, as Windows does (unless
+                    // autoplay is to carry on: then it waits, at the end, for what follows).
                     exo.pause()
                     queue.moveTo(0)
                     sync(0)
@@ -176,7 +189,7 @@ class QueuePlayer(
         if (exo.isCommandAvailable(COMMAND_GET_TIMELINE)) {
             // The playlist is already in playing order, whatever shuffle says: nobody should
             // look for a shuffled order underneath it.
-            builder.setPlaylist(InOrderTimeline(exo.currentTimeline, sent), exo.currentTracks, exo.mediaMetadata)
+            builder.setPlaylist(InOrderTimeline(exo.currentTimeline, sent), exo.currentTracks, stationShown() ?: exo.mediaMetadata)
         }
         val failed = exo.playerError
         if (failed != null) {
@@ -196,6 +209,8 @@ class QueuePlayer(
     val ahead: Int get() = (queue.order.size - queue.cursor - 1).coerceAtLeast(0)
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        // Paused on purpose: nothing is to start by itself.
+        if (!playWhenReady) end?.stopped()
         if (playWhenReady) {
             if (!mayPlay()) return Futures.immediateVoidFuture()
             // A start that was refused left the player stopped (see refuseStart): a Play that
@@ -232,6 +247,11 @@ class QueuePlayer(
         // (Stopping keeps the queue and the place in the song.)
         if (exo.playbackState != STATE_IDLE) exo.stop()
         invalidateState()
+    }
+
+    override fun handleStop(): ListenableFuture<*> {
+        end?.stopped()
+        return super.handleStop()
     }
 
     override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {
@@ -640,6 +660,69 @@ class QueuePlayer(
         }
     }
 
+    // ---- Internet radio ---------------------------------------------------------------------
+
+    /** What the station playing (its queue entry) last announced it is playing. */
+    private var announced: Pair<Long, String>? = null
+
+    /** What a station playing is shown as: its name stays the title, and the song it
+     *  announces goes where the artist would (as Windows shows it); null for a song. */
+    private fun stationShown(): MediaMetadata? {
+        val station = queue.current()?.takeIf { it.radioUrl.isNotEmpty() } ?: return null
+        val now = announced?.takeIf { it.first == queue.currentUid() }?.second?.takeIf { it.isNotEmpty() }
+        return exo.mediaMetadata.buildUpon().setTitle(station.title).setArtist(now ?: station.artistLabel).setDisplayTitle(station.title).build()
+    }
+
+    private val rejoins = Rejoins()
+
+    /**
+     * A station's stream dropped (it failed, or ended, which a live stream doesn't do): it is
+     * joined again from now, after 1, 2, 4 and 8 seconds (Windows' `reconnect`), unless it was
+     * paused or something else chosen meanwhile. False once it has dropped five times in
+     * three minutes: then it is the station that is at fault, and it is passed over.
+     */
+    fun rejoinStation(): Boolean {
+        val uid = queue.currentUid() ?: return false
+        val wait = rejoins.next(uid, android.os.SystemClock.elapsedRealtime()) ?: return false
+        later(wait) {
+            if (queue.currentUid() != uid || !exo.playWhenReady) return@later
+            exo.seekToDefaultPosition()
+            startPlaying()
+        }
+        return true
+    }
+
+    // ---- The end of the queue ----------------------------------------------------------------
+
+    /** What carries on when the queue ends (autoplay), for the account playing; null for
+     *  nothing. */
+    var end: QueueEnd? = null
+
+    /**
+     * Autoplay's songs have been found for the queue whose last entry was `seed`: they join it,
+     * if it is still that queue; and if the player had played to its end and waited (`resume`),
+     * it carries on into them. Nothing found, or the queue another by now: a player that had
+     * ended parks on the first song, as it would have.
+     */
+    fun carriedOn(seed: Long, songs: List<Song>, resume: Boolean) {
+        val still = queue.lastUid() == seed
+        if (still && songs.isNotEmpty()) {
+            val atEnd = exo.playbackState == Player.STATE_ENDED
+            queue.carryOn(songs, radio = Autoplay.isRadio(queue.source))
+            if (resume && atEnd) {
+                queue.moveTo(queue.cursor + 1)
+                sync(0)
+                startPlaying()
+            } else {
+                sync()
+            }
+        } else if (still && resume && exo.playbackState == Player.STATE_ENDED) {
+            exo.pause()
+            queue.moveTo(0)
+            sync(0)
+        }
+    }
+
     /** Takes the entry with this number out of what's to come. */
     fun removeEntry(uid: Long) {
         if (queue.dropUid(uid)) sync()
@@ -729,6 +812,7 @@ class QueuePlayer(
         applyRepeat()
         queue.trackChanged()
         changed(this)
+        end?.lastSong(queue)
     }
 
     /** ExoPlayer moved on by itself, or was told to by next, previous or a queue entry. */
@@ -745,6 +829,7 @@ class QueuePlayer(
             applyRepeat()
         }
         changed(this)
+        end?.lastSong(queue)
     }
 
     // ---- Media items ----------------------------------------------------------------------
@@ -758,7 +843,9 @@ class QueuePlayer(
 
     private fun build(song: Song, uid: Long): MediaItem = MediaItem.Builder()
         .setMediaId(song.id)
-        .setUri(songUri(song.id))
+        // An internet radio station is read from its own address, not the server's: the data
+        // source passes an address that names no song straight through.
+        .setUri(if (song.radioUrl.isNotEmpty()) song.radioUrl else songUri(song.id))
         .setTag(SongTag(song, uid))
         .setMediaMetadata(metadataFor(song))
         .build()

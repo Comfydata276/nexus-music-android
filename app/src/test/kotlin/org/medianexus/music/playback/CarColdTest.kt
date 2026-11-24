@@ -117,7 +117,9 @@ class CarColdTest {
         assertEquals(listOf("Shuffle", "Song 4"), fromThePhone { titles(tree.children(CarNode.Playlist("p1"))) })
         assertEquals(listOf("Shuffle", "Song 2"), fromThePhone { titles(tree.children(CarNode.Liked)) })
         // Library.
-        assertEquals(listOf("Albums", "Artists", "Genres"), fromThePhone { titles(tree.children(CarNode.Library)) })
+        // (Radio is there offline too, and empty: the folders stay where they were.)
+        assertEquals(listOf("Albums", "Artists", "Genres", "Radio"), fromThePhone { titles(tree.children(CarNode.Library)) })
+        assertEquals(emptyList<String>(), fromThePhone { titles(tree.children(CarNode.Radio)) })
         assertEquals(listOf("First Light"), fromThePhone { titles(tree.children(CarNode.Albums)) })
         assertEquals(listOf("Paper Lanterns"), fromThePhone { titles(tree.children(CarNode.Artists)) })
         assertEquals(listOf("Folk"), fromThePhone { titles(tree.children(CarNode.Genres)) })

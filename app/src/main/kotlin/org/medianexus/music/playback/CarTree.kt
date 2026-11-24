@@ -52,6 +52,7 @@ data class CarWords(
     val albums: String = "Albums",
     val artists: String = "Artists",
     val genres: String = "Genres",
+    val radio: String = "Radio",
     val likedSongs: String = "Liked songs",
     val recentlyPlayed: String = "Recently played",
     val recentlyAdded: String = "Recently added",
@@ -114,6 +115,9 @@ class CarOffline(
  * No folder is ever longer than reaches the car whole (see [CarFolders]): one that would be
  * is shown as numbered ranges instead.
  */
+/** What a queue of radio stations says it came from, on the phone and in the car. */
+const val RADIO_STATIONS = "radio-stations"
+
 class CarTree(private val library: Library, private val words: CarWords = CarWords(), private val offline: CarOffline? = null) {
     /** The tabs. */
     fun tabs(): List<CarEntry> = listOf(
@@ -406,6 +410,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         CarNode.Playlists -> library.playlists().key
         CarNode.Artists, is CarNode.ArtistLetter -> library.artists().key
         CarNode.Genres -> library.genres().key
+        CarNode.Radio -> library.stations().key
         CarNode.Albums, is CarNode.AlbumLetter -> library.allAlbums(AlbumList.AlphabeticalByName).key
         CarNode.Liked -> library.liked().key
         is CarNode.Album -> library.album(node.id).key
@@ -440,6 +445,8 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
                 CarEntry(CarIds.format(CarNode.Albums), words.albums, icon = R.drawable.ic_disc_album, browsable = true, inside = CarStyle.GRID),
                 CarEntry(CarIds.format(CarNode.Artists), words.artists, icon = R.drawable.ic_user_round, browsable = true, inside = CarStyle.LIST),
                 CarEntry(CarIds.format(CarNode.Genres), words.genres, icon = R.drawable.ic_tags, browsable = true, inside = CarStyle.LIST),
+                // The stations stream live from the internet: offline the folder is empty.
+                CarEntry(CarIds.format(CarNode.Radio), words.radio, icon = R.drawable.ic_radio, browsable = true, inside = CarStyle.LIST),
             ))
             CarNode.Albums -> if (isOffline) Listing(playableAlbums(playable()).map { albumEntry(it, group = words.aToZ) }, inside = CarStyle.GRID) else albums(again)
             is CarNode.AlbumsBy -> {
@@ -473,6 +480,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
                 (if (isOffline) playableGenres() else first(library.genres(), part, again) { playableGenres().takeIf { it.isNotEmpty() } }.orEmpty()).map(::genreEntry),
             )
             CarNode.Liked -> songs(likedSongs(part, again), ListRef.Liked)
+            CarNode.Radio -> songs(stations(part, again), ListRef.Radio)
             is CarNode.Album -> songs(albumSongs(node.id, part, again).first, ListRef.Album(node.id))
             is CarNode.Playlist -> songs(playlistSongs(node.id, part, again = again).first, ListRef.Playlist(node.id))
             is CarNode.Artist -> {
@@ -506,6 +514,11 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         val have = playable().albums
         return albums.filter { it.id in have }
     }
+
+    /** The radio stations, as the server lists them (kept, then checked); none offline,
+     *  where none plays. */
+    private suspend fun stations(part: Boolean, again: (Any?) -> Unit): List<Song> =
+        if (isOffline) emptyList() else first(library.stations(), part, again).orEmpty()
 
     private fun playableGenres(): List<Genre> = org.medianexus.music.library.OnThePhone.genres(playable().songs)
 
@@ -584,7 +597,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     suspend fun item(node: CarNode): CarEntry? = when (node) {
         CarNode.Root -> CarEntry(CarIds.ROOT, words.library, browsable = true)
         CarNode.Home, CarNode.Playlists, CarNode.Library -> tabs().firstOrNull { it.id == CarIds.format(node) }
-        CarNode.Albums, CarNode.Artists, CarNode.Genres -> children(CarNode.Library)?.firstOrNull { it.id == CarIds.format(node) }
+        CarNode.Albums, CarNode.Artists, CarNode.Genres, CarNode.Radio -> children(CarNode.Library)?.firstOrNull { it.id == CarIds.format(node) }
         CarNode.Liked -> CarEntry(CarIds.format(node), words.likedSongs, icon = R.drawable.ic_heart, browsable = true, inside = CarStyle.LIST)
         is CarNode.AlbumLetter -> CarEntry(CarIds.format(node), node.letter, browsable = true, inside = CarStyle.GRID)
         is CarNode.ArtistLetter -> CarEntry(CarIds.format(node), node.letter, browsable = true, inside = CarStyle.LIST)
@@ -780,6 +793,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         is ListRef.Album -> if (list.id.isEmpty()) null else (downloadedInstead(list.id, with) ?: albumSongs(list.id, part = false) {}).let { (songs, name) -> Triple(songs, name, "album:${list.id}") }
         is ListRef.Playlist -> playlistSongs(list.id, part = false) {}.let { (songs, name) -> Triple(songs, name, "playlist:${list.id}") }
         ListRef.Liked -> Triple(likedSongs(part = false) {}, words.likedSongs, "liked")
+        ListRef.Radio -> Triple(stations(part = false) {}, words.radio, RADIO_STATIONS)
         // The Downloads tab's lists, as the downloads have them. Their own names as sources,
         // so the queue doesn't follow a page of the server's with songs that aren't here.
         ListRef.DownloadedSongs -> Triple(DownloadedViews.songs(downloadsNow()), words.downloads, "downloads")

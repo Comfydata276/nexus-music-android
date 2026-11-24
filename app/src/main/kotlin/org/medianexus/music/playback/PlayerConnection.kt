@@ -261,7 +261,8 @@ class PlayerConnection(
     private fun read(queueToo: Boolean) {
         val c = controller ?: return
         val index = c.currentMediaItemIndex
-        val song = c.currentMediaItem?.let(::songOf)
+        // A station: what it announces it is playing goes where the artist would.
+        val song = c.currentMediaItem?.let(::songOf)?.let { it.takeIf { it.radioUrl.isEmpty() } ?: it.copy(artist = c.mediaMetadata.artist?.toString()?.ifEmpty { null } ?: it.artist) }
         currentSong.value = song
         entryNow.value = (c.currentMediaItem?.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid ?: AppCommands.NONE
         val playing = c.isPlaying || (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING)
@@ -326,6 +327,13 @@ class PlayerConnection(
         view: org.medianexus.music.library.ListView? = null,
         shown: IntArray? = null,
     ) = play(playArgs(songs, start, context, source, shuffle, anyStart, view, shown))
+
+    /**
+     * A song's radio (Windows' `play_radio`): the song now, in order, and songs like it lined
+     * up after it by autoplay as soon as it starts, whatever the autoplay setting (see
+     * [AutoplayRunner]). The song doesn't wait for the others to be found.
+     */
+    fun playRadio(song: Song, context: String) = play(listOf(song), 0, context, Autoplay.RADIO_SOURCE, shuffle = false)
 
     /** Sends a PLAY made by [playArgs] or [pageArgs]. */
     fun play(args: Bundle) = send(AppCommands.PLAY, args)

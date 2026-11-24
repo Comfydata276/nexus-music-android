@@ -13,6 +13,8 @@ sealed interface CarNode {
     data object Albums : CarNode
     data object Artists : CarNode
     data object Genres : CarNode
+    /** The internet radio stations set up on the server (Library). */
+    data object Radio : CarNode
     data object Liked : CarNode
     /** Albums, or artists, whose names start with one letter ("#" for the rest), when there
      *  are too many to list in one go. */
@@ -54,6 +56,8 @@ sealed interface ListRef {
     data class Album(val id: String) : ListRef
     data class Playlist(val id: String) : ListRef
     data object Liked : ListRef
+    /** The radio stations. */
+    data object Radio : ListRef
     /** The Downloads tab's lists (see [CarNode.Downloads]). */
     data object DownloadedSongs : ListRef
     data class DownloadedAlbum(val id: String) : ListRef
@@ -74,6 +78,7 @@ object CarIds {
         CarNode.Albums -> "albums"
         CarNode.Artists -> "artists"
         CarNode.Genres -> "genres"
+        CarNode.Radio -> "radio"
         CarNode.Liked -> "liked"
         is CarNode.AlbumLetter -> "albums/${escape(node.letter)}"
         is CarNode.ArtistLetter -> "artists/${escape(node.letter)}"
@@ -96,6 +101,7 @@ object CarIds {
         is ListRef.Album -> "album/${escape(list.id)}"
         is ListRef.Playlist -> "playlist/${escape(list.id)}"
         ListRef.Liked -> "liked"
+        ListRef.Radio -> "radio"
         ListRef.DownloadedSongs -> "downloads-songs"
         is ListRef.DownloadedAlbum -> "downloads-album/${escape(list.id)}"
         is ListRef.DownloadedList -> "downloads-list/${escape(list.key)}"
@@ -103,6 +109,7 @@ object CarIds {
 
     private fun listOf(parts: List<String>): ListRef? = when {
         parts.size == 1 && parts[0] == "liked" -> ListRef.Liked
+        parts.size == 1 && parts[0] == "radio" -> ListRef.Radio
         parts.size == 1 && parts[0] == "downloads-songs" -> ListRef.DownloadedSongs
         parts.size == 2 && parts[0] == "downloads-album" -> ListRef.DownloadedAlbum(parts[1])
         parts.size == 2 && parts[0] == "downloads-list" -> ListRef.DownloadedList(parts[1])
@@ -139,6 +146,7 @@ object CarIds {
                 "albums" -> CarNode.Albums
                 "artists" -> CarNode.Artists
                 "genres" -> CarNode.Genres
+                "radio" -> CarNode.Radio
                 "liked" -> CarNode.Liked
                 "downloads" -> CarNode.Downloads
                 "downloads-songs" -> CarNode.DownloadedSongs
