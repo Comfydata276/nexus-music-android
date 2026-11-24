@@ -86,6 +86,18 @@ class SearchSpeedTest {
     }
 
     @Test
+    fun anOfflineSearchStopsPartWayLikeAnOnlineOne() {
+        // What plays offline, a large library of it: each keystroke's search used to run to
+        // the end for nobody, and the next waited for it.
+        val songs = vocabulary(20_000, seed = 9).mapIndexed { n, word -> org.medianexus.music.net.Song(id = "s$n", title = word, artist = "someone") }
+        LocalSearch.find("warm", songs, SearchLimits()) // (the index made once, as when typing begins)
+        var asked = 0
+        val stopped = runCatching { LocalSearch.find("abcdefgh", songs, SearchLimits(), cancelled = { ++asked > 1 }) }.exceptionOrNull()
+        assertTrue("not stopped: $stopped", stopped is kotlinx.coroutines.CancellationException)
+        assertTrue(asked > 1)
+    }
+
+    @Test
     fun aSupersededArrangementStops() {
         var titles = 0
         val songs = object : SongColumns {

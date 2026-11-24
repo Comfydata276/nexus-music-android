@@ -36,9 +36,11 @@ class ListIndex(val songs: List<Song>, val albums: List<Album>, val artists: Lis
  * search and spoken requests use it offline.
  */
 object LocalSearch {
-    fun find(query: String, songs: List<Song>, limits: SearchLimits, liked: (String) -> Boolean = { false }): Found {
+    /** `cancelled` is asked as the search goes, as online ([PhoneSearch]): once it says so
+     *  (more typing has replaced this search), it stops with a CancellationException. */
+    fun find(query: String, songs: List<Song>, limits: SearchLimits, liked: (String) -> Boolean = { false }, cancelled: () -> Boolean = { false }): Found {
         if (SearchRank.words(query).isEmpty()) return Found()
-        return indexOf(songs).find(query, limits, liked) ?: Found()
+        return indexOf(songs).find(query, limits, liked, cancelled) ?: throw kotlinx.coroutines.CancellationException("a newer search replaced it")
     }
 
     /** The last index made: the songs that play change only when something is downloaded or

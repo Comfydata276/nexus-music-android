@@ -78,7 +78,9 @@ fun SearchPage() {
         SearchModel(null, search = { query ->
             if (graph.watch.offline && account != null) {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS) { account.likes.isLiked(it) }
+                    // Stopped part-way when more typing replaces it, as online.
+                    val job = coroutineContext[kotlinx.coroutines.Job]
+                    org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS, { account.likes.isLiked(it) }) { job?.isActive == false }
                 }
             } else {
                 account?.library?.search?.find(query, LIMITS) ?: Found()
