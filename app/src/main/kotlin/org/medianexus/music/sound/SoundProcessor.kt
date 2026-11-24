@@ -221,8 +221,9 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         channels = 0
         encoding = C.ENCODING_INVALID
         lastSound = null
+        // Whatever comes next begins with nothing before it (see arrive).
         fresh = true
-        identity()
+        songGain = 1f
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
@@ -340,21 +341,17 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     /** Sound begins with nothing before it (after a reset, or in a new format): everything is
      *  as `s` asks from the first sample. */
     private fun arrive(s: Sound) {
+        retarget(s)
         ease = 1f
-        mono = if (s.mono) 1f else 0f
-        monoTarget = mono
-        preampTarget = if (s.eqOn) s.preampDb else 0f
+        mono = monoTarget
         preampDb = preampTarget
         preamp = 10f.pow(preampDb / 20f)
-        var any = preampDb != 0f
         for (band in 0 until 6) {
-            bandTargets[band] = if (s.eqOn) s.gain(band) else 0f
             bands[band] = bandTargets[band]
             filters.set(band, bands[band])
-            if (bands[band] != 0f) any = true
         }
         filters.clear()
-        eqRunning = any
+        eqRunning = preampDb != 0f || bands.any { it != 0f }
     }
 
     /** Moves the equaliser's bands and preamp a step towards where they are going, once a
@@ -390,15 +387,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     private fun settled(): Boolean =
         songGain == 1f && ease == 1f && mono == 0f && monoTarget == 0f &&
             !eqRunning && preampDb == 0f && bands.all { it == 0f } && bandTargets.all { it == 0f } && preampTarget == 0f
-
-    private fun identity() {
-        songGain = 1f; ease = 1f; easeStep = 0f
-        mono = 0f; monoTarget = 0f
-        bands.fill(0f); bandTargets.fill(0f)
-        preampDb = 0f; preampTarget = 0f; preamp = 1f
-        eqRunning = false
-        if (rate > 0) for (band in 0 until 6) filters.set(band, 0f)
-    }
 
     private fun approach(now: Float, target: Float, step: Float): Float =
         if (abs(target - now) <= step) target else if (target > now) now + step else now - step
