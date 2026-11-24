@@ -37,6 +37,8 @@ class AccountWiring(
     val suspect: () -> Unit,
     /** Makes the account's downloads (they need Android: Media3's manager, the network). */
     val downloads: ((AccountGraph) -> Downloads)? = null,
+    /** Something for the Diagnostics page (no names, no addresses). */
+    val note: (String) -> Unit = {},
 )
 
 /**
@@ -92,7 +94,7 @@ class AccountGraph(
     val keptIndex = KeptIndex(File(account.dirs.cache, "kept.json"), scope, io)
 
     /** What is downloaded: the songs, the lists downloaded whole, the failures. */
-    val catalogue = Catalogue(downloadsDir)
+    val catalogue = Catalogue(downloadsDir, note = wiring?.note ?: {})
 
     /** Which songs play with the server gone. */
     val availability = Availability(catalogue, keptIndex, cap = { settings.value.bitrate }, keeping = { settings.value.cacheLimitMb > 0 })

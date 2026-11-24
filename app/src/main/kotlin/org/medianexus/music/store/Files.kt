@@ -12,15 +12,21 @@ import java.nio.file.StandardCopyOption
  * each: the bytes go to a file beside it, reach the disk, and then take its place.
  */
 @Throws(IOException::class)
-fun writeAtomically(file: File, bytes: ByteArray) = writeAtomically(file) { it.write(bytes) }
+fun writeAtomically(file: File, bytes: ByteArray, durable: Boolean = false) = writeAtomically(file, durable) { it.write(bytes) }
 
 /**
  * As above, for something too big to hold in memory twice over: `write` puts it straight
  * into the file beside. (A 20,000-song queue is 12 MB of JSON; built as text and then as
  * bytes before being written, it was 36 MB more of the app's memory at each save.)
+ *
+ * `durable`: the new file must still be the one there after a power cut, because something
+ * is about to rely on it (a record that a download is whole, a change waiting for the
+ * server). The bytes reach the disk before the rename either way; with `durable` the folder
+ * does too, after it ([syncDir]): without that the rename itself can be lost, and the old
+ * file is back. A cache (a page, a cover) doesn't ask for it: the old one would do.
  */
 @Throws(IOException::class)
-fun writeAtomically(file: File, write: (java.io.OutputStream) -> Unit) {
+fun writeAtomically(file: File, durable: Boolean = false, write: (java.io.OutputStream) -> Unit) {
     file.parentFile?.mkdirs()
     val temp = temporaryFor(file)
     try {
@@ -40,6 +46,7 @@ fun writeAtomically(file: File, write: (java.io.OutputStream) -> Unit) {
         temp.delete()
         throw e
     }
+    if (durable) file.parentFile?.let { syncDir(it) }
 }
 
 /**

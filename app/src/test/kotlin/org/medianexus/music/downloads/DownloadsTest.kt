@@ -130,12 +130,15 @@ class DownloadsTest {
         }
     }
 
+    /** Where the start-up sweep runs: at once, unless a test holds it. */
+    private var disk: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
+
     private fun downloads(): Downloads {
         val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient())
         val covers = CoverStore(folder.newFolder(), scope, Dispatchers.IO, fetch = { _, _ -> throw ApiError.Network("none") })
         return Downloads(context, catalogue, api, OkHttpClient(), database, "acct", settings, reach, covers, { busy, wifi -> kept += busy to wifi }, scope, spare = { spare },
             // The songs here are not audio (what is and isn't a song is WholeDownloadTest's).
-            check = { _, _ -> Inspected("flac", true, -1) })
+            check = { _, _ -> Inspected("flac", true, -1) }, disk = disk)
             .also { made += it }
             .also { idle() }
     }
@@ -294,5 +297,32 @@ class DownloadsTest {
         assertFalse(engine.state.value.busy)
         assertFalse(catalogue.has("s2"))
         assertTrue(catalogue.has("s1") && catalogue.has("s3"))
+    }
+
+    @Test
+    fun noWorkIsAcceptedUntilTheStartUpSweepIsOver() {
+        // The sweep is held: it runs when the test says.
+        val held = java.util.concurrent.LinkedBlockingQueue<Runnable>()
+        disk = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                held += block
+            }
+        }
+        // What an earlier run left: a file that is nobody's, and old.
+        val stray = File(catalogue.dir, "stray.flac").also { it.writeBytes(ByteArray(9)); it.setLastModified(catalogue.opened - 60_000) }
+        val engine = downloads()
+        until("read") { engine.state.value.settled }
+        val asking = scope.async { engine.download(listOf(song("s1"))) }
+        // Media3's manager is up, and still nothing is taken on: the folder hasn't been swept.
+        repeat(50) { idle() }
+        assertFalse(asking.isCompleted)
+        assertTrue(asked.isEmpty())
+        assertTrue(stray.exists())
+        // The sweep runs.
+        held.take().run()
+        until("asked") { asking.isCompleted }
+        assertFalse(stray.exists())
+        until("downloaded") { catalogue.has("s1") }
+        assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
     }
 }

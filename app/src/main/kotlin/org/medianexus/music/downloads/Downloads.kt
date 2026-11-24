@@ -151,6 +151,8 @@ class Downloads(
     /** What says whether a file that has arrived is the song (a stand-in, in tests whose
      *  songs are not audio). */
     private val check: AudioCheck = Media3AudioCheck,
+    /** Where the start-up sweep of the folder runs (a test's own, to hold it). */
+    private val disk: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
@@ -160,6 +162,9 @@ class Downloads(
     val state: StateFlow<DownloadsState> = now.asStateFlow()
 
     private lateinit var manager: DownloadManager
+
+    /** Done once Media3's manager has read what was waiting and the start-up sweep of the
+     *  folder has finished: until then no work is accepted (see [Catalogue.sweep]). */
     private val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
     private var released = false
 
@@ -183,7 +188,6 @@ class Downloads(
                 addListener(Listener())
             }
             follow()
-            ready.complete(Unit)
         }
     }
 
@@ -376,10 +380,21 @@ class Downloads(
             // download waiting) is cleared away.
             for (download in downloadManager.currentDownloads) ask(download)?.let { songs[it.song.id] = it.song }
             if (batch.isEmpty()) batch += songs.keys
-            val busy = songs.keys.toSet()
-            scope.launch(Dispatchers.IO) { catalogue.sweep(busy) }
+            // Every download Media3 still holds, whatever was readable of it: the sweep must
+            // leave their files alone.
+            val busy = downloadManager.currentDownloads.mapTo(HashSet()) { it.request.id } + songs.keys
             initialized = true
             publish()
+            // What a download cut short left in the folder is cleared away, once, now: before
+            // any work is accepted ([ready]), so nothing asked for from here on can have a
+            // file of its own in the folder while the sweep looks.
+            scope.launch(disk) {
+                try {
+                    catalogue.sweep(busy)
+                } finally {
+                    ready.complete(Unit)
+                }
+            }
             // Downloads whose files were found, at sign-in, to be missing or not the length
             // that was recorded: not downloads any more, and fetched again.
             val again = catalogue.wanting.map { it.song }.filter { !catalogue.has(it.id) }

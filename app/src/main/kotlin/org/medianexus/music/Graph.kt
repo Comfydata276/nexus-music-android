@@ -97,6 +97,7 @@ class Graph(context: Context) {
                 reach = watch.state,
                 suspect = { watch.check() },
                 downloads = { account -> downloadsFor(context.applicationContext, account) },
+                note = { diagnostics.note(it) },
             ),
         )
     }
