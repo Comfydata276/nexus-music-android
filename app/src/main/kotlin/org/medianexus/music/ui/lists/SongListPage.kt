@@ -244,12 +244,18 @@ fun SongListPage(
 fun rememberShown(songs: List<Song>?, view: org.medianexus.music.library.ListView, dates: (List<Song>) -> LongArray): IntArray? {
     if (songs == null) return null
     if (view.isDefault) return remember(songs) { IntArray(songs.size) { it } }
-    val work = { org.medianexus.music.library.Arrange.arrange(songs.columns(), view, (if (view.sort == org.medianexus.music.library.ListView.ADDED) dates(songs) else null).let { d -> { i: Int -> d?.get(i) ?: 0L } }) }
-    if (songs.size <= ARRANGED_AT_ONCE) return remember(songs, view) { work() }
+    val work = { cancelled: () -> Boolean ->
+        org.medianexus.music.library.Arrange.arrange(songs.columns(), view, cancelled, (if (view.sort == org.medianexus.music.library.ListView.ADDED) dates(songs) else null).let { d -> { i: Int -> d?.get(i) ?: 0L } })
+    }
+    if (songs.size <= ARRANGED_AT_ONCE) return remember(songs, view) { work { false } }
     val arranged by androidx.compose.runtime.produceState<Pair<List<Song>, IntArray>?>(null, songs, view) {
         val keep = value?.takeIf { it.first === songs }
         value = keep
-        value = songs to kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { work() }
+        // Stopped part-way when another keystroke or order replaces it.
+        value = songs to kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val job = coroutineContext[kotlinx.coroutines.Job]
+            work { job?.isActive == false }
+        }
     }
     return arranged?.takeIf { it.first === songs }?.second
 }

@@ -99,11 +99,16 @@ fun SongsContent() {
         val snap = copy ?: return@produceState
         if (value?.copy !== snap) value = null
         value = withContext(Dispatchers.Default) {
+            val job = coroutineContext[kotlinx.coroutines.Job]
             val newest = snap.newestFirst
+            // (Made here, once a copy, not on the main thread: what marks the row playing.)
+            snap.newestPlace
             val order = if (view.isDefault) newest else {
                 val table = snap.songs
-                // Places in the newest-first list, then back to places in the table.
-                Arrange.arrange(table.columns(newest), view) { Arrange.dayStart(table.createdMillis(newest[it]) / 1000) }.let { at -> IntArray(at.size) { newest[at[it]] } }
+                // Places in the newest-first list, then back to places in the table. Stopped
+                // part-way if more typing has replaced it.
+                Arrange.arrange(table.columns(newest), view, cancelled = { job?.isActive == false }) { Arrange.dayStart(table.createdMillis(newest[it]) / 1000) }
+                    .let { at -> IntArray(at.size) { newest[at[it]] } }
             }
             Shown(snap, view, order)
         }
@@ -121,11 +126,9 @@ fun SongsContent() {
     val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
 
     // The place of a song (by its place in the table) in the newest-first list: what the
-    // service is told, and what marks the row playing.
-    val ownPlace = remember(now?.copy) {
-        val newest = now?.copy?.newestFirst
-        if (newest == null) IntArray(0) else IntArray(newest.size).also { places -> for ((i, t) in newest.withIndex()) places[t] = i }
-    }
+    // service is told, and what marks the row playing. Made off the main thread, with the
+    // arrangement.
+    val ownPlace = now?.copy?.newestPlace ?: IntArray(0)
     fun play(row: Int, any: Boolean = false) {
         val n = now ?: return
         val t = n.order.getOrNull(row) ?: return

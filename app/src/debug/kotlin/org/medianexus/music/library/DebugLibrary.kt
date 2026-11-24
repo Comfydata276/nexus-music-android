@@ -57,19 +57,27 @@ object DebugLibrary {
         val search = account.library.search
         val limits = SearchLimits(artists = 24, albums = 36, songs = 60)
         return queries.joinToString("\n") { query ->
-            // As typed, a letter at a time: each step is a search of its own.
+            // As typed, a letter at a time: each step is a search of its own. Typed through
+            // `times` times over, so each keystroke is timed as it comes after the one before
+            // it (what a search may reuse from the last one, it reuses as it would for a
+            // person typing; never the same words searched again straight away).
             val steps = (1..query.length).map { query.substring(0, it) }.filter { it.isNotBlank() }
-            val each = steps.map { step ->
-                val runs = (1..times).map {
+            val runs = Array(steps.size) { LongArray(times) }
+            var songs = 0
+            for (time in 0 until times) {
+                for ((n, step) in steps.withIndex()) {
                     val started = System.nanoTime()
                     val found = runBlocking(Dispatchers.Default) { search.find(step, limits) }
-                    (System.nanoTime() - started) / 1_000 to found.songs.size
+                    runs[n][time] = (System.nanoTime() - started) / 1_000
+                    songs = found.songs.size
                 }
-                runs.map { it.first }.sorted()[times / 2] to runs.last().second
             }
-            val worst = each.maxOf { it.first }
-            val median = each.map { it.first }.sorted()[each.size / 2]
-            "\"$query\": ${steps.size} keystrokes, median ${median / 1000.0} ms, slowest ${worst / 1000.0} ms; ${each.last().second} songs for the whole words (copy of ${copy.songs.size})"
+            val each = runs.map { it.sorted()[times / 2] }
+            // The slowest keystroke by its median (as measured before), and the slowest single run.
+            val slowest = each.max()
+            val worst = runs.maxOf { it.max() }
+            val median = each.sorted()[each.size / 2]
+            "\"$query\": ${steps.size} keystrokes, median ${median / 1000.0} ms, slowest ${slowest / 1000.0} ms (worst single ${worst / 1000.0} ms); $songs songs for the whole words (copy of ${copy.songs.size})"
         }
     }
 

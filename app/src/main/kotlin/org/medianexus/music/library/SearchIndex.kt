@@ -13,9 +13,12 @@ package org.medianexus.music.library
  * artist) are kept once. Plain Kotlin, so it can be tested on its own.
  */
 class SearchIndex private constructor(
-    /** Every distinct word, folded, as its characters (code points, as Rust's `Vec<char>`). */
-    private val words: Array<IntArray>,
-    /** Each distinct name's words, as places in [words]: name `p` is
+    /** Every distinct word, folded, as its characters (code points, as Rust's `Vec<char>`),
+     *  one after another: word `w` is `chars[wordAt[w] until wordAt[w + 1]]`. One array, not
+     *  one per word: 65,000 words are a quarter of a million characters. */
+    private val chars: IntArray,
+    private val wordAt: IntArray,
+    /** Each distinct name's words, as numbers of words (see [wordAt]): name `p` is
      *  `nameWords[nameAt[p] until nameAt[p + 1]]`. */
     private val nameAt: IntArray,
     private val nameWords: IntArray,
@@ -26,6 +29,14 @@ class SearchIndex private constructor(
     private val albumArtist: IntArray,
     private val artistName: IntArray,
 ) {
+    /** How many typed-word-to-word comparisons searches have made (for the tests; not
+     *  exact when searches overlap). */
+    internal var comparisons = 0L
+
+    /** The last search's typed words, folded, with each one's score against every distinct
+     *  word. Replaced whole by each search that finishes its comparisons. */
+    @Volatile private var lastScores: List<Pair<String, FloatArray>> = emptyList()
+
     val songCount: Int get() = songTitle.size
     val albumCount: Int get() = albumName.size
     val artistCount: Int get() = artistName.size
@@ -56,21 +67,42 @@ class SearchIndex private constructor(
         artistAllowed: ((Int) -> Boolean)? = null,
         cancelled: () -> Boolean = { false },
     ): Hits? {
-        val typed = SearchRank.words(query).map(SearchRank::points)
-        if (typed.isEmpty()) return Hits.NONE
+        val folded = SearchRank.words(query)
+        if (folded.isEmpty()) return Hits.NONE
         // Compare each typed word with each distinct word once, however many songs use it.
-        val scores = Array(typed.size) { t -> FloatArray(words.size) { w -> SearchRank.likeness(typed[t], words[w]) } }
+        // A word typed in the search before (all but the one being typed, as a phrase grows)
+        // has the same scores as then: they are used again rather than worked out again.
+        val before = lastScores
+        val rows = SearchRank.Rows()
+        val scores = Array(folded.size) { t ->
+            before.firstOrNull { it.first == folded[t] }?.second ?: run {
+                val typed = SearchRank.points(folded[t])
+                val count = wordAt.size - 1
+                val of = FloatArray(count)
+                for (w in 0 until count) {
+                    // Looked at every few thousand words: a keystroke is a few milliseconds.
+                    if (w and CHECK_EVERY == 0 && cancelled()) return null
+                    of[w] = SearchRank.likeness(typed, chars, wordAt[w], wordAt[w + 1] - wordAt[w], rows)
+                    comparisons++
+                }
+                of
+            }
+        }
+        lastScores = folded.indices.map { folded[it] to scores[it] }
         if (cancelled()) return null
         // And each typed word's best in every distinct name, once: an album's name, or an
         // artist's, is shared by many songs.
         val names = nameAt.size - 1
-        val best = Array(typed.size) { t ->
+        val best = Array(folded.size) { t ->
             val of = scores[t]
-            FloatArray(names) { p ->
+            val bestOf = FloatArray(names)
+            for (p in 0 until names) {
+                if (p and CHECK_EVERY == 0 && cancelled()) return null
                 var b = 0f
                 for (k in nameAt[p] until nameAt[p + 1]) b = maxOf(b, of[nameWords[k]])
-                b
+                bestOf[p] = b
             }
+            bestOf
         }
         if (cancelled()) return null
         val rater = Rater(scores, best)
@@ -78,7 +110,7 @@ class SearchIndex private constructor(
         var topTitle = 0f
         val songHits = Top(songs)
         for (index in songTitle.indices) {
-            if (index and 2047 == 0 && cancelled()) return null
+            if (index and CHECK_EVERY == 0 && cancelled()) return null
             if (songAllowed != null && !songAllowed(index)) continue
             if (!rater.rate(songTitle[index], songArtist[index], 0.9f, songAlbum[index], 0.8f)) continue
             topTitle = maxOf(topTitle, rater.name)
@@ -88,6 +120,7 @@ class SearchIndex private constructor(
         var topArtist = 0f
         val artistHits = Top(artists)
         for (index in artistName.indices) {
+            if (index and CHECK_EVERY == 0 && cancelled()) return null
             if (artistAllowed != null && !artistAllowed(index)) continue
             if (!rater.rate(artistName[index], -1, 0f, -1, 0f)) continue
             topArtist = maxOf(topArtist, rater.score)
@@ -96,6 +129,7 @@ class SearchIndex private constructor(
 
         val albumHits = Top(albums)
         for (index in albumName.indices) {
+            if (index and CHECK_EVERY == 0 && cancelled()) return null
             if (albumAllowed != null && !albumAllowed(index)) continue
             if (!rater.rate(albumName[index], albumArtist[index], 0.85f, -1, 0f)) continue
             albumHits.offer(rater.score, index)
@@ -193,11 +227,19 @@ class SearchIndex private constructor(
         fun places(): IntArray = places.copyOf(size)
     }
 
+    private companion object {
+        /** How often (a mask: every 2,048) the loops look at whether to stop. */
+        const val CHECK_EVERY = 2047
+    }
+
     /** Puts an index together: songs, albums and artists, each in the order they are to be
      *  numbered. The words of a name many share are worked out once. */
     class Builder {
         private val wordIds = HashMap<String, Int>()
-        private val words = ArrayList<IntArray>()
+        private var chars = IntArray(16 * 1024)
+        private var charsUsed = 0
+        private var wordAt = IntArray(1024).also { it[0] = 0 }
+        private var wordCount = 0
         private val nameIds = HashMap<String, Int>()
         private var nameAt = IntArray(1024)
         private var names = 0
@@ -216,11 +258,22 @@ class SearchIndex private constructor(
             if (wordsUsed + folded.size > nameWords.size) nameWords = nameWords.copyOf(maxOf(nameWords.size * 2, wordsUsed + folded.size))
             nameAt[names] = wordsUsed
             for (word in folded) {
-                nameWords[wordsUsed++] = wordIds.getOrPut(word) { words += SearchRank.points(word); words.size - 1 }
+                nameWords[wordsUsed++] = wordIds.getOrPut(word) { addWord(word) }
             }
             names++
             nameAt[names] = wordsUsed
             names - 1
+        }
+
+        private fun addWord(word: String): Int {
+            val points = SearchRank.points(word)
+            if (charsUsed + points.size > chars.size) chars = chars.copyOf(maxOf(chars.size * 2, charsUsed + points.size))
+            points.copyInto(chars, charsUsed)
+            charsUsed += points.size
+            if (wordCount + 2 > wordAt.size) wordAt = wordAt.copyOf(wordAt.size * 2)
+            wordCount++
+            wordAt[wordCount] = charsUsed
+            return wordCount - 1
         }
 
         fun song(title: String, artist: String, album: String) = apply {
@@ -238,7 +291,7 @@ class SearchIndex private constructor(
         fun artist(name: String) = apply { artistName += name(name) }
 
         fun build(): SearchIndex = SearchIndex(
-            words.toTypedArray(), nameAt.copyOf(names + 1), nameWords.copyOf(wordsUsed),
+            chars.copyOf(charsUsed), wordAt.copyOf(wordCount + 1), nameAt.copyOf(names + 1), nameWords.copyOf(wordsUsed),
             songTitle.done(), songArtist.done(), songAlbum.done(), albumName.done(), albumArtist.done(), artistName.done(),
         )
     }

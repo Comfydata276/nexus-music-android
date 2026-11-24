@@ -16,7 +16,7 @@ class ListViewTest {
         Song(id = "d", title = "delta", artist = "Bea", displayArtist = "Bea & Cai", album = "First", discNumber = 1, track = 5, duration = 200),
     )
 
-    private fun shown(view: ListView, added: (Int) -> Long = { 0 }) = Arrange.arrange(songs.columns(), view, added).map { songs[it].id }
+    private fun shown(view: ListView, added: (Int) -> Long = { 0 }) = Arrange.arrange(songs.columns(), view, added = added).map { songs[it].id }
 
     @Test
     fun sortsAsWindowsDoes() {

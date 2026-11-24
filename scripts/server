@@ -27,22 +27,54 @@
 #   scripts/server api <method> [name=value...]
 #                             call the Subsonic API as the test account, e.g.
 #                             scripts/server api search3 query=lantern
+#   scripts/server --instance <name> <command> ...
+#                             the same, on a second server of its own (its own container,
+#                             port, database and music folder): for a large library that the
+#                             ordinary one must not hold. "big" listens on 4534; others on
+#                             NEXUS_TEST_PORT. Its music starts as the ordinary library
+#                             (hard links, no copy), e.g.
+#                             scripts/server --instance big start
+#                             scripts/server --instance big biglibrary 50000 --vocabulary
 #
 # It listens on this machine only (127.0.0.1). The emulator reaches it at http://10.0.2.2:4533.
 # Account: tester / tester-pass-1 (made up; it exists nowhere else).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-name=nexus-test-navidrome
-port="${NEXUS_TEST_PORT:-4533}"
+instance=""
+if [ "${1:-}" = "--instance" ]; then
+  instance="${2:?--instance: which one? e.g. big}"
+  case "$instance" in *[!a-z0-9-]*) die "--instance: a name of lower-case letters, digits and dashes" ;; esac
+  shift 2
+fi
 image="${NEXUS_NAVIDROME_IMAGE:-deluan/navidrome:latest}"
-library="$cache/library"
-data="$cache/navidrome"
+if [ -z "$instance" ]; then
+  name=nexus-test-navidrome
+  port="${NEXUS_TEST_PORT:-4533}"
+  library="$cache/library"
+  data="$cache/navidrome"
+else
+  name="nexus-test-navidrome-$instance"
+  if [ "$instance" = big ]; then port="${NEXUS_TEST_PORT:-4534}"; else port="${NEXUS_TEST_PORT:?a port for instance $instance: NEXUS_TEST_PORT=...}"; fi
+  [ "$port" != 4533 ] || die "port 4533 is the ordinary server's"
+  library="$cache/library-$instance"
+  data="$cache/navidrome-$instance"
+fi
+# The same folder as the rig's containers see it (the cache is /cache there).
+lib_inside="/cache/${library#"$cache"/}"
 base="http://127.0.0.1:$port"
 
 generate() {
+  if [ -n "$instance" ]; then
+    # A second server's music starts as the ordinary library's: the same files, linked.
+    [ -f "$cache/library/manifest.json" ] || rig_run python3 /work/tools/library/generate.py /cache/library "$@"
+    mkdir -p "$library"
+    [ -d "$library/music" ] || cp -al "$cache/library/music" "$library/music"
+    cp "$cache/library/manifest.json" "$library/manifest.json"
+    return
+  fi
   mkdir -p "$library"
-  rig_run python3 /work/tools/library/generate.py /cache/library "$@"
+  rig_run python3 /work/tools/library/generate.py "$lib_inside" "$@"
 }
 
 start() {
@@ -51,7 +83,7 @@ start() {
     say "the test server is already running"
   else
     if ss -ltn 2>/dev/null | grep -q -E "[:.]$port\s"; then
-      die "port $port is taken by something else. Free it, or choose another: NEXUS_TEST_PORT=4534 scripts/server start"
+      die "port $port is taken by something else. Free it, or choose another: NEXUS_TEST_PORT=<port> scripts/server start"
     fi
     mkdir -p "$data"
     docker rm -f "$name" >/dev/null 2>&1 || true
@@ -67,7 +99,7 @@ start() {
       -e ND_ENABLESHARING=false -e ND_ENABLEDOWNLOADS=true \
       "$image" >/dev/null || die "docker could not start the server"
   fi
-  rig_run python3 /work/tools/library/setup.py "$base" /cache/library \
+  rig_run python3 /work/tools/library/setup.py "$base" "$lib_inside" \
     || { say "--- last lines from the server ---"; docker logs --tail 20 "$name" >&2 || true; die "setting up the test server failed"; }
 }
 
@@ -90,7 +122,7 @@ case "${1:-}" in
     ;;
   status)
     if container_running "$name"; then
-      rig_run python3 /work/tools/library/setup.py "$base" /cache/library --status
+      rig_run python3 /work/tools/library/setup.py "$base" "$lib_inside" --status
       echo "  memory held: $(docker stats --no-stream --format '{{.MemUsage}}' "$name" | cut -d/ -f1)"
     else
       echo "test server: not running (start with: scripts/server start)"
@@ -101,21 +133,22 @@ case "${1:-}" in
   longlist)
     container_running "$name" || die "the test server isn't running (scripts/server start)"
     case "${2:-5000}" in
-      --remove) rig_run python3 /work/tools/library/setup.py "$base" /cache/library --long=remove ;;
-      *) rig_run python3 /work/tools/library/setup.py "$base" /cache/library "--long=${2:-5000}" ;;
+      --remove) rig_run python3 /work/tools/library/setup.py "$base" "$lib_inside" --long=remove ;;
+      *) rig_run python3 /work/tools/library/setup.py "$base" "$lib_inside" "--long=${2:-5000}" ;;
     esac
     ;;
   manyalbums)
     # A genre with more albums than one page of a grid ("Paging test"), for checking paging.
     container_running "$name" || die "the test server isn't running (scripts/server start)"
     arg="${2:-80}"; [ "$arg" = "--remove" ] && arg=remove
-    rig_run python3 /work/tools/library/manyalbums.py "$base" /cache/library "$arg"
+    rig_run python3 /work/tools/library/manyalbums.py "$base" "$lib_inside" "$arg"
     ;;
   biglibrary)
     # Tens of thousands of distinct songs in half-kilobyte files (tools/library/biglibrary.py).
     container_running "$name" || die "the test server isn't running (scripts/server start)"
     arg="${2:-50000}"; [ "$arg" = "--remove" ] && arg=remove
-    rig_run python3 /work/tools/library/biglibrary.py "$base" /cache/library "$arg"
+    case "$arg" in --*) arg=50000; shift 1 ;; *) shift 2 || shift 1 ;; esac
+    rig_run python3 /work/tools/library/biglibrary.py "$base" "$lib_inside" "$arg" "$@"
     ;;
   sweepcheck)
     # Look for gaps in a recording of the "Continuous Sweep" album (tools/library/sweepcheck.py).
@@ -151,5 +184,5 @@ case "${1:-}" in
     rig_run curl -sS -G "$base/rest/$method" -d u=tester -d p=tester-pass-1 -d v=1.16.1 -d c=rig -d f=json "${args[@]}"
     echo
     ;;
-  *) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -104,11 +104,19 @@ object Arrange {
      * seconds (0 where that isn't known). What was typed is looked for in the title, the
      * artist and the album, whatever the case. A sort is stable, so songs that tie keep the
      * list's own order; reversed, the whole of it is reversed, ties too, as Windows does.
+     * `cancelled` is asked every so often: once it says so, the arrangement stops with a
+     * [kotlinx.coroutines.CancellationException].
      */
-    fun arrange(songs: SongColumns, view: ListView, added: (Int) -> Long = { 0 }): IntArray {
+    fun arrange(songs: SongColumns, view: ListView, cancelled: () -> Boolean = { false }, added: (Int) -> Long = { 0 }): IntArray {
+        // A newer find or order has taken this one's place: it stops where it is, inside each
+        // pass, rather than running to the end of 50,000 songs for nobody.
+        fun check(i: Int) {
+            if (i and CHECK_EVERY == 0 && cancelled()) throw kotlinx.coroutines.CancellationException("a newer arrangement replaced it")
+        }
         val needle = view.filter.trim()
         val shown = ArrayList<Int>(songs.size)
         for (i in 0 until songs.size) {
+            check(i)
             if (needle.isEmpty() || songs.title(i).contains(needle, ignoreCase = true) ||
                 songs.artistLabel(i).contains(needle, ignoreCase = true) || songs.album(i).contains(needle, ignoreCase = true)
             ) {
@@ -119,7 +127,8 @@ object Arrange {
             // Each song's key worked out once (Windows' `sort_by_cached_key`).
             val words = arrayOfNulls<String>(songs.size)
             val numbers = LongArray(songs.size)
-            for (i in shown) {
+            for ((n, i) in shown.withIndex()) {
+                check(n)
                 when (view.sort) {
                     ListView.TITLE -> words[i] = songs.title(i).lowercase()
                     ListView.ARTIST -> words[i] = songs.artistLabel(i).lowercase()
@@ -131,11 +140,20 @@ object Arrange {
                     else -> numbers[i] = added(i)
                 }
             }
-            shown.sortWith(compareBy<Int> { words[it] ?: "" }.thenBy { numbers[it] })
+            var compared = 0
+            shown.sortWith { a, b ->
+                check(++compared)
+                val byWord = (words[a] ?: "").compareTo(words[b] ?: "")
+                if (byWord != 0) byWord else numbers[a].compareTo(numbers[b])
+            }
             if (view.descending) shown.reverse()
         }
         return shown.toIntArray()
     }
+
+    /** How often (a mask: every 1,024 songs or comparisons) an arrangement looks at whether
+     *  it has been superseded. */
+    private const val CHECK_EVERY = 1023
 
     /** The start of the day a time falls on, here (seconds; Windows' `day_start`): songs
      *  that joined the library on the same day count as equally old, so they keep the

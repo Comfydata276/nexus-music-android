@@ -56,6 +56,13 @@ class LibrarySnapshot(
         order.toIntArray()
     }
 
+    /** The other way round from [newestFirst]: for the song at each place in [songs], its
+     *  place in the newest-first list. */
+    val newestPlace: IntArray by lazy {
+        val newest = newestFirst
+        IntArray(newest.size).also { places -> for ((i, t) in newest.withIndex()) places[t] = i }
+    }
+
     /** What matches `query`, best first, as Windows' search finds it; null if `cancelled`
      *  said to stop part-way. */
     fun find(query: String, limits: SearchLimits, liked: (String) -> Boolean, cancelled: () -> Boolean = { false }): Found? {
@@ -151,7 +158,12 @@ class LibraryCopy(
 
     /** Reads the phone's copy, if it hasn't been yet: the whole one, or failing that the
      *  pages of a first fetch that was cut short. */
-    suspend fun open() = lock.withLock { openLocked() }
+    suspend fun open() {
+        lock.withLock { openLocked() }
+        // Ready for the first search, made now, off the main thread, rather than when the
+        // first search asks (a car's, cold, would wait for it).
+        current.value?.takeIf { it.complete }?.let { copy -> withContext(kotlinx.coroutines.Dispatchers.Default) { copy.index } }
+    }
 
     private suspend fun openLocked() {
         if (opened.value) return

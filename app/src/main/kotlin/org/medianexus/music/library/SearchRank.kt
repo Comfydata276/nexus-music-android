@@ -84,58 +84,113 @@ object SearchRank {
     /** A word's characters, as Rust has them (`Vec<char>`): code points, not halves of them. */
     fun points(word: String): IntArray = word.codePoints().toArray()
 
+    /**
+     * The rows a comparison works in, made once and used for every comparison a search makes
+     * (tens of thousands at each keystroke): one per search, never shared between threads.
+     */
+    class Rows {
+        internal var before = IntArray(32)
+        internal var previous = IntArray(32)
+        internal var current = IntArray(32)
+
+        internal fun fit(n: Int) {
+            if (n <= before.size) return
+            val size = maxOf(n, before.size * 2)
+            before = IntArray(size)
+            previous = IntArray(size)
+            current = IntArray(size)
+        }
+    }
+
     /** How many single-letter slips separate two words; over `limit` comes back as
-     *  `limit + 1` (`slips`). `bLength` takes only the start of `b` (Windows' `&word[..n]`),
-     *  without making a copy of it: this is asked of every word in the library at each
-     *  keystroke. */
+     *  `limit + 1` (`slips`). */
     fun slips(a: String, b: String, limit: Int): Int = slips(points(a), points(b), limit)
 
-    fun slips(a: IntArray, b: IntArray, limit: Int, bLength: Int = b.size): Int {
+    /** The same of words as their characters; `bLength` takes only the start of `b`
+     *  (Windows' `&word[..n]`) without making a copy of it. */
+    fun slips(a: IntArray, b: IntArray, limit: Int, bLength: Int = b.size, rows: Rows = Rows()): Int {
         if (kotlin.math.abs(a.size - bLength) > limit) return limit + 1
-        var before = IntArray(bLength + 1)
-        var previous = IntArray(bLength + 1) { it }
-        var current = IntArray(bLength + 1)
+        val last = run(a, b, 0, limit, bLength, rows)
+        return if (last == null) limit + 1 else minOf(last[bLength], limit + 1)
+    }
+
+    /**
+     * Windows' table of slips between `a` and the first `bLength` characters of `b`, row by
+     * row in `rows`: the last row (each entry `j` the slips between `a` and `b[..j]`), or null
+     * if a row came out wholly over `limit` (every entry after it would be too).
+     */
+    private fun run(a: IntArray, b: IntArray, bFrom: Int, limit: Int, bLength: Int, rows: Rows): IntArray? {
+        rows.fit(bLength + 1)
+        var before = rows.before
+        var previous = rows.previous
+        var current = rows.current
+        for (j in 0..bLength) previous[j] = j
         for (i in 1..a.size) {
             current[0] = i
-            var least = current[0]
+            var least = i
+            val ai = a[i - 1]
             for (j in 1..bLength) {
-                val cost = if (a[i - 1] != b[j - 1]) 1 else 0
-                var best = minOf(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
-                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) best = minOf(best, before[j - 2] + 1)
+                val bj = b[bFrom + j - 1]
+                var best = previous[j] + 1
+                val left = current[j - 1] + 1
+                if (left < best) best = left
+                val diagonal = previous[j - 1] + (if (ai != bj) 1 else 0)
+                if (diagonal < best) best = diagonal
+                if (i > 1 && j > 1 && ai == b[bFrom + j - 2] && a[i - 2] == bj && before[j - 2] + 1 < best) best = before[j - 2] + 1
                 current[j] = best
-                least = minOf(least, best)
+                if (best < least) least = best
             }
-            if (least > limit) return limit + 1
+            if (least > limit) return null
             val swap = before
             before = previous
             previous = current
             current = swap
         }
-        return minOf(previous[bLength], limit + 1)
+        return previous
     }
 
     /** How well a typed word matches a word of a name, from 0 to 1 (`likeness`). */
     fun likeness(typed: String, word: String): Float = likeness(points(typed), points(word))
 
-    /** The same, of words as their characters ([points]): lengths are counted in characters,
-     *  as Rust counts them. */
-    fun likeness(typed: IntArray, word: IntArray): Float {
-        if (typed.contentEquals(word)) return 1f
-        if (startsWith(word, typed)) return 0.85f + 0.1f * typed.size / word.size
-        val limit = when (typed.size) {
+    /**
+     * The same, of words as their characters ([points]): lengths are counted in characters,
+     * as Rust counts them. Exactly Windows' answer, worked out with less: whether the lengths
+     * leave any slip-forgiving match possible is looked at before any table is made, the
+     * table's rows are `rows` (nothing made per comparison), and the three starts of a longer
+     * word that Windows compares one after another ("masi" against "mai", "mais", "maisi")
+     * are read off one table, whose last row holds every start at once.
+     */
+    fun likeness(typed: IntArray, word: IntArray, rows: Rows = Rows()): Float = likeness(typed, word, 0, word.size, rows)
+
+    /** The same, of the word at `word[from until from + w]`: words kept one after another in
+     *  one array (see [SearchIndex]). */
+    fun likeness(typed: IntArray, word: IntArray, from: Int, w: Int, rows: Rows): Float {
+        val t = typed.size
+        if (w >= t && startsWith(word, from, typed)) return if (w == t) 1f else 0.85f + 0.1f * t / w
+        val limit = when (t) {
             in 0..3 -> return 0f
             in 4..7 -> 1
             else -> 2
         }
         // A short word is only taken for a mistyping of one that starts the same way.
-        if (typed.size <= 5 && typed.firstOrNull() != word.firstOrNull()) return 0f
-        val whole = slips(typed, word, limit)
-        if (whole <= limit) return if (whole == 1) 0.75f else 0.6f
-        // A mistyped start of a longer word: "masi" for "maisie".
+        if (t <= 5 && (w == 0 || typed[0] != word[from])) return 0f
+        // Too short to be the word with a slip or two, and shorter than what was typed, so
+        // no start of it is worth comparing either: most of a library's words, at no cost.
+        if (w < t - limit) return 0f
+        if (kotlin.math.abs(t - w) <= limit) {
+            val whole = run(typed, word, from, limit, w, rows)?.get(w) ?: (limit + 1)
+            if (whole <= limit) return if (whole == 1) 0.75f else 0.6f
+        }
+        // A mistyped start of a longer word: "masi" for "maisie". Windows compares the
+        // starts one, none and two characters past what was typed... or as long as the
+        // word less its last character.
+        val shortest = (t - 1).coerceAtLeast(0)
+        val longest = minOf(t + 1, (w - 1).coerceAtLeast(0))
         var best = limit + 1
-        val from = (typed.size - 1).coerceAtLeast(0)
-        val to = minOf(typed.size + 1, (word.size - 1).coerceAtLeast(0))
-        for (length in from..to) best = minOf(best, slips(typed, word, limit, length))
+        if (shortest <= longest) {
+            val last = run(typed, word, from, limit, longest, rows)
+            if (last != null) for (length in shortest..longest) if (last[length] < best) best = last[length]
+        }
         return when {
             best == 1 -> 0.4f
             best == 2 && limit == 2 -> 0.3f
@@ -143,9 +198,8 @@ object SearchRank {
         }
     }
 
-    private fun startsWith(word: IntArray, start: IntArray): Boolean {
-        if (start.size > word.size) return false
-        for (i in start.indices) if (word[i] != start[i]) return false
+    private fun startsWith(word: IntArray, from: Int, start: IntArray): Boolean {
+        for (i in start.indices) if (word[from + i] != start[i]) return false
         return true
     }
 
