@@ -89,29 +89,42 @@ fun StatsPage(route: Route.Stats) {
             Stats.page(period, library.songs, library.albums, library.artists, library.stamp.fetched, plays, playlists.value.orEmpty(), Stats.now())
         }
     }
-    Column(Modifier.fillMaxSize()) {
-        TitleBar(stringResource(R.string.your_stats), onBack = ui.navigator::back)
-        // The chips across the top; "All time" stays chosen for its finer choices.
-        val chips = listOf(R.string.stats_today, R.string.stats_week, R.string.stats_month, R.string.stats_all).map { stringResource(it) }
-        ChipRow(chips, selected = period.coerceAtMost(Stats.ALL), onChoose = { chosen -> if (chosen != period.coerceAtMost(Stats.ALL)) period = chosen })
-        val shown = page?.takeIf { snapshot != null }
-        if (period >= Stats.ALL && shown != null && shown.filters.isNotEmpty()) {
-            val names = shown.filters.map { filterName(res, it) }
-            ChipRow(names, selected = shown.filters.indexOfFirst { it.period == shown.period }.coerceAtLeast(0), onChoose = { chosen ->
+    // The chips scroll with the page: on a phone on its side, two rows of them standing
+    // still would leave the figures a strip.
+    val chips = listOf(R.string.stats_today, R.string.stats_week, R.string.stats_month, R.string.stats_all).map { stringResource(it) }
+    val shown = page?.takeIf { snapshot != null }
+    val filterNames = shown?.filters?.map { filterName(res, it) }.orEmpty()
+    val head: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
+        // "All time" stays chosen for its finer choices.
+        item(key = "periods", contentType = "chips") {
+            ChipRow(chips, selected = period.coerceAtMost(Stats.ALL), onChoose = { chosen -> if (chosen != period.coerceAtMost(Stats.ALL)) period = chosen })
+        }
+        if (period >= Stats.ALL && shown != null && shown.filters.isNotEmpty()) item(key = "filters", contentType = "chips") {
+            ChipRow(filterNames, selected = shown.filters.indexOfFirst { it.period == shown.period }.coerceAtLeast(0), onChoose = { chosen ->
                 val next = shown.filters[chosen].period
                 if (next != shown.period) period = next
             }, modifier = Modifier.padding(top = 8.dp))
         }
+    }
+    Column(Modifier.fillMaxSize()) {
+        TitleBar(stringResource(R.string.your_stats), onBack = ui.navigator::back)
         when {
-            snapshot == null && read -> PageStatus(PageState.Empty(stringResource(R.string.library_still_read), icon = R.drawable.ic_chart_no_axes_column))
-            shown == null -> SkeletonRows()
-            else -> StatsContent(shown, snapshot!!)
+            snapshot == null && read -> LazyColumn(Modifier.fillMaxSize()) {
+                head()
+                item(key = "reading") { Column(Modifier.fillMaxWidth().heightIn(min = 240.dp)) { PageStatus(PageState.Empty(stringResource(R.string.library_still_read), icon = R.drawable.ic_chart_no_axes_column)) } }
+            }
+            shown == null -> LazyColumn(Modifier.fillMaxSize()) {
+                head()
+                item(key = "loading") { SkeletonRows() }
+            }
+            // (Each period starts at its top, its rows at their starts: not where the last was.)
+            else -> androidx.compose.runtime.key(shown.period) { StatsContent(shown, snapshot!!, head) }
         }
     }
 }
 
 @Composable
-private fun StatsContent(page: Stats.Page, library: LibrarySnapshot) {
+private fun StatsContent(page: Stats.Page, library: LibrarySnapshot, head: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
     val ui = LocalUi.current
     val res = LocalResources.current
     val note = noteFor(res, page)
@@ -126,6 +139,7 @@ private fun StatsContent(page: Stats.Page, library: LibrarySnapshot) {
             },
         )
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            head()
             item(key = "empty") { Column(Modifier.fillMaxWidth().heightIn(min = 240.dp)) { PageStatus(PageState.Empty(empty, icon = R.drawable.ic_chart_no_axes_column)) } }
             if (note.isNotEmpty() && page.period >= Stats.ALL) item(key = "note") { Note(note) }
         }
@@ -139,6 +153,7 @@ private fun StatsContent(page: Stats.Page, library: LibrarySnapshot) {
     val context = stringResource(R.string.mix_top)
     val key = Route.Stats(page.period).key
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        head()
         item(key = "figures", contentType = "figures") { Figures(figures(res, page)) }
         if (note.isNotEmpty()) item(key = "note", contentType = "note") { Note(note) }
         if (page.artists.isNotEmpty()) item(key = "artists", contentType = "shelf") {
