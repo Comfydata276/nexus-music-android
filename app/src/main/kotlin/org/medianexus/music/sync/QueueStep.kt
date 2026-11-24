@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.medianexus.music.library.Arrange
 import org.medianexus.music.net.ApiError
@@ -113,7 +115,7 @@ object QueueShare {
  * Sharing the play queue and the place in it through the server's own saved-queue feature, as
  * the Windows app does: whichever device changed it last has the say; a device that's playing
  * keeps its own. The phone saves its queue under its own device name a few seconds after the
- * person changes it; asks the server for the saved queue at each look; takes it up, paused,
+ * person changes it, if nothing newer has happened meanwhile (see [upload]); asks the server for the saved queue at each look; takes it up, paused,
  * if another device saved it after anything was last done here and nothing is playing; and
  * otherwise, if another device has been playing in the last half hour, offers "Continue
  * here". It never starts playing by itself.
@@ -148,9 +150,17 @@ class QueueStep(
     private var soon: Job? = null
     @Volatile private var uploadedAt = 0L
 
+    /** The queue here is one taken up from another device, and nothing has been done to it
+     *  or played of it here since: it is that device's still, and is not this phone's to save. */
+    @Volatile private var tookUp = false
+
+    /** Saves take turns, in the order they were asked for. */
+    private val saving = Mutex()
+
     /** The queue changed here, by the person's doing: save it on the server once things have
      *  settled (Windows' `queue_changed_here`). */
     fun changedHere() {
+        tookUp = false
         if (!may()) return
         synchronized(this) {
             soon?.cancel()
@@ -164,14 +174,35 @@ class QueueStep(
     /** Playback has moved on within the same song: saved now and then, not at every note
      *  of it (each save sends the whole of the queue's ids again). */
     fun progressed() {
+        tookUp = false
         if (clock() - uploadedAt >= PROGRESS_SECONDS) changedHere()
     }
 
-    private suspend fun upload() {
-        if (!may()) return
-        val upload = withContext(main) { here?.upload() } ?: return
-        uploadedAt = clock()
+    /**
+     * Saves the queue as it stands, **if it is still the newest thing that happened**. One
+     * save at a time, in the order asked: two can't finish the wrong way round. And not:
+     *
+     * - a queue taken up from another device with nothing done to it here since (a save asked
+     *   for before it was taken up would otherwise pass that device's queue on as this
+     *   phone's own, changed now);
+     * - when another device has saved its queue since the change this save is for. The server
+     *   is asked immediately before, and its queue is left alone if it is another device's
+     *   and was saved after this phone's queue last changed (three seconds pass between a
+     *   change here and its save, and the save takes the server's clock for its time: it
+     *   would land on top of anything saved in between).
+     *
+     * Between that question and the save another device can still save, and be overwritten:
+     * the server has no way to make a save conditional (as for a playlist's edits).
+     */
+    private suspend fun upload() = saving.withLock {
+        if (!may() || tookUp) return@withLock
+        val (upload, changed) = withContext(main) { here?.let { it.upload() to it.stamp() } } ?: return@withLock
+        upload ?: return@withLock
         try {
+            val theirs = saved()
+            if (!may() || tookUp) return@withLock
+            if (theirs.songs.isNotEmpty() && theirs.changedBy != device() && QueueShare.changedAt(theirs) > changed) return@withLock
+            uploadedAt = clock()
             save(device(), upload)
         } catch (e: CancellationException) {
             throw e
@@ -203,8 +234,11 @@ class QueueStep(
             note(theirs, name, player?.currentId())
             if (player == null || !QueueShare.adopted(theirs, name, player.stamp(), player.playing())) return@withContext
             val (cursor, position) = QueueShare.place(theirs)
-            // Taken up: there's nothing left to offer.
-            if (player.replace(theirs.songs, cursor, position, QueueShare.changedAt(theirs), play = false)) offer.value = null
+            // Taken up: there's nothing left to offer, and it is not this phone's to save.
+            if (player.replace(theirs.songs, cursor, position, QueueShare.changedAt(theirs), play = false)) {
+                tookUp = true
+                offer.value = null
+            }
         }
     }
 

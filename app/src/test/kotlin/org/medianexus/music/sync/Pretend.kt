@@ -111,3 +111,25 @@ internal class PretendPhone(val root: File, val account: String, private val sco
         log.close().join()
     }
 }
+
+/** A pretend player for the tests of the shared queue: what it would save, when its queue
+ *  last changed, and every queue put in its place. */
+internal class PretendPlayer(var playing: Boolean = false, var current: String? = "mine", var stamp: Long = 0) : QueueHere {
+    var queue: QueueUpload? = QueueUpload(listOf("mine", "next"), "mine", 5_000)
+    val replaced = ArrayList<String>()
+
+    /** What `replace` answers: whether the player took the queue. */
+    var takes = true
+
+    override fun upload() = queue
+    override fun currentId() = current
+    override fun playing() = playing
+    override fun stamp() = stamp
+    override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, play: Boolean): Boolean {
+        if (!takes) return false
+        replaced += "${songs.map { it.id }} at $cursor, $positionMs ms, ${if (play) "playing" else "paused"}"
+        queue = QueueUpload(songs.map { it.id }, songs[cursor].id, positionMs)
+        this.stamp = stamp
+        return true
+    }
+}
