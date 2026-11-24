@@ -1580,6 +1580,91 @@ on Android 12 and 17, `scripts/measure`, and TalkBack read aloud (the names are 
 `scripts/emu ui`: "Drag to move <title>", Move up and Move down, "Leave selection",
 "Add <title> to this playlist").
 
+## The M3b fixes: what was checked
+
+(Offline playlist editing, checked above, was taken out in this round: see DESIGN.md, "What
+the M3b fixes decided".)
+
+**Unit tests**, each seen to fail first against the code it fixes, the order of events forced
+with gates where it matters:
+
+- `OnceTest` (real OkHttp, mockwebserver3): on a warm connection whose answer is dropped, the
+  playlist client (`Subsonic.once`) sends once where the ordinary client sends again; nothing
+  listening is "never sent".
+- `PlaylistsTest`, rewritten for the rules: nothing changeable or kept with the server not
+  there; one attempt for each outcome (done, refused, unconfirmed, never sent); a failure
+  dropping the changes behind it, said once; Undo as the reverse change behind the one it
+  undoes; the page as the server's copy plus what is waiting, never written into the kept
+  page; a fetch crossing a change; 70 taking the page and the Library row away; ownership
+  checked in the menu and again on the copy read before the write; the duplicate warning on a
+  fresh copy; **the known window** (the write held after its read, the playlist reversed by
+  the other device, the wrong song removed: documented, not fixed).
+- `SelectionTest`; `AutoplayTest` on a real Media3 ExoPlayer: Stop during a station's rejoin
+  wait, the player's own pause or autoplay switched off while autoplay's lookup is out;
+  `MenuLookupTest` through a real `MediaController` connected to the service's session (the
+  menus' Play threw from the lookup's thread); `CarRadioTest` (a station by its own id; one
+  gone is "not found").
+- E: `PlaylistEditTest` counts reads of the list for half of a 5,000-song playlist taken out
+  and put back (at most four reads of each song; the old code read 18,755,000 times) and
+  puts back beside the right copy of a neighbour; `PlaylistDragTest` (100,000 rows crossed of
+  200,000 in milliseconds; the old drag took seconds); `QueueTest` (the saved queue is the
+  queue at the tap, made into songs on another thread); `EnqueueArgsTest`.
+
+**E's numbers**, on the shape of `scripts/server longlist` (the library's 100 songs over and
+over, 5,000 in all), on this machine's JVM, medians of fifteen runs, before and after:
+
+| | Before | After |
+|---|---|---|
+| Drag one song over 4,999 rows | 10.8 ms | 0.32 ms |
+| Remove 2,500 of 5,000: the change made / the page shown with it / positions on the server's copy | 13.2 / 12.7 / 12.4 ms | 0.35 / 0.63 / 0.13 ms |
+| Put the 2,500 back: the change made / the page / carried out on the server's copy | 13.1 / 12.4 / 12.3 ms | 0.21 / 0.33 / 0.22 ms |
+| Save a queue of 50,000 as a playlist, on the main thread | 2.5 ms (every song made) | 0.06 ms (two arrays copied; the songs made off it in 0.22 ms) |
+| Queue 5,000 songs by hand, on the main thread | 2.3 ms written + 3.6 ms read | under 0.01 ms |
+
+On the Android 16 emulator, a six-second drag down the 5,000-song playlist, the build before
+E and with it: 359 and 353 frames, 3.3% and 4.3% janky, 50th percentile 27 and 25 ms, 90th 32
+and 32 ms, 95th 42 and 36 ms. The emulator's drawing hides the difference at this size; the
+counts above are what changed.
+
+**On the Android 16 emulator** (`phone36`), debug build, the test server, the other device
+being `scripts/server api`; pictures in `~/.cache/nexus-music-android/shots/m3b/` (`fix-*`):
+
+- "Save queue as playlist" made "Fix round" on the server with the queue's eleven songs.
+- The other device added Nordlys; the phone, showing its older copy, removed Hollow Ladder:
+  the server lost Hollow Ladder and kept Nordlys, and the page caught up. A removal undone
+  from its toast was put back in its place on the server.
+- Drag: Glass Avenue dragged down the 5,000-song list landed on the server where it was
+  dropped.
+- **A black hole mid-request**, with a relay of the test's own between the emulator and the
+  server that logs each call's name and, once a playlist write has gone through it, swallows
+  the answers on that connection (the server's own log records no API calls at its level):
+  one `getPlaylist`, one `updatePlaylist` that reached the server, no second; after 30 s
+  "Couldn't confirm that change. Check the playlist.", the playlist read again, the song gone
+  once on the server and from the page. With `scripts/slowlink hole` from before the change
+  (the read itself swallowed): after 34 s "Couldn't reach your server. The playlist wasn't
+  changed.", the server unchanged. (In one run of four, a change made just after switching
+  to the hole reached the server and was reported done; I could not tell how it got through.
+  The app's report matched the server.)
+- **The link cut** (`scripts/slowlink cut`): no drag handles; "Remove from this playlist",
+  Rename and "Add to playlist" each said "Playlists can only be changed while your server can
+  be reached." (The first run found Remove simply missing and Add to playlist opening its list
+  first: put right in `f84387c`.)
+- Selection: two rows chosen, the other device changed the playlist, a pull to refresh: the
+  selection was gone.
+- The collection menus: an album card's Play next, Add to queue and Play, and a playlist
+  header's Add to queue and Play (from Lullaby, as drawn): no crash, each did what it said.
+- **Stop during a station's rejoin**: a station of the test's own on this machine; the stream
+  stopped and a listener put in its place that logs each connection and closes it. Without
+  Stop, the attempts came at the drop (+13.7 s, when the player's buffer ran out), then 1, 2,
+  4 and 8 s apart. With Stop sent as soon as the first two were logged: none after it in 25 s.
+  (Without Stop, after the four rejoins the app's general "Lost the connection to the server"
+  wait takes over and keeps trying, 20 times in a minute: not changed here.)
+- Sleep timer "End of this song" on Short songs' last song, autoplay on and its songs already
+  queued behind it: paused at the song's end and nothing played or was reported after it.
+- Recommended under Fix round: Idle Engine added; the tick came once the server had it.
+- D1: the drag handle ends at x=979 and the fast-scroll strip starts at 990 (default size), 972
+  and 984 at 360dp with 1.3 font.
+
 ## Sound and lyrics (M4a)
 
 **Songs of its own, on a server of its own.** The ordinary server keeps its hundred songs.

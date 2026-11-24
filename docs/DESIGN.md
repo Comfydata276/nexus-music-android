@@ -1406,7 +1406,7 @@ simplest form (described where it belongs above). What had to be decided on the 
   (Windows' `edit_playlist`: read the playlist, remove by the positions the songs have now, or
   replace it with the reordered list). Additions go as Subsonic's `songIdToAdd`, renames and
   deletions as such, a new playlist as `createPlaylist`.
-- **Offline: held, and sent in order, like a like** (decided; Windows has no offline editing,
+- **Offline: held, and sent in order, like a like** (*reversed in the M3b fixes*: see below; Windows has no offline editing,
   and fails with its error). Every change to a playlist goes through the account's one ordered
   sender (`Pending.PlaylistChange` in `held.json`), so playlist changes and likes, ratings and
   plays all keep their order, and a change made in a dead spot is not lost. Because a change
@@ -1415,12 +1415,12 @@ simplest form (described where it belongs above). What had to be decided on the 
   isn't made offline** (the server gives it its id): "You're offline. A new playlist is made
   on your server, so try again when you're back online." What can be edited offline is what
   Library shows offline: the playlists on the phone.
-- **What is held wins over what the server says**: a playlist is shown as the server last
+- **What is held wins over what the server says** (*replaced in the M3b fixes*): a playlist is shown as the server last
   sent it with every change still on its way carried out on top, in order (`Playlists.onTop`,
   applied to every copy fetched, through `Library.playlistShown`). A fetch of a playlist and
   the sending of a change to it take turns, and a change is marked sent before its turn is
   let go, so no copy shows a change twice.
-- **What can't be promised**, as for plays: Subsonic has no way to make a change safe to send
+- **What can't be promised** (*no longer so: a change is now sent once*), as for plays: Subsonic has no way to make a change safe to send
   twice. Killed in the instant between the server taking a change and the phone recording it,
   the app sends it again: a move comes to the same thing; a removal of one of several copies of
   a song takes out another; songs added are added twice.
@@ -1467,6 +1467,76 @@ simplest form (described where it belongs above). What had to be decided on the 
 - **"Save queue as playlist"** (the queue sheet's heading): what is playing and everything
   after it, read from the service's own queue in the same process (`QueueNow`), not only the
   part the sheet shows.
+
+### What the M3b fixes decided
+
+A review of M3b found that holding playlist changes for later could spoil a playlist changed
+elsewhere meanwhile, that a change could be sent twice, and that what a page showed could
+be a copy the phone had written itself. These are the rules now.
+
+- **A playlist is changed only with the server there, and a change is never kept for later**
+  (`library/Playlists.kt`). Offline, or with the server not known to be reachable (a check
+  must have succeeded: `reach.sure`), every change is unavailable and says so when tapped:
+  "Playlists can only be changed while your server can be reached." (Add to playlist says
+  it before its list opens; the drag handles aren't offered at all, as a drag can't say
+  anything.) A change waits only in memory, behind the earlier changes to the same playlist,
+  and goes with the process. *Why the reversal*: a change held for an hour is worked out on
+  the playlist as it is an hour later, by which time the person has forgotten it and someone
+  else may have rearranged the list; and while it was held, the page showed a copy the
+  phone had written, not the server's. Windows never edits offline either. Nothing held in
+  `held.json` was ever a playlist change on an installed build (0.3.0 had none), so there is
+  nothing old to drop. Likes, ratings and plays are still held, as before.
+- **One attempt.** A playlist change goes out on a client with OkHttp's retry switched off
+  (`Subsonic.once`), so it is written once. It ends one of four ways: done; refused by the
+  server ("That didn't save. …"); unconfirmed (written, no answer: "Couldn't confirm that
+  change. Check the playlist.", and the playlist is read again); or provably never sent (the
+  connection was never made, or the read before it failed: "Couldn't reach your server. The
+  playlist wasn't changed.").
+- **A change that fails, or can't be confirmed, drops every change to that playlist waiting
+  behind it**, unsent, reads the playlist again, and says so once. Undo is the reverse change,
+  waiting behind the one it undoes, under the same rule.
+- **What a page shows is the server's copy with the changes still waiting on top**
+  (`Playlists.shown`), worked out each time it is drawn and never written into the kept
+  page: the kept page holds only what the server sent. A fetch and a change to the same
+  playlist take turns (one lock per playlist); a done change leaves the waiting list only once
+  the server's copy with it in has been kept, so it is never shown twice nor missing for a
+  frame. The server saying a playlist is gone (70) takes its page and its Library row away,
+  and says so ("That playlist is no longer on your server.").
+- **The accepted window** (A5). Subsonic can't make a write conditional on what was read, so
+  the playlist is read immediately before the write, with nothing between them but checking
+  it is still the account's and working out positions (one pass along it). A change another
+  device makes in that instant can be overwritten, or a removal can land on the song that has
+  moved into the position. Windows has the same window. `PlaylistsTest.aChangeElsewhere…
+  IsTheKnownWindow` holds the write after the read, changes the playlist, and shows the result.
+- **Whose it is, positively**: a playlist can be changed only when the account is known to own
+  it (the owner is the account, or the server didn't say, and it isn't `readonly`); checked in
+  the menus and again on the copy read just before the write.
+- **Adding**: the "already in this playlist" question is asked of a fresh copy from the
+  server; Recommended's tick appears only once the server has the song, and Recommended is
+  cleared when the server is out of reach.
+- **A selection belongs to the list it was made on** (`rememberSelection`, by the list's
+  identity): a refresh, another search answer, another order or find, another account, or
+  leaving the page drops it, so what is done to it is done to the rows that were ticked.
+- **Nothing starts music after the person stops it.** The player keeps one counter
+  (`QueuePlayer.intent`) that every pause, stop, sleep-timer pause, loss of audio focus and new
+  choice moves on, read on the player's thread; a station's rejoin and autoplay's songs each
+  note it when asked for and act only if it hasn't moved. A station is also stopped when
+  offline mode is switched on. (The rejoin's 1, 2, 4, 8 seconds are unchanged.)
+- **The collection menus** (an album's, artist's or playlist's Play, Play next, Add to queue)
+  look the songs up away from the main thread and act on the main thread, only if nothing
+  else was chosen and the account is the same (`PlayerConnection.afterLookup`); opened from a
+  page, they use what the page drew. **In the car**, a station is chosen by its own id; one no
+  longer there is "not found", never another lineup.
+- **Touch**: the drag handles keep clear of the fast-scroll strip (the row ends where the strip
+  begins, on any list long enough to have one); after a drop, the rows stay in the new order
+  until the playlist has it, so a tap plays what is on screen.
+- **Big lists cost what one song costs**: a drag is the playlist with one song moved (where it
+  was, where it is), so a row crossed changes one number; taking out, finding and putting back
+  many songs go along the list once; "Save queue as playlist" copies two arrays on the main
+  thread and makes the songs off it; songs queued by hand are left for the player (`Drawn`),
+  not written out and read back. Songs put back by Undo each go after a song that stayed
+  (Windows: after the one put back before it), which is what lets them go in on one pass, and
+  keeps them beside their own neighbour if someone added another copy of it meanwhile.
 
 ## Working with the Windows app
 
