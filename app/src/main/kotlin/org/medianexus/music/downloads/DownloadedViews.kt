@@ -30,7 +30,8 @@ data class DownloadedPlaylist(val list: DownloadedList, val songs: List<Song>)
 object DownloadedViews {
     /** Playlists and Liked songs downloaded whole, Liked songs first, then by name. */
     fun playlists(state: DownloadsState): List<DownloadedPlaylist> =
-        state.collections.filter { it.isPlaylist }
+        // (Never the playlist the app keeps what it shares between devices in.)
+        state.collections.filter { it.isPlaylist && it.name != org.medianexus.music.sync.PLAYLIST_NAME }
             .sortedWith(compareBy({ it.key != "liked" }, { it.name.lowercase() }))
             .map { list -> DownloadedPlaylist(list, list.songs.mapNotNull { state.downloaded[it]?.song }) }
 

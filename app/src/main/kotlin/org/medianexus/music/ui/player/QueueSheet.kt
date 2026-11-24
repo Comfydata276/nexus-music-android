@@ -159,6 +159,7 @@ private fun QueueList() {
         if (step != 0f) scope.launch { dragOffset += list.scrollBy(step) }
     }
 
+    val elsewhere by (ui.account?.queueStep?.elsewhere ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsStateWithLifecycle()
     val nextInQueue = stringResource(R.string.next_in_queue)
     val nextFrom = if (upNext.context.isEmpty()) stringResource(R.string.next_up) else stringResource(R.string.next_from, upNext.context)
     val moveUp = stringResource(R.string.move_up)
@@ -177,6 +178,11 @@ private fun QueueList() {
                     ui.saveQueueAsPlaylist(org.medianexus.music.playback.QueueNow.fromNowOn())
                 })
             }
+        }
+        // Another device has been playing since this one did anything: offer to pick it up
+        // where it had got to (Windows' queue panel has the same card, in the same words).
+        elsewhere?.let { there ->
+            item(key = "elsewhere", contentType = "elsewhere") { ElsewhereCard(there) { ui.account?.queueStep?.continueHere() } }
         }
         val now = song
         if (now == null) {
@@ -254,6 +260,28 @@ private fun QueueList() {
 
 /** Whether a list key is one of the queue's own rows. */
 private fun isRowKey(key: Any): Boolean = key is String && (key == "gap" || (key.length > 1 && key[0] == 'u'))
+
+/** What another device has been playing, and "Continue here" (Windows' card in its queue
+ *  panel: `Player.elsewhere`). */
+@Composable
+private fun ElsewhereCard(there: org.medianexus.music.sync.Elsewhere, onContinue: () -> Unit) {
+    val colors = Theme.colors
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
+            .background(colors.raised, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .padding(start = 12.dp, end = 4.dp).heightIn(min = 56.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+            BasicText(stringResource(R.string.playing_elsewhere), style = Theme.type.caption.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            BasicText(
+                if (there.artist.isEmpty()) there.title else stringResource(R.string.elsewhere_song, there.title, there.artist),
+                style = Theme.type.rowDetail.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        LinkText(stringResource(R.string.continue_here), onContinue, color = colors.accentBright)
+    }
+}
 
 @Composable
 private fun Heading(text: String, action: String? = null, onAction: () -> Unit = {}) {

@@ -141,7 +141,9 @@ class Playlists(
 
     /** Whether this account may change `playlist`: one the server says is the account's, and
      *  not one Navidrome calls read-only. One whose owner isn't given is not taken to be. */
-    fun canEdit(playlist: Playlist): Boolean = !playlist.readonly && playlist.owner.isNotEmpty() && playlist.owner.equals(username, ignoreCase = true)
+    fun canEdit(playlist: Playlist): Boolean = !playlist.readonly && playlist.owner.isNotEmpty() && playlist.owner.equals(username, ignoreCase = true) &&
+        // (Never the playlist the app keeps what it shares between devices in.)
+        playlist.name != org.medianexus.music.sync.PLAYLIST_NAME
 
     /** A playlist as the page shows it: as kept, or with the change on its way carried out (if
      *  it was made on this very copy, or adds songs at the end). */
@@ -285,7 +287,6 @@ class Playlists(
                 is Change.Append -> {
                     val songIds = change.songs.map { it.id }
                     server.addToPlaylist(id, songIds)
-                    added?.record(id, songIds, clock() / 1000)
                 }
                 is Change.Remove -> server.removeManyFromPlaylist(id, change.rows)
                 is Change.Order -> server.replacePlaylist(id, change.songs.map { it.id })
@@ -300,6 +301,9 @@ class Playlists(
                 }
                 else -> {
                     val after = applied(now!!, change)
+                    // The person's own change: the songs it added or took out are dated now,
+                    // for other devices too (before the page is told, which only notices).
+                    added?.changed(id, now.songs.map { it.id }, after.songs.map { it.id }, clock() / 1000)
                     pages.put(playlistSpec(id), after)
                     if (!flight.undo && (change is Change.Remove || change is Change.Order)) {
                         synchronized(lock) { lastUndo.value = PlaylistUndo(id, after, now.songs, clock()) }

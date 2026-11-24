@@ -103,6 +103,16 @@ data class Settings(
     /** When the pins and the theme were last changed, to settle which device's are newer. */
     val pinsAt: Long = 0,
     val themeAt: Long = 0,
+    /** Which account the choices that are shared between devices belong to (its storage
+     *  key): the pins and their time, each list's choices, the theme's time and the sync
+     *  playlist's id. They are shared into that account's record and no other's: when
+     *  another account is taken on they are put away with the one they belong to, and that
+     *  account's own brought out (see `sync/Belongs.kt`). Empty until an account first is. */
+    val sharedFor: String = "",
+    /** The theme showing was chosen under the account in `sharedFor`, or came from its
+     *  record. False when it is only what the phone was left showing by another account:
+     *  then the phone has nothing to say about the theme to this account's other devices. */
+    val themeOwn: Boolean = true,
 
     // ---- The phone's own ----
     /** Android 17's local-network permission was refused and the system won't ask again:

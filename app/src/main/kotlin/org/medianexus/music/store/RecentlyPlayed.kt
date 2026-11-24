@@ -60,6 +60,10 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
         if (early) save()
     }
 
+    /** Told when a song that started playing here went into the list: worth passing on to
+     *  the person's other devices. */
+    @Volatile var changedHere: () -> Unit = {}
+
     /** A song has started playing. */
     fun played(song: Song) {
         if (song.id.isEmpty()) return
@@ -74,7 +78,44 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
                 (listOf(Played(song, now())) + list).take(HISTORY_LENGTH)
             }
         }
+        if (changed) {
+            save()
+            changedHere()
+        }
+    }
+
+    /** Whether the list on the phone has been read ([open]): before it has, what is here is
+     *  not the account's history, and is neither shared with other devices nor merged. */
+    val isOpen: Boolean get() = opened
+
+    /**
+     * Takes in what other devices have played (the history part of Windows' `take_shared`):
+     * both devices' plays, in order ([org.medianexus.music.sync.Merge.mergeHistory]).
+     * `songsOf` gives the songs for ids this phone hasn't met; a play whose song can't be had
+     * is left out here, as on Windows (it stays in the shared record). Returns whether
+     * anything changed. Nothing before the list on the phone has been read.
+     */
+    suspend fun take(theirs: List<org.medianexus.music.sync.Play>, songsOf: suspend (List<String>) -> Map<String, Song>): Boolean {
+        if (!opened) return false
+        fun plays(list: List<Played>) = list.map { org.medianexus.music.sync.Play(it.song.id, it.at) }
+        val before = songs.value
+        val merged = org.medianexus.music.sync.Merge.mergeHistory(plays(before), theirs)
+        if (merged == plays(before)) return false
+        val known = HashMap<String, Song>()
+        for (played in before) known.putIfAbsent(played.song.id, played.song)
+        val unmet = merged.map { it.song }.filter { it !in known }.distinct()
+        if (unmet.isNotEmpty()) known.putAll(songsOf(unmet))
+        var changed = false
+        songs.update { now ->
+            // (Something may have started playing while the songs were looked up: merged
+            // with what is here now, so that isn't lost.)
+            for (played in now) known.putIfAbsent(played.song.id, played.song)
+            val list = org.medianexus.music.sync.Merge.mergeHistory(plays(now), theirs).mapNotNull { play -> known[play.song]?.let { Played(it, play.at) } }
+            changed = list != now
+            if (changed) list else now
+        }
         if (changed) save()
+        return changed
     }
 
     private fun save() {
@@ -109,17 +150,9 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
 
         /** Puts plays from two devices into one list, newest first (Windows' `merge_history`):
          *  the same play once, the same song twice running as one stretch of listening, the
-         *  newest hundred. */
-        fun mergeHistory(a: List<Pair<String, Long>>, b: List<Pair<String, Long>>): List<Pair<String, Long>> {
-            val all = (a + b).sortedWith(compareByDescending<Pair<String, Long>> { it.second }.thenBy { it.first })
-            val out = ArrayList<Pair<String, Long>>()
-            for (play in all) {
-                val last = out.lastOrNull()
-                if (last == play) continue
-                if (last != null && last.first == play.first) continue
-                out += play
-            }
-            return out.take(HISTORY_LENGTH)
-        }
+         *  newest hundred. (The one port of it is [org.medianexus.music.sync.Merge].) */
+        fun mergeHistory(a: List<Pair<String, Long>>, b: List<Pair<String, Long>>): List<Pair<String, Long>> =
+            org.medianexus.music.sync.Merge.mergeHistory(a.map { org.medianexus.music.sync.Play(it.first, it.second) }, b.map { org.medianexus.music.sync.Play(it.first, it.second) })
+                .map { it.song to it.at }
     }
 }

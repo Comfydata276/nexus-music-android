@@ -640,8 +640,15 @@ class QueuePlayer(
 
     // ---- Shuffle and repeat ---------------------------------------------------------------
 
+    /** How many times shuffle has been changed for what is playing: only ever by someone
+     *  pressing its button (the app's, the notification's, a car's), which is here. The
+     *  service remembers the choice for the list being played when this moves on. */
+    var shufflePresses = 0L
+        private set
+
     fun setShuffle(on: Boolean) {
         if (queue.shuffle == on) return
+        shufflePresses++
         queue.setShuffle(on, random)
         sync()
         invalidateState()

@@ -48,10 +48,37 @@ class Library(
 
     // ---- Playlists ------------------------------------------------------------------------
 
-    fun playlists() = PageSpec("playlists", ListSerializer(Playlist.serializer())) { api.playlists() }
+    /**
+     * The account's playlists, **without the one the app keeps what it shares between devices
+     * in** ("Nexus Music sync": see sync/InStep.kt), which isn't one to listen to. Everything
+     * that lists playlists reads this page (Library, the car, search, the playlist picker,
+     * Your stats, spoken requests), so it is left out here once: of what the server sends,
+     * and of a copy kept on the phone by a version that didn't know of it ([Listed]).
+     */
+    fun playlists() = PageSpec("playlists", Listed) { api.playlists().filter { it.name != org.medianexus.music.sync.PLAYLIST_NAME } }
 
-    /** One playlist with its songs. */
-    fun playlist(id: String) = PageSpec("playlist:$id", Playlist.serializer()) { playlistShown(id) { api.playlist(id) } }
+    /** One playlist with its songs. The one that holds the shared record is "not found",
+     *  asked for by its id from anywhere: it is never shown, played, downloaded or changed. */
+    fun playlist(id: String) = PageSpec("playlist:$id", Opened) {
+        playlistShown(id) { api.playlist(id).also { if (it.name == org.medianexus.music.sync.PLAYLIST_NAME) throw org.medianexus.music.net.ApiError.Server(70, "") } }
+    }
+
+    /** A list of playlists as kept on the phone, read without the sync playlist. */
+    private object Listed : kotlinx.serialization.KSerializer<List<Playlist>> {
+        private val all = ListSerializer(Playlist.serializer())
+        override val descriptor = all.descriptor
+        override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: List<Playlist>) = all.serialize(encoder, value)
+        override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): List<Playlist> = all.deserialize(decoder).filter { it.name != org.medianexus.music.sync.PLAYLIST_NAME }
+    }
+
+    /** A playlist as kept on the phone: a kept copy of the sync playlist is as good as none. */
+    private object Opened : kotlinx.serialization.KSerializer<Playlist> {
+        private val one = Playlist.serializer()
+        override val descriptor = one.descriptor
+        override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: Playlist) = one.serialize(encoder, value)
+        override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): Playlist =
+            one.deserialize(decoder).also { if (it.name == org.medianexus.music.sync.PLAYLIST_NAME) throw kotlinx.serialization.SerializationException("not a playlist to show") }
+    }
 
     /** How a playlist is read from the server: set by the account to its playlists'
      *  `fetched`, so that a read takes turns with a change being made to it. */

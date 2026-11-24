@@ -1,0 +1,405 @@
+package org.medianexus.music.sync
+
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.medianexus.music.net.ApiError
+import org.medianexus.music.net.Playlist
+
+/**
+ * The exchange of the shared record with the server, and the rules that keep the person's
+ * PCs safe from the phone (docs/DESIGN.md, "In step with other devices"). The server here is
+ * a pretend one that counts every question and every write.
+ */
+class InStepTest {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+    @After
+    fun stop() = scope.cancel()
+
+    /** A server's playlists, and everything asked of it. */
+    private class Server(val owner: String = "tester") : StepServer {
+        val lists = LinkedHashMap<String, Playlist>()
+        var reads = 0
+        var listed = 0
+        val writes = ArrayList<Pair<String, String>>()
+        val made = ArrayList<String>()
+        private var next = 100
+
+        /** Held before each call goes through, by the tests that interleave two devices. */
+        var gate: suspend (what: String) -> Unit = {}
+
+        /** A write that reaches the server and gets no answer. */
+        var loseAnswers = 0
+
+        fun put(id: String, comment: String, name: String = PLAYLIST_NAME, by: String = owner) {
+            lists[id] = Playlist(id = id, name = name, comment = comment, owner = by)
+        }
+
+        fun comment(id: String) = lists.getValue(id).comment
+
+        override suspend fun playlists(): List<Playlist> {
+            gate("list")
+            listed++
+            return lists.values.map { it.copy(comment = "") }
+        }
+
+        override suspend fun playlist(id: String): Playlist {
+            gate("read")
+            reads++
+            return lists[id] ?: throw ApiError.Server(70, "not found")
+        }
+
+        override suspend fun create(name: String): Playlist {
+            gate("make")
+            val id = "new${next++}"
+            made += id
+            put(id, "", name)
+            return lists.getValue(id)
+        }
+
+        override suspend fun setComment(id: String, comment: String) {
+            gate("write")
+            if (lists[id]?.owner?.lowercase() != owner.lowercase()) throw ApiError.Server(50, "not yours")
+            lists[id] = lists.getValue(id).copy(comment = comment)
+            writes += id to comment
+            if (loseAnswers > 0) {
+                loseAnswers--
+                throw ApiError.Network("The connection dropped.")
+            }
+        }
+
+        fun asked() = reads + listed + writes.size + made.size
+    }
+
+    /** A device: what it holds, as one record. Taking in is Windows' rule (the newer). */
+    private class Device(var holds: Shared?) : StepPhone {
+        override var playlist = ""
+        val took = ArrayList<Shared>()
+
+        /** Run as the exchange takes in what came back: a change made here meanwhile. */
+        var meanwhile: () -> Unit = {}
+
+        override suspend fun record(): Shared? = holds
+
+        override suspend fun take(theirs: Shared) {
+            meanwhile()
+            took += theirs
+            val mine = holds ?: return
+            // As the phone's own stores take it: each part only where theirs is newer.
+            holds = Merge.merge(mine, theirs, NOW)
+        }
+    }
+
+    private fun step(server: Server, device: Device, may: () -> Boolean = { true }, notes: MutableList<String> = ArrayList(), account: String = "acct-${System.nanoTime()}", pause: suspend (Long) -> Unit = {}) =
+        InStep(server, device, username = "Tester", account = account, may = may, scope = scope, clock = { NOW }, pause = pause, note = { notes += it })
+
+    private fun text(shared: Shared) = SharedText.write(shared)
+
+    private val pc = Shared(
+        layout = 1, pins = listOf("p1", "p2"), pinsAt = 1_700_000_000, theme = "Ember", themeAt = 1_700_000_100,
+        lists = mapOf("playlist:p1" to SharedPrefs(shuffle = true, sort = 3u, descending = true, sortChosen = true, at = 1_700_000_200)),
+        added = mapOf("p1" to mapOf("s1" to SharedNote(listOf(1_700_000_300), 1_700_000_300))),
+        history = listOf(Play("s2", 1_700_000_500), Play("s1", 1_700_000_400)),
+        plays = listOf(Play("s2", 1_700_000_500), Play("s1", 1_700_000_400)),
+        playSources = listOf(PlayFrom("s1", 1_700_000_400, "playlist:p1")),
+    )
+
+    /** A phone freshly installed, everything read and nothing in any of it. */
+    private val nothing = Shared(layout = 1)
+
+    // ---- rule 2: never before it has loaded ----------------------------------------------------
+
+    @Test
+    fun anExchangeAskedForBeforeThePhoneHasReadItsOwnSendsNothing() = runBlocking {
+        val server = Server().apply { put("a", text(pc)) }
+        val device = Device(holds = null)
+        assertEquals(InStep.Outcome.NOT_READ_YET, step(server, device).exchange())
+        // Not a question, not a write: an empty list that means "not read yet" never leaves.
+        assertEquals(0, server.asked())
+        assertEquals(text(pc), server.comment("a"))
+        assertTrue(device.took.isEmpty())
+    }
+
+    // ---- the case that matters most ----------------------------------------------------------
+
+    @Test
+    fun aFreshPhoneLeavesThePCsRecordExactlyAsItIs() = runBlocking {
+        // The text as the Windows app itself wrote it (its own order of fields and maps).
+        val windows = """{"nexus_music_sync":1,"pins":["p1","p2"],"pins_at":1700000000,"theme":"Ember","theme_at":1700000100,"lists":{"playlist:p1":{"shuffle":true,"sort":3,"descending":true,"sort_chosen":true,"at":1700000200},"liked":{"shuffle":false,"sort":5,"descending":true,"sort_chosen":true,"at":1700000250}},"added":{"p1":{"s9":{"times":[],"at":1794000000},"s1":{"times":[1700000300],"at":1700000300}}},"history":[["s2",1700000500],["s1",1700000400]],"plays":[["s2",1700000500],["s1",1700000400]],"play_sources":[["s1",1700000400,"playlist:p1"]]}"""
+        val server = Server().apply { put("a", windows) }
+        val device = Device(holds = nothing)
+        assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
+        assertTrue("nothing was written", server.writes.isEmpty())
+        assertEquals(windows, server.comment("a"))
+        // And the phone has taken in what the PC had.
+        assertEquals(listOf("p1", "p2"), device.holds!!.pins)
+        assertEquals("Ember", device.holds!!.theme)
+        // Again, now that it holds it: still nothing to write.
+        assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
+        assertTrue(server.writes.isEmpty())
+    }
+
+    // ---- rule 4: what it doesn't understand is preserved ---------------------------------------
+
+    @Test
+    fun aCommentThatIsNotARecordIsLeftAloneAndSaidInDiagnostics() = runBlocking {
+        for (comment in listOf("My sync playlist, do not delete", """{"nexus_music_sync":1,"pins":["a","b""", """{"pins":null}""", "null", """{"nexus_music_sync":4294967296}""")) {
+            val server = Server().apply { put("a", comment) }
+            val notes = ArrayList<String>()
+            val device = Device(holds = pc)
+            assertEquals(comment, InStep.Outcome.UNREADABLE, step(server, device, notes = notes).exchange())
+            assertTrue("nothing was written over: $comment", server.writes.isEmpty())
+            assertEquals(comment, server.comment("a"))
+            assertTrue(device.took.isEmpty())
+            assertEquals(1, notes.size)
+            // (The line says what happened and nothing of what the comment held.)
+            assertFalse(notes[0].contains("sync playlist") || notes[0].contains("pins"))
+        }
+    }
+
+    @Test
+    fun aRecordInALaterLayoutIsReadAndNeverWritten() = runBlocking {
+        val later = """{"nexus_music_sync":2,"pins":["z"],"pins_at":1790000000,"shape":{"of":"things to come"}}"""
+        val server = Server().apply { put("a", later) }
+        val device = Device(holds = pc)
+        assertEquals(InStep.Outcome.NEWER_LAYOUT, step(server, device).exchange())
+        assertTrue(server.writes.isEmpty())
+        assertEquals(later, server.comment("a"))
+        // What is understood of it is taken in (as Windows does).
+        assertEquals(listOf("z"), device.holds!!.pins)
+    }
+
+    @Test
+    fun fieldsThisVersionDoesNotKnowAreWrittenBackAsTheyWere() = runBlocking {
+        val server = Server().apply { put("a", """{"nexus_music_sync":1,"devices":{"pc":[1,2.50,{"x":null}]},"pins":[],"pins_at":0,"note":"later"}""") }
+        val device = Device(holds = pc)
+        assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
+        val wrote = server.writes.single().second
+        assertTrue(wrote, wrote.endsWith(""","devices":{"pc":[1,2.50,{"x":null}]},"note":"later"}"""))
+        assertEquals(pc, SharedText.read(wrote)!!.copy(unknown = emptyList()))
+    }
+
+    // ---- rule 7: the playlist that holds the record ----------------------------------------------
+
+    @Test
+    fun thePlaylistIsFoundByNameAndOwnerTheLowestIdOfSeveral() = runBlocking {
+        val server = Server().apply {
+            put("zz", text(Shared(layout = 1, pins = listOf("wrong"), pinsAt = 5)))
+            put("b2", text(pc))
+            put("a9", "someone else's", by = "guest")
+            put("b1", "", name = "Nexus Music sync 2")
+            put("c1", "not it", name = "Road trip")
+        }
+        val device = Device(holds = nothing)
+        assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
+        assertEquals("b2", device.playlist)
+        assertTrue(server.made.isEmpty())
+        assertEquals(listOf("p1", "p2"), device.holds!!.pins)
+    }
+
+    @Test
+    fun aKnownPlaylistThatIsNoLongerTheRecordIsLookedForAgain() = runBlocking {
+        val server = Server().apply {
+            put("old", text(pc), name = "Renamed by another app")
+            put("yours", "", by = "guest")
+            put("b2", text(pc))
+        }
+        // Remembered from before; renamed since. And one remembered that is someone else's.
+        for (known in listOf("old", "yours", "gone")) {
+            val device = Device(holds = nothing).apply { playlist = known }
+            assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
+            assertEquals("b2", device.playlist)
+        }
+        assertTrue(server.made.isEmpty() && server.writes.isEmpty())
+    }
+
+    @Test
+    fun thePlaylistIsMadeOnlyWhenTheServerSaysThereIsNoneAndSharingIsOn() = runBlocking {
+        // None there: made, and the record written into it.
+        val server = Server().apply { put("c1", "not it", name = "Road trip") }
+        val device = Device(holds = pc)
+        assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
+        assertEquals(1, server.made.size)
+        assertEquals(pc, SharedText.read(server.comment(server.made[0])))
+        // Sharing off, or the server out of reach: nothing is asked, read, made or written.
+        val quiet = Server()
+        assertEquals(InStep.Outcome.NOT_NOW, step(quiet, Device(holds = pc), may = { false }).exchange())
+        assertEquals(0, quiet.asked())
+        // Switched off while the server was being asked what it has: not made.
+        var on = true
+        val late = Server().apply { gate = { if (it == "list") on = false } }
+        assertEquals(InStep.Outcome.NOT_NOW, step(late, Device(holds = pc), may = { on }).exchange())
+        assertTrue(late.made.isEmpty() && late.writes.isEmpty())
+        // The list of playlists can't be had: nothing is made on the strength of that.
+        val down = Server().apply { gate = { if (it == "list") throw ApiError.Network("The connection timed out.") } }
+        assertEquals(InStep.Outcome.FAILED, step(down, Device(holds = pc)).exchange())
+        assertTrue(down.made.isEmpty())
+    }
+
+    // ---- a write with no answer ------------------------------------------------------------------
+
+    @Test
+    fun aWriteThatGetsNoAnswerIsSafeToMakeAgain() = runBlocking {
+        val server = Server().apply { put("a", text(pc.copy(pins = listOf("old"), pinsAt = 5))) }
+        val device = Device(holds = pc)
+        val step = step(server, device)
+        // It reached the server; the phone never heard.
+        server.loseAnswers = 1
+        assertEquals(InStep.Outcome.FAILED, step.exchange())
+        val after = server.comment("a")
+        // Again: the server already has it, so there is nothing to write, and it is the same.
+        assertEquals(InStep.Outcome.DONE, step.exchange())
+        assertEquals(1, server.writes.size)
+        assertEquals(after, server.comment("a"))
+        assertEquals(pc, SharedText.read(after))
+    }
+
+    // ---- rule 6: one at a time, nothing lost, nothing stale ------------------------------------------
+
+    @Test
+    fun aSecondExchangeWaitsForNothingAndAnotherFollowsTheFirst() = runBlocking {
+        val server = Server().apply { put("a", text(nothing)) }
+        val device = Device(holds = pc)
+        val held = CompletableDeferred<Unit>()
+        val reached = CompletableDeferred<Unit>()
+        server.gate = { if (it == "write") { reached.complete(Unit); held.await() } }
+        var followed = 0
+        val step = step(server, device, account = "one-at-a-time", pause = { followed++ })
+        val first = async { step.exchange() }
+        reached.await()
+        // Asked for while the first is out: it does nothing itself...
+        assertEquals(InStep.Outcome.BUSY, step.exchange())
+        // ...and nor does another of this account's objects (signed out and straight back in).
+        assertEquals(InStep.Outcome.BUSY, step(server, Device(holds = pc), account = "one-at-a-time").exchange())
+        assertEquals(0, followed)
+        held.complete(Unit)
+        assertEquals(InStep.Outcome.DONE, first.await())
+        // ...but one follows, once the first is back and things have settled.
+        assertEquals(1, followed)
+        assertEquals(1, server.writes.size)
+    }
+
+    @Test
+    fun aChangeMadeHereDuringAnExchangeIsNeitherLostNorSentStale() = runBlocking {
+        val server = Server().apply { put("a", text(pc)) }
+        // The phone holds what the PC has; then, while an exchange is out, the person unpins.
+        val device = Device(holds = pc)
+        val unpinned = pc.copy(pins = listOf("p2"), pinsAt = NOW - 1)
+        device.meanwhile = {
+            device.holds = unpinned
+            device.meanwhile = {}
+        }
+        val step = step(server, device)
+        assertEquals(InStep.Outcome.DONE, step.exchange())
+        // What came back (the pins as they were) did not put the unpinned one back...
+        assertEquals(listOf("p2"), device.holds!!.pins)
+        // ...and the first exchange wrote nothing stale: it had nothing to add.
+        assertTrue(server.writes.isEmpty())
+        // The next carries the change.
+        assertEquals(InStep.Outcome.DONE, step.exchange())
+        assertEquals(listOf("p2"), SharedText.read(server.comment("a"))!!.pins)
+    }
+
+    @Test
+    fun twoDevicesInterleavedAtEveryStepConvergeOnTheMergeAndLoseNothing() = runBlocking {
+        val a = Shared(
+            layout = 1, pins = listOf("pa"), pinsAt = 300, theme = "Ocean", themeAt = 100,
+            lists = mapOf("liked" to SharedPrefs(shuffle = true, at = 50), "album:1" to SharedPrefs(sort = 2u, at = 70)),
+            added = mapOf("p" to mapOf("s" to SharedNote(listOf(40), 40))),
+            history = listOf(Play("x", 900), Play("y", 700)), plays = listOf(Play("x", 900), Play("y", 700)),
+            playSources = listOf(PlayFrom("x", 900, "playlist:p")),
+        )
+        val b = Shared(
+            layout = 1, pins = listOf("pb", "pc"), pinsAt = 200, theme = "Rose", themeAt = 150,
+            lists = mapOf("liked" to SharedPrefs(shuffle = false, at = 60), "songs" to SharedPrefs(sort = 1u, at = 10)),
+            added = mapOf("p" to mapOf("s" to SharedNote(emptyList(), NOW - 5), "t" to SharedNote(listOf(45), 45))),
+            history = listOf(Play("z", 800), Play("y", 700)), plays = listOf(Play("z", 800), Play("y", 700)),
+        )
+        val wanted = Merge.merge(a, b, NOW)
+        // Each device's exchange is a read then (perhaps) a write. Every order in which the
+        // two devices' steps can fall, each held at a gate until its turn: no sleeps.
+        val orders = listOf("AABB", "ABAB", "ABBA", "BAAB", "BABA", "BBAA")
+        for (order in orders) {
+            val server = Server().apply { put("r", "") }
+            val turns = order.map { CompletableDeferred<Unit>() }
+            val done = order.map { CompletableDeferred<Unit>() }
+            fun gateFor(who: Char): suspend (String) -> Unit {
+                val mine = order.indices.filter { order[it] == who }
+                var step = 0
+                var last: Int? = null
+                return { _ ->
+                    // The step before this one is over: the next in line may go.
+                    last?.let { done[it].complete(Unit) }
+                    val turn = mine[step++]
+                    last = turn
+                    turns[turn].await()
+                }
+            }
+            val (gateA, gateB) = gateFor('A') to gateFor('B')
+            // One pretend server seen by both, each through its own gate.
+            fun through(gate: suspend (String) -> Unit) = object : StepServer {
+                override suspend fun playlists() = server.playlists()
+                override suspend fun playlist(id: String): Playlist { gate("read"); return server.playlist(id) }
+                override suspend fun create(name: String) = server.create(name)
+                override suspend fun setComment(id: String, comment: String) { gate("write"); server.setComment(id, comment) }
+            }
+            val (deviceA, deviceB) = Device(a).apply { playlist = "r" } to Device(b).apply { playlist = "r" }
+            fun stepOf(device: Device, gate: suspend (String) -> Unit) =
+                InStep(through(gate), device, "tester", "acct-${System.nanoTime()}", { true }, scope, clock = { NOW }, pause = {})
+            val (stepA, stepB) = stepOf(deviceA, gateA) to stepOf(deviceB, gateB)
+            val runA = async(Dispatchers.Default) { stepA.exchange().also { order.indices.filter { order[it] == 'A' }.forEach { done[it].complete(Unit) } } }
+            val runB = async(Dispatchers.Default) { stepB.exchange().also { order.indices.filter { order[it] == 'B' }.forEach { done[it].complete(Unit) } } }
+            withTimeout(10_000) {
+                for (i in order.indices) {
+                    turns[i].complete(Unit)
+                    done[i].await()
+                }
+                assertEquals(InStep.Outcome.DONE, runA.await())
+                assertEquals(InStep.Outcome.DONE, runB.await())
+            }
+            // Crossed like that, the later write may have been made without the other's
+            // (the server has no way to refuse it). Nothing is lost for it: each device still
+            // holds its own, and the next look by each puts it right, whichever goes first.
+            val quiet = InStep(server, deviceA, "tester", "a-${System.nanoTime()}", { true }, scope, clock = { NOW }, pause = {})
+            val quietB = InStep(server, deviceB, "tester", "b-${System.nanoTime()}", { true }, scope, clock = { NOW }, pause = {})
+            repeat(2) {
+                assertEquals(InStep.Outcome.DONE, quiet.exchange())
+                assertEquals(InStep.Outcome.DONE, quietB.exchange())
+            }
+            assertEquals(order, wanted, SharedText.read(server.comment("r")))
+            assertEquals(order, wanted, deviceA.holds)
+            assertEquals(order, wanted, deviceB.holds)
+            // Settled: another round writes nothing.
+            val writes = server.writes.size
+            quiet.exchange()
+            quietB.exchange()
+            assertEquals(order, writes, server.writes.size)
+        }
+    }
+
+    @Test
+    fun anExchangeThatFailsLeavesThePhoneAsItWas() = runBlocking {
+        val server = Server().apply { put("a", text(pc)) }
+        server.gate = { if (it == "read") throw ApiError.Network("The connection dropped.") }
+        val device = Device(holds = nothing).apply { playlist = "a" }
+        assertEquals(InStep.Outcome.FAILED, step(server, device).exchange())
+        assertTrue(device.took.isEmpty())
+        assertNull(device.holds!!.pins.firstOrNull())
+    }
+
+    private companion object {
+        const val NOW = 1_795_000_000L
+    }
+}

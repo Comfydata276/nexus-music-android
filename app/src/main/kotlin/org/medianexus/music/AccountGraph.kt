@@ -48,6 +48,13 @@ class AccountWiring(
     val inUse: () -> Boolean = { true },
     /** Waits this many milliseconds before something is tried again (a test's own clock). */
     val pause: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+    /** The settings themselves, to change: keeping in step with the person's other devices
+     *  takes in what they chose (pins, each list's choices, the theme). Null: nothing is
+     *  shared (tests of other things). */
+    val settingsStore: org.medianexus.music.store.SettingsStore? = null,
+    /** Whether the app's screens are in front: only then is the server looked at each
+     *  minute for what other devices have changed. */
+    val inFront: () -> Boolean = { false },
 )
 
 /**
@@ -206,6 +213,113 @@ class AccountGraph(
      *  `plays.log`; see [org.medianexus.music.store.PlayLog]). */
     val playLog = org.medianexus.music.store.PlayLog(File(account.dirs.data, "plays.log"), io, note = wiring?.note ?: {})
 
+    /** Recently played and the log of plays have been read from the phone for this account:
+     *  until then they are not shared with other devices, nor theirs taken in (see [step]). */
+    private val historyRead = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /** Sharing between devices is switched on, and the server may be asked now. */
+    private fun mayShare(): Boolean = settings.value.sync && !reach.value.offline && !closed
+
+    /** The account has gone ([close]): nothing more is exchanged for it. */
+    @Volatile private var closed = false
+
+    private val inFront: () -> Boolean = wiring?.inFront ?: { false }
+
+    /** Songs the server has said it doesn't have, so they aren't asked for at every exchange
+     *  (a song in another device's history that has since been deleted). */
+    private val songsGone = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** The songs with these ids, for Recently played as other devices have it: from the
+     *  phone's copy of the library where it has them, else asked of the server one by one,
+     *  as Windows asks. */
+    private suspend fun songsById(ids: List<String>): Map<String, org.medianexus.music.net.Song> {
+        val found = HashMap<String, org.medianexus.music.net.Song>()
+        val wanted = ids.toHashSet()
+        copy.state.value?.songs?.let { table ->
+            for (i in 0 until table.size) if (table.id(i) in wanted && table.id(i) !in found) found[table.id(i)] = table.song(i)
+        }
+        for (id in ids) {
+            if (id in found || id in songsGone) continue
+            try {
+                api.song(id).takeIf { it.id == id }?.let { found[id] = it }
+            } catch (e: org.medianexus.music.net.ApiError.Server) {
+                if (e.code == 70L) songsGone += id
+            } catch (_: org.medianexus.music.net.ApiError) {
+                // Asked for again at the next exchange.
+            }
+        }
+        return found
+    }
+
+    /** This phone's side of what is shared between devices (see [step]). */
+    private val shared: org.medianexus.music.sync.PhoneShared? = wiring?.settingsStore?.let { store ->
+        org.medianexus.music.sync.PhoneShared(
+            store, account.key, added, recentlyPlayed, playLog,
+            read = { historyRead.isCompleted },
+            playlists = { pages.kept(library.playlists())?.mapTo(HashSet()) { it.id } },
+            songs = ::songsById,
+        )
+    }
+
+    /**
+     * Keeping in step with the person's other devices (Windows' src/sync.rs): the pins, each
+     * list's shuffle and sort, the theme, when songs were added to playlists, Recently played
+     * and the latest plays, kept as text in the comment of a playlist on the server. Null
+     * where nothing is shared (tests of other things).
+     *
+     * The record is written by the account's client directly, beside the playlists' own way
+     * of changing a playlist ([playlists]) and not through it: that way is for what the
+     * person does to a playlist (it waits its turn behind their other changes, is shown on
+     * the page, is refused with words, and is sent once and never again), and none of that
+     * is wanted here. This write is the app's own, of the whole value, and safe to make
+     * again: if it gets no answer, the next exchange reads what the server has and writes
+     * only if it still adds something.
+     */
+    val step: org.medianexus.music.sync.InStep? = shared?.let { phone ->
+        org.medianexus.music.sync.InStep(
+            object : org.medianexus.music.sync.StepServer {
+                override suspend fun playlists() = api.playlists()
+                override suspend fun playlist(id: String) = api.playlist(id)
+                // Made once: a request sent twice would make two.
+                override suspend fun create(name: String) = api.once().createPlaylist(name, emptyList())
+                override suspend fun setComment(id: String, comment: String) = api.setPlaylistComment(id, comment)
+            },
+            phone, account.username, account.key, ::mayShare, scope, pause = pause, note = wiring?.note ?: {},
+        )
+    }
+
+    /** The play queue shared with the person's other devices through the server's saved
+     *  queue, and "Continue here" (see [org.medianexus.music.sync.QueueStep]). */
+    val queueStep: org.medianexus.music.sync.QueueStep? = wiring?.settingsStore?.let { store ->
+        org.medianexus.music.sync.QueueStep(
+            save = { device, upload -> api.savePlayQueue(device, upload.ids, upload.current, upload.positionMs) },
+            saved = { api.playQueue() },
+            device = {
+                // A made-up name for this device, made the first time it is wanted.
+                if (store.value.deviceId.isEmpty()) store.update { if (it.deviceId.isEmpty()) it.copy(deviceId = org.medianexus.music.sync.QueueShare.newDeviceId()) else it }
+                org.medianexus.music.sync.QueueShare.deviceName(store.value.deviceId)
+            },
+            may = ::mayShare, scope = scope, pause = pause,
+        )
+    }
+
+    private var lookedAt = 0L
+
+    /** Picks up whatever other devices have changed, and passes on what changed here
+     *  (Windows' `look_elsewhere`): the shared record, then the saved queue. */
+    suspend fun look() {
+        if (!mayShare()) return
+        synchronized(this) { lookedAt = System.currentTimeMillis() }
+        step?.exchange()
+        queueStep?.check()
+    }
+
+    /** The app has come to the front: a look, unless one was made a moment ago. */
+    fun cameToFront() {
+        if (step == null || System.currentTimeMillis() - synchronized(this) { lookedAt } < LOOK_FLOOR_MILLIS) return
+        scope.launch { if (historyRead.isCompleted) look() }
+    }
+
     /** The account's mixes of its own, made to rules (Windows' `rule_mixes`). */
     val ruleMixes = org.medianexus.music.store.RuleMixes(File(account.dirs.data, "rule-mixes.json"), io)
 
@@ -269,14 +383,47 @@ class AccountGraph(
             recentlyPlayed.open()
             // With no log yet, it starts from what Recently played remembers (Windows' `load`).
             playLog.open { recentlyPlayed.state.value.map { it.song.id to it.at } }
+            historyRead.complete(Unit)
+            // In step with the person's other devices: now (Windows' `start_sync`), and
+            // every minute from here on while the app's screens are in front. Not in the
+            // background: what changes here still goes out a few seconds after it does
+            // (each song that starts is one such change), and nobody is looking at what
+            // changed elsewhere.
+            if (step != null) {
+                look()
+                while (true) {
+                    pause(org.medianexus.music.sync.InStep.LOOK_MILLIS)
+                    if (inFront()) look()
+                }
+            }
+        }
+        if (step != null) {
+            // Something shared changed here: passed on once things have settled. (What an
+            // exchange itself brought in is not a change made here.)
+            added.changedHere = { step.shareSoon() }
+            recentlyPlayed.changedHere = { step.shareSoon() }
+            scope.launch {
+                settings.map { if (org.medianexus.music.sync.Belongs.ready(it, account.key)) org.medianexus.music.sync.Sharing.choices(it) else null }
+                    .distinctUntilChanged().drop(1)
+                    .collect { now -> if (now != null && now != shared?.settled) step.shareSoon() }
+            }
+            // The server back, or sharing switched on: a look at once. Switched off, what
+            // another device was playing is no longer offered.
+            scope.launch {
+                kotlinx.coroutines.flow.combine(reach.map { it.offline }, settings.map { it.sync }) { offline, on -> !offline && on }
+                    .distinctUntilChanged().drop(1)
+                    .collect { may -> if (may) { if (historyRead.isCompleted) launch { look() } } else if (!settings.value.sync) queueStep?.forget() }
+            }
         }
         scope.launch { ruleMixes.open() }
         // Every copy of a playlist read from the server (or the phone) is looked at, so a song
         // that turns up in it later can be dated (Windows' `observe_playlist`).
         scope.launch {
             pages.changes.collect { (key, value) ->
+                // (Noticed, for this phone's own "Date added"; not put on record for other
+                // devices: see Added.sawCopy.)
                 if (key.startsWith("playlist:") && value is org.medianexus.music.net.Playlist) {
-                    added.observe(key.removePrefix("playlist:"), value.songs, System.currentTimeMillis() / 1000)
+                    added.sawCopy(key.removePrefix("playlist:"), value.songs, System.currentTimeMillis() / 1000)
                 }
             }
         }
@@ -434,6 +581,7 @@ class AccountGraph(
     }
 
     fun close() {
+        closed = true
         synchronized(going) { gone = true }
         downloads?.release()
         // Everything it holds written, then the file let go for whoever opens it next.
@@ -453,5 +601,9 @@ class AccountGraph(
          *  again. */
         const val HELD_RETRY_MILLIS = 30_000L
         const val HELD_RETRY_MOST_MILLIS = 30 * 60_000L
+
+        /** The app coming to the front doesn't look at the server again within this long of
+         *  the last look. */
+        const val LOOK_FLOOR_MILLIS = 10_000L
     }
 }

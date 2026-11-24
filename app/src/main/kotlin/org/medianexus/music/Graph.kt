@@ -122,6 +122,10 @@ class Graph(context: Context) {
     /** What belongs to whoever is signed in: their library, covers, likes, downloads and
      *  queue. */
     val accounts = Accounts(session, scope) { signedIn ->
+        // The pins, each list's choices and the theme's time in the settings are made this
+        // account's own before anything of the account exists to read or share them: what
+        // was chosen under another account is put away with it (see sync/Belongs.kt).
+        org.medianexus.music.sync.Belongs.takeOn(settings, signedIn.account.key, { key -> accountDirs(context.filesDir, context.cacheDir, key).data }) { diagnostics.note(it) }
         AccountGraph(
             signedIn.account, signedIn.api,
             wiring = AccountWiring(
@@ -132,6 +136,8 @@ class Graph(context: Context) {
                 note = { diagnostics.note(it) },
                 network = network.state,
                 inUse = { org.medianexus.music.downloads.DownloadKeeper.visible || playing },
+                settingsStore = settings,
+                inFront = { org.medianexus.music.downloads.DownloadKeeper.visible },
             ),
         )
     }
@@ -168,6 +174,12 @@ class Graph(context: Context) {
      * The watch does so every 15 seconds by itself; this is the screens coming to the front.
      */
     fun checkIfDown() = watch.nudge()
+
+    /** The screens have come to the front: what the person's other devices have changed
+     *  meanwhile is picked up (Windows looks when its window is brought back). */
+    fun cameToFront() {
+        accounts.state.value?.cameToFront()
+    }
 
     /**
      * The server answers again after being out of reach (`back`), or offline mode has been

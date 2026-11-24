@@ -111,7 +111,8 @@ private fun Appearance(graph: Graph) {
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     SettingRow(stringResource(R.string.theme), stringResource(R.string.theme_detail), stacked = true) {
         ThemeSwatches(settings.theme) { name ->
-            graph.settings.update { it.copy(theme = name, themeAt = System.currentTimeMillis() / 1000) }
+            // Chosen here, now, under this account: its other devices take it as the newer.
+            graph.settings.update { it.copy(theme = name, themeAt = System.currentTimeMillis() / 1000, themeOwn = true) }
         }
     }
 }
@@ -222,6 +223,13 @@ private fun Account(graph: Graph) {
     val signedIn = session as? SessionState.SignedIn ?: return
     SettingRow(signedIn.account.server, stringResource(R.string.signed_in_as, signedIn.account.username)) {
         TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
+    }
+    // Where Windows has it, in Windows' words. Off, nothing of this is read from the server
+    // or written to it.
+    val settings by graph.settings.state.collectAsStateWithLifecycle()
+    val inStep = stringResource(R.string.keep_in_step)
+    SettingRow(inStep, stringResource(R.string.keep_in_step_detail)) {
+        Toggle(settings.sync, { on -> graph.settings.update { it.copy(sync = on) } }, inStep)
     }
 }
 

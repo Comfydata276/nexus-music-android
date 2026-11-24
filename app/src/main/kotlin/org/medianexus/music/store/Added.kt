@@ -33,6 +33,16 @@ typealias AddedNotes = Map<String, Map<String, AddedNote>>
  * the playlist is dated to when the app added it, or first saw it there. "Date added" sorts
  * by these, and by the day the song joined the library where there is no note.
  *
+ * **What the phone tells other devices** (docs/DESIGN.md, "In step with other devices"): a
+ * note with a time on it (`at` above 0) is shared, and on every device the newer note for a
+ * song wins. So the phone puts a time on a note only for what the person did on this phone
+ * ([changed], [create], [record]). What it merely notices in a copy of a playlist it has read
+ * ([sawCopy]) is kept for its own "Date added" as a note with no time on it, which is never
+ * shared and gives way to any dated note from another device; and a dated note is never
+ * altered by what is noticed. (Windows dates what it notices with "now", in [observe], and
+ * shares that: a PC that looks at a playlist late overwrites the date the song was really
+ * added, on every device. That is ported for its tests, and the phone does not call it.)
+ *
  * Safe from any thread. Written off the main thread, whole, the newest state each time; read
  * when first needed.
  */
@@ -43,6 +53,10 @@ class Added(
     /** Where an earlier version of the app kept it (`added.json`): moved to `file` when found. */
     private val formerly: File? = null,
 ) {
+    /** Told when a dated note changed here, by the person's own doing: worth passing on to
+     *  other devices. */
+    @Volatile var changedHere: () -> Unit = {}
+
     private var lists = HashMap<String, HashMap<String, AddedNote>>()
     private var seen = HashSet<String>()
     private var loaded = false
@@ -70,9 +84,93 @@ class Added(
     }
 
     /**
+     * A copy of a playlist has been read, from the server or the phone: the phone's own notes
+     * are brought in step with it for "Date added", and nothing is put on record for other
+     * devices. A song that has turned up since the first look is dated `now` here, in a note
+     * with no time on it; one that has gone takes such a note with it. A note with a time on
+     * it (the person's own doing, or another device's word) is left exactly as it is,
+     * whatever the copy holds: it changes only by [changed] or by a newer note ([merge]).
+     */
+    @Synchronized
+    fun sawCopy(playlist: String, songs: List<Song>, now: Long) {
+        load()
+        val counts = LinkedHashMap<String, Int>()
+        for (song in songs) counts[song.id] = (counts[song.id] ?: 0) + 1
+        val firstLook = seen.add(playlist)
+        val notes = lists.getOrPut(playlist) { HashMap() }
+        var changed = firstLook
+        for (id in notes.keys.filter { it !in counts }) {
+            if (notes.getValue(id).at == 0L) {
+                notes.remove(id)
+                changed = true
+            }
+        }
+        for ((id, count) in counts) {
+            val note = notes[id]
+            if (note != null && (note.at != 0L || note.times.size == count)) continue
+            val times = note?.times.orEmpty()
+            notes[id] = AddedNote(
+                // On the first look, copies nothing is known about go in front, as the oldest.
+                if (firstLook) (List((count - times.size).coerceAtLeast(0)) { 0L } + times).take(count)
+                else if (times.size < count) times + List(count - times.size) { now } else times.take(count),
+                at = 0,
+            )
+            changed = true
+        }
+        if (changed) save()
+    }
+
+    /**
+     * The person changed a playlist on this phone: it held `before` (song ids, as read from
+     * the server just before the change) and holds `after`. Each song there are now more or
+     * fewer copies of gets a note dated `now`, as Windows' `observe` and `record` would give
+     * it: a copy added is dated now; a song taken out leaves its note, emptied, so other
+     * devices hear that it went (unless nothing was known of it). Songs the change didn't
+     * touch are not looked at.
+     */
+    fun changed(playlist: String, before: List<String>, after: List<String>, now: Long) {
+        val told = synchronized(this) {
+            load()
+            val was = before.groupingBy { it }.eachCount()
+            val isNow = after.groupingBy { it }.eachCount()
+            val notes = lists.getOrPut(playlist) { HashMap() }
+            var any = false
+            var dated = false
+            for (id in was.keys + isNow.keys) {
+                val had = was[id] ?: 0
+                val has = isNow[id] ?: 0
+                if (had == has) continue
+                any = true
+                val note = notes[id]
+                // The note as it stands for the copies that were there: a dated note is not
+                // altered by what is noticed (see the class), so it may be out of step.
+                // Copies nothing is known of go in front, as the oldest.
+                val times = (note?.times.orEmpty()).let { if (it.size < had) List(had - it.size) { 0L } + it else it.take(had) }
+                if (has == 0) {
+                    if (note == null || note.at == 0L) {
+                        notes.remove(id)
+                    } else {
+                        notes[id] = AddedNote(emptyList(), now)
+                        dated = true
+                    }
+                } else {
+                    notes[id] = AddedNote(if (times.size < has) times + List(has - times.size) { now } else times.take(has), now)
+                    dated = true
+                }
+            }
+            if (any) save()
+            dated
+        }
+        if (told) changedHere()
+    }
+
+    /**
      * Brings the notes for a playlist in step with the songs now in it, as just read from the
      * server (Windows' `observe`). Songs it didn't have before are dated `now`, unless this is
      * the first look at the playlist. Returns whether anything worth sharing changed.
+     *
+     * Windows' own, ported with its tests. **The phone does not call it for a copy it has
+     * merely read** (see the class): that is [sawCopy].
      */
     @Synchronized
     fun observe(playlist: String, songs: List<Song>, now: Long): Boolean {
@@ -137,6 +235,7 @@ class Added(
             notes[id] = AddedNote(note.times + now, now)
         }
         save()
+        if (ids.isNotEmpty()) changedHere()
     }
 
     /** Notes a playlist the app has just created with these songs in it (`create`). */

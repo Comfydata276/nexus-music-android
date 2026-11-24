@@ -850,13 +850,19 @@ class PlaybackService : MediaLibraryService() {
                     following = next.scope.launch {
                         val order = withContext(Dispatchers.Default) { orderOf(key, songs, filter) }
                         // (Offline, what doesn't play doesn't join, as on Windows.)
-                        if (player.queue.source == key) player.follow(key, songs, order, playsOffline() ?: { true })
+                        // (The list changed, perhaps on another device: not a change to the
+                        // queue made here.)
+                        if (player.queue.source == key) quietly { player.follow(key, songs, order, playsOffline() ?: { true }) }
                     }
                 }
                 for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
             }
         }
         next.scope.launch { restore(next) }
+        // The person's other devices: this is the player whose queue is shared with them.
+        queueStamp = 0
+        queueMark = null
+        now.queueStep?.here = queueHere(next)
         // The library copy arriving or changing: songs held that came without levelling
         // values may find them there.
         next.scope.launch { now.copy.state.collect { copy -> if (era === next) sound.songsHeld(songsHeld(), copy) } }
@@ -921,7 +927,9 @@ class PlaybackService : MediaLibraryService() {
         if (saved != null) {
             // Made ready off the main thread: it can be thousands of songs.
             val revived = withContext(Dispatchers.Default) { player.revive(saved) }
-            player.restore(revived, (saved.position * 1000).toLong())
+            // Putting it back isn't a change to pass on: it keeps the time it last changed.
+            if (player.queue.isEmpty) queueStamp = saved.stamp
+            quietly { player.restore(revived, (saved.position * 1000).toLong()) }
         }
         // Only now: the saved queue is the player's, or there was none.
         era.queue.settle()
@@ -963,6 +971,7 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun leave() {
         val old = era ?: return
+        old.account.queueStep?.here = null
         stopWaiting()
         outage.clear()
         current = null
@@ -1113,10 +1122,20 @@ class PlaybackService : MediaLibraryService() {
 
     private fun queueChanged() {
         val queue = player.queue
-        // Shuffle and repeat are settings, and the list being played remembers its shuffle.
+        // Shuffle and repeat are settings, and the list being played remembers its shuffle
+        // when the person changes it while it plays (the shuffle button, anywhere).
+        //
+        // Not whenever the list's remembered choice and the queue disagree, as it used to
+        // be. They also disagree when the choice was changed on another device, or the
+        // queue was put back from the last run, or the app itself decided (a spoken "play
+        // <artist>" is shuffled): putting the time on it then would tell every other device
+        // that this one's shuffle is the newer choice, and overwrite theirs. The list's
+        // choice is shared between devices, and the newer wins (see sync/PhoneShared.kt).
         val now = System.currentTimeMillis() / 1000
-        if (Remembered.differs(graph.settings.value, queue.shuffle, queue.repeat, queue.source)) {
-            val (shuffle, repeat, source) = Triple(queue.shuffle, queue.repeat, queue.source)
+        val toggled = player.shufflePresses != shufflePressesSeen
+        shufflePressesSeen = player.shufflePresses
+        if (toggled || Remembered.differs(graph.settings.value, queue.shuffle, queue.repeat, "")) {
+            val (shuffle, repeat, source) = Triple(queue.shuffle, queue.repeat, if (toggled) queue.source else "")
             graph.settings.update { Remembered.with(it, shuffle, repeat, source, now) }
         }
         publishExtras()
@@ -1171,11 +1190,82 @@ class PlaybackService : MediaLibraryService() {
         // queue now (the saved one is not put over it: see QueuePlayer.restore).
         if (!kept.settled && !queue.isEmpty) kept.settle()
         val position = exo.currentPosition / 1000.0
-        val stamp = System.currentTimeMillis() / 1000
+        // When the queue last really changed, or was played on (Windows' `queue_stamp`): the
+        // queue itself, the place in it, or the second of the song. Putting a queue back, or
+        // taking one from another device or from the list it follows, is not that (`quiet`):
+        // between devices the queue changed last has the say, and one this phone only holds
+        // must not be passed on as changed here, now.
+        val mark = Triple(queue.revision, queue.cursor, position.toLong())
+        val before = queueMark
+        if (mark != before) {
+            queueMark = mark
+            if (!queueQuiet && !queue.isEmpty) {
+                queueStamp = System.currentTimeMillis() / 1000
+                // Saved on the server for the person's other devices: a few seconds after a
+                // change, and now and then while a song simply plays on.
+                val step = era?.account?.queueStep
+                if (before != null && before.first == mark.first && before.second == mark.second && exo.playWhenReady) step?.progressed() else step?.changedHere()
+            }
+        }
+        val stamp = queueStamp
         // The queue is copied for the writer only when it has changed; while it only plays,
         // where it has got to is all that's handed over.
         kept.save(queue.revision, queue.cursor, position, stamp) { queue.saved(position, stamp) }
         lastSaveAt = System.currentTimeMillis()
+    }
+
+    /** How many times shuffle had been changed by its button when the queue was last looked
+     *  at (see [queueChanged]). */
+    private var shufflePressesSeen = 0L
+
+    /** When the queue was last changed here, or played on (seconds since 1970; see [save]). */
+    private var queueStamp = 0L
+    /** The queue, the place in it and the second of the song as last saved. */
+    private var queueMark: Triple<Long, Int, Long>? = null
+    /** Set while a queue is put in place that is not a change made here. */
+    private var queueQuiet = false
+
+    /** Does something to the queue that is not the person changing it here: nothing of it
+     *  is stamped as changed now, or passed on to other devices. */
+    private inline fun quietly(change: () -> Unit) {
+        queueQuiet = true
+        try {
+            change()
+            // (Whatever it did has been seen by now: queue changes are told at once.)
+            val queue = player.queue
+            queueMark = Triple(queue.revision, queue.cursor, (exo.currentPosition / 1000.0).toLong())
+        } finally {
+            queueQuiet = false
+        }
+    }
+
+    /** The player's side of sharing the queue with the person's other devices (see
+     *  [org.medianexus.music.sync.QueueStep]), for one account's turn. */
+    private fun queueHere(era: Era) = object : org.medianexus.music.sync.QueueHere {
+        override fun upload(): org.medianexus.music.sync.QueueUpload? {
+            if (this@PlaybackService.era !== era) return null
+            val queue = player.queue
+            return org.medianexus.music.sync.QueueShare.window(queue.order.size, queue.cursor, { queue.songs[queue.order[it]] }, exo.currentPosition / 1000.0)
+        }
+
+        override fun currentId(): String? = if (this@PlaybackService.era === era) player.queue.current()?.id else null
+        override fun playing(): Boolean = exo.playWhenReady && !player.queue.isEmpty
+        override fun stamp(): Long = queueStamp
+
+        override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, play: Boolean): Boolean {
+            // Not before this phone's own queue from its last run is back: that comes first,
+            // and what another device saved takes its place only if it is the newer.
+            era.restoring.await()
+            if (this@PlaybackService.era !== era || songs.isEmpty()) return false
+            // (Looked at again: something may have been started here while that was waited for.)
+            if (!play && (exo.playWhenReady && !player.queue.isEmpty || stamp <= queueStamp)) return false
+            val next = withContext(Dispatchers.Default) { player.prepare(songs, cursor.coerceIn(0, songs.size - 1), context = "", shuffle = false) }
+            if (this@PlaybackService.era !== era) return false
+            if (play) holdForeground(why = "to carry on from another device")
+            queueStamp = stamp
+            quietly { player.play(next, positionMs, playNow = play) }
+            return true
+        }
     }
 
     // ---- The car's buttons ------------------------------------------------------------------
@@ -2317,6 +2407,16 @@ class PlaybackService : MediaLibraryService() {
     private fun shuffleFor(source: String): Boolean =
         if (source.isEmpty()) player.queue.shuffle else graph.settings.value.lists[source]?.shuffle ?: false
 
+    /** The person chose how the list `source` plays: it remembers, from now. */
+    private fun rememberShuffle(source: String, shuffle: Boolean) {
+        if (source.isEmpty()) return
+        val now = System.currentTimeMillis() / 1000
+        graph.settings.update { s ->
+            val prefs = s.lists[source] ?: org.medianexus.music.store.ListPrefs()
+            if (prefs.shuffle == shuffle) s else s.copy(lists = s.lists + (source to prefs.copy(shuffle = shuffle, at = now)))
+        }
+    }
+
     /**
      * Makes a list into a queue and hands it to the session, for the start numbered `mine`
      * and the account it began under. Whether that start still stands is asked here, at the
@@ -2326,6 +2426,9 @@ class PlaybackService : MediaLibraryService() {
      */
     private suspend fun staged(mine: Long, era: Era, list: PlayList): MediaItemsWithStartPosition {
         val shuffle = list.shuffle ?: shuffleFor(list.source)
+        // "Shuffle" at the top of a list is the person saying how that list plays: the list
+        // remembers, as on Windows (with the time, so other devices take it as the newer).
+        if (list.shuffleChosen && list.shuffle != null) rememberShuffle(list.source, list.shuffle)
         val plays = playsOffline()
         // Made into a queue off the main thread: a list can be thousands of songs.
         val next = withContext(Dispatchers.Default) {

@@ -65,6 +65,8 @@ class MainActivity : ComponentActivity() {
         // downloads Android paused with a job it stopped may run again (an app on screen may
         // download, and is asked for a job of the kind only it may have).
         graph.checkIfDown()
+        // And what the person's other devices have changed meanwhile is picked up.
+        graph.cameToFront()
         graph.accounts.state.value?.downloads?.let { downloads ->
             downloads.stoppedByAndroid(false)
             downloads.refresh()

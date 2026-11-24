@@ -81,6 +81,9 @@ data class PlayList(
     val anyStart: Boolean = false,
     /** A song was chosen (a row tapped): offline, if it can't play, nothing starts. */
     val chosen: Boolean = false,
+    /** `shuffle` is the person's own choice for this list ("Shuffle" at its top), which the
+     *  list then remembers; not the app's (a spoken request for an artist is shuffled). */
+    val shuffleChosen: Boolean = false,
 )
 
 /**
@@ -860,7 +863,7 @@ class CarTree(
      *  Null if the list is empty. */
     suspend fun shuffled(list: ListRef): PlayList? {
         val (songs, context, source) = songsOf(list) ?: return null
-        return if (songs.isEmpty()) null else PlayList(songs, 0, context, source, shuffle = true, anyStart = true)
+        return if (songs.isEmpty()) null else PlayList(songs, 0, context, source, shuffle = true, anyStart = true, shuffleChosen = true)
     }
 
     /** What choosing a song plays: its list, from it. Null if the song can't be found. */
