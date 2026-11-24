@@ -251,4 +251,18 @@ class CatalogueTest {
         assertTrue(catalogue.clear())
         assertTrue(folder.root.listFiles()!!.all { it.isFile && it.name in setOf(Catalogue.SONGS_FILE, Catalogue.LOG_FILE) })
     }
+
+    @Test
+    fun whatThePhoneCantDecodeIsAskedAgainAfterASystemUpdate() {
+        val dir = folder.newFolder()
+        val song = Song(id = "s1", title = "One", suffix = "m4a", size = 1_000)
+        Catalogue(dir, androidVersion = 35).mustConvert(song)
+        // On the version that said so, it holds, after a restart too.
+        assertTrue(Catalogue(dir, androidVersion = 35).convertsFor(song))
+        // Android updated: asked again (its decoders may be other ones now).
+        assertFalse(Catalogue(dir, androidVersion = 36).convertsFor(song))
+        // And said again there, it holds there.
+        Catalogue(dir, androidVersion = 36).mustConvert(song)
+        assertTrue(Catalogue(dir, androidVersion = 36).convertsFor(song))
+    }
 }

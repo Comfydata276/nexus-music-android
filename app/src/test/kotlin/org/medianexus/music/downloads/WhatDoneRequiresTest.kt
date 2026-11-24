@@ -380,10 +380,24 @@ class WhatDoneRequiresTest {
         // not a yes. (It used to be: the file was marked Done unasked.)
         val (catalogue, engine) = appStarted(Media3AudioCheck { format -> if (format.sampleMimeType == androidx.media3.common.MimeTypes.AUDIO_FLAC) throw IllegalStateException("the decoders could not be listed") else true })
         conversions["s1"] = twenty
-        run { engine.download(listOf(flac("s1", five, seconds = 20))) }
+        val song = flac("s1", five, seconds = 20)
+        run { engine.download(listOf(song)) }
         settled(engine, catalogue, "s1")
         assertTrue("${engine.state.value.failed}", catalogue.has("s1"))
         assertEquals("mp3", catalogue.entry("s1")!!.suffix)
+        // **Not remembered**: a question that couldn't be put is no answer. (It was written
+        // down as a no, for good.) Removed, and the app started again with the phone
+        // answering, the file as it is is what is downloaded.
+        assertFalse(catalogue.convertsFor(song))
+        engine.remove(listOf("s1"))
+        until("removed") { !catalogue.has("s1") }
+        appStopped(engine)
+        val (again, later) = appStarted()
+        assertFalse(again.convertsFor(song))
+        run { later.download(listOf(song)) }
+        settled(later, again, "s1")
+        assertEquals("flac", again.entry("s1")!!.suffix)
+        assertEquals(0, again.entry("s1")!!.bitrate)
     }
 
     // ---- A download that fails when it is played ----------------------------------------------

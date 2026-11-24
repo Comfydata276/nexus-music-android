@@ -43,6 +43,9 @@ data class Inspected(
     val broken: Broken? = null,
     /** Whether this phone has a decoder for what is in it. */
     val decodable: Boolean = true,
+    /** Whether the phone answered that ([decodable]) at all: false when the question could
+     *  not be put (then [decodable] is false for this download, and nothing is remembered). */
+    val decodersAnswered: Boolean = true,
     /** The file ends part-way through a sample, in a format whose reader lets that pass (an
      *  MP3's last frame): no error, and the sound before it is whole, but a stream that
      *  stopped there was stopped. */
@@ -252,14 +255,17 @@ class Media3AudioCheck(
             if (whole && broken == null && seen.flacTailUnverified() && !flacEndsInATag(seen)) broken = Broken.DAMAGED
             val said = seen.map?.durationUs?.takeIf { it != C.TIME_UNSET && it > 0 } ?: seen.durationUs
             val audio = seen.audio
+            // The phone's answer: yes, no, or (null) the question could not be put.
+            val decodes = if (audio == null) true else runCatching { decodes(audio) }.getOrNull()
             return Inspected(
                 container = container,
                 audio = audio != null,
                 durationUs = if (said == C.TIME_UNSET || said <= 0) -1 else said,
                 ranUs = if (whole && broken == null) seen.endUs() else -1,
                 broken = broken,
-                // (A question that could not be put is a no: see [playerDecodes].)
-                decodable = audio == null || runCatching { decodes(audio) }.getOrDefault(false),
+                // (A question that could not be put is a no, for now: see [playerDecodes].)
+                decodable = decodes == true,
+                decodersAnswered = decodes != null,
                 partial = seen.partial,
                 gaveUp = whole && broken == null && container == "mp3" && seen.lastEnd >= 0 && input.position - seen.lastEnd >= MP3_SEARCH_BYTES,
             )
@@ -533,18 +539,16 @@ class Media3AudioCheck(
          * at Media3 1.11.1): the decoders for the kind of sound, in the player's order, and
          * whether any of them takes this format (`MediaCodecInfo.isFormatSupported`: the
          * codec's profile, the sample rate, the number of channels). Plain PCM needs no
-         * decoder. **If the system can't be asked, no**: a song is then downloaded as the
-         * server converts it, which plays, and not marked on a guess. (It used to ask only
-         * whether some decoder for the kind existed, and took a question that failed for yes.)
+         * decoder. **Throws if the system can't be asked**, which the check takes for a no for
+         * that download only ([Inspected.decodersAnswered]): the song is then downloaded as
+         * the server converts it, which plays, and not marked on a guess, nor remembered as a
+         * file this phone can't play. (It used to ask only whether some decoder for the kind
+         * existed, and took a question that failed for yes.)
          */
         fun playerDecodes(context: android.content.Context, format: Format): Boolean {
             if (format.sampleMimeType == MimeTypes.AUDIO_RAW) return true
             if (format.sampleMimeType == null) return false
-            return try {
-                MediaCodecUtil.getDecoderInfosSoftMatch(MediaCodecSelector.DEFAULT, format, false, false).any { it.isFormatSupported(context, format) }
-            } catch (_: MediaCodecUtil.DecoderQueryException) {
-                false
-            }
+            return MediaCodecUtil.getDecoderInfosSoftMatch(MediaCodecSelector.DEFAULT, format, false, false).any { it.isFormatSupported(context, format) }
         }
 
         /** FLAC's CRC-16 (polynomial 0x8005, from nothing, most significant bit first). */

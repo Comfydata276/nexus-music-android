@@ -59,6 +59,9 @@ class DownloadFailure(
     /** The file arrived whole and the phone has no decoder for what is in it: worth asking
      *  the server to convert it, and nothing else. */
     val undecodable: Boolean = false,
+    /** With [undecodable]: the phone said so. False when the question could not be put:
+     *  converted this time, and not remembered. */
+    val phoneSaid: Boolean = true,
     /** What arrived came to a clean end, is a song the player reads, and has this wrong
      *  with it: if the next fetch brings the very same bytes, the flaw is the server's own
      *  copy's (see [SongFetch]). */
@@ -559,7 +562,7 @@ class SongFetch(
         if (whole) {
             // (Final at once: the same file would come again.)
             if (seen.container == null || !seen.audio) throw DownloadFailure(NOT_A_SONG)
-            if (!seen.decodable) throw DownloadFailure(NO_DECODER, undecodable = true)
+            if (!seen.decodable) throw DownloadFailure(NO_DECODER, undecodable = true, phoneSaid = seen.decodersAnswered)
             return song
         }
         var fault = faultOf(song, form, seen)
@@ -568,7 +571,7 @@ class SongFetch(
         when (fault) {
             null -> return song
             Fault.NOT_A_SONG -> throw DownloadFailure(NOT_A_SONG, again = true)
-            Fault.NO_DECODER -> throw DownloadFailure(NO_DECODER, undecodable = true)
+            Fault.NO_DECODER -> throw DownloadFailure(NO_DECODER, undecodable = true, phoneSaid = seen.decodersAnswered)
             else -> Unit
         }
         // It is a song the player reads, and something is wrong with it (see [Flawed]).

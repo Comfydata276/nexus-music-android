@@ -114,12 +114,14 @@ class Catalogue(
     private val note: (String) -> Unit = {},
     /** How many changes the log holds before the list is written whole (fewer in a test). */
     private val compactAfter: Int = COMPACT_AFTER,
+    /** The version of Android the phone runs: what it says it can't decode holds for that. */
+    private val androidVersion: Int = android.os.Build.VERSION.SDK_INT,
 ) {
     private val lock = Any()
     private val songs = LinkedHashMap<String, Downloaded>()
     private val lists = LinkedHashMap<String, DownloadedList>()
     private val failures = LinkedHashMap<String, Failed>()
-    private val converts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val converts = java.util.concurrent.ConcurrentHashMap<String, Convert>()
 
     /** Changes in the log since the list was last written whole. */
     private var logged = 0
@@ -168,7 +170,8 @@ class Catalogue(
         wanting = found
         read(LISTS_FILE, ListSerializer(DownloadedList.serializer()))?.forEach { lists[it.key] = it }
         read(FAILED_FILE, ListSerializer(Failed.serializer()))?.forEach { failures[it.song.id] = it }
-        read(CONVERT_FILE, ListSerializer(Convert.serializer()))?.forEach { converts[it.id] = it.size }
+        // (Only what was said on this version of Android: after a system update, asked again.)
+        read(CONVERT_FILE, ListSerializer(Convert.serializer()))?.forEach { if (it.android == androidVersion) converts[it.id] = it }
         publish()
     }
 
@@ -176,21 +179,25 @@ class Catalogue(
 
     /** A song whose file, as it is on the server, this phone was found not to decode: the
      *  song's id and that file's size (so that another file under the same id has a fresh
-     *  chance). */
+     *  chance), and the version of Android that said so (0: one from before that was kept,
+     *  which is asked again). */
     @Serializable
-    private class Convert(val id: String, val size: Long = 0)
+    private data class Convert(val id: String, val size: Long = 0, val android: Int = 0)
 
     /**
-     * This phone can't decode the song's file as it is (asked of the player before it was
-     * marked, or found by the player when it was played): **remembered, on the disk**, so
-     * that it is downloaded, and streamed, as the server converts it, and the same file is
-     * never fetched again to fail again. It outlives "Remove all": it is a fact about the
-     * phone and the file, not a download.
+     * This phone can't decode the song's file as it is (the phone's definite answer, asked
+     * before it was marked, or found by the player when it was played): **remembered, on the
+     * disk**, so that it is downloaded, and streamed, as the server converts it, and the same
+     * file is never fetched again to fail again, **on this version of Android**: after a
+     * system update the question is asked again. It outlives "Remove all": it is a fact
+     * about the phone and the file, not a download. (A question that could not be put is
+     * not an answer, and is never written here.)
      */
     fun mustConvert(song: Song) {
         synchronized(lock) {
-            if (converts.put(song.id, song.size) == song.size) return
-            write(CONVERT_FILE, ListSerializer(Convert.serializer()), converts.map { Convert(it.key, it.value) }, durable = true)
+            val now = Convert(song.id, song.size, androidVersion)
+            if (converts.put(song.id, now) == now) return
+            write(CONVERT_FILE, ListSerializer(Convert.serializer()), converts.values.toList(), durable = true)
         }
     }
 
@@ -199,7 +206,7 @@ class Catalogue(
     fun convertsFor(song: Song): Boolean = convertsFor(song.id, song.size)
 
     fun convertsFor(id: String, size: Long): Boolean {
-        val of = converts[id] ?: return false
+        val of = converts[id]?.size ?: return false
         return of <= 0 || size <= 0 || of == size
     }
 

@@ -1205,12 +1205,13 @@ class Downloads(
                     }
                     // The file as it is arrived whole, and nothing on this phone decodes
                     // what is in it (an ALAC in an .m4a, say): never marked as a download.
-                    // The server's conversion is downloaded in its place.
+                    // The server's conversion is downloaded in its place. Remembered only if
+                    // the phone said so: a question that couldn't be put is a no for now.
                     if (e.undecodable && !form.converted) {
-                        catalogue.mustConvert(ask.song)
+                        if (e.phoneSaid) catalogue.mustConvert(ask.song)
                         form = convertedForm()
                         before = null
-                        note("downloads: the phone can't decode one as it is; the server's conversion is downloaded instead")
+                        note(if (e.phoneSaid) "downloads: the phone can't decode one as it is; the server's conversion is downloaded instead" else "downloads: the phone couldn't be asked whether it decodes one; the server's conversion is downloaded instead, this time")
                         continue
                     }
                     // What arrived was not the song, whole: fetched afresh, a few times, by
