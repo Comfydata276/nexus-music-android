@@ -366,40 +366,67 @@ class Downloads(
      * cancels what is under way, downloads what is missing, or, if all of it is downloaded,
      * removes it.
      *
-     * **Only this list's standing changes, and only songs nothing else wants are touched**: a
-     * song another downloaded list holds, or that was downloaded by itself, stays downloaded
-     * (or goes on arriving), and the other list stays downloaded whole.
+     * **Only this list's standing changes, and only songs nothing else wants are touched**
+     * (see [withdraw], which every removal or cancelling of a group goes through).
      */
     suspend fun toggle(list: DownloadedList, songs: List<Song>): Toggled = asking.withLock {
         ready.await()
         onDisk {}
-        val waiting = songs.filter { it.id in asks }.map { it.id }
+        val ids = songs.map { it.id }
+        val waiting = ids.filter { it in asks }
         // Whether it is this list that is on its way: a song of it arriving for another list,
         // or by itself, doesn't make its button a Cancel (there would be nothing of this
         // list's to cancel); pressed then, it downloads the list, as it would with nothing
         // arriving.
         val kept = catalogue.collection(list.key) != null
         when {
-            waiting.isNotEmpty() && kept -> {
-                val others = onDisk {
-                    forgetList(list.key)
-                    catalogue.wantedBesides(list.key)
-                }
-                stop(waiting.filter { it !in others })
-                Toggled.Cancelled
-            }
-            waiting.isEmpty() && songs.isNotEmpty() && songs.all { catalogue.has(it.id) } -> {
-                val others = onDisk {
-                    forgetList(list.key)
-                    catalogue.wantedBesides(list.key)
-                }
-                val going = songs.map { it.id }.filter { it !in others }
-                drop(going)
-                // Nothing of it went: every song of it is held by something else downloaded.
-                if (going.isEmpty()) Toggled.HeldElsewhere else Toggled.Removed
-            }
-            else -> Toggled.Asked(ask(songs, list.copy(songs = songs.map { it.id }), own = false))
+            waiting.isNotEmpty() && kept -> withdraw(list.key, waiting, files = false)
+            waiting.isEmpty() && songs.isNotEmpty() && songs.all { catalogue.has(it.id) } -> withdraw(list.key, ids, files = true)
+            else -> Toggled.Asked(ask(songs, list.copy(songs = ids), own = false))
         }
+    }
+
+    /**
+     * A group as the Downloads page shows it (an album with anything downloaded, a playlist
+     * or Liked songs downloaded whole: `key` is its list's, `ids` the songs shown), by its
+     * button there: cancelled if any of it is on its way, else removed. The same path as a
+     * list's own button, so the same rule about who else wants each song.
+     */
+    suspend fun removeGroup(key: String, ids: List<String>): Toggled = asking.withLock {
+        ready.await()
+        onDisk {}
+        val waiting = ids.filter { it in asks }
+        if (waiting.isNotEmpty()) withdraw(key, waiting, files = false) else withdraw(key, ids, files = true)
+    }
+
+    /**
+     * **The one way a group is removed or cancelled**: the wish for the group is withdrawn,
+     * and of `ids` only the songs nothing else wants are touched (deleted, with `files`;
+     * otherwise only stopped on their way). A song another list downloaded whole holds stays
+     * downloaded (or goes on arriving), and that list stays downloaded whole.
+     *
+     * What "the wish for the group" is: the list `key`, if it is downloaded whole; then a
+     * song of it that was also asked for by itself keeps its file, as its own download. If
+     * `key` is no list downloaded whole (an album on the Downloads page made of songs
+     * downloaded one at a time, or its own page showing every song downloaded), the group
+     * *is* those songs' own downloads, and it is those that are withdrawn: otherwise its
+     * button could never remove anything.
+     *
+     * Decided on the disk's own thread, in turn with every other change, under [asking].
+     */
+    private suspend fun withdraw(key: String, ids: List<String>, files: Boolean): Toggled {
+        val others = onDisk {
+            if (catalogue.collection(key) != null) forgetList(key) else catalogue.unsingle(ids)
+            catalogue.wantedBesides(key)
+        }
+        val going = ids.filter { it !in others }
+        if (!files) {
+            stop(going)
+            return Toggled.Cancelled
+        }
+        drop(going)
+        // Nothing of it went: every song of it is held by something else downloaded.
+        return if (going.isEmpty()) Toggled.HeldElsewhere else Toggled.Removed
     }
 
     sealed interface Toggled {
@@ -411,11 +438,21 @@ class Downloads(
         data class Asked(val asked: org.medianexus.music.downloads.Asked) : Toggled
     }
 
-    /** Stops these songs' downloads, waiting or part-way, by hand: they are no longer wanted
-     *  for themselves either. */
+    /**
+     * Stops these songs' downloads, waiting or part-way, by hand, **and nothing puts them
+     * back**: they are no longer wanted for themselves, and a list downloaded whole that one
+     * of them belongs to is no longer kept whole (as removing a song by hand has always done:
+     * otherwise the next look at the list, or the server coming back, would fetch them all
+     * again, and the Cancel would have been for nothing). What had already arrived of such a
+     * list stays downloaded.
+     */
     fun cancel(ids: Collection<String>) = onMain {
-        later { catalogue.unsingle(ids) }
-        stop(ids)
+        val asked = ids.toSet()
+        later {
+            for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) forgetList(list.key)
+            catalogue.unsingle(asked)
+        }
+        stop(asked)
     }
 
     /** Stops these songs' downloads, and nothing more. */
@@ -429,8 +466,9 @@ class Downloads(
         publish()
     }
 
-    /** Stops everything on its way. */
-    fun cancelAll() = onMain { cancel(asks.keys.toList() + now.value.active.map { it.song.id }) }
+    /** Stops everything on its way, waiting or part-way, as [cancel] does: the lists those
+     *  songs were for are no longer kept whole, so nothing fetches them again. */
+    fun cancelAll() = onMain { cancel(asks.keys + now.value.active.map { it.song.id }) }
 
     /** Has another go at the songs that couldn't be downloaded. */
     suspend fun retryFailed(onlyNetwork: Boolean = false): Asked? {
@@ -504,8 +542,17 @@ class Downloads(
         val next = list.copy(songs = songs.map { it.id }, at = was.at)
         // (Only if it is still downloaded whole by the time it is written.)
         if (next != was) onDisk { if (catalogue.collection(list.key) != null) catalogue.keep(next) }
-        val missing = songs.filter { !catalogue.has(it.id) }
-        if (missing.isNotEmpty() && !reach.value.offline) download(missing)
+        if (reach.value.offline) return
+        // Asked for only if the list is still downloaded whole when its turn to ask comes: it
+        // may have been cancelled or removed while this waited (everything written before
+        // now has been, by then), and what was cancelled must not be put back.
+        asking.withLock {
+            ready.await()
+            onDisk {}
+            if (catalogue.collection(list.key) == null) return
+            val missing = songs.filter { !catalogue.has(it.id) }
+            if (missing.isNotEmpty()) ask(missing, null, own = false)
+        }
     }
 
     // ---- Covers -----------------------------------------------------------------------------

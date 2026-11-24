@@ -626,4 +626,140 @@ class DownloadsTest {
         // And a failure of our own making never carries the exception it came from.
         assertEquals(null, DownloadFailure("Can't reach the server.", network = true).cause)
     }
+
+    // ---- Groups on the Downloads page, and Cancel all (offline hardening 2, item 1) ---------
+
+    @Test
+    fun removingAnAlbumFromTheDownloadsPageLeavesWhatAPlaylistStillNeeds() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2, s3) = listOf(song("s1"), song("s2"), song("s3"))
+        // A playlist downloaded whole holds two songs of an album; a third song of the album
+        // was downloaded by itself. The Downloads page shows the album with all three.
+        run { engine.toggle(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) }
+        run { engine.download(listOf(s3), own = true) }
+        until("all three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
+        assertEquals(listOf("s1", "s2", "s3"), DownloadedViews.album(engine.state.value, "al-1")!!.songs.map { it.id })
+        // The album's button on the Downloads page: Remove from downloads.
+        assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("album:al-1", listOf("s1", "s2", "s3")) })
+        until("s3 gone") { !catalogue.has("s3") }
+        repeat(20) { idle() }
+        // What the playlist needs is still there, files and all, and the playlist is still
+        // downloaded whole: nothing of it was forgotten.
+        assertTrue(catalogue.has("s1") && catalogue.has("s2"))
+        assertTrue(catalogue.fileOf("s1")!!.isFile && catalogue.fileOf("s2")!!.isFile)
+        assertEquals(listOf("playlist:p1"), engine.state.value.collections.map { it.key })
+        assertEquals(setOf("s1", "s2"), Catalogue(catalogue.dir).state.value.ids)
+        assertEquals(listOf("playlist:p1"), Catalogue(catalogue.dir).state.value.collections.map { it.key })
+        // Asked again, there is nothing of the album's own to remove, and it says so.
+        assertEquals(Downloads.Toggled.HeldElsewhere, run { engine.removeGroup("album:al-1", listOf("s1", "s2")) })
+        assertTrue(catalogue.has("s1") && catalogue.has("s2"))
+    }
+
+    @Test
+    fun removingAPlaylistFromTheDownloadsPageLeavesAnotherListWhole() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2, s3) = listOf(song("s1"), song("s2"), song("s3"))
+        run { engine.toggle(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) }
+        run { engine.toggle(list("playlist:p2", listOf(s2, s3)), listOf(s2, s3)) }
+        until("all three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
+        assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("playlist:p1", listOf("s1", "s2")) })
+        until("s1 gone") { !catalogue.has("s1") }
+        repeat(20) { idle() }
+        assertTrue(catalogue.has("s2") && catalogue.has("s3"))
+        assertEquals(listOf("playlist:p2"), engine.state.value.collections.map { it.key })
+    }
+
+    @Test
+    fun anAlbumOfSongsDownloadedByThemselvesCanBeRemovedAsAGroup() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2) = listOf(song("s1"), song("s2"))
+        run { engine.download(listOf(s1, s2), own = true) }
+        until("both") { engine.state.value.downloaded.size == 2 && !engine.state.value.busy }
+        // No list holds them: the group is the songs' own downloads, and removing it removes
+        // them (it must not answer "something else has them" for ever).
+        assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("album:al-1", listOf("s1", "s2")) })
+        until("gone") { engine.state.value.downloaded.isEmpty() }
+        assertTrue(Catalogue(catalogue.dir).state.value.singles.isEmpty())
+        // And so does the album's own button, on its page.
+        run { engine.download(listOf(s1, s2), own = true) }
+        until("both again") { engine.state.value.downloaded.size == 2 && !engine.state.value.busy }
+        assertEquals(Downloads.Toggled.Removed, run { engine.toggle(list("album:al-1", listOf(s1, s2)), listOf(s1, s2)) })
+        until("gone again") { engine.state.value.downloaded.isEmpty() }
+    }
+
+    @Test
+    fun cancelAllIsNotUndoneByTheNextLookAtAList() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val songs = listOf(song("s1", size = 400_000), song("s2", size = 400_000), song("s3", size = 400_000))
+        run { engine.toggle(list("playlist:p1", songs), songs) }
+        until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
+        engine.cancelAll()
+        until("stopped") { !engine.state.value.busy }
+        slow = false
+        // The playlist's page arrives from the server, and the server is found to be back:
+        // both used to fetch every cancelled song again.
+        run { engine.follow(list("playlist:p1", songs), songs) }
+        run { engine.topUp { it to songs } }
+        // (Something asked for afterwards has arrived: anything asked for before it would
+        // have been asked of the server by now.)
+        run { engine.download(listOf(song("s9"))) }
+        until("the later one") { catalogue.has("s9") && !engine.state.value.busy }
+        // No cancelled song was asked for a second time, and none arrived.
+        for (song in songs) assertTrue(song.id, asked.count { it.url.queryParameter("id") == song.id } <= 1)
+        assertEquals(setOf("s9"), catalogue.state.value.ids)
+        // The wish to keep the list whole was withdrawn with the cancel, and stays withdrawn.
+        assertTrue(engine.state.value.collections.isEmpty())
+        assertTrue(Catalogue(catalogue.dir).state.value.collections.isEmpty())
+    }
+
+    @Test
+    fun cancelAllLeavesWhatHadAlreadyArrived() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2) = listOf(song("s1"), song("s2", size = 400_000))
+        run { engine.toggle(list("playlist:p1", listOf(s1)), listOf(s1)) }
+        until("s1") { catalogue.has("s1") && !engine.state.value.busy }
+        slow = true
+        run { engine.follow(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) }
+        until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
+        engine.cancelAll()
+        until("stopped") { !engine.state.value.busy }
+        repeat(20) { idle() }
+        // The song that had arrived is still a download; only the one on its way went.
+        assertTrue(catalogue.has("s1") && catalogue.fileOf("s1")!!.isFile)
+        assertFalse(catalogue.has("s2"))
+    }
+
+    @Test
+    fun aListForgottenWhileItsPageWasBeingLookedAtFetchesNothing() {
+        // The page of a list downloaded whole has arrived and is being looked at (the write
+        // of its new order is held), and at that moment everything is cancelled.
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2) = listOf(song("s1", size = 400_000), song("s2", size = 400_000))
+        run { engine.toggle(list("playlist:p1", listOf(s1)), listOf(s1)) }
+        until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
+        holding = true
+        val following = scope.async { engine.follow(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) }
+        repeat(20) { idle() }
+        engine.cancelAll()
+        holding = false
+        while (true) serial.execute(held.poll() ?: break)
+        until("looked at") { following.isCompleted }
+        // Something asked for afterwards has arrived: had the look at the page asked for the
+        // list's songs, Media3 (which starts downloads in the order asked) would have asked
+        // the server for them before it.
+        slow = false
+        run { engine.download(listOf(song("s9"))) }
+        until("the later one") { catalogue.has("s9") && !engine.state.value.busy }
+        assertFalse(catalogue.has("s2"))
+        assertEquals(0, asked.count { it.url.queryParameter("id") == "s2" })
+        assertEquals(null, catalogue.collection("playlist:p1"))
+    }
 }

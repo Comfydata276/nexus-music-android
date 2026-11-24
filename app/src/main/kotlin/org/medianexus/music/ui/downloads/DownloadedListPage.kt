@@ -19,6 +19,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.medianexus.music.R
+import kotlinx.coroutines.launch
+import org.medianexus.music.downloads.DownloadPages
 import org.medianexus.music.downloads.DownloadedViews
 import org.medianexus.music.downloads.Downloads
 import org.medianexus.music.net.Song
@@ -51,6 +53,7 @@ import org.medianexus.music.ui.shell.sidewaysPhone
 fun DownloadedListPage(route: Route.Downloaded) {
     val ui = LocalUi.current
     val res = LocalResources.current
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val state = downloadsNow()
     val marks = rememberDownloadMarks()
     val liked = likedSongs()
@@ -103,20 +106,17 @@ fun DownloadedListPage(route: Route.Downloaded) {
                 onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
                 inline = inline,
                 // Everything here is downloaded (or on its way back after a retry): the
-                // button offers to remove it, as on a list's own page.
+                // button offers to remove it, as on a list's own page, and by the same path
+                // (`Downloads.removeGroup`): a song another downloaded list still needs
+                // stays, and that list stays downloaded whole.
                 download = DownloadButton(if (now.state == 1) 1 else 2, now.done, now.total, now.progress) {
-                    val downloads = ui.account?.downloads ?: return@DownloadButton
-                    if (now.state == 1) {
-                        downloads.cancel(songs.map { it.id })
-                        ui.toast(res.getString(R.string.download_cancelled))
-                    } else {
-                        ui.sheet = Sheet.RemoveList(name, hero.cover) {
-                            // (A list downloaded whole that they belong to stops being kept
-                            // up to date, as the list's own button does it.)
-                            downloads.remove(songs.map { it.id })
-                            ui.toast(res.getString(R.string.removed_from_downloads))
-                        }
+                    val account = ui.account ?: return@DownloadButton
+                    val shown = songs.map { it.id }
+                    val go = {
+                        account.scope.launch { DownloadPages.removeGroup(context, account, route.list, shown)?.let(ui::toast) }
+                        Unit
                     }
+                    if (now.state == 1) go() else ui.sheet = Sheet.RemoveList(name, hero.cover) { go() }
                 },
             )
         }

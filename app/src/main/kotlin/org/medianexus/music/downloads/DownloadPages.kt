@@ -46,6 +46,17 @@ object DownloadPages {
         }
     }
 
+    /** A group's button on the Downloads page (an album, a playlist, Liked songs, with the
+     *  songs shown): removed, or cancelled if any of it is on its way, and what to say. */
+    suspend fun removeGroup(context: Context, account: AccountGraph, key: String, ids: List<String>): String? {
+        val downloads = account.downloads ?: return null
+        return when (withContext(Dispatchers.Main.immediate) { downloads.removeGroup(key, ids) }) {
+            Downloads.Toggled.Cancelled -> context.getString(R.string.download_cancelled)
+            Downloads.Toggled.HeldElsewhere -> context.getString(R.string.still_downloaded_elsewhere)
+            else -> context.getString(R.string.removed_from_downloads)
+        }
+    }
+
     /** Songs on their own (a song's menu). */
     suspend fun songs(context: Context, account: AccountGraph, songs: List<Song>): String? {
         val downloads = account.downloads ?: return null
