@@ -2006,7 +2006,7 @@ class PlaybackService : MediaLibraryService() {
             era == null || !exo.playWhenReady || settings.cacheLimitMb <= 0 || graph.watch.offline -> 0
             else -> {
                 val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
-                val saver = Build.VERSION.SDK_INT >= 24 && connectivity?.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+                val saver = connectivity?.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
                 when {
                     saver -> 0
                     connectivity?.isActiveNetworkMetered == true -> minOf(settings.cacheAhead, FetchAhead.ON_MOBILE_DATA)

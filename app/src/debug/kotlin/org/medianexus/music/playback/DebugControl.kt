@@ -7,6 +7,7 @@ import android.content.Intent
 import java.io.File
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 
@@ -68,6 +69,15 @@ class DebugControl : BroadcastReceiver() {
             resultData = DebugHosts.set(context.applicationContext, entry)
             return
         }
+        if (intent.getStringExtra("measure") == "availability") {
+            // What knowing which songs play offline costs with 5,000 downloads (DebugMeasure).
+            val done = goAsync()
+            Thread {
+                done.resultData = runCatching { org.medianexus.music.downloads.DebugMeasure.availability(context.cacheDir) }.getOrElse { "failed: $it" }
+                done.finish()
+            }.start()
+            return
+        }
         intent.getStringExtra("spare")?.let { megabytes ->
             resultData = org.medianexus.music.downloads.DebugSpare.set(context.applicationContext, megabytes)
             return
@@ -86,6 +96,8 @@ class DebugControl : BroadcastReceiver() {
                 try {
                     val account = graph.accounts.restored()
                     val engine = account?.downloads
+                    // Answered once Media3 has read its list (a cold start reads it first).
+                    engine?.let { e -> kotlinx.coroutines.withTimeoutOrNull(10_000) { e.state.first { it.settled } } }
                     done.resultData = when {
                         account == null || engine == null -> "nobody signed in"
                         download != null -> org.medianexus.music.downloads.DownloadPages.listFor(account, download, "Liked songs")

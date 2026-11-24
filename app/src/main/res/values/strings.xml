@@ -247,7 +247,6 @@
     <string name="downloads_summary_one">1 song, %1$s</string>
     <string name="on_its_way">and 1 more on its way</string>
     <string name="on_their_way">and %1$d more on their way</string>
-    <string name="waiting">Waiting</string>
     <string name="waiting_for_wifi">Waiting for Wi-Fi</string>
     <string name="waiting_for_network">Waiting for a connection</string>
     <string name="waiting_for_server">Can\'t reach server</string>
@@ -270,6 +269,4 @@
     <string name="storage">Storage</string>
     <string name="notice_sign_in_gone">Your saved sign-in no longer works. Sign in again.</string>
     <string name="bad_download">The downloaded copy of “%1$s” wouldn\'t play, so it\'s being streamed. If that keeps happening, remove the download and fetch it again.</string>
-    <string name="cant_play_offline_list">That isn\'t downloaded, so it can\'t play while you\'re offline</string>
-    <string name="server_said">The server reported: %1$s</string>
 </resources>

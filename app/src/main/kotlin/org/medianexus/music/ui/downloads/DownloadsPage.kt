@@ -118,6 +118,7 @@ fun rememberDownloadAsk(): (() -> Unit) -> Unit {
 fun DownloadsPage() {
     val ui = LocalUi.current
     val context = LocalContext.current
+    val res = androidx.compose.ui.platform.LocalResources.current
     val scope = rememberCoroutineScope()
     val state = downloadsNow()
     val reach = reachNow()
@@ -150,11 +151,11 @@ fun DownloadsPage() {
                         })
                         if (state.busy) TextButton(stringResource(R.string.cancel_all), onClick = {
                             account?.downloads?.cancelAll()
-                            ui.toast(context.getString(R.string.downloads_cancelled))
+                            ui.toast(res.getString(R.string.downloads_cancelled))
                         })
                         if (done.isNotEmpty() && !state.busy) TextButton(stringResource(R.string.remove_all_downloads), danger = true, onClick = {
                             account?.downloads?.removeAll()
-                            ui.toast(context.getString(R.string.downloads_removed))
+                            ui.toast(res.getString(R.string.downloads_removed))
                         })
                     }
                 }
@@ -169,7 +170,7 @@ fun DownloadsPage() {
                     row.copy(liked = song.id in likedSet).withDownload(state, reach.offline, plays, song),
                     onClick = {
                         val at = done.indexOfFirst { it.id == song.id }
-                        if (at >= 0) ui.play(done, at, context.getString(R.string.downloads), "downloads")
+                        if (at >= 0) ui.play(done, at, res.getString(R.string.downloads), "downloads")
                     },
                     onMore = { ui.menu = SongMenu(song) },
                     showDuration = true,

@@ -26,7 +26,10 @@ import org.medianexus.music.store.accountDirs
  * them. Screens and the playback service both take what they need from here; nothing here
  * belongs to a screen.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class Graph(context: Context) {
+    private val app: Context = context.applicationContext
+
     /** Work that outlives any screen. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -66,7 +69,7 @@ class Graph(context: Context) {
     val queueSaver = QueueSaver(scope, Dispatchers.IO)
 
     /** Media3's database: the kept songs' index and each account's list of downloads. */
-    val database by lazy { androidx.media3.database.StandaloneDatabaseProvider(context.applicationContext) }
+    val database: androidx.media3.database.DatabaseProvider by lazy { databaseFor(app) }
 
     /**
      * Whether the server can be reached (see [ServerWatch]): noticed from every request the
@@ -132,6 +135,9 @@ class Graph(context: Context) {
      *  that failed for want of it are tried again, downloaded playlists are topped up. */
     private fun cameOnline() {
         reconnected()
+        // As Windows says it; not after offline mode is switched off by hand, which says
+        // nothing (the switch was in the person's own hand).
+        if (!settings.value.offline) toasts.show(app.getString(R.string.back_online))
         val account = accounts.state.value ?: return
         account.scope.launch {
             account.flush()
@@ -179,6 +185,18 @@ class Graph(context: Context) {
         return org.medianexus.music.downloads.DownloadedViews.listOf(list.key, page, list)
     }
 
+    private fun batchEnded(context: Context, state: org.medianexus.music.downloads.DownloadsState) {
+        val (done, failed) = state.batchDone to state.batchFailed
+        val said = when {
+            failed == 0 && done == 1 -> context.getString(R.string.download_finished)
+            failed == 0 && done > 1 -> context.getString(R.string.songs_downloaded, done)
+            done == 0 && failed > 0 -> org.medianexus.music.downloads.DownloadPages.trouble(context, state.failed)
+            failed > 0 -> context.getString(R.string.some_downloaded, done, failed)
+            else -> null
+        }
+        said?.let(toasts::show)
+    }
+
     private fun reconnected() {
         accounts.state.value?.covers?.retryFailed()
         org.medianexus.music.ui.parts.CoverRetry.now()
@@ -189,6 +207,9 @@ class Graph(context: Context) {
     val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection))
 
     companion object {
+        @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+        private fun databaseFor(context: Context): androidx.media3.database.DatabaseProvider = androidx.media3.database.StandaloneDatabaseProvider(context)
+
         /** Where the saved password is. Kept out of backups: the key that opens it can't
          *  leave the phone anyway. */
         fun passwordFile(context: Context): File = File(context.noBackupFilesDir, "password.sealed")
@@ -217,6 +238,16 @@ class Graph(context: Context) {
                 // (What one account's server said is not the next account's to be shown.)
                 refusals.clear()
                 account?.api?.onReached = ::reached
+                // When a batch of downloads ends, it is said, as Windows says it.
+                account?.downloads?.let { downloads ->
+                    account.scope.launch {
+                        var busy = false
+                        downloads.state.collect { state ->
+                            if (busy && !state.busy && state.settled && state.batchTotal > 0) batchEnded(context, state)
+                            busy = state.busy
+                        }
+                    }
+                }
                 // Downloaded lists topped up with what they gained while the app was away.
                 if (account != null) account.scope.launch {
                     if (!watch.offline) account.downloads?.let { downloads ->

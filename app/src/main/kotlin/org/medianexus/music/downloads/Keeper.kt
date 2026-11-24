@@ -96,7 +96,7 @@ object DownloadKeeper {
                 .setRequiredNetworkType(network)
                 .setPersisted(true)
                 .apply {
-                    if (userInitiated && Build.VERSION.SDK_INT >= 34) {
+                    if (userInitiated) {
                         setUserInitiated(true)
                         setEstimatedNetworkBytes(JobInfo.NETWORK_BYTES_UNKNOWN.toLong(), JobInfo.NETWORK_BYTES_UNKNOWN.toLong())
                     }
