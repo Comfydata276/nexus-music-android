@@ -706,7 +706,10 @@ class QueuePlayer(
     private fun stationShown(): MediaMetadata? {
         val station = queue.current()?.takeIf { it.radioUrl.isNotEmpty() } ?: return null
         val now = announced?.takeIf { it.first == queue.currentUid() }?.second?.takeIf { it.isNotEmpty() }
-        return exo.mediaMetadata.buildUpon().setTitle(station.title).setArtist(now ?: station.artistLabel).setDisplayTitle(station.title).build()
+        // As the subtitle too: with a display title set, what a car shows beneath it is the
+        // subtitle, not the artist.
+        val beneath = now ?: station.artistLabel
+        return exo.mediaMetadata.buildUpon().setTitle(station.title).setArtist(beneath).setDisplayTitle(station.title).setSubtitle(beneath).build()
     }
 
     private val rejoins = Rejoins()
