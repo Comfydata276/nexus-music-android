@@ -26,6 +26,10 @@ import org.medianexus.music.net.ApiError
 class HeldChangesTest {
     @get:Rule val folder = TemporaryFolder()
 
+    /** Nothing here waits on time passing. This is only so that a test which has gone wrong
+     *  with something held at one of its gates fails, and does not sit there for ever. */
+    @get:Rule val notForEver: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(120)
+
     private fun star(id: String, starred: Boolean) = Pending.Star("song", id, starred)
 
     private fun ids(changes: List<Pending>) = changes.map { it.id }
@@ -72,6 +76,39 @@ class HeldChangesTest {
     }
 
     private var later = 0
+
+    /**
+     * The phone's disk, as a test may hold it up. While `holding`, whatever is asked of it
+     * (reading what is held, a write) waits at the gate; the test hears of each thing as it
+     * arrives ([arrival]) and lets it through when it chooses.
+     */
+    private class Disk : kotlinx.coroutines.CoroutineDispatcher() {
+        private val waiting = ArrayDeque<Runnable>()
+        private val arrivals = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        private var holding = false
+
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            synchronized(waiting) {
+                if (!holding) return Dispatchers.IO.dispatch(context, block)
+                waiting += block
+            }
+            arrivals.trySend(Unit)
+        }
+
+        fun hold() = synchronized(waiting) { holding = true }
+
+        /** Returns once one more thing has arrived at the gate. */
+        suspend fun arrival() = arrivals.receive()
+
+        /** Lets through the thing that has waited longest. */
+        fun letOne() = Dispatchers.IO.dispatch(kotlin.coroutines.EmptyCoroutineContext, synchronized(waiting) { waiting.removeFirst() })
+
+        /** Lets everything through, and holds nothing more. */
+        fun open() = synchronized(waiting) {
+            holding = false
+            while (true) Dispatchers.IO.dispatch(kotlin.coroutines.EmptyCoroutineContext, waiting.removeFirstOrNull() ?: break)
+        }
+    }
 
     // ---- Windows' rules ---------------------------------------------------------------------
 
@@ -341,9 +378,9 @@ class HeldChangesTest {
         reached.await()
         val second = held(restarted = false)
         val also = async(Dispatchers.Default) { second.flush() }
-        // The second has nothing to do but wait its turn: it sends nothing while the first
-        // is sending.
-        kotlinx.coroutines.delay(100)
+        // The second has nothing to do but wait its turn. (That it sends nothing meanwhile
+        // is in what the server ends up having been sent: had it not waited, "a" or "b"
+        // would have gone twice. No stretch of time is waited out to see nothing happen.)
         assertTrue(sent.isEmpty())
         go.complete(Unit)
         sending.await()
@@ -401,6 +438,79 @@ class HeldChangesTest {
         assertEquals(1, notes.count { "1 play could be neither sent to the server nor kept on the phone, and is lost" in it })
     }
 
+    // ---- A change whose write hasn't ended (found by a test that failed one run in three) ------
+
+    @Test
+    fun aChangeStillBeingWrittenIsNotGivenUpWhenAnotherPassEnds() = runBlocking {
+        // Offline. A change has been written, and its pass has got as far as asking whether
+        // the server may be asked...
+        val disk = Disk()
+        val asking = CompletableDeferred<Unit>()
+        val answer = java.util.concurrent.CountDownLatch(1)
+        HeldChanges.restarted(file())
+        val held = HeldChanges(
+            file(), disk,
+            send = { sent += said(it) },
+            offline = {
+                if (asking.complete(Unit)) answer.await()
+                true
+            },
+            note = { notes += it },
+        )
+        val first = async(Dispatchers.Default) { held.submit(star("a", true)) }
+        asking.await()
+        // ...when a second is made (a play counted as a heart is tapped, two hearts tapped
+        // together): it is in the queue, and its write to the phone has yet to happen.
+        disk.hold()
+        val second = async(Dispatchers.Default) { runCatching { held.submit(Pending.Played("b", at = 1_700_000_000_000)) } }
+        try {
+            disk.arrival()
+            disk.letOne()
+            disk.arrival()
+            assertEquals(2, held.waiting.value)
+            // The first one's pass ends there: the server may not be asked.
+            answer.countDown()
+            assertEquals(HeldChanges.Outcome.HELD, first.await())
+            // The second is still in the queue. (It used to be taken for a change the phone
+            // had refused to keep, which it had not: it was dropped, and its maker told it
+            // was lost.)
+            assertEquals(listOf("a", "b"), ids(held.all()))
+            assertEquals(2, held.waiting.value)
+        } finally {
+            // (Whatever went wrong above, nothing is left standing at a gate.)
+            answer.countDown()
+            disk.open()
+        }
+        // Its write done, it is held like the first, and both are what a fresh start finds.
+        assertEquals(Result.success(HeldChanges.Outcome.HELD), second.await())
+        assertEquals(listOf("a", "b"), ids(held().all()))
+        assertTrue(notes.toString(), notes.isEmpty())
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun aChangeThePhoneRefusedToKeepIsStillGivenUpByWhicheverPassEnds() = runBlocking {
+        // The other side of the same rule: offline, and the phone won't take the write. That
+        // change is lost, and its maker is told so, as before.
+        offline = true
+        val held = held()
+        assertEquals(HeldChanges.Outcome.HELD, held.submit(star("a", true)))
+        folder.root.setWritable(false)
+        try {
+            try {
+                held.submit(star("b", true))
+                fail("it could be neither sent nor kept")
+            } catch (_: ApiError.Network) {
+            }
+        } finally {
+            folder.root.setWritable(true)
+            offline = false
+        }
+        // The one that was written is still held, and is all that is.
+        assertEquals(listOf("a"), ids(held.all()))
+        assertEquals(listOf("a"), ids(held().all()))
+    }
+
     // ---- What is said to have been sent (offline hardening 2, item 6) --------------------------
 
     @Test
@@ -430,29 +540,26 @@ class HeldChangesTest {
         offline = true
         // The first sign-in's sender has a change to write, and its write is held up (the
         // account's own work is being wound up as it is signed out of).
-        val waiting = java.util.concurrent.LinkedBlockingQueue<Runnable>()
-        var holding = false
-        val slowDisk = object : kotlinx.coroutines.CoroutineDispatcher() {
-            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
-                if (holding) waiting += block else Dispatchers.IO.dispatch(context, block)
-            }
-        }
+        val slowDisk = Disk()
         HeldChanges.restarted(file())
         val first = HeldChanges(file(), slowDisk, offline = { offline }, note = { notes += it })
         first.submit(star("a", true))
-        holding = true
+        slowDisk.hold()
         val late = async(Dispatchers.Default) { first.submit(star("b", true)) }
-        while (waiting.isEmpty()) kotlinx.coroutines.yield()
-        // Signed straight back in: the second sender, for the same file, takes a change and
-        // writes it.
-        val second = held(restarted = false)
-        val fresh = async(Dispatchers.Default) { second.submit(star("c", true)) }
-        kotlinx.coroutines.delay(200)
-        // The first one's write now goes through.
-        holding = false
-        while (true) Dispatchers.IO.dispatch(kotlin.coroutines.EmptyCoroutineContext, waiting.poll() ?: break)
-        late.await()
-        fresh.await()
+        try {
+            // It has read what is held and is in the queue; its write is what waits.
+            slowDisk.arrival()
+            slowDisk.letOne()
+            slowDisk.arrival()
+            // Signed straight back in: the second sender, for the same file, takes a change
+            // and writes it, and is done.
+            val second = held(restarted = false)
+            assertEquals(HeldChanges.Outcome.HELD, second.submit(star("c", true)))
+        } finally {
+            // The first one's write now goes through.
+            slowDisk.open()
+        }
+        assertEquals(HeldChanges.Outcome.HELD, late.await())
         // Whatever order the writes landed in, the file holds every change: what an app
         // started again would send. (The old sender's write used to be of its own list, and
         // took the newer one's change off the disk.)

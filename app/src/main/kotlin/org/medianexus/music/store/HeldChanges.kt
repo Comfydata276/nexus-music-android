@@ -77,6 +77,13 @@ sealed interface Pending {
  * - **A file that can't be read and can't be set aside stays as it is.** Nothing is written
  *   over it: until it can be moved out of the way no change is acknowledged as held (it is
  *   sent if the server is there; if not, its maker is told it didn't save).
+ * - **Only a write that failed loses a change.** A change is in the queue from the moment it
+ *   is made, and its write to the phone takes a moment more. A pass that ends in that moment
+ *   (another change's, or the one the app coming back online starts) leaves it alone: it is
+ *   not yet held, and it is not lost either. Whoever made it runs a pass once its write has
+ *   ended, and is told then. (Such a pass used to take "not written yet" for "couldn't be
+ *   written": offline, the second of two changes made together was dropped from the queue
+ *   and its maker told it didn't save, on a phone that had refused nothing.)
  *
  * **Plays, and what can't be promised.** The Subsonic interface has no way to make a
  * submission safe to repeat, so if the app is killed in the instant between the server
@@ -115,10 +122,13 @@ class HeldChanges(
         data class Failed(val error: ApiError) : Settled
     }
 
-    /** A change in the queue. `saved`: it is on the disk. `parked`: it has had to wait
-     *  (whoever made it was told it was held). `settled` tells whoever is waiting on it. */
+    /** A change in the queue. `saved`: it is on the disk. `refused`: the phone wouldn't take
+     *  a write that would have put it there (with neither, its write hasn't ended yet).
+     *  `parked`: it has had to wait (whoever made it was told it was held). `settled` tells
+     *  whoever is waiting on it. */
     private class Entry(val change: Pending, val settled: CompletableDeferred<Settled>?) {
         @Volatile var saved = false
+        @Volatile var refused = false
         @Volatile var parked = false
     }
 
@@ -241,7 +251,8 @@ class HeldChanges(
 
     /**
      * One pass over the queue, one at a time and in order (see the class). Every change left
-     * in the queue at its end has had its maker told it is held.
+     * in the queue at its end has had its maker told it is held, but for one whose write to
+     * the phone is still under way (its maker's own pass follows that write).
      */
     private suspend fun pass() = shared.passes.withLock {
         var strange = 0
@@ -313,7 +324,9 @@ class HeldChanges(
     }
 
     /** Tells the makers of everything still queued that it is held; a change that could not
-     *  be written to the phone is not held but lost, and its maker is told that instead. */
+     *  be written to the phone is not held but lost, and its maker is told that instead. One
+     *  whose write hasn't ended is neither yet, and is left for the pass its maker runs when
+     *  it has (see the class). */
     private fun park() {
         val lostNow = ArrayList<Entry>()
         synchronized(lock) {
@@ -323,7 +336,7 @@ class HeldChanges(
                 if (entry.saved) {
                     entry.parked = true
                     entry.settled?.complete(Settled.Held)
-                } else if (entry.settled?.isCompleted == false) {
+                } else if (entry.refused && entry.settled?.isCompleted == false) {
                     each.remove()
                     lostNow += entry
                 }
@@ -352,7 +365,10 @@ class HeldChanges(
                     shared.inTheWay = false
                 }
                 if (now.isNotEmpty() || file.exists()) writeAtomically(file, json.encodeToString(LIST, now.map { it.change }).toByteArray(), durable = true)
-                now.forEach { it.saved = true }
+                now.forEach {
+                    it.saved = true
+                    it.refused = false
+                }
                 // (What was written is the queue as it stood when this began: anything
                 // dealt with since is still to come off.)
                 synchronized(lock) { if (loaded().toList() == now) shared.dirty = false }
@@ -364,6 +380,10 @@ class HeldChanges(
                 // if not, its maker is told it didn't save (see park).
                 if (!shared.unsavedSaid) note("held changes: they couldn't be written to the phone")
                 shared.unsavedSaid = true
+                // Each of these has now been refused by the phone, which is what park goes
+                // by: not merely "isn't written", which is also true of a change whose write
+                // has yet to begin.
+                now.forEach { if (!it.saved) it.refused = true }
                 false
             }
         }

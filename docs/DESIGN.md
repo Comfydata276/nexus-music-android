@@ -958,7 +958,15 @@ How it is built (M1a):
   straight back in to the same account cannot run two, or let an old write land over a new
   one. A file that can't be read is set aside (`held.damaged.json`) and said, never read as
   empty and written over; one that can't be set aside either is left as it is, and nothing
-  is acknowledged as held until it can be moved out of the way. What is said to have been
+  is acknowledged as held until it can be moved out of the way. **Only a write that failed
+  loses a change**: one that is in the queue and not yet written (its write takes a moment)
+  is left alone by a pass that ends meanwhile, and is told held, or lost, by the pass its
+  own maker runs once the write has ended. (Such a pass used to take "not written yet" for
+  "couldn't be written": out of reach of the server, the second of two changes made within
+  one write of each other, a play counted as a heart was tapped, say, was dropped from the
+  queue and its maker told "That didn't save", on a phone that had refused nothing. It was
+  found by `HeldOrderTest` failing about one run in three, which is why that test and the
+  sender's own now force the order of events with gates and wait on nothing.) What is said to have been
   sent ("the 2 changes you made offline…") counts what the server accepted, once. Windows' rules for what an answer means are kept
   (`send_all`, its tests ported): what the server dealt with (took, or refused for good)
   goes; a proxy's error page in the server's place counts as "try again", and later changes
