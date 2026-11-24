@@ -276,6 +276,12 @@ class PinnedCopyTest {
         val exo = start()
         exo.play()
         advance(exo).untilPosition(0, 5_000)
+        // (Once the player has read as far ahead as it means to, and not while it is still
+        // reading: a file rewritten under a read is cut short under it, which to the reader
+        // is the end of the song, not a copy that has gone. On a machine with no time to
+        // spare the read was sometimes still under way here, the seek then found a song
+        // that had "ended", and no error ever came: one run in five timed out.)
+        advance(exo).untilLoadingIs(false)
         // Downloaded again at another quality: a file at the same name, and not the same file.
         downloaded!!.writeBytes(copyAt(160))
         downloaded!!.setLastModified(downloaded!!.lastModified() + 5_000)
