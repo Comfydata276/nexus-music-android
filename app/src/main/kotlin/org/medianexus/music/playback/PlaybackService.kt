@@ -103,7 +103,13 @@ class PlaybackService : MediaLibraryService() {
             CarOffline(
                 now = { graph.watch.offline },
                 availability = account.availability,
-                downloads = { account.downloads?.state?.value ?: org.medianexus.music.downloads.DownloadsState() },
+                // The downloads as they stand; before their engine has said anything (the
+                // first moments of a cold start), as the catalogue read them from the disk.
+                downloads = {
+                    account.downloads?.state?.value?.takeIf { it.settled || it.downloaded.isNotEmpty() }
+                        ?: account.catalogue.state.value.let { org.medianexus.music.downloads.DownloadsState(downloaded = it.songs, collections = it.collections) }
+                },
+                unsure = { !graph.watch.state.value.sure },
             ),
         )
         val kept = KeptSongs(

@@ -11,7 +11,15 @@ import org.medianexus.music.net.ApiError
 
 /** Where the app stands with the server: offline mode switched on by hand, and whether the
  *  server could be reached when it was last asked. */
-data class Reach(val manual: Boolean = false, val unreachable: Boolean = false) {
+data class Reach(
+    val manual: Boolean = false,
+    val unreachable: Boolean = false,
+    /** Whether it is known which: false only for the moment after an account is taken on,
+     *  before the server has answered or failed to. Then what is on the phone is shown
+     *  first, and nothing waits on the server that has an answer here (the car, started
+     *  cold in a dead spot, must not sit waiting to find out there is no signal). */
+    val sure: Boolean = true,
+) {
     /** Nothing should be expected of the server (Windows' `is_offline`). */
     val offline: Boolean get() = manual || unreachable
 }
@@ -49,6 +57,9 @@ class ServerWatch(
     private val mayAsk: () -> Boolean = { true },
     private val againMillis: Long = AGAIN_MILLIS,
     private val caughtUp: () -> Unit = {},
+    /** The first ask after an account is taken on: the same question, given up on sooner
+     *  (see [begin]). */
+    private val firstPing: suspend () -> Unit = ping,
 ) {
     private val now = MutableStateFlow(Reach())
     val state: StateFlow<Reach> = now.asStateFlow()
@@ -61,6 +72,38 @@ class ServerWatch(
 
     /** Offline mode has just been switched off, and the server not yet heard from. */
     @Volatile private var switchedOff = false
+
+    /** The server was taken to be out of reach without being asked (no network at
+     *  start-up): its first answer is not a return worth announcing. */
+    @Volatile private var assumed = false
+
+    /**
+     * An account has just been taken on (the app has started, or someone signed in). If the
+     * phone has no network at all, the server is out of reach **from this instant**: nothing
+     * waits to find that out. Otherwise it is asked at once, and given less time than usual to
+     * answer; until it has answered or failed to, the state says it isn't [Reach.sure].
+     */
+    fun begin(networkThere: Boolean) {
+        if (now.value.manual) return
+        if (!networkThere) {
+            assumed = true
+            gone()
+            // (Asked all the same: a server on the phone itself, or over a link Android
+            // doesn't count as a network, answers.)
+            check()
+            return
+        }
+        now.value = now.value.copy(sure = false)
+        synchronized(lock) {
+            if (asking?.isActive == true) return
+            asking = scope.launch { askOnce(first = true) }
+        }
+    }
+
+    /** The phone has lost its network: the server is out of reach until it answers. */
+    fun noNetwork() {
+        if (!now.value.manual && !now.value.unreachable) gone()
+    }
 
     /** Offline mode, by hand, as Settings has it. */
     fun manual(on: Boolean) {
@@ -102,20 +145,24 @@ class ServerWatch(
             asking?.cancel()
             asking = null
         }
-        now.value = now.value.copy(unreachable = false)
+        assumed = false
+        now.value = now.value.copy(unreachable = false, sure = true)
     }
 
-    private suspend fun askOnce() {
+    private suspend fun askOnce(first: Boolean = false) {
         if (!mayAsk()) {
             gone()
             return
         }
         try {
-            ping()
+            if (first) firstPing() else ping()
             answered()
         } catch (e: ApiError) {
             when {
-                e.signInRefused -> signInGone()
+                e.signInRefused -> {
+                    now.value = now.value.copy(sure = true)
+                    signInGone()
+                }
                 // No answer, an error page from something in front of the server, or the
                 // server unable to answer properly: carry on with what's on the phone and
                 // keep trying. (An error the server itself gives is an answer: it is there.)
@@ -131,6 +178,7 @@ class ServerWatch(
     /** The server answered a ping: back, if it was out of reach; caught up with, if offline
      *  mode has just been switched off. */
     private fun answered() {
+        if (!now.value.sure) now.value = now.value.copy(sure = true)
         if (now.value.unreachable) {
             switchedOff = false
             back()
@@ -142,7 +190,7 @@ class ServerWatch(
 
     private fun gone() {
         if (now.value.manual) return
-        now.value = now.value.copy(unreachable = true)
+        now.value = now.value.copy(unreachable = true, sure = true)
         synchronized(lock) {
             if (loop?.isActive == true) return
             loop = scope.launch {
@@ -158,12 +206,19 @@ class ServerWatch(
     private fun back() {
         val was = now.value
         if (!was.unreachable) return
-        now.value = was.copy(unreachable = false)
+        now.value = was.copy(unreachable = false, sure = true)
         synchronized(lock) {
             loop?.cancel()
             loop = null
         }
-        cameOnline()
+        // Taken to be out of reach only because the phone had no network when the app
+        // started: caught up with, and nothing said.
+        if (assumed) {
+            assumed = false
+            caughtUp()
+        } else {
+            cameOnline()
+        }
     }
 
     companion object {

@@ -82,6 +82,13 @@ class Graph(context: Context) {
     val watch: ServerWatch = ServerWatch(
         scope,
         ping = { accounts.state.value?.api?.ping() },
+        // The first ask after start-up is given a few seconds, not the half minute a request
+        // may take: on a link that swallows everything, the car must not wait that long to
+        // be shown what is on the phone.
+        firstPing = {
+            kotlinx.coroutines.withTimeoutOrNull(FIRST_ASK_MILLIS) { accounts.state.value?.api?.ping(); Unit }
+                ?: throw org.medianexus.music.net.ApiError.Network("It took too long to answer.")
+        },
         cameOnline = { caughtUp(back = true) },
         signInGone = ::signInGone,
         caughtUp = { caughtUp(back = false) },
@@ -221,6 +228,9 @@ class Graph(context: Context) {
     val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection))
 
     companion object {
+        /** How long the server is given to answer the first time it is asked after start-up. */
+        const val FIRST_ASK_MILLIS = 4_000L
+
         @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
         private fun databaseFor(context: Context): androidx.media3.database.DatabaseProvider = androidx.media3.database.StandaloneDatabaseProvider(context)
 
@@ -257,6 +267,9 @@ class Graph(context: Context) {
                 // (What one account's server said is not the next account's to be shown.)
                 refusals.clear()
                 account?.api?.onReached = ::reached
+                // Is its server there? With no network, no: from this instant. Otherwise it
+                // is asked at once (see ServerWatch.begin).
+                if (account != null) watch.begin(networkThere = network.state.value.connected)
                 // When a batch of downloads ends, it is said, as Windows says it.
                 account?.downloads?.let { downloads ->
                     account.scope.launch {
@@ -286,6 +299,8 @@ class Graph(context: Context) {
             reconnected()
             watch.networkBack()
         }
+        // No network at all: the server is out of reach until it answers again.
+        scope.launch { network.state.collect { if (!it.connected && accounts.state.value != null) watch.noNetwork() } }
         // The switch in Settings and the one every request checks are the same.
         scope.launch {
             settings.state.map { it.offline }.distinctUntilChanged().collect {

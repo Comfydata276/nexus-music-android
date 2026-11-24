@@ -71,7 +71,12 @@ class AccountGraph(
 
     val covers = CoverStore(
         File(account.dirs.cache, "covers"), scope, io,
-        fetch = { id, size -> api.fetchBytes(api.coverUrl(id, size), MOST_COVER_BYTES) },
+        // No cover is asked of a server known to be out of reach: the fetch fails here, at
+        // once, and is tried again when the server is back (CoverStore.retryFailed).
+        fetch = { id, size ->
+            if (reach.value.offline) throw org.medianexus.music.net.ApiError.Network("The server is out of reach.")
+            api.fetchBytes(api.coverUrl(id, size), MOST_COVER_BYTES)
+        },
         // Covers of downloaded music, kept with the downloads.
         pinned = File(downloadsDir, "covers"),
     )

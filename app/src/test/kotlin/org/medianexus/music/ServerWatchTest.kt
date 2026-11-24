@@ -196,4 +196,68 @@ class ServerWatchTest {
         assertEquals(1, online)
         assertEquals(0, caughtUp)
     }
+
+    // ---- From the first instant (offline review 7) --------------------------------------------
+
+    @Test
+    fun withNoNetworkAtStartUpItIsOfflineFromTheFirstInstantAndSaysNothingWhenItAnswers() = runTest {
+        val watch = watch()
+        // The phone has no network: out of reach, now, with nothing asked and waited for.
+        answer = { throw ApiError.Network("no network") }
+        watch.begin(networkThere = false)
+        assertTrue(watch.state.value.unreachable)
+        assertTrue(watch.state.value.sure)
+        runCurrent()
+        assertTrue(watch.offline)
+        // A server that answers all the same (on the phone itself, say): caught up with, and
+        // not announced as a return.
+        answer = {}
+        advanceTimeBy(ServerWatch.AGAIN_MILLIS + 1)
+        runCurrent()
+        assertFalse(watch.state.value.unreachable)
+        assertEquals(0, online)
+        assertEquals(1, caughtUp)
+    }
+
+    @Test
+    fun withANetworkItIsNotSureUntilTheServerHasAnsweredOrFailedTo() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var first = 0
+        val watch = ServerWatch(
+            backgroundScope,
+            ping = { pings++; answer() },
+            cameOnline = { online++ }, signInGone = { signedOut++ }, mayAsk = { mayAsk }, caughtUp = { caughtUp++ },
+            // The first ask: held here until the test lets it fail.
+            firstPing = { first++; gate.await(); throw ApiError.Network("too slow") },
+        )
+        watch.begin(networkThere = true)
+        runCurrent()
+        // Asked, and not answered: neither online nor offline is known.
+        assertEquals(1, first)
+        assertFalse(watch.state.value.sure)
+        assertFalse(watch.offline)
+        // It fails: out of reach, and that is known.
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(watch.state.value.sure)
+        assertTrue(watch.state.value.unreachable)
+        // A later account starts unsure again.
+        watch.reset()
+        assertTrue(watch.state.value.sure)
+        assertFalse(watch.state.value.unreachable)
+    }
+
+    @Test
+    fun losingTheNetworkIsOutOfReachAtOnce() = runTest {
+        val watch = watch()
+        answer = { throw ApiError.Network("gone") }
+        watch.noNetwork()
+        assertTrue(watch.state.value.unreachable)
+        // And its return is the usual one.
+        answer = {}
+        watch.networkBack()
+        runCurrent()
+        assertFalse(watch.state.value.unreachable)
+        assertEquals(1, online)
+    }
 }
