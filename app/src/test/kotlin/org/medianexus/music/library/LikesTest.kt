@@ -300,4 +300,58 @@ class LikesTest {
         withTimeout(5_000) { while (sent.size < 2) kotlinx.coroutines.delay(5) }
         assertEquals(listOf(true, false), sent.toList())
     }
+
+    @Test
+    fun unlikedAndLikedAgainQuicklyNeverLeavesLikedSongs() = runBlocking {
+        server = Found(songs = listOf(a, b))
+        // Each send says what it is, then waits for the test to let the server answer.
+        val sent = Channel<Boolean>(Channel.UNLIMITED)
+        val answers = Channel<Unit>(Channel.UNLIMITED)
+        val (likes, pages) = setUp { _, _, liked -> sent.send(liked); answers.receive() }
+        pages.fresh(likedSpec)
+        likes.heard(Found(songs = listOf(a, b)))
+        suspend fun shown() = likes.songsOf(pages.kept(likedSpec))!!.map { it.id }
+        likes.set(a, false)
+        assertEquals(listOf("b"), shown())
+        // Liked again before the server has answered the unlike. (The server still says
+        // "liked", so the like used to add no row of its own.)
+        likes.set(a, true)
+        assertTrue("a" in shown())
+        assertFalse(withTimeout(5_000) { sent.receive() })
+        // The server takes the unlike: kept Liked songs loses it, as the server now has it.
+        answers.send(Unit)
+        // The like is sent only once the unlike's turn is over, kept copy and all.
+        assertTrue(withTimeout(5_000) { sent.receive() })
+        assertFalse("a" in pages.kept(likedSpec)!!.songs.map { it.id })
+        // What the person last asked for is a like: it is still there, all the while the
+        // like is on its way. (It used to vanish until the like had gone through.)
+        assertTrue("liked again, and gone from Liked songs", "a" in shown())
+        assertTrue(likes.isLiked("a"))
+        val kept = scope.async(start = CoroutineStart.UNDISPATCHED) {
+            pages.changes.first { (key, value) -> key == "liked" && (value as Found).songs.any { it.id == "a" } }
+        }
+        answers.send(Unit)
+        withTimeout(5_000) { kept.await() }
+        assertTrue("a" in shown())
+        assertEquals(1, shown().count { it == "a" })
+    }
+
+    @Test
+    fun aLikedListHeardWhileAnUnlikeAndALikeAreOnTheirWayKeepsTheLike() = runBlocking {
+        server = Found(songs = listOf(a, b))
+        val sent = Channel<Boolean>(Channel.UNLIMITED)
+        val answers = Channel<Unit>(Channel.UNLIMITED)
+        val (likes, pages) = setUp { _, _, liked -> sent.send(liked); answers.receive() }
+        pages.fresh(likedSpec)
+        likes.heard(Found(songs = listOf(a, b)), askedAt = 0)
+        likes.set(a, false)
+        likes.set(a, true)
+        withTimeout(5_000) { sent.receive() }
+        // Liked songs as the server had it a moment ago (a still in it) arrives meanwhile.
+        likes.heard(Found(songs = listOf(a, b)), askedAt = now)
+        answers.send(Unit)
+        withTimeout(5_000) { sent.receive() }
+        assertTrue("a" in likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
+        answers.send(Unit)
+    }
 }

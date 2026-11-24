@@ -129,7 +129,9 @@ class Likes(
                 albums = albums.keepingNewer(server.albums, StarTarget.ALBUM, askedAt),
             )
             listed = songs
-            justLiked.keys.retainAll { it !in songs }
+            // A song with a change still on its way keeps its place at the head: what the
+            // server listed was asked for before that change is settled.
+            justLiked.keys.retainAll { it !in songs || Item(StarTarget.SONG, it) in unsent }
             publish()
         }
     }
@@ -188,7 +190,10 @@ class Likes(
         if (song.id.isEmpty() || song.radioUrl.isNotEmpty()) return
         val kept = song.copy(starred = song.starred ?: "", queued = false)
         change(Item(StarTarget.SONG, song.id), liked, song.title, kept) {
-            if (liked && song.id !in server.songs) justLiked[song.id] = kept
+            // Even if the server still lists it: an unlike of it may be on its way, and when
+            // the server takes that, the kept Liked songs loses it. The list shows the last
+            // thing asked for, so the like heads it until the like itself is kept.
+            if (liked) justLiked[song.id] = kept
         }
     }
 
