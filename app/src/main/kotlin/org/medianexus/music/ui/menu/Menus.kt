@@ -17,6 +17,10 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -359,6 +363,7 @@ fun Ui.saveQueueAsPlaylist(fromNowOn: () -> List<Song>) {
 }
 
 /** A question with a name to type (Windows' prompt with text). */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun Ask(title: String, initial: String, confirm: String, choose: (() -> Unit) -> Unit, onConfirm: (String) -> Unit) {
     val box = rememberTextFieldState()
@@ -377,11 +382,28 @@ private fun Ask(title: String, initial: String, confirm: String, choose: (() -> 
         Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).focusRequester(focus),
         onKeyboardAction = { go() },
     )
-    Buttons {
-        TextButton(stringResource(R.string.cancel), onClick = { choose {} })
-        TextButton(confirm, primary = true, onClick = go)
+    // With the keyboard up (in landscape it leaves little room), the sheet scrolls the buttons
+    // into view, so the choice is on screen rather than under the keys.
+    val buttons = remember { BringIntoViewRequester() }
+    val keyboard = WindowInsets.isImeVisible
+    LaunchedEffect(keyboard) {
+        if (keyboard) {
+            // (Once the sheet has been laid out above the keyboard.)
+            kotlinx.coroutines.delay(KEYBOARD_SETTLE_MILLIS)
+            buttons.bringIntoView()
+        }
+    }
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().bringIntoViewRequester(buttons)) {
+        Buttons {
+            TextButton(stringResource(R.string.cancel), onClick = { choose {} })
+            TextButton(confirm, primary = true, onClick = go)
+        }
     }
 }
+
+/** How long the keyboard takes to finish opening before the name sheet's buttons are brought
+ *  into view. */
+private const val KEYBOARD_SETTLE_MILLIS = 300L
 
 // ---- Ratings ------------------------------------------------------------------------------
 

@@ -275,13 +275,14 @@ fun ArtistPage(route: Route.Artist) {
                 if (songs.isEmpty()) ui.toast(res.getString(R.string.cant_play_offline)) else ui.play(songs, 0, name, route.key, shuffle = shuffle, anyStart = true)
                 return@ArtistLayout
             }
-            // In the order the page shows them, as Windows builds it: newest first, then by
-            // name (Windows' `PlaySource::Albums`), the first forty.
-            val albums = artist?.albums.orEmpty().sortedWith(compareByDescending<Album> { it.year }.thenBy { it.name }).take(40)
+            // What the page drew, in the order drawn (albums, then singles and EPs, each newest
+            // first), the first forty (Windows' `PlaySource::Albums`); and only if nothing has
+            // been chosen since the tap (see Choices).
+            val albums = artist?.let(::playedByHeader).orEmpty()
             ui.toast(res.getString(R.string.getting_songs))
-            scope.launch {
-                var missing = 0
-                val songs = albums.flatMap { album ->
+            var missing = 0
+            ui.player.afterLookup(scope, {
+                albums.flatMap { album ->
                     try {
                         library.quick(library.album(album.id)).songs
                     } catch (_: ApiError) {
@@ -289,6 +290,7 @@ fun ArtistPage(route: Route.Artist) {
                         emptyList()
                     }
                 }
+            }) { songs ->
                 when {
                     songs.isEmpty() -> ui.toast(res.getString(R.string.page_failed))
                     else -> {
@@ -302,6 +304,10 @@ fun ArtistPage(route: Route.Artist) {
         res = res,
     )
 }
+
+/** What an artist's header plays: the albums as the page draws them (albums, then singles
+ *  and EPs, each newest first), the first forty. */
+internal fun playedByHeader(artist: Artist): List<Album> = grouped(artist).flatMap { it.second }.take(40)
 
 /** Albums first, then singles and EPs; each newest first. */
 private fun grouped(artist: Artist): List<Pair<Int, List<Album>>> {
