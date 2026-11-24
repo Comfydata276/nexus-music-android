@@ -275,6 +275,9 @@ class PlaybackService : MediaLibraryService() {
                 graph.scope.launch(Dispatchers.IO) { limitApplied(kept.enforceWhenFree()) }
             }
         }
+        // Streaming quality changed in Settings: the song playing switches to it at once,
+        // from where it is, as on Windows (`reload_current`).
+        scope.launch { graph.settings.state.map { it.bitrate }.distinctUntilChanged().drop(1).collect { qualityChanged() } }
         main.postDelayed(ticker, TICK_MILLIS)
         // Fetching ahead stops the moment offline mode goes on, or the server is gone.
         scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().collect { aheadNow() } }
@@ -1733,7 +1736,11 @@ class PlaybackService : MediaLibraryService() {
             val plays = playsOffline()
             var none = false
             val next = withContext(Dispatchers.Default) {
-                era.account.library.keptSongs(source)?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle, plays) ?: run { none = true; null } }
+                // A list of the downloads is read from their own record, like the car's
+                // Downloads tab; any other from the library's kept copy.
+                val songs = era.account.downloads?.let { org.medianexus.music.downloads.DownloadedViews.songsFor(it.state.value, source) }
+                    ?: era.account.library.keptSongs(source)
+                songs?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle, plays) ?: run { none = true; null } }
             }
             // Something else has been chosen while this was being read (or the account has
             // gone, which overtakes every start): that stands.
@@ -2045,6 +2052,20 @@ class PlaybackService : MediaLibraryService() {
      * as Settings says on Wi-Fi, the next one only on mobile data, none with Android's Data
      * Saver on, none offline, none when nothing is kept, none while paused.
      */
+    /** Streaming quality has changed: the song playing is opened again where it is, at the
+     *  new quality (see [Recovery.reopensForQuality]); what is fetched ahead is fetched in the
+     *  new form. Stopping and making ready again keeps the queue and the place in the song,
+     *  and whether it is playing. */
+    private fun qualityChanged() {
+        aheadNow()
+        val song = player.queue.current() ?: return
+        val downloaded = era?.account?.availability?.isDownloaded(song.id) == true
+        if (!Recovery.reopensForQuality(exo.playbackState, downloaded, song.radioUrl.isNotEmpty(), waitingFor != null)) return
+        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "streaming quality changed: the song playing is opened again at ${graph.settings.value.bitrate} kbps")
+        exo.stop()
+        exo.prepare()
+    }
+
     private fun aheadNow() {
         if (!::ahead.isInitialized) return
         val era = era

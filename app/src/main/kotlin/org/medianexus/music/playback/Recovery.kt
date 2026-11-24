@@ -16,6 +16,17 @@ object Recovery {
         playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING || waitingForServer)
 
     /**
+     * Streaming quality was changed in Settings: whether the song at the cursor is to be
+     * opened again, from where it is, so that it plays at the new quality straight away (as
+     * Windows' `reload_current` does). Not if nothing is open (the next song opened is at the
+     * new quality anyway), if it plays from its download (which is what it is whatever the
+     * quality), if it is a radio stream, or if it is waiting for the server to come back
+     * (the next try opens it at the new quality).
+     */
+    fun reopensForQuality(playbackState: Int, downloaded: Boolean, radio: Boolean, waitingForServer: Boolean): Boolean =
+        (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) && !downloaded && !radio && !waitingForServer
+
+    /**
      * Whether to stop waiting for the server: it has been out of reach for `waitedMs`, and
      * the next try would be `nextWaitMs` from now. Waiting ends with the last try that still
      * falls inside [GIVE_UP_MILLIS], which is how long the service keeps its foreground

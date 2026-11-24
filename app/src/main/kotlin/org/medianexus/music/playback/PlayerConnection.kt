@@ -391,7 +391,9 @@ class PlayerConnection(
 
     /** Whether a list's route key names a page the library keeps whole (see
      *  `Library.keptSongs`). */
-    private fun keptPage(source: String): Boolean = source == "liked" || source.startsWith("album:") || source.startsWith("playlist:")
+    private fun keptPage(source: String): Boolean =
+        source == "liked" || source.startsWith("album:") || source.startsWith("playlist:") ||
+            source == org.medianexus.music.downloads.DownloadedViews.SOURCE || source.startsWith("${org.medianexus.music.downloads.DownloadedViews.SOURCE}:")
 
     private fun withController(block: (MediaController) -> Unit) {
         val c = controller

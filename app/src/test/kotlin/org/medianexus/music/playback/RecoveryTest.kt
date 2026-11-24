@@ -77,4 +77,21 @@ class RecoveryTest {
         // Nothing came of it.
         assertEquals(Recovery.Held.STAND_DOWN, Recovery.whenHoldRunsOut(looking = 0, busy = false))
     }
+
+    @Test
+    fun aChangeOfQualityReopensOnlyASongThatIsStreamedNow() {
+        val ready = androidx.media3.common.Player.STATE_READY
+        // Playing or paused part-way, from the server: opened again at the new quality.
+        assertTrue(Recovery.reopensForQuality(ready, downloaded = false, radio = false, waitingForServer = false))
+        assertTrue(Recovery.reopensForQuality(androidx.media3.common.Player.STATE_BUFFERING, downloaded = false, radio = false, waitingForServer = false))
+        // Its download is what plays, whatever the quality.
+        assertFalse(Recovery.reopensForQuality(ready, downloaded = true, radio = false, waitingForServer = false))
+        // A station is what it sends.
+        assertFalse(Recovery.reopensForQuality(ready, downloaded = false, radio = true, waitingForServer = false))
+        // Nothing open, or ended: the next song opened is at the new quality anyway.
+        assertFalse(Recovery.reopensForQuality(androidx.media3.common.Player.STATE_IDLE, downloaded = false, radio = false, waitingForServer = false))
+        assertFalse(Recovery.reopensForQuality(androidx.media3.common.Player.STATE_ENDED, downloaded = false, radio = false, waitingForServer = false))
+        // Waiting for the server: the next try is.
+        assertFalse(Recovery.reopensForQuality(ready, downloaded = false, radio = false, waitingForServer = true))
+    }
 }

@@ -61,6 +61,21 @@ object DownloadedViews {
 
     fun playlist(state: DownloadsState, key: String): DownloadedPlaylist? = playlists(state).firstOrNull { it.list.key == key }
 
+    /**
+     * The songs of a list the downloads name, as the screens and the car start them: all of
+     * them ("downloads", newest first), an album ("downloads:album:<id>") or a list downloaded
+     * whole ("downloads:playlist:<id>", "downloads:liked"). Null for any other name.
+     */
+    fun songsFor(state: DownloadsState, source: String): List<Song>? = when {
+        source == SOURCE -> songs(state)
+        source.startsWith("$SOURCE:album:") -> album(state, source.removePrefix("$SOURCE:album:"))?.songs
+        source.startsWith("$SOURCE:") -> playlist(state, source.removePrefix("$SOURCE:"))?.songs
+        else -> null
+    }
+
+    /** What a list started from the downloads is said to come from. */
+    const val SOURCE = "downloads"
+
     /** Every downloaded song, the most lately downloaded first (as Windows' Downloads page). */
     fun songs(state: DownloadsState): List<Song> = state.downloaded.values.sortedByDescending { it.at }.map { it.song }
 
