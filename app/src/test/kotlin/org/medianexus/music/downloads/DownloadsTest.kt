@@ -144,12 +144,16 @@ class DownloadsTest {
     /** What the catalogue had to say, and on which thread it was doing what it said. */
     private val notes: MutableList<Pair<String, Thread>> = Collections.synchronizedList(mutableListOf())
 
+    /** The phone's network as the downloads are told of it (a test changes it as Android
+     *  would say it changed). */
+    private var network: kotlinx.coroutines.flow.MutableStateFlow<org.medianexus.music.net.NetworkNow> = MutableStateFlow(org.medianexus.music.net.NetworkNow())
+
     private fun downloads(): Downloads {
         val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient())
         val covers = CoverStore(folder.newFolder(), scope, Dispatchers.IO, fetch = { _, _ -> throw ApiError.Network("none") })
         return Downloads(context, catalogue, api, OkHttpClient(), database, "acct", settings, reach, covers, { busy, wifi -> kept += busy to wifi }, scope, spare = { spare },
             // The songs here are not audio (what is and isn't a song is WholeDownloadTest's).
-            check = { _, _ -> Inspected("flac", true, -1) }, disk = disk)
+            check = { _, _ -> Inspected("flac", true, -1) }, disk = disk, network = network)
             .also { made += it }
             .also { idle() }
     }
@@ -452,5 +456,76 @@ class DownloadsTest {
         // ...and the write that couldn't be made was tried somewhere other than the main thread.
         until("said") { notes.any { "failed.json couldn't be written" in it.first } }
         assertTrue(notes.filter { "couldn't be written" in it.first }.none { it.second === Looper.getMainLooper().thread })
+    }
+
+    // ---- When they may run (offline review 6) -----------------------------------------------
+
+    @Test
+    fun onAWifiWithNoInternetBeyondItDownloadsStillRun() {
+        // A home Wi-Fi with a music server on it and nothing beyond: Android never marks it
+        // as validated. It is unmetered, and it is a network; that is all that is asked of it.
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val caps = ShadowNetworkCapabilities.newInstance()
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        shadowOf(manager).setNetworkCapabilities(manager.activeNetwork, caps)
+        settings.value = Settings(downloadWifiOnly = true)
+        // (As the app reads it from the system.)
+        network = MutableStateFlow(org.medianexus.music.net.NetworkWatch(context).state.value)
+        assertEquals(org.medianexus.music.net.NetworkNow(connected = true, unmetered = true), network.value)
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1"))) }
+        until("downloaded") { catalogue.has("s1") }
+    }
+
+    @Test
+    fun theSameNetworkTurningMeteredStopsWifiOnlyDownloadsAtOnce() {
+        slow = true
+        settings.value = Settings(downloadWifiOnly = true)
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1", size = 400_000))) }
+        until("arriving") { engine.state.value.active.any { (it.state as? SongState.Fetching)?.fraction?.let { f -> f > 0.05f } == true } }
+        // The network is the same one, and now counts as metered (a hotspot recognised as
+        // one; the person marking it so).
+        network.value = org.medianexus.music.net.NetworkNow(connected = true, unmetered = false)
+        until("held for Wi-Fi") { engine.state.value.held == Held.WIFI && engine.state.value.active.all { it.state == SongState.Waiting } }
+        assertFalse(catalogue.has("s1"))
+        // No network at all, Wi-Fi only on: still waiting for Wi-Fi. Off: for any connection.
+        network.value = org.medianexus.music.net.NetworkNow(connected = false, unmetered = false)
+        until("still Wi-Fi") { engine.state.value.held == Held.WIFI }
+        settings.value = Settings(downloadWifiOnly = false)
+        until("any connection") { engine.state.value.held == Held.NETWORK }
+        // Mobile data, and Wi-Fi only is off: it carries on, from where it stopped.
+        slow = false
+        network.value = org.medianexus.music.net.NetworkNow(connected = true, unmetered = false)
+        until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
+        assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
+    }
+
+    @Test
+    fun stoppedByAndroidTheTransfersStopUntilItCarriesThemOnAgain() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1", size = 400_000))) }
+        until("arriving") { engine.state.value.active.any { (it.state as? SongState.Fetching)?.fraction?.let { f -> f > 0.05f } == true } }
+        // Android stops the job (its time is up; the network it was given went).
+        engine.stoppedByAndroid(true)
+        until("paused") { engine.state.value.held == Held.ANDROID && engine.state.value.active.all { it.state == SongState.Waiting } }
+        // Nothing more arrives: the transfer itself has stopped, not only the watching of it.
+        val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
+        until("its fetch has let go") { made.last().state.value.active.none { it.state is SongState.Fetching } && part.length() > 0 }
+        val had = part.length()
+        repeat(200) { idle() }
+        assertEquals(had, part.length())
+        assertFalse(catalogue.has("s1"))
+        // The job runs again.
+        slow = false
+        engine.stoppedByAndroid(false)
+        until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
+        assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
     }
 }

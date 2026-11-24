@@ -155,6 +155,7 @@ fun DownloadsContent(titled: Boolean) {
             Held.NETWORK -> res.getString(R.string.waiting_for_network)
             Held.OFFLINE -> res.getString(R.string.downloads_offline_mode)
             Held.SERVER -> res.getString(R.string.cant_reach_server_short)
+            Held.ANDROID -> res.getString(R.string.waiting_for_android)
             Held.NOTHING -> null
         }
         if (state.busy) {

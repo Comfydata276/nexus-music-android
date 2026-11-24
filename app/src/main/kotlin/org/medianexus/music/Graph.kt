@@ -68,6 +68,9 @@ class Graph(context: Context) {
      *  so the last snapshot either hands it is still written. */
     val queueSaver = QueueSaver(scope, Dispatchers.IO)
 
+    /** The phone's network, as Android reports it and as it changes (see [NetworkWatch]). */
+    val network = org.medianexus.music.net.NetworkWatch(app)
+
     /** Media3's database: the kept songs' index and each account's list of downloads. */
     val database: androidx.media3.database.DatabaseProvider by lazy { databaseFor(app) }
 
@@ -181,6 +184,7 @@ class Graph(context: Context) {
         scope = account.scope,
         spare = { org.medianexus.music.downloads.DebugSpare.spare(context) ?: org.medianexus.music.downloads.Downloads.SPARE },
         note = { diagnostics.note(it) },
+        network = network.state,
     ).also { downloads -> downloads.reachedFailed = { watch.check() } }
 
     /** A list downloaded whole, as the server has it now, with its songs. */
@@ -242,7 +246,12 @@ class Graph(context: Context) {
         }
         // Whether the server answers, from every request the account's client makes.
         scope.launch {
+            var had = false
             accounts.state.collect { account ->
+                // Signed out (not "not yet read", at start-up, when the job may be what
+                // started the app): nothing of theirs is carried on, by job or service.
+                if (account == null && had) org.medianexus.music.downloads.DownloadKeeper.letGo(app)
+                had = account != null
                 // What was found out about one account's server is not the next account's.
                 watch.reset()
                 // (What one account's server said is not the next account's to be shown.)
@@ -273,22 +282,9 @@ class Graph(context: Context) {
         // Allowed to reach the home network: what failed tries again.
         scope.launch { localAccess.allowed.collect { if (it > 0) { reconnected(); watch.networkBack() } } }
         // A network again (after none, or another one): the same.
-        runCatching {
-            val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
-            connectivity.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
-                private var had = true
-                override fun onAvailable(network: android.net.Network) {
-                    if (!had) {
-                        reconnected()
-                        watch.networkBack()
-                    }
-                    had = true
-                }
-
-                override fun onLost(network: android.net.Network) {
-                    had = false
-                }
-            })
+        network.onBack = {
+            reconnected()
+            watch.networkBack()
         }
         // The switch in Settings and the one every request checks are the same.
         scope.launch {

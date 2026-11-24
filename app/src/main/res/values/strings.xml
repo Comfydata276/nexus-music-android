@@ -267,6 +267,7 @@
     <string name="waiting_for_wifi">Waiting for Wi-Fi</string>
     <string name="waiting_for_network">Waiting for a connection</string>
     <string name="waiting_for_server">Can\'t reach server</string>
+    <string name="waiting_for_android">Paused by Android for now</string>
     <string name="offline_mode">Offline mode</string>
     <string name="offline_mode_detail">Plays only what\'s on this phone and doesn\'t contact your server. Likes, ratings and plays are kept and sent when you turn it off.</string>
     <string name="offline_mode_on">Offline mode: only downloaded songs will play</string>

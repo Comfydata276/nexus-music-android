@@ -34,6 +34,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import org.medianexus.music.Reach
+import org.medianexus.music.net.NetworkNow
+import org.medianexus.music.net.NetworkWatch
 import org.medianexus.music.net.Song
 import org.medianexus.music.net.Subsonic
 import org.medianexus.music.playback.songUri
@@ -54,7 +56,13 @@ sealed interface SongState {
 data class Active(val song: Song, val state: SongState)
 
 /** Why downloads that are waiting aren't moving. */
-enum class Held { NOTHING, WIFI, NETWORK, OFFLINE, SERVER }
+enum class Held {
+    NOTHING, WIFI, NETWORK, OFFLINE, SERVER,
+
+    /** Android has stopped the job the downloads were running under: they wait until it
+     *  runs it again (or the app is opened). */
+    ANDROID,
+}
 
 /**
  * Everything about one account's downloads, at one moment, for the screens and the car: what
@@ -150,6 +158,9 @@ class Downloads(
     /** Room always left spare on the phone (smaller in a test build, to see the refusal). */
     private val spare: () -> Long = { SPARE },
     private val note: (String) -> Unit = {},
+    /** The phone's network, as it changes (see [NetworkWatch]): downloads run when there is
+     *  one, and it is unmetered if Wi-Fi only is on. */
+    private val network: StateFlow<NetworkNow> = MutableStateFlow(NetworkNow()),
     /** What says whether a file that has arrived is the song (a stand-in, in tests whose
      *  songs are not audio). */
     private val check: AudioCheck = Media3AudioCheck,
@@ -189,7 +200,12 @@ class Downloads(
             manager = DownloadManager(context, index, Factory()).apply {
                 maxParallelDownloads = AT_ONCE
                 minRetryCount = RETRIES
-                requirements = requirementsFor(settings.value.downloadWifiOnly)
+                // Media3 is asked for no network of its own: it would wait for one Android
+                // has "validated" as reaching the internet, which a server on a home Wi-Fi
+                // with no internet beyond it never is, and it reads "metered" in a way that
+                // can miss a change on the same network. Whether downloads may run now is
+                // decided here (see [gate]).
+                requirements = Requirements(0)
                 addListener(Listener())
             }
             follow()
@@ -200,28 +216,80 @@ class Downloads(
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
 
-    /** The settings and the server: Wi-Fi only, and pausing while nothing can be asked of it. */
+    /** Android has stopped the job the downloads were running under (see [stoppedByAndroid]). */
+    private var stopped = false
+
+    /** The client transfers go out on: the app's own, or one bound to the network Android's
+     *  job was given (see [useNetwork]). */
+    @Volatile private var route: OkHttpClient = http
+
+    /** The settings, the network and the server, as each changes. */
     private fun follow() {
         // A song entered in the catalogue (on a download's own thread), removed, or failed:
         // published at once, not when Media3 next says something.
         scope.launch(Dispatchers.Main.immediate) { catalogue.state.collect { publish() } }
-        scope.launch(Dispatchers.Main.immediate) {
-            settings.map { it.downloadWifiOnly }.distinctUntilChanged().collect { wifiOnly ->
-                manager.requirements = requirementsFor(wifiOnly)
-                publish()
-            }
-        }
-        scope.launch(Dispatchers.Main.immediate) {
-            reach.map { it.offline }.distinctUntilChanged().collect { offline ->
-                // Offline, by hand or because the server has gone: what is under way stops
-                // (and is picked up again later), rather than failing for want of a server.
-                if (offline) manager.pauseDownloads() else manager.resumeDownloads()
-                publish()
-            }
+        scope.launch(Dispatchers.Main.immediate) { settings.map { it.downloadWifiOnly }.distinctUntilChanged().collect { gate() } }
+        scope.launch(Dispatchers.Main.immediate) { network.collect { gate() } }
+        scope.launch(Dispatchers.Main.immediate) { reach.map { it.offline }.distinctUntilChanged().collect { gate() } }
+    }
+
+    /**
+     * Whether downloads may run now, decided here and nowhere else, at every change of
+     * anything it rests on: not offline (by hand, or our own server out of reach: what is
+     * under way stops and is picked up again later, rather than failing for want of a
+     * server); a network there, and an unmetered one if Wi-Fi only is on, **as the system
+     * reports the network** (never whether Android has validated it as reaching the
+     * internet: whether our server answers is asked of our server); and not stopped by
+     * Android. What is under way is stopped at once when it turns to no.
+     */
+    private fun gate() {
+        if (!::manager.isInitialized || released) return
+        if (holdsFor() != Held.NOTHING) manager.pauseDownloads() else manager.resumeDownloads()
+        publish()
+    }
+
+    /** Why downloads may not run now ([Held.NOTHING]: they may). */
+    private fun holdsFor(): Held {
+        val net = network.value
+        val wifiOnly = settings.value.downloadWifiOnly
+        return when {
+            reach.value.manual -> Held.OFFLINE
+            reach.value.unreachable -> Held.SERVER
+            !net.connected -> if (wifiOnly) Held.WIFI else Held.NETWORK
+            wifiOnly && !net.unmetered -> Held.WIFI
+            stopped -> Held.ANDROID
+            else -> Held.NOTHING
         }
     }
 
-    private fun requirementsFor(wifiOnly: Boolean) = Requirements(if (wifiOnly) Requirements.NETWORK_UNMETERED else Requirements.NETWORK)
+    /**
+     * Android has stopped the job the downloads were running under (`true`: its time ran out,
+     * the network it was given went, the phone needs the memory), or is running it again
+     * (`false`). Stopped, the transfers stop too, here and now, and wait: the app must not go
+     * on downloading in a process Android has told to stop, on whatever network happens to
+     * be the default.
+     */
+    fun stoppedByAndroid(on: Boolean) = onMain {
+        if (stopped == on) return@onMain
+        stopped = on
+        gate()
+    }
+
+    /**
+     * The network Android gave the job the downloads run under, or null when there is none
+     * (no job; or it has ended): transfers started from now on go out on it, not on whatever
+     * the phone's default route is (a job asked for an unmetered network must not download
+     * over mobile data because that is the default at that moment).
+     */
+    fun useNetwork(given: android.net.Network?) {
+        route = if (given == null) http else http.newBuilder()
+            .socketFactory(given.socketFactory)
+            .dns { host -> given.getAllByName(host).toList() }
+            // Connections belong to the network they were made on: none are shared with the
+            // app's own.
+            .connectionPool(okhttp3.ConnectionPool(AT_ONCE, 1, java.util.concurrent.TimeUnit.MINUTES))
+            .build()
+    }
 
     // ---- Asking for downloads --------------------------------------------------------------
 
@@ -459,7 +527,7 @@ class Downloads(
             // leave their files alone.
             val busy = downloadManager.currentDownloads.mapTo(HashSet()) { it.request.id } + asks.keys
             initialized = true
-            publish()
+            gate()
             // What a download cut short left in the folder is cleared away, once, now: before
             // any work is accepted ([ready]), so nothing asked for from here on can have a
             // file of its own in the folder while the sweep looks.
@@ -512,7 +580,6 @@ class Downloads(
 
         override fun onIdle(downloadManager: DownloadManager) = publish()
 
-        override fun onRequirementsStateChanged(downloadManager: DownloadManager, requirements: Requirements, notMetRequirements: Int) = publish()
 
         override fun onDownloadsPausedChanged(downloadManager: DownloadManager, downloadsPaused: Boolean) = publish()
     }
@@ -539,14 +606,7 @@ class Downloads(
         }.sortedBy { if (it.state is SongState.Fetching) 0 else 1 }
         // (The batch is counted afresh when downloads are next asked for with nothing on its
         // way: not here, where a song just asked for may not be in Media3's list yet.)
-        val held = when {
-            active.isEmpty() -> Held.NOTHING
-            reach.value.manual -> Held.OFFLINE
-            reach.value.unreachable -> Held.SERVER
-            manager.notMetRequirements and Requirements.NETWORK_UNMETERED != 0 -> Held.WIFI
-            manager.notMetRequirements and Requirements.NETWORK != 0 -> Held.NETWORK
-            else -> Held.NOTHING
-        }
+        val held = if (active.isEmpty()) Held.NOTHING else holdsFor()
         val next = DownloadsState(
             downloaded = snapshot.songs,
             active = active,
@@ -586,6 +646,7 @@ class Downloads(
         released = true
         ticking?.cancel()
         if (::manager.isInitialized) manager.release()
+        route = http
     }
 
     // ---- The downloader ---------------------------------------------------------------------
@@ -599,7 +660,7 @@ class Downloads(
     }
 
     private inner class SongDownloader(private val id: String, private val ask: Ask?) : Downloader {
-        private val fetch = SongFetch(http, catalogue, check, ::asTheServerHasIt)
+        private val fetch = SongFetch(route, catalogue, check, ::asTheServerHasIt)
 
         override fun download(progressListener: Downloader.ProgressListener?) {
             val ask = ask ?: throw IllegalStateException("A download with nothing to say what it is")

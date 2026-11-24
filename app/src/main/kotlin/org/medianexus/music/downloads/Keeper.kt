@@ -64,6 +64,8 @@ object DownloadKeeper {
     @Volatile var visible = false
 
     private var wanted: Triple<Boolean, Boolean, Boolean>? = null
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var retry: Runnable? = null
 
     /**
      * There are downloads to do (`busy`), and they may use Wi-Fi only (`wifiOnly`): the job is
@@ -77,39 +79,89 @@ object DownloadKeeper {
         val now = Triple(busy, wifiOnly, visible)
         if (wanted == now) return
         val again = wanted?.let { it.first != busy || it.second != wifiOnly } ?: true
-        wanted = now
+        retry?.let(main::removeCallbacks)
+        retry = null
         val jobs = app.getSystemService(JobScheduler::class.java) ?: return
         if (!busy) {
+            wanted = now
             // A job running now finishes itself when the manager is idle (see DownloadsJob).
             if (again) runCatching { jobs.getPendingJob(JOB_ID)?.let { if (!running) jobs.cancel(JOB_ID) } }
             DownloadsService.stop(app)
             return
         }
         val pending = runCatching { jobs.getPendingJob(JOB_ID) }.getOrNull()
-        val network = if (wifiOnly) JobInfo.NETWORK_TYPE_UNMETERED else JobInfo.NETWORK_TYPE_ANY
         val userInitiated = Build.VERSION.SDK_INT >= 34 && visible
         // Already asked for, the same way, or better (a user-initiated job is never swapped
         // for an ordinary one): left as it is. Asking again would stop one that is running.
-        val fine = pending != null && pending.networkType == network && (!userInitiated || isUserInitiated(pending))
+        val fine = pending != null && wantsUnmetered(pending) == wifiOnly && (!userInitiated || isUserInitiated(pending))
+        var scheduled = fine
         if (!fine) {
-            val info = JobInfo.Builder(JOB_ID, ComponentName(app, DownloadsJob::class.java))
-                .setRequiredNetworkType(network)
-                .setPersisted(true)
-                .apply {
-                    if (userInitiated) {
-                        setUserInitiated(true)
-                        setEstimatedNetworkBytes(JobInfo.NETWORK_BYTES_UNKNOWN.toLong(), JobInfo.NETWORK_BYTES_UNKNOWN.toLong())
-                    }
-                }
-                .build()
-            val result = runCatching { jobs.schedule(info) }.getOrDefault(JobScheduler.RESULT_FAILURE)
-            if (result != JobScheduler.RESULT_SUCCESS && userInitiated) {
+            scheduled = runCatching { jobs.schedule(job(app, wifiOnly, userInitiated)) }.getOrDefault(JobScheduler.RESULT_FAILURE) == JobScheduler.RESULT_SUCCESS
+            if (!scheduled && userInitiated) {
                 // Refused (the app had just left the screen): an ordinary job, then.
-                runCatching { jobs.schedule(JobInfo.Builder(JOB_ID, ComponentName(app, DownloadsJob::class.java)).setRequiredNetworkType(network).setPersisted(true).build()) }
+                scheduled = runCatching { jobs.schedule(job(app, wifiOnly, userInitiated = false)) }.getOrDefault(JobScheduler.RESULT_FAILURE) == JobScheduler.RESULT_SUCCESS
             }
+        }
+        if (scheduled) {
+            wanted = now
+        } else {
+            // Android would not take it. Not remembered as asked for: it is asked for again
+            // at the next look, and in a while whether or not anything changes meanwhile
+            // (downloads that are only waiting publish nothing).
+            wanted = null
+            runCatching { app.graph.diagnostics.note("downloads: Android would not schedule the job that carries them on; asked again in a while") }
+            retry = Runnable { update(app, busy, wifiOnly) }.also { main.postDelayed(it, RETRY_MILLIS) }
         }
         if (Build.VERSION.SDK_INT < 34 && visible) DownloadsService.start(app)
     }
+
+    /**
+     * The job: kept through a restart, and run when there is a network of the kind the
+     * downloads may use. **Not** `setRequiredNetworkType`, which also asks that Android has
+     * validated the network as reaching the internet: a music server on a home Wi-Fi with no
+     * internet beyond it would never see the job run. The network is asked for by what it
+     * is (one that carries ordinary traffic; unmetered, for Wi-Fi only), and whether our own
+     * server answers on it is our own question (`ServerWatch`).
+     */
+    internal fun job(context: Context, wifiOnly: Boolean, userInitiated: Boolean): JobInfo {
+        val network = android.net.NetworkRequest.Builder()
+            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            // A VPN counts (a server reached over one is as good as any), as it does for
+            // JobScheduler's own network types.
+            .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .apply { if (wifiOnly) addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED) }
+            .build()
+        return JobInfo.Builder(JOB_ID, ComponentName(context, DownloadsJob::class.java))
+            .setRequiredNetwork(network)
+            .setPersisted(true)
+            .apply {
+                if (userInitiated && Build.VERSION.SDK_INT >= 34) {
+                    setUserInitiated(true)
+                    setEstimatedNetworkBytes(JobInfo.NETWORK_BYTES_UNKNOWN.toLong(), JobInfo.NETWORK_BYTES_UNKNOWN.toLong())
+                }
+            }
+            .build()
+    }
+
+    private fun wantsUnmetered(info: JobInfo): Boolean =
+        info.requiredNetwork?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true
+
+    /**
+     * Whoever was signed in has signed out: nothing of theirs is to be carried on. The job is
+     * cancelled, running or not (Android then stops it, and it lets go of the account: see
+     * [DownloadsJob]), the service stopped, and nothing remembered as asked for.
+     */
+    fun letGo(context: Context) {
+        val app = context.applicationContext
+        retry?.let(main::removeCallbacks)
+        retry = null
+        wanted = null
+        runCatching { app.getSystemService(JobScheduler::class.java)?.cancel(JOB_ID) }
+        DownloadsService.stop(app)
+    }
+
+    /** How long after Android rejects a schedule it is asked for again. */
+    private const val RETRY_MILLIS = 30_000L
 
     private fun isUserInitiated(info: JobInfo): Boolean = Build.VERSION.SDK_INT >= 34 && info.isUserInitiated
 
@@ -140,6 +192,7 @@ object DownloadKeeper {
             Held.NETWORK -> context.getString(R.string.waiting_for_network)
             Held.OFFLINE -> context.getString(R.string.offline_mode)
             Held.SERVER -> context.getString(R.string.waiting_for_server)
+            Held.ANDROID -> context.getString(R.string.waiting_for_android)
             Held.NOTHING -> null
         }
         return NotificationCompat.Builder(context, CHANNEL)
@@ -183,20 +236,28 @@ class DownloadsJob : JobService() {
             DownloadsService.start(this, fromJob = true)
         }
         work = scope.launch {
-            val account = graph.accounts.restored()
-            val downloads = account?.downloads
-            if (downloads == null) {
-                finish(params)
-                return@launch
-            }
-            downloads.state.collectLatest { state ->
-                if (Build.VERSION.SDK_INT >= 34 && params.isUserInitiatedJob) {
-                    setNotification(params, DownloadKeeper.NOTIFICATION_ID, DownloadKeeper.notification(this@DownloadsJob, state), JOB_END_NOTIFICATION_POLICY_REMOVE)
-                }
-                // (Not before the manager has read what was waiting: a cold start would find
-                // nothing yet.)
-                if (state.settled && (!state.busy || state.held == Held.OFFLINE)) {
+            graph.accounts.restored()
+            // Whoever is signed in, as that changes: a job must not go on holding the
+            // downloads of an account that has signed out.
+            graph.accounts.state.collectLatest { account ->
+                val downloads = account?.downloads
+                if (downloads == null) {
                     finish(params)
+                    return@collectLatest
+                }
+                // The job is running (again): the downloads may, on the network it was given.
+                downloads.useNetwork(params.network)
+                downloads.stoppedByAndroid(false)
+                downloads.state.collect { state ->
+                    if (Build.VERSION.SDK_INT >= 34 && params.isUserInitiatedJob) {
+                        setNotification(params, DownloadKeeper.NOTIFICATION_ID, DownloadKeeper.notification(this@DownloadsJob, state), JOB_END_NOTIFICATION_POLICY_REMOVE)
+                    }
+                    // (Not before the manager has read what was waiting: a cold start would find
+                    // nothing yet.)
+                    if (state.settled && (!state.busy || state.held == Held.OFFLINE)) {
+                        downloads.useNetwork(null)
+                        finish(params)
+                    }
                 }
             }
         }
@@ -209,14 +270,23 @@ class DownloadsJob : JobService() {
         jobFinished(params, false)
     }
 
+    /**
+     * Android says stop (the network the job was given has gone, its time is up, the phone
+     * wants the memory, or the job was cancelled). The transfers stop with it, now: they are
+     * paused until the job is run again, or the app is opened. Left running, they would carry
+     * on in a process Android has told to stop, on whatever network is the default.
+     */
     override fun onStopJob(params: JobParameters): Boolean {
         DownloadKeeper.running = false
         work?.cancel()
         val reason = if (Build.VERSION.SDK_INT >= 31) params.stopReason else -1
         val graph = applicationContext.graph
-        graph.diagnostics.note("downloads: the job was stopped by Android (reason $reason)")
+        val downloads = graph.accounts.state.value?.downloads
+        downloads?.stoppedByAndroid(true)
+        downloads?.useNetwork(null)
+        graph.diagnostics.note("downloads: the job was stopped by Android (reason $reason); they wait until it runs again")
         // Run again later if there is still something to fetch.
-        return graph.accounts.state.value?.downloads?.state?.value?.busy == true
+        return downloads?.state?.value?.busy == true
     }
 
     override fun onDestroy() {
@@ -249,16 +319,22 @@ class DownloadsService : Service() {
         }
         scope.coroutineContext[Job]?.children?.forEach { it.cancel() }
         scope.launch {
-            val downloads = graph.accounts.restored()?.downloads
-            if (downloads == null) {
-                stopSelf()
-                return@launch
-            }
-            downloads.state.collectLatest { state ->
-                if (state.settled && (!state.busy || state.held == Held.OFFLINE)) {
+            graph.accounts.restored()
+            // Whoever is signed in, as that changes: signed out, there is nothing to hold up.
+            graph.accounts.state.collectLatest { account ->
+                val downloads = account?.downloads
+                if (downloads == null) {
                     stopSelf()
-                } else {
-                    getSystemService(NotificationManager::class.java)?.notify(DownloadKeeper.NOTIFICATION_ID, DownloadKeeper.notification(this@DownloadsService, state))
+                    return@collectLatest
+                }
+                // Held up by the service: whatever Android stopped a job for no longer stands.
+                downloads.stoppedByAndroid(false)
+                downloads.state.collect { state ->
+                    if (state.settled && (!state.busy || state.held == Held.OFFLINE)) {
+                        stopSelf()
+                    } else {
+                        getSystemService(NotificationManager::class.java)?.notify(DownloadKeeper.NOTIFICATION_ID, DownloadKeeper.notification(this@DownloadsService, state))
+                    }
                 }
             }
         }
