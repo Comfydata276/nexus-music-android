@@ -73,10 +73,10 @@ sealed interface Pending {
  *   says something definite about that change (the thing isn't there: 70; the account may
  *   not do it: 50): gone, and its maker told. **Any other error from the server says nothing
  *   about the change**: it waits, later changes to the same thing wait behind it, the rest go
- *   on, and it is tried again later; a like or a rating is given up a day after it was made
- *   if the server is still answering so, and **a play never is**. A proxy's error page in the
- *   server's place: the same wait (three such pages running: everything waits). No answer, or
- *   a sign-in the server won't take: everything waits. (Windows' `send_all` takes every error
+ *   on, and it is tried again later, **for as long as it takes**: a like or a rating waits
+ *   as a play does (it used to be given up a day after it was made, with nobody told). A
+ *   proxy's error page in the server's place: the same wait (three such pages running:
+ *   everything waits). No answer, or a sign-in the server won't take: everything waits. (Windows' `send_all` takes every error
  *   of the server's as final; its tests are ported with that one difference.)
  * - **A file that can't be read is set aside** (`held.damaged.json`) and said, as the
  *   settings file is; it is never read as "nothing held" and written over. One that can't be
@@ -115,7 +115,6 @@ class HeldChanges(
     /** [queued] is not what it was, without its maker's doing: what an earlier run left has
      *  been read, or a change that had been held has gone. */
     private val moved: () -> Unit = {},
-    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     /** How a change stood when [submit] returned. */
     enum class Outcome {
@@ -136,10 +135,6 @@ class HeldChanges(
      *  (whoever made it was told it was held). `settled` tells whoever is waiting on it. */
     private class Entry(val change: Pending, val settled: CompletableDeferred<Settled>?) {
         @Volatile var parked = false
-
-        /** When the server first answered for it with an error that says nothing, for a
-         *  change that doesn't say when it was made. */
-        var unsureSince = 0L
     }
 
     /**
@@ -308,7 +303,7 @@ class HeldChanges(
                     e
                 }
                 when {
-                    error == null || (error is ApiError.Server && (error.code in FINAL || givenUp(entry))) -> {
+                    error == null || (error is ApiError.Server && error.code in FINAL) -> {
                         // Dealt with: it leaves the queue and the disk now, before anything
                         // else is done, so that a play the server has counted is not there
                         // to be sent again. (Whether it has left the disk is asked at the
@@ -367,25 +362,6 @@ class HeldChanges(
         if (lost) lostTouch()
     }
 
-    /**
-     * Whether a change the server has again answered with an error that says nothing has
-     * waited long enough to be given up: a day from when it was made (from the first such
-     * answer, for one that doesn't say when it was made). **Never a play.**
-     */
-    private fun givenUp(entry: Entry): Boolean {
-        val made = when (val change = entry.change) {
-            is Pending.Played -> return false
-            is Pending.Star -> change.at
-            is Pending.Rating -> change.at
-        }
-        val now = clock()
-        if (made <= 0 && entry.unsureSince == 0L) entry.unsureSince = now
-        val since = if (made > 0) made else entry.unsureSince
-        if (now - since < GIVE_UP_MILLIS) return false
-        note("held changes: one the server answered with an error for a day was given up")
-        return true
-    }
-
     /** Tells the makers of everything still queued that it is held. Nothing is removed. */
     private fun park() = synchronized(lock) {
         for (entry in loaded()) {
@@ -440,10 +416,6 @@ class HeldChanges(
         /** The server's errors that say something definite about one change: the account may
          *  not do it (50), the thing isn't there (70). */
         private val FINAL = setOf(50L, 70L)
-
-        /** How long a like or a rating the server keeps answering with an error that says
-         *  nothing is kept and tried. */
-        const val GIVE_UP_MILLIS = 24 * 60 * 60 * 1000L
 
         /** Each file's one sender, for as long as the process lives. */
         private val all = HashMap<String, Shared>()

@@ -73,13 +73,12 @@ class HeldChangesTest {
             note = { notes += it },
             tryLater = { later++ },
             answered = { change, taken -> answers += said(change) + if (taken) " taken" else " refused" },
-            clock = { now },
         )
     }
 
     private var later = 0
 
-    /** The sender's clock. */
+    /** When changes are made. */
     @Volatile private var now = 1_700_000_000_000L
 
     /** What was said of changes that had been held, as their answers came. */
@@ -570,7 +569,7 @@ class HeldChangesTest {
     // ---- What an error from the server means (offline hardening 3, item 1) ------------------------
 
     @Test
-    fun anErrorThatSaysNothingAboutTheChangeIsTriedAgainAndNeverLosesAPlay() = runBlocking {
+    fun anErrorThatSaysNothingAboutTheChangeIsTriedAgainAndNeverLosesAPlayOrALike() = runBlocking {
         // The server is there and answers with a fault of its own (code 0), for a play and
         // for a like; a like of something else goes through.
         var faulty = true
@@ -586,20 +585,20 @@ class HeldChangesTest {
         // A later change to the same song waits behind the one that is waiting.
         assertEquals(HeldChanges.Outcome.HELD, held.submit(Pending.Star("song", "b", false, at = now)))
         assertEquals(listOf("c+"), sent.toList())
-        // A day of that: the like and the unlike are given up, in Diagnostics' hearing and
-        // their maker's. The play is not: a play is never discarded for such an answer.
-        now += HeldChanges.GIVE_UP_MILLIS
-        held.flush()
-        assertEquals(listOf("a"), ids(held.all()))
-        assertEquals(listOf("b+ refused", "b- refused"), answers.toList())
-        assertEquals(2, notes.count { "given up" in it })
-        now += 30 * HeldChanges.GIVE_UP_MILLIS
-        held.flush()
-        assertEquals(listOf("a"), ids(held().all()))
-        // The server mended, the play is counted.
+        // A month of that: nothing is given up. A like waits as a play does (it used to be
+        // given up a day after it was made, with nobody told).
+        for (day in 1..30) {
+            now += 24 * 60 * 60 * 1000L
+            held.flush()
+        }
+        assertEquals(listOf("a", "b", "b"), ids(held.all()))
+        assertEquals(listOf("a", "b", "b"), ids(held().all()))
+        assertTrue(answers.isEmpty())
+        // The server mended, all of it goes, in the order it was made.
         faulty = false
-        assertEquals(1, held.flush())
-        assertEquals(listOf("c+", "a!"), sent.toList())
+        assertEquals(3, held.flush())
+        assertEquals(listOf("c+", "a!", "b+", "b-"), sent.toList())
+        assertEquals(listOf("a! taken", "b+ taken", "b- taken"), answers.toList())
         assertTrue(held().all().isEmpty())
     }
 
