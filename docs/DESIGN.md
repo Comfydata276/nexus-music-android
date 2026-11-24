@@ -1652,6 +1652,11 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
   yes, the playlist is read again and that is the page; if that read fails, "Added to …" is
   still said and the page stays as it was until it can be read. A recommendation's tick means
   the song is in that read.
+- **An Undo button is for one change.** A removal's or a move's toast carries the Undo the
+  server's yes to it made (`PlaylistUndo`), not just the playlist. Tapped when that is no
+  longer the last change the server said yes to on the playlist (another removal since, while
+  the first toast was still showing), it does nothing and says "Can't undo: the playlist has
+  changed since."
 
 ## Working with the Windows app
 

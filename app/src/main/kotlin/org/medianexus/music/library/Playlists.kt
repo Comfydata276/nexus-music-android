@@ -96,7 +96,8 @@ data class PlaylistUndo(val playlist: String, val leftAs: Playlist, val before: 
  *   again (the server can say yes and leave out a song it doesn't have): nothing in advance.
  * - **Which songs are already there is worked out on the read the add is made on** ([Repeats]).
  * - **Undo** is the reverse of what the server said yes to, made on the playlist as that left
- *   it, under the same rule; out of reach, it says so and is kept.
+ *   it, under the same rule; out of reach, it says so and is kept. Each Undo is for one change,
+ *   and only while that is the last the server said yes to on the playlist.
  * - **Only the account's own** ([canEdit]): checked as a change is made and on the fresh copy.
  * - **Gone** (the server's error 70, on any read of a playlist): its page and its row in Library
  *   go, and the person is told ([fetched]).
@@ -130,6 +131,8 @@ class Playlists(
         BUSY,
         /** There is nothing (any more) to undo. */
         NOTHING_TO_UNDO,
+        /** That Undo's change is no longer the last the server said yes to on the playlist. */
+        UNDO_STALE,
         /** It holds songs missing from the library, so it can't be removed from or reordered
          *  by the rows shown ([Playlist.hidesSongs]). */
         MISSING_SONGS,
@@ -139,8 +142,13 @@ class Playlists(
 
     /** What is changed: rows taken out, or the whole order (a move, or an Undo). */
     private sealed interface Change {
-        data class Remove(val rows: List<Int>) : Change
-        data class Order(val songs: List<Song>) : Change
+        /** A change by the playlist's positions, or by replacing its songs (a removal, a move or
+         *  an Undo): `offered` is the Undo the server's yes to it made. */
+        sealed class ByPosition : Change {
+            @Volatile var offered: PlaylistUndo? = null
+        }
+        class Remove(val rows: List<Int>) : ByPosition()
+        class Order(val songs: List<Song>) : ByPosition()
         data class Rename(val name: String) : Change
         data object Delete : Change
         class Append(val songs: List<Song>, val repeats: Repeats) : Change {
@@ -196,28 +204,34 @@ class Playlists(
 
     // ---- Making changes ---------------------------------------------------------------------
 
-    /** Takes these rows of `playlist` (as drawn) out; `done` is told whether the server did. */
-    fun remove(playlist: Playlist, rows: Collection<Int>, done: (Boolean) -> Unit = {}): Unavailable? {
+    /** Takes these rows of `playlist` (as drawn) out; `done` is given the Undo for it once the
+     *  server has done it (null if it hasn't). */
+    fun remove(playlist: Playlist, rows: Collection<Int>, done: (PlaylistUndo?) -> Unit = {}): Unavailable? {
         val places = rows.filter { it in playlist.songs.indices }.distinct().sorted()
         if (places.isEmpty()) return null
-        return begin(playlist.id, playlist, Change.Remove(places), done)
+        return byPosition(playlist, Change.Remove(places), done)
     }
 
-    /** Moves the song at row `from` of `playlist` (as drawn) to row `to`. */
-    fun move(playlist: Playlist, from: Int, to: Int, done: (Boolean) -> Unit = {}): Unavailable? {
+    /** Moves the song at row `from` of `playlist` (as drawn) to row `to`; `done` as for [remove]. */
+    fun move(playlist: Playlist, from: Int, to: Int, done: (PlaylistUndo?) -> Unit = {}): Unavailable? {
         val songs = playlist.songs
         if (from == to || from !in songs.indices || to !in songs.indices) return null
-        return begin(playlist.id, playlist, Change.Order(songs.toMutableList().apply { add(to, removeAt(from)) }), done)
+        return byPosition(playlist, Change.Order(songs.toMutableList().apply { add(to, removeAt(from)) }), done)
     }
 
+    private fun byPosition(playlist: Playlist, change: Change.ByPosition, done: (PlaylistUndo?) -> Unit) =
+        begin(playlist.id, playlist, change, { taken -> done(if (taken) change.offered else null) })
+
     /**
-     * Takes back the last removal or move of this playlist the server said yes to, within a
-     * minute (Windows' `undo_last`), on the playlist exactly as that left it. Out of reach, or
-     * with a change on its way, it says so and is kept for later.
+     * Takes back the removal or move `the` is the Undo of (Windows' `undo_last`), within a
+     * minute, on the playlist exactly as that change left it. Only while it is still the last
+     * change the server said yes to on that playlist: otherwise nothing is done, and it says so.
+     * Out of reach, it says so and is kept for later.
      */
-    fun undoLast(id: String, done: (Boolean) -> Unit = {}): Unavailable? = synchronized(lock) {
-        val undo = lastUndo.value?.takeIf { it.playlist == id && clock() - it.at <= UNDO_MILLIS } ?: return Unavailable.NOTHING_TO_UNDO
-        begin(id, undo.leftAs, Change.Order(undo.before), done, undo = true)
+    fun undo(the: PlaylistUndo, done: (Boolean) -> Unit = {}): Unavailable? = synchronized(lock) {
+        if (clock() - the.at > UNDO_MILLIS) return Unavailable.NOTHING_TO_UNDO
+        if (lastUndo.value !== the) return Unavailable.UNDO_STALE
+        begin(the.playlist, the.leftAs, Change.Order(the.before), done, undo = true)
     }
 
     /**
@@ -359,8 +373,10 @@ class Playlists(
                     // for other devices too (before the page is told, which only notices).
                     added?.changed(id, now.songs.map { it.id }, after.songs.map { it.id }, clock() / 1000)
                     keep(after)
-                    if (!flight.undo && (change is Change.Remove || change is Change.Order)) {
-                        synchronized(lock) { lastUndo.value = PlaylistUndo(id, after, now.songs, clock()) }
+                    if (!flight.undo && change is Change.ByPosition) {
+                        val undo = PlaylistUndo(id, after, now.songs, clock())
+                        change.offered = undo
+                        synchronized(lock) { lastUndo.value = undo }
                     }
                 }
             }
@@ -424,8 +440,7 @@ class Playlists(
         Change.Delete, is Change.Create, is Change.Append -> p
     }
 
-    /** A change made by the playlist's positions, or by replacing its songs. */
-    private fun byPosition(change: Change) = change is Change.Remove || change is Change.Order
+    private fun byPosition(change: Change) = change is Change.ByPosition
 
     // (Only on a copy that hides nothing: what the server holds is then what it lists.)
     private fun withSongs(p: Playlist, songs: List<Song>) = p.copy(songs = songs, songCount = songs.size, duration = songs.sumOf { it.duration }, held = p.held?.let { songs.size })

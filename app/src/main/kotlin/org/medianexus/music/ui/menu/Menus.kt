@@ -241,6 +241,7 @@ fun Ui.said(unavailable: org.medianexus.music.library.Playlists.Unavailable?): B
         org.medianexus.music.library.Playlists.Unavailable.NOT_YOURS -> R.string.playlist_not_changeable
         org.medianexus.music.library.Playlists.Unavailable.BUSY -> R.string.playlist_busy
         org.medianexus.music.library.Playlists.Unavailable.NOTHING_TO_UNDO -> null
+        org.medianexus.music.library.Playlists.Unavailable.UNDO_STALE -> R.string.playlist_undo_changed
         org.medianexus.music.library.Playlists.Unavailable.MISSING_SONGS -> R.string.playlist_missing_songs
         org.medianexus.music.library.Playlists.Unavailable.RESERVED_NAME -> R.string.playlist_name_reserved
     }
@@ -331,10 +332,10 @@ fun Ui.removeFromPlaylist(playlist: Playlist, rows: List<Int>) {
     val res = graph.resources
     val count = rows.distinct().count { it in playlist.songs.indices }
     if (count == 0) return
-    said(account.playlists.remove(playlist, rows) { taken ->
-        if (!taken) return@remove
+    said(account.playlists.remove(playlist, rows) { undo ->
+        undo ?: return@remove
         val words = if (count == 1) res.getString(R.string.removed_from_playlist) else res.getString(R.string.removed_many_from_playlist, count)
-        graph.toasts.show(words, res.getString(R.string.undo)) { undoPlaylist(playlist.id) }
+        graph.toasts.show(words, res.getString(R.string.undo)) { undoPlaylist(undo) }
     })
 }
 
@@ -345,14 +346,15 @@ fun Ui.movePlaylistSong(playlist: Playlist, from: Int, to: Int): Boolean {
     val account = account ?: return false
     val res = graph.resources
     if (from == to) return false
-    return said(account.playlists.move(playlist, from, to) { taken ->
-        if (taken) graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(playlist.id) }
+    return said(account.playlists.move(playlist, from, to) { undo ->
+        if (undo != null) graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(undo) }
     })
 }
 
-/** Windows' `undo_last`: "Put back", once the server has. */
-fun Ui.undoPlaylist(id: String) {
-    said(account?.playlists?.undoLast(id) { taken -> if (taken) toast(graph.resources.getString(R.string.put_back)) })
+/** Windows' `undo_last`: "Put back", once the server has. A toast's Undo is for the change it
+ *  was shown for, and only while that is the playlist's last. */
+fun Ui.undoPlaylist(the: org.medianexus.music.library.PlaylistUndo) {
+    said(account?.playlists?.undo(the) { taken -> if (taken) toast(graph.resources.getString(R.string.put_back)) })
 }
 
 /** "Save queue as playlist": the songs in the queue at the tap, in the order they play

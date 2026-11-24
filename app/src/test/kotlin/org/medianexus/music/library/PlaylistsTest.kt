@@ -175,6 +175,13 @@ class PlaylistsTest {
         return withTimeout(10_000) { done.await() }
     }
 
+    /** Removes or moves, and waits until the server has settled it: the Undo it offers, if done. */
+    private suspend fun undoable(change: ((PlaylistUndo?) -> Unit) -> Unavailable?): PlaylistUndo? {
+        val done = CompletableDeferred<PlaylistUndo?>()
+        assertNull(change { done.complete(it) })
+        return withTimeout(10_000) { done.await() }
+    }
+
     /** Adds, and waits until the server has settled it: how it ended. */
     private suspend fun adding(add: ((Adding) -> Unit) -> Unavailable?): Adding {
         val done = CompletableDeferred<Adding>()
@@ -193,13 +200,13 @@ class PlaylistsTest {
     @Test
     fun onThePlaylistAsDrawnEachChangeIsMadeAndThePageIsWhatWasSent() = runBlocking<Unit> {
         var page = opened()
-        assertTrue(made { playlists.remove(page, listOf(1), it) })
+        assertTrue(null != undoable { playlists.remove(page, listOf(1), it) })
         assertEquals("a c d e", server.now("p1"))
         // A3: kept at once as sent; nothing read afterwards to learn it.
         assertEquals("a c d e", kept())
         assertEquals(2, server.count("get"))
         page = pages.kept(spec("p1"))!!
-        assertTrue(made { playlists.move(page, 3, 0, it) })
+        assertTrue(null != undoable { playlists.move(page, 3, 0, it) })
         assertEquals("e a c d", server.now("p1"))
         assertEquals("e a c d", kept())
         page = pages.kept(spec("p1"))!!
@@ -223,8 +230,8 @@ class PlaylistsTest {
             val before = writes()
             assertFalse(case, made { done ->
                 when (case) {
-                    "remove" -> playlists.remove(page, listOf(1), done)
-                    "move" -> playlists.move(page, 0, 2, done)
+                    "remove" -> playlists.remove(page, listOf(1)) { done(it != null) }
+                    "move" -> playlists.move(page, 0, 2) { done(it != null) }
                     "rename" -> playlists.rename(page, "Road trip", done)
                     else -> playlists.delete(page, done)
                 }
@@ -240,7 +247,7 @@ class PlaylistsTest {
     fun aRenameMadeElsewhereIsAChangeToo() = runBlocking<Unit> {
         val page = opened()
         server.names["p1"] = "Renamed elsewhere"
-        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertFalse(null != undoable { playlists.remove(page, listOf(0), it) })
         assertEquals(0, server.count("remove"))
         assertEquals("Renamed elsewhere", pages.kept(spec("p1"))!!.name)
     }
@@ -265,22 +272,22 @@ class PlaylistsTest {
 
     @Test
     fun aCardWhoseCountHasChangedSendsNothing() = runBlocking<Unit> {
-        for (case in listOf("rename", "delete")) {
-            server.elsewhere("p1", "a b c d e")
-            server.names["p1"] = "Mix"
-            val card = pages.fresh(listSpec()).first { it.id == "p1" }
-            assertEquals(5, card.songCount)
+        // (Delete first: a rename that is done asks for the list again, after it.)
+        server.elsewhere("p2", "a b c d e")
+        for ((case, id) in listOf("delete" to "p2", "rename" to "p1")) {
+            val card = pages.fresh(listSpec()).first { it.id == id }
+            assertEquals(case, 5, card.songCount)
             // Another device adds a song: the card still says five.
-            server.elsewhere("p1", "a b c d e f")
+            server.elsewhere(id, "a b c d e f")
             val said = listen()
             val before = writes()
             assertFalse(case, made { if (case == "rename") playlists.rename(card, "Road trip", it) else playlists.delete(card, it) })
             assertEquals(case, Outcome.CHANGED, said.await().outcome)
             assertEquals(case, before, writes())
-            assertEquals(case, "Mix", server.names["p1"])
-            assertEquals(case, "a b c d e f", server.now("p1"))
+            assertEquals(case, "Mix", server.names[id] ?: "Mix")
+            assertEquals(case, "a b c d e f", server.now(id))
             // The card is brought up to what was read: now its change goes.
-            val now = pages.kept(listSpec())!!.first { it.id == "p1" }
+            val now = pages.kept(listSpec())!!.first { it.id == id }
             assertEquals(case, 6, now.songCount)
             assertTrue(case, made { if (case == "rename") playlists.rename(now, "Road trip", it) else playlists.delete(now, it) })
         }
@@ -290,7 +297,7 @@ class PlaylistsTest {
     fun theCardsCountFollowsThePhonesOwnChange() = runBlocking<Unit> {
         pages.fresh(listSpec())
         val page = opened()
-        assertTrue(made { playlists.remove(page, listOf(0), it) })
+        assertTrue(null != undoable { playlists.remove(page, listOf(0), it) })
         val card = pages.kept(listSpec())!!.first { it.id == "p1" }
         assertEquals(4, card.songCount)
         assertTrue(made { playlists.rename(card, "Road trip", it) })
@@ -303,7 +310,7 @@ class PlaylistsTest {
         val drawn = opened()
         server.elsewhere("p1", "a x b c d e")
         opened()
-        assertFalse(made { playlists.remove(drawn, listOf(1, 2), it) })
+        assertFalse(null != undoable { playlists.remove(drawn, listOf(1, 2), it) })
         assertEquals(0, server.count("remove"))
         assertEquals("a x b c d e", server.now("p1"))
     }
@@ -334,8 +341,9 @@ class PlaylistsTest {
             server.elsewhere("p1", "x a b c")
             server.missing.clear()
             var page = opened()
+            var undo: PlaylistUndo? = null
             if (case == "undo") {
-                assertTrue(made { playlists.remove(page, listOf(2), it) })
+                undo = undoable { playlists.remove(page, listOf(2), it) }!!
                 page = pages.kept(spec("p1"))!!
             }
             // The disk holding "x" goes offline and the server scans.
@@ -345,9 +353,9 @@ class PlaylistsTest {
             val before = writes()
             assertFalse(case, made { done ->
                 when (case) {
-                    "remove" -> playlists.remove(page, listOf(1), done)
-                    "move" -> playlists.move(page, 3, 0, done)
-                    else -> playlists.undoLast("p1", done)
+                    "remove" -> playlists.remove(page, listOf(1)) { done(it != null) }
+                    "move" -> playlists.move(page, 3, 0) { done(it != null) }
+                    else -> playlists.undo(undo!!, done)
                 }
             })
             assertEquals(case, Outcome.MISSING_SONGS, said.await().outcome)
@@ -437,7 +445,7 @@ class PlaylistsTest {
         val page = opened()
         val (reached, open) = server.hold("remove")
         val first = CompletableDeferred<Boolean>()
-        assertNull(playlists.remove(page, listOf(0)) { first.complete(it) })
+        assertNull(playlists.remove(page, listOf(0)) { first.complete(it != null) })
         reached.await()
         assertEquals(setOf("p1"), playlists.busy.value)
         // Shown as made while it is on its way.
@@ -461,10 +469,10 @@ class PlaylistsTest {
         val page = opened()
         server.trouble["remove"] = Trouble.REFUSE
         val said = listen()
-        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertFalse(null != undoable { playlists.remove(page, listOf(0), it) })
         assertEquals(Outcome.REFUSED, said.await().outcome)
         assertEquals("a b c d e", ids(playlists.shown(pages.kept(spec("p1"))!!)))
-        assertEquals(Unavailable.NOTHING_TO_UNDO, playlists.undoLast("p1"))
+        assertNull(playlists.undo.value)
     }
 
     // ---- A4: Undo ----------------------------------------------------------------------------
@@ -473,29 +481,45 @@ class PlaylistsTest {
     fun undoIsTheReverseOfWhatTheServerSaidYesTo() = runBlocking<Unit> {
         val page = opened()
         val (reached, open) = server.hold("remove")
-        val done = CompletableDeferred<Boolean>()
+        val done = CompletableDeferred<PlaylistUndo?>()
         playlists.remove(page, listOf(1, 3)) { done.complete(it) }
         reached.await()
         // Not offered before the server has said yes.
-        assertEquals(Unavailable.NOTHING_TO_UNDO, playlists.undoLast("p1"))
+        assertNull(playlists.undo.value)
         open.complete(Unit)
-        assertTrue(withTimeout(10_000) { done.await() })
-        assertTrue(made { playlists.undoLast("p1", it) })
+        val undo = withTimeout(10_000) { done.await() }!!
+        assertTrue(made { playlists.undo(undo, it) })
         assertEquals("a b c d e", server.now("p1"))
         assertEquals("a b c d e", kept())
         // Used up.
-        assertEquals(Unavailable.NOTHING_TO_UNDO, playlists.undoLast("p1"))
+        assertEquals(Unavailable.UNDO_STALE, playlists.undo(undo))
+    }
+
+    @Test
+    fun anUndoIsForItsOwnChangeOnly() = runBlocking<Unit> {
+        // "b" removed, then "d" while the first toast is still up; the first toast's Undo.
+        val page = opened()
+        val first = undoable { playlists.remove(page, listOf(1), it) }!!
+        val after = pages.kept(spec("p1"))!!
+        val second = undoable { playlists.remove(after, listOf(2), it) }!!
+        val before = writes()
+        assertEquals(Unavailable.UNDO_STALE, playlists.undo(first))
+        assertEquals(before, writes())
+        assertEquals("a c e", server.now("p1"))
+        // The second's own Undo puts back what it took.
+        assertTrue(made { playlists.undo(second, it) })
+        assertEquals("a c d e", server.now("p1"))
     }
 
     @Test
     fun undoOfAPlaylistChangedSinceSendsNothingAndSaysSo() = runBlocking<Unit> {
         val page = opened()
-        assertTrue(made { playlists.remove(page, listOf(1), it) })
+        val undo = undoable { playlists.remove(page, listOf(1), it) }!!
         // Another device has since taken out "d", which Undo would otherwise put back.
         server.elsewhere("p1", "a c e")
         val said = listen()
         val before = writes()
-        assertFalse(made { playlists.undoLast("p1", it) })
+        assertFalse(made { playlists.undo(undo, it) })
         assertEquals(Outcome.UNDO_CHANGED, said.await().outcome)
         assertEquals(before, writes())
         assertEquals("a c e", server.now("p1"))
@@ -505,11 +529,11 @@ class PlaylistsTest {
     @Test
     fun undoWithTheServerOutOfReachSaysSoAndIsKept() = runBlocking<Unit> {
         val page = opened()
-        assertTrue(made { playlists.move(page, 0, 4, it) })
+        val undo = undoable { playlists.move(page, 0, 4, it) }!!
         reachable = false
-        assertEquals(Unavailable.OFFLINE, playlists.undoLast("p1"))
+        assertEquals(Unavailable.OFFLINE, playlists.undo(undo))
         reachable = true
-        assertTrue(made { playlists.undoLast("p1", it) })
+        assertTrue(made { playlists.undo(undo, it) })
         assertEquals("a b c d e", server.now("p1"))
     }
 
@@ -520,7 +544,7 @@ class PlaylistsTest {
         val page = opened()
         server.trouble["remove"] = Trouble.LOSE_ANSWER
         val said = listen()
-        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertFalse(null != undoable { playlists.remove(page, listOf(0), it) })
         assertEquals(Outcome.UNCONFIRMED, said.await().outcome)
         withTimeout(10_000) { while (kept() != "b c d e") kotlinx.coroutines.delay(5) }
         assertEquals(1, server.count("remove"))
@@ -531,7 +555,7 @@ class PlaylistsTest {
         val page = opened()
         server.trouble["get"] = Trouble.LOSE_ANSWER
         val said = listen()
-        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertFalse(null != undoable { playlists.remove(page, listOf(0), it) })
         assertEquals(Outcome.UNSENT, said.await().outcome)
         assertEquals(0, writes())
     }
@@ -574,7 +598,7 @@ class PlaylistsTest {
         val page = opened()
         server.owners["p1"] = "guest"
         val said = listen()
-        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertFalse(null != undoable { playlists.remove(page, listOf(0), it) })
         assertEquals(Outcome.REFUSED, said.await().outcome)
         assertEquals(0, writes())
     }
@@ -593,7 +617,7 @@ class PlaylistsTest {
             if (case == "refresh") {
                 runCatching { pages.fresh(spec("p1")) }
             } else {
-                assertFalse(made { playlists.remove(page, listOf(0), it) })
+                assertFalse(null != undoable { playlists.remove(page, listOf(0), it) })
             }
             assertEquals(case, Outcome.GONE, said.await().outcome)
             assertTrue(case, "p1" in playlists.gone.value)
@@ -617,7 +641,7 @@ class PlaylistsTest {
         val page = opened()
         val (reached, open) = server.hold("remove")
         val done = CompletableDeferred<Boolean>()
-        playlists.remove(page, listOf(1)) { done.complete(it) }
+        playlists.remove(page, listOf(1)) { done.complete(it != null) }
         reached.await()
         server.elsewhere("p1", "e d c b a")
         open.complete(Unit)
