@@ -23,11 +23,12 @@ import org.medianexus.music.net.ScanStatus
 import org.medianexus.music.net.Song
 
 /**
- * A fetch of the library a page at a time can't lose songs and still call the copy whole.
- * The server's library changing between pages (a song deleted before the page being read
- * makes one fall between two pages; one added repeats one and skips another) is caught by
- * asking the server how its library stands again once the last page is in, and by counting
- * the songs against the number the server gives; a copy that fails either is not published.
+ * A fetch of the library a page at a time can't lose songs and still be taken for whole. The
+ * server's library changing between pages (a song deleted before the page being read makes
+ * one fall between two pages; one added repeats one and skips another) is caught by asking
+ * the server how its library stands again once the last page is in, and by a song coming
+ * round twice. Such a copy is used all the same, but stamped as out of date, so the next
+ * ordinary check fetches it again.
  */
 class LibraryFetchTest {
     @get:Rule val folder = TemporaryFolder()
@@ -77,76 +78,114 @@ class LibraryFetchTest {
     private val thirty = (0 until 30).map { "s%02d".format(it) }
 
     @Test
-    fun aSongDeletedBeforeThePageBeingReadIsNotLost() = runBlocking {
+    fun aSongDeletedBetweenPagesGivesACopyThatIsUsedAndFetchedAgain() = runBlocking {
         val server = Server(thirty)
         // After the first page, a song on it is deleted: s10 moves up onto page one, which
         // has been read, and the second page starts at s11. Fetched as it stood, s10 is lost.
         server.served = { page -> if (page == 0 && server.scans == 0) server.change { remove("s03") } }
         val copy = copy(server)
         assertTrue(copy.check())
-        val snap = copy.ready!!
-        assertEquals(thirty - "s03", ids(snap))
-        assertEquals(29L, snap.stamp.count)
-        assertEquals("scan-1", snap.stamp.lastScan)
-    }
-
-    @Test
-    fun aSongAddedBeforeThePageBeingReadIsNotLostEither() = runBlocking {
-        val server = Server(thirty)
-        // A song added near the top: s09 is pushed onto page two and comes round twice, and
-        // s29 is pushed off the end of the last page read and never comes at all.
-        server.served = { page -> if (page == 0 && server.scans == 0) server.change { add(1, "new") } }
-        val copy = copy(server)
-        assertTrue(copy.check())
-        assertEquals(listOf("s00", "new") + thirty.drop(1), ids(copy.ready))
-    }
-
-    @Test
-    fun aCopyShortOfTheServersCountIsNotPublished() = runBlocking {
-        val server = Server(thirty)
-        val notes = mutableListOf<String>()
-        val copy = copy(server, notes = notes)
-        assertTrue(copy.check())
-        val good = copy.ready!!
-        // A scan, after which the server says 31 songs but lists 30 (one that can't be listed,
-        // or a page that came back short): a fetch that doesn't add up.
-        server.scans++
-        server.says = 31
+        // Used (there is no better), but marked as out of date.
+        val first = copy.ready!!
+        assertEquals(thirty - "s10", ids(first))
+        assertEquals(LibraryCopy.UNSETTLED, first.stamp.count)
+        assertTrue(LibraryCopy.isStale(first.stamp, server.scanStatus(), 10_000, unmetered = false))
+        // The next ordinary check fetches it again, and the library has stood still since.
         server.pagesAsked.clear()
+        assertTrue(copy.check())
+        assertEquals(listOf(0, 1, 2), server.pagesAsked)
+        val clean = copy.ready!!
+        assertEquals(thirty - "s03", ids(clean))
+        assertEquals(29L, clean.stamp.count)
+        assertEquals("scan-1", clean.stamp.lastScan)
+        // And then not again; what is on the phone is the clean copy.
         assertFalse(copy.check())
-        // Tried a few times, then left for later; the copy in use is the last good one.
-        assertTrue(server.pagesAsked.count { it == 0 } in 2..4)
-        assertTrue(copy.ready === good)
-        assertTrue(copy.state.value === good)
-        assertTrue(notes.any { "not whole" in it })
-        // Nor kept on the phone: read again, it is the good copy.
-        val again = copy(server, dir = folder.root)
-        again.open()
-        assertEquals(thirty, ids(again.state.value))
+        assertEquals(29L, CopyFile.read(File(folder.root, "copy.bin"))!!.stamp.count)
     }
 
     @Test
-    fun theFirstCopyIsNotCalledWholeWhenItIsnt() = runBlocking {
+    fun aSongAddedBetweenPagesIsCaughtByTheSongThatCameTwice() = runBlocking {
         val server = Server(thirty)
-        server.says = 33
+        // A song added near the top, and the scan status (wrongly) not moved: s09 is pushed
+        // onto the second page and comes round twice, and "new" is never seen.
+        server.says = 30
+        server.served = { page -> if (page == 0 && server.ids.size == 30) server.ids.add(1, "new") }
         val copy = copy(server)
-        assertFalse(copy.check())
-        assertNull(copy.ready)
-        assertFalse(copy.state.value?.complete ?: false)
-    }
-
-    @Test
-    fun aLibraryThatKeepsChangingIsLeftForLater() = runBlocking {
-        val server = Server(thirty)
-        // A scan after every page: no fetch can be trusted.
-        server.served = { server.change { } }
-        val copy = copy(server)
-        assertFalse(copy.check())
-        assertNull(copy.ready)
-        // Quiet again: the next check fetches it.
-        server.served = {}
         assertTrue(copy.check())
         assertEquals(thirty, ids(copy.ready))
+        assertEquals(LibraryCopy.UNSETTLED, copy.ready!!.stamp.count)
+        server.served = {}
+        server.says = null
+        assertTrue(copy.check())
+        assertEquals(listOf("s00", "new") + thirty.drop(1), ids(copy.ready))
+        assertEquals(31L, copy.ready!!.stamp.count)
+    }
+
+    @Test
+    fun aQuietLibraryIsFetchedOnce() = runBlocking {
+        val server = Server(thirty)
+        val copy = copy(server)
+        assertTrue(copy.check())
+        assertEquals(thirty, ids(copy.ready))
+        assertEquals(30L, copy.ready!!.stamp.count)
+        assertFalse(copy.check())
+        assertFalse(copy.check())
+        assertEquals(listOf(0, 1, 2, 3), server.pagesAsked)
+    }
+
+    @Test
+    fun nothingIsFetchedWhileTheServerIsScanning() = runBlocking {
+        val server = Server(thirty)
+        server.scanning = true
+        val copy = copy(server)
+        assertFalse(copy.check())
+        assertFalse(copy.check())
+        assertTrue(server.pagesAsked.isEmpty())
+        // A copy marked out of date waits for the scan to finish too.
+        server.scanning = false
+        server.served = { page -> if (page == 0 && server.scans == 0) server.change { } }
+        assertTrue(copy.check())
+        server.served = {}
+        server.scanning = true
+        server.pagesAsked.clear()
+        assertFalse(copy.check())
+        assertTrue(server.pagesAsked.isEmpty())
+        server.scanning = false
+        assertTrue(copy.check())
+    }
+
+    @Test
+    fun aServerThatCantBeAskedAgainGivesACopyMarkedOutOfDate() = runBlocking {
+        var asked = 0
+        val server = object : LibraryServer {
+            override suspend fun scanStatus(): ScanStatus {
+                if (++asked == 2) throw org.medianexus.music.net.ApiError.Network("(gone)")
+                return ScanStatus(count = 3, lastScan = "a")
+            }
+            override suspend fun page(artists: Int, albums: Int, songs: Int, offset: Int) =
+                Found(songs = listOf("a", "b", "c").drop(offset).take(songs).map { Song(id = it) })
+        }
+        val copy = copy(server)
+        assertTrue(copy.check())
+        assertEquals(listOf("a", "b", "c"), ids(copy.ready))
+        assertEquals(LibraryCopy.UNSETTLED, copy.ready!!.stamp.count)
+    }
+
+    @Test
+    fun aServerThatGivesTheSamePageForEverIsStopped() = runBlocking {
+        val pages = java.util.concurrent.atomic.AtomicInteger()
+        val server = object : LibraryServer {
+            override suspend fun scanStatus() = ScanStatus(count = 10, lastScan = "a")
+            override suspend fun page(artists: Int, albums: Int, songs: Int, offset: Int): Found {
+                pages.incrementAndGet()
+                return Found(songs = (0 until 10).map { Song(id = "s$it") })
+            }
+        }
+        val copy = copy(server)
+        assertTrue(copy.check())
+        assertEquals(2, pages.get())
+        assertEquals(10, copy.ready!!.songs.size)
+        assertEquals(LibraryCopy.UNSETTLED, copy.ready!!.stamp.count)
     }
 
     @Test

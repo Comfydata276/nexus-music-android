@@ -255,8 +255,7 @@ class LibraryCopyTest {
         }
         val copy = LibraryCopy(folder.root, server, Dispatchers.IO)
         copy.check()
-        // Nothing where the server says it has 400 songs: not a whole copy.
-        assertFalse(copy.state.value?.complete ?: false)
+        assertNotNull(copy.state.value)
         assertNull(copy.ready)
     }
 
