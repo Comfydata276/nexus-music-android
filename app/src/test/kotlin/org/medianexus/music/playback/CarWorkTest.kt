@@ -60,7 +60,18 @@ class CarWorkTest {
         try {
             // (The limit runs on this test's clock, which moves on by itself when nothing
             // else can: no real time is waited, however long the limit is.)
-            OffMain.within(scope, limitMs = 7_000) {
+            // On a thread of its own that has begun the work before the limit is armed:
+            // handed to Dispatchers.Default, the work could still be waiting for a thread
+            // when the test's clock (which has nothing else to wait for) reached the limit,
+            // and was then never begun at all, and the test waited for it for ever (seen with
+            // the machine busy).
+            val startedFirst = object : kotlinx.coroutines.CoroutineDispatcher() {
+                override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                    Thread(block).start()
+                    begun.await()
+                }
+            }
+            OffMain.within(scope, limitMs = 7_000, on = startedFirst) {
                 worked = Thread.currentThread()
                 begun.countDown()
                 gate.await()
