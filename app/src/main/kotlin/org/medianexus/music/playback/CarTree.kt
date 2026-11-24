@@ -150,8 +150,11 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
      * places for that reason), so "kept, or else the server" is not enough for what is
      * downloaded.
      */
-    private suspend fun <T> first(spec: org.medianexus.music.store.PageSpec<T>, part: Boolean, again: (Any?) -> Unit, here: () -> T? = { null }): T? {
-        if (isOffline) {
+    private suspend fun <T> first(spec: org.medianexus.music.store.PageSpec<T>, part: Boolean, again: (Any?) -> Unit, phoneOnly: Boolean = false, here: () -> T? = { null }): T? {
+        // (`phoneOnly`: whoever asks has already answered from the phone, and what follows
+        // from that answer is taken from the phone too, whatever has become of the server
+        // meanwhile: see [forVoice].)
+        if (isOffline || phoneOnly) {
             // The kept copy, if it has anything that plays: it has the whole list, so each
             // song keeps its place in it. If it has nothing that plays (it is not there; or
             // it is an old copy, from before the server gave these songs other ids), the
@@ -161,9 +164,14 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         }
         if (isUnsure) {
             // What is kept, without waiting; the server is asked behind it, whatever is
-            // given (see `PageCache.later`).
-            runCatching { library.later(spec, org.medianexus.music.store.PageCache.FRESH_FOR_MILLIS, again) }.getOrNull()?.let { return it }
+            // given (see `PageCache.later`). But a kept list of songs with nothing in it
+            // that plays, of something the phone does have songs of (an old copy, from
+            // before the server gave its songs other ids), is passed over for the songs on
+            // the phone, as it is offline: shown, it was a folder of nothing that would play.
+            val page = runCatching { library.later(spec, org.medianexus.music.store.PageCache.FRESH_FOR_MILLIS, again) }.getOrNull()
+            if (page != null && anyPlays(page)) return page
             here()?.let { return it }
+            if (page != null) return page
             // Nothing of it on the phone: the server it is, once it is known to be there
             // (a few seconds at most); if it turns out not to be, nothing, at once.
             if (settled()) return here()
@@ -192,8 +200,8 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         first(library.liked(), part, again) { DownloadedViews.playlist(downloadsNow(), "liked")?.songs?.takeIf { it.isNotEmpty() }?.let { org.medianexus.music.net.Found(songs = it) } }?.songs.orEmpty()
 
     /** A playlist's songs and its name: see [first]. */
-    private suspend fun playlistSongs(id: String, part: Boolean, again: (Any?) -> Unit): Pair<List<Song>, String> {
-        val page = first(library.playlist(id), part, again) {
+    private suspend fun playlistSongs(id: String, part: Boolean, phoneOnly: Boolean = false, again: (Any?) -> Unit): Pair<List<Song>, String> {
+        val page = first(library.playlist(id), part, again, phoneOnly) {
             DownloadedViews.playlist(downloadsNow(), "playlist:$id")?.takeIf { it.songs.isNotEmpty() }?.let { Playlist(id = id, name = it.list.name, songs = it.songs, songCount = it.songs.size, coverArt = it.list.coverArt) }
         }
         return page?.songs.orEmpty() to page?.name.orEmpty()
@@ -208,18 +216,24 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
      * once, with the server's list asked for behind them (`again` is told when it lands).
      * With nothing of either, the server's list is waited for only if `wait` (a folder that
      * would otherwise be empty); a search, or a spoken request, never waits for playlists.
+     *
+     * `phoneOnly`: whoever asks has already worked out its answer from the phone (a search,
+     * a spoken request): the playlists the phone knows of, and never the server's list,
+     * **whatever has become of the server since** (it used to look again at whether the
+     * server was there, and if it had come back in that moment, wait on a fresh list of
+     * playlists with the answer already in hand).
      */
-    private suspend fun playlistsKnown(wait: Boolean, again: (Any?) -> Unit = {}, page: suspend () -> List<Playlist>): List<Playlist> {
-        if (!isOffline && !isUnsure) return page()
+    private suspend fun playlistsKnown(wait: Boolean, again: (Any?) -> Unit = {}, phoneOnly: Boolean = false, page: suspend () -> List<Playlist>): List<Playlist> {
+        if (!phoneOnly && !isOffline && !isUnsure) return page()
         val downloaded = DownloadedViews.playlists(downloadsNow()).filter { it.list.key.startsWith("playlist:") && it.songs.isNotEmpty() }
             .map { Playlist(id = it.list.key.removePrefix("playlist:"), name = it.list.name, songCount = it.songs.size, coverArt = it.list.coverArt) }
-        val listed = if (isOffline) kept(library.playlists()) else runCatching { library.later(library.playlists(), org.medianexus.music.store.PageCache.FRESH_FOR_MILLIS, again) }.getOrNull()
-        if (listed == null && !isOffline) {
+        val listed = if (isOffline || phoneOnly) kept(library.playlists()) else runCatching { library.later(library.playlists(), org.medianexus.music.store.PageCache.FRESH_FOR_MILLIS, again) }.getOrNull()
+        if (listed == null && !isOffline && !phoneOnly) {
             // Not known yet whether the server is there, and no list kept: what is downloaded
             // if there is any; else, where a wait is allowed, to know whether the server is
             // there (and its list if it is).
             if (downloaded.isNotEmpty() || !wait) return downloaded
-            return if (settled()) playlistsKnown(wait, again, page) else page()
+            return if (settled()) playlistsKnown(wait, again, phoneOnly, page) else page()
         }
         val have = downloaded.mapTo(HashSet()) { it.id }
         val others = listed.orEmpty().filter { it.id !in have && (!isOffline || kept(library.playlist(it.id))?.songs?.any(::plays) == true) }
@@ -433,11 +447,15 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
                     "frequent" -> AlbumList.Frequent
                     else -> return null
                 }
-                // Offline: the kept copy of that list, if there is one, and of it what plays.
+                // Offline: the kept copy of that list, if there is one, and of it what plays;
+                // with no copy kept, the albums on the phone (in no such order, which only
+                // the server knows: but something to choose from, and at once). It had no
+                // answer of its own: empty offline, and a wait while it wasn't known
+                // whether the server was there.
                 // (Every branch below goes by [first]: nothing here asks the server while it
                 // is out of reach, or waits on it while that isn't known and the phone has
                 // an answer.)
-                val albums = first(library.albums(order, 0, Library.GRID_PAGE), part, again).orEmpty()
+                val albums = first(library.albums(order, 0, Library.GRID_PAGE), part, again) { playableAlbums(playable()).takeIf { it.isNotEmpty() } }.orEmpty()
                 Listing(onlyPlayable(albums).map { albumEntry(it) }, inside = CarStyle.GRID)
             }
             is CarNode.AlbumLetter -> Listing(onlyPlayable(if (isOffline) playableAlbums(playable()) else everyAlbum(part, again)).filter { letterOf(it.name) == node.letter }.map { albumEntry(it) }, inside = CarStyle.GRID)
@@ -451,7 +469,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             )
             CarNode.Liked -> songs(likedSongs(part, again), ListRef.Liked)
             is CarNode.Album -> songs(albumSongs(node.id, part, again).first, ListRef.Album(node.id))
-            is CarNode.Playlist -> songs(playlistSongs(node.id, part, again).first, ListRef.Playlist(node.id))
+            is CarNode.Playlist -> songs(playlistSongs(node.id, part, again = again).first, ListRef.Playlist(node.id))
             is CarNode.Artist -> {
                 // What plays of theirs, by album: all there is offline, and what stands in
                 // while it isn't known whether the server is there and no page of them is kept.
@@ -578,13 +596,25 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             else first(library.album(node.id), part = false, again = {}) { playableAlbums(playable()).firstOrNull { it.id == node.id } }?.let { albumEntry(it) }
         is CarNode.Artist -> if (isOffline) (kept(library.artist(node.id)) ?: playableArtists(playable()).firstOrNull { it.id == node.id })?.let(::artistEntry)
             else first(library.artist(node.id), part = false, again = {}) { playableArtists(playable()).firstOrNull { it.id == node.id } }?.let(::artistEntry)
-        is CarNode.Playlist -> if (isOffline || isUnsure) playlistsKnown(wait = true) { library.quick(library.playlists()) }.firstOrNull { it.id == node.id }?.let(::playlistEntry)
+        // (A playlist from what the phone has of it itself, first: its downloads, its own
+        // kept page. It used to be looked for in the list of playlists alone, and with that
+        // list not kept, waited to know whether the server was there.)
+        is CarNode.Playlist -> if (isOffline || isUnsure) (playlistHere(node.id) ?: playlistsKnown(wait = true) { library.quick(library.playlists()) }.firstOrNull { it.id == node.id })?.let(::playlistEntry)
             else playlistEntry(library.quick(library.playlist(node.id)))
         is CarNode.Genre -> (if (isOffline) kept(library.genres()).orEmpty() else first(library.genres(), part = false, again = {}) { playableGenres().takeIf { it.isNotEmpty() } }.orEmpty()).firstOrNull { it.name == node.name }?.let(::genreEntry)
             ?: CarEntry(CarIds.format(node), node.name, icon = R.drawable.ic_tags, browsable = true, inside = CarStyle.GRID)
         is CarNode.Track -> play(node)?.let { list -> songEntry(list.songs[list.start], node.list, node.index) }
         CarNode.Downloads -> tabs().firstOrNull { it.id == CarIds.format(node) }
         CarNode.DownloadedSongs, is CarNode.DownloadedAlbum, is CarNode.DownloadedList -> downloadsTab().firstOrNull { it.id == CarIds.format(node) }
+    }
+
+    /** A playlist as the phone itself has it: downloaded whole, or its own page kept (offline,
+     *  only if something of it plays). Never the server. */
+    private suspend fun playlistHere(id: String): Playlist? {
+        DownloadedViews.playlist(downloadsNow(), "playlist:$id")?.takeIf { it.songs.isNotEmpty() }?.let {
+            return Playlist(id = id, name = it.list.name, songCount = it.songs.size, coverArt = it.list.coverArt)
+        }
+        return kept(library.playlist(id))?.takeIf { !isOffline || it.songs.any(::plays) }
     }
 
     /** Home with the server out of reach: from the phone alone, and nothing waited for.
@@ -767,11 +797,12 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         val limits = SearchLimits(artists = 10, albums = 15, songs = 30)
         // Offline, what is on the phone. Not yet known whether the server is there (just
         // after start-up): what is on the phone if anything of it matches, rather than a wait.
+        // (Decided once: what follows goes by this, not by another look at the server.)
         val here = if (isOffline || isUnsure) LocalSearch.find(query, playable().songs, limits, likedNow) else null
         // (Offline: only the playlists with something that plays, the downloaded ones among
         // them. Not yet known whether the server is there: the ones the phone knows of, and
         // never a wait for the server's list: a song found on the phone is not held up for it.)
-        val playlists = runCatching { playlistsKnown(wait = false) { library.quick(library.playlists()) } }.getOrDefault(emptyList())
+        val playlists = runCatching { playlistsKnown(wait = false, phoneOnly = here != null) { library.quick(library.playlists()) } }.getOrDefault(emptyList())
             .filter { Voice.score(query, it.name) >= 0.6 }.take(MOST_PLAYLISTS_FOUND)
         val found = when {
             here == null -> library.search.find(query, limits)
@@ -806,7 +837,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         // asked for by name, and downloaded, used to wait out the not-knowing first.
         val offlineNow = isOffline || (isUnsure && (playable().let { p ->
             val local = LocalSearch.find(request.searchWords(), p.songs, SearchLimits(artists = 3, albums = 3, songs = 3), likedNow)
-            val lists = playlistsKnown(wait = false) { emptyList() }
+            val lists = playlistsKnown(wait = false, phoneOnly = true) { emptyList() }
             val genres = p.songs.filter { it.genre.isNotEmpty() }.map { it.genre }.distinct().map { Genre(name = it) }
             Voice.choose(request, local, lists, genres) != VoiceChoice.Nothing || Voice.choose(request.copy(focus = VoiceRequest.Focus.ANY, query = request.searchWords()), local, lists, genres) != VoiceChoice.Nothing
         } || settled()))
@@ -814,7 +845,9 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         // Offline, only what is on the phone is looked in.
         suspend fun find(words: String, limits: SearchLimits) = if (here != null) LocalSearch.find(words, here.songs, limits, likedNow) else library.search.find(words, limits)
         val found = find(request.searchWords(), SearchLimits(artists = 10, albums = 10, songs = 25))
-        val playlists = runCatching { playlistsKnown(wait = false) { library.quick(library.playlists()) } }.getOrDefault(emptyList())
+        // (Answered from the phone, the playlists are the phone's too, and so is the list
+        // that is then played: nothing waits on a server that has come back meanwhile.)
+        val playlists = runCatching { playlistsKnown(wait = false, phoneOnly = offlineNow) { library.quick(library.playlists()) } }.getOrDefault(emptyList())
         val genres = if (request.focus == VoiceRequest.Focus.GENRE || request.focus == VoiceRequest.Focus.ANY) {
             if (here != null) here.songs.filter { it.genre.isNotEmpty() }.map { it.genre }.distinct().map { Genre(name = it) }
             else runCatching { library.quick(library.genres()) }.getOrDefault(emptyList())
@@ -832,12 +865,12 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         return when (choice) {
             is VoiceChoice.OfAlbum -> if (offlineNow) albumSongsOffline(choice.album.id).let { (songs, name) -> PlayList(songs, 0, name, "album:${choice.album.id}") }
                 else library.quick(library.album(choice.album.id)).let { PlayList(it.songs, 0, it.name, "album:${it.id}") }
-            is VoiceChoice.OfPlaylist -> playlistSongs(choice.playlist.id, part = false) {}.let { (songs, name) ->
+            is VoiceChoice.OfPlaylist -> playlistSongs(choice.playlist.id, part = false, phoneOnly = offlineNow) {}.let { (songs, name) ->
                 PlayList(songs, 0, name.ifEmpty { choice.playlist.name }, "playlist:${choice.playlist.id}")
             }
             is VoiceChoice.OfSong -> {
                 val song = choice.song
-                val album = if (song.albumId.isEmpty()) null else runCatching { albumSongs(song.albumId, part = false) {} }.getOrNull()
+                val album = if (song.albumId.isEmpty()) null else runCatching { if (offlineNow) albumSongsOffline(song.albumId) else albumSongs(song.albumId, part = false) {} }.getOrNull()
                 val at = album?.first?.indexOfFirst { it.id == song.id } ?: -1
                 if (album != null && at >= 0) PlayList(album.first, at, album.second, "album:${song.albumId}") else PlayList(listOf(song), 0, song.title, "")
             }

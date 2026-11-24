@@ -651,6 +651,18 @@ class QueuePlayer(
         if (queue.moveUid(uid, after, queued)) sync()
     }
 
+    /**
+     * Moves to this place in the playing order, leaving the order as it is (nothing is
+     * taken out or brought forward), and makes the player's playlist follow: for passing
+     * over what can't be played to the next that can, wherever in the queue that is.
+     * Whether it then plays is as it was.
+     */
+    fun passTo(place: Int) {
+        if (place !in queue.order.indices || place == queue.cursor) return
+        queue.moveTo(place)
+        sync(0)
+    }
+
     /** Plays the entry with this number now, if it is still to come. */
     fun jumpTo(uid: Long) {
         if (!queue.jumpToUid(uid)) return

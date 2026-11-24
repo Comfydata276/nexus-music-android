@@ -602,7 +602,11 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
     playlist or album is always listed and always opens with what is on the phone: Home,
     Playlists, Liked songs, a playlist, an album, each place asked for by id, a song chosen,
     search and a spoken request. The list of playlists puts the downloaded ones in whether
-    or not the server's list is kept.
+    or not the server's list is kept. **The Albums folders by order** (Recently added,
+    Recently played, Most played), whose order only the server knows, show the albums on the
+    phone when their own list is not kept (they were empty). **One playlist asked for by id**
+    is answered from what the phone has of that playlist itself (its downloads, its own kept
+    page), and only then from the list of playlists.
   - **While it isn't known whether the server is there** (the first seconds of a cold
     start: four at most, none at all with no network; and the moment after offline mode is
     switched off), **every path answers at once from what the phone has**, and the server is
@@ -615,13 +619,28 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
     by name counts as on the phone) all go the same way. Only where the phone has nothing at
     all is anything waited for, and then only to *know* (those few seconds): after which it
     is the server's answer, or the phone's nothing. No cover is fetched while the server is
-    known to be out of reach.
+    known to be out of reach. **A kept list of songs with nothing in it that plays, of
+    something the phone has songs of** (an old copy, from before the server gave its songs
+    other ids) gives way to the songs on the phone in those seconds too, as it does offline:
+    shown as it was kept, it was a folder of nothing that would play. **And an answer worked
+    out on the phone is finished on the phone**: a search or a spoken request that has found
+    what it wants there takes its playlists, and the list it then plays, from the phone as
+    well, whatever has become of the server meanwhile (it used to look again at whether the
+    server was there, and if it had come back in that moment, wait on a fresh list of
+    playlists with the answer already in hand).
   - **A song that isn't on the phone, at the cursor when the server is known to be out of
     reach and not yet heard, is passed over at once** for the next in the queue that can be
     played, with a line saying so ("Can't reach your server: skipped to a song on this
     phone"); with none, the player stops where it is and says that
     (`PlaybackService.passOverOutOfReach`, asked when the check fails, when the player comes
-    to such a song, and when its stream fails). It used to wait as "Reconnecting…" for as
+    to such a song, and when its stream fails). **"The next" is the next in the order the
+    queue will play** (`Recovery.nextThatPlays`, asked of the queue itself): on through the
+    playing order, which is the shuffled order when shuffle is on, through all of the queue
+    and not only the part of it the player holds, and round from the end to the top when
+    repeat is on. (It was looked for along the player's own playlist, by position: a song on
+    the phone three hundred places on in a long queue was "nothing further on", and repeat
+    counted for nothing.) A song that fails for any other reason is passed over the same
+    way: to the queue's next, not the playlist's. It used to wait as "Reconnecting…" for as
     long as the stream's own tries took: the stream's loader looks only at the switch set by
     hand. A song that was *playing* when the server went still stays where it is and carries
     on when the server is back.

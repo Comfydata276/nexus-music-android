@@ -58,9 +58,20 @@ object Recovery {
     fun passesOverOutOfReach(known: Boolean, onPhone: Boolean, heard: Boolean, meansToPlay: Boolean): Boolean =
         known && !onPhone && !heard && meansToPlay
 
-    /** The place of the next entry after `current`, of `count`, that plays with no server;
-     *  null if none does. */
-    fun nextThatPlays(current: Int, count: Int, plays: (Int) -> Boolean): Int? = (current + 1 until count).firstOrNull(plays)
+    /**
+     * The place, **in the order the queue will play**, of the next entry after the one at
+     * `cursor` that plays with no server; null if none does. `count` places in the playing
+     * order (which is the shuffled order when shuffle is on, and all of the queue, not the
+     * part of it the player holds); `repeat` as the queue has it: with repeat on (either
+     * kind) the queue goes round from its end to its top, as Next does, so what is before
+     * the cursor is to come too.
+     *
+     * (It used to look along the player's own playlist, by position: that is a window of a
+     * long queue, so a song on the phone two hundred places on was "nothing further on",
+     * and it stopped at the playlist's end whatever repeat said.)
+     */
+    fun nextThatPlays(cursor: Int, count: Int, repeat: Int, plays: (Int) -> Boolean): Int? =
+        (cursor + 1 until count).firstOrNull(plays) ?: if (repeat != Repeat.OFF) (0 until minOf(cursor, count)).firstOrNull(plays) else null
 
     /**
      * Streaming quality was changed in Settings: whether the song at the cursor is to be

@@ -1267,7 +1267,8 @@ class PlaybackService : MediaLibraryService() {
                             // (No longer that download: it has been replaced, or removed.
                             // Looked for again, once.)
                             !stale && uid?.let { triedAgain.add(it) } == true -> exo.prepare()
-                            else -> passOver()
+                            // No server to play it from: on to the next that is on the phone.
+                            else -> passOverToThePhone()
                         }
                     }
                 }
@@ -1284,7 +1285,8 @@ class PlaybackService : MediaLibraryService() {
                     publishExtras()
                     exo.prepare()
                 }
-                offline(error) -> passOver()
+                // Offline mode, and this one isn't on the phone: the next that is.
+                offline(error) -> passOverToThePhone()
                 // Chosen with the server known to be out of reach, and not on the phone:
                 // the next that is, at once, with a line saying so. Not "Reconnecting…".
                 network(error) && passOverOutOfReach() -> Unit
@@ -1428,8 +1430,7 @@ class PlaybackService : MediaLibraryService() {
         val known = reach.unreachable && reach.sure && !reach.manual
         val onPhone = song.radioUrl.isEmpty() && era.account.availability.plays(song)
         if (!Recovery.passesOverOutOfReach(known, onPhone, heard = heardUid == player.queue.currentUid(), meansToPlay = exo.playWhenReady)) return false
-        val plays = { index: Int -> (exo.getMediaItemAt(index).localConfiguration?.tag as? QueuePlayer.SongTag)?.song?.let { it.radioUrl.isEmpty() && era.account.availability.plays(it) } == true }
-        val next = Recovery.nextThatPlays(exo.currentMediaItemIndex, exo.mediaItemCount, plays)
+        val next = nextOnThePhone()
         stopWaiting()
         if (next == null) {
             // Nothing further on is on the phone: stopped here, and said (not left trying).
@@ -1441,10 +1442,21 @@ class PlaybackService : MediaLibraryService() {
         }
         graph.diagnostics.note("a song chosen with the server out of reach is not on the phone: passed over for the next that is")
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "out of reach: passed over to place $next of the queue")
-        exo.seekTo(next, 0)
+        player.passTo(next)
         exo.prepare()
         say(getString(R.string.passed_over_out_of_reach))
         return true
+    }
+
+    /** The place of the next entry that plays with no server, in the order the queue will
+     *  play it (see [Recovery.nextThatPlays]): asked of the queue itself, which has all of
+     *  it, its shuffled order and its repeat, and not of the player's part of it. */
+    private fun nextOnThePhone(): Int? {
+        val availability = era?.account?.availability ?: return null
+        val queue = player.queue
+        return Recovery.nextThatPlays(queue.cursor, queue.order.size, queue.repeat) { place ->
+            queue.songs[queue.order[place]].let { it.radioUrl.isEmpty() && availability.plays(it) }
+        }
     }
 
     /** A short line for whoever is looking: the phone's own screens (a toast), and every
@@ -1462,10 +1474,29 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun passOver() {
         failures++
-        if (failures < 3 && exo.hasNextMediaItem()) {
-            exo.seekToNextMediaItem()
-            exo.prepare()
+        if (failures >= 3) return
+        // "The next" is the queue's to say, in the order it will play: the place after this
+        // one, and from the last, round to the top if repeat is on (as Next goes). The
+        // player's own playlist is only part of a long queue, and ends where that part does.
+        val step = player.queue.next() ?: return
+        if (!step.carriesOn || step.place == player.queue.cursor) return
+        player.passTo(step.place)
+        exo.prepare()
+    }
+
+    /**
+     * With no server to be had, the song at the cursor can't be played: on to the next in
+     * the queue that is on the phone, in the order the queue will play ([nextOnThePhone]);
+     * with none, it stays where it is, stopped, and says so.
+     */
+    private fun passOverToThePhone() {
+        val next = nextOnThePhone()
+        if (next == null) {
+            say(getString(R.string.cant_play_offline))
+            return
         }
+        player.passTo(next)
+        exo.prepare()
     }
 
     private fun undecodable(error: PlaybackException) = error.errorCode in listOf(

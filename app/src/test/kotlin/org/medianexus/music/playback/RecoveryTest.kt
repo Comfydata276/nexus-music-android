@@ -116,10 +116,46 @@ class RecoveryTest {
     @Test
     fun whatItIsPassedOverForIsTheNextThatPlays() {
         val onPhone = setOf(0, 4, 7)
-        assertEquals(4, Recovery.nextThatPlays(current = 1, count = 9) { it in onPhone })
-        assertEquals(7, Recovery.nextThatPlays(current = 4, count = 9) { it in onPhone })
-        // Never back to an earlier one, never the one it is on.
-        assertEquals(null, Recovery.nextThatPlays(current = 7, count = 9) { it in onPhone })
-        assertEquals(null, Recovery.nextThatPlays(current = 0, count = 1) { true })
+        assertEquals(4, Recovery.nextThatPlays(cursor = 1, count = 9, repeat = Repeat.OFF) { it in onPhone })
+        assertEquals(7, Recovery.nextThatPlays(cursor = 4, count = 9, repeat = Repeat.OFF) { it in onPhone })
+        // With repeat off: never back to an earlier one, never the one it is on.
+        assertEquals(null, Recovery.nextThatPlays(cursor = 7, count = 9, repeat = Repeat.OFF) { it in onPhone })
+        assertEquals(null, Recovery.nextThatPlays(cursor = 0, count = 1, repeat = Repeat.OFF) { true })
+    }
+
+    // ---- In the order the queue will play (offline hardening 3, item 5) -------------------------
+
+    @Test
+    fun withRepeatOnTheQueueGoesRoundSoWhatIsBeforeTheCursorIsToComeToo() {
+        val onPhone = setOf(0, 4, 7)
+        // Past the last that plays, with repeat on (either kind, as Next goes round): the
+        // first that plays from the top. (It stopped at the end whatever repeat said.)
+        assertEquals(0, Recovery.nextThatPlays(cursor = 7, count = 9, repeat = Repeat.ALL) { it in onPhone })
+        assertEquals(0, Recovery.nextThatPlays(cursor = 8, count = 9, repeat = Repeat.ONE) { it in onPhone })
+        // What is still ahead comes before what is behind.
+        assertEquals(7, Recovery.nextThatPlays(cursor = 5, count = 9, repeat = Repeat.ALL) { it in onPhone })
+        // Never the one it is on, though it is the only one that plays.
+        assertEquals(null, Recovery.nextThatPlays(cursor = 4, count = 9, repeat = Repeat.ALL) { it == 4 })
+        assertEquals(null, Recovery.nextThatPlays(cursor = 0, count = 1, repeat = Repeat.ALL) { true })
+    }
+
+    @Test
+    fun itIsLookedForInTheShuffledOrderAndInAllOfTheQueue() {
+        // A long list, shuffled, of which two songs are on the phone: far apart in the
+        // list, and wherever the shuffle has put them in the playing order.
+        val songs = List(1_000) { org.medianexus.music.net.Song(id = "s$it", title = "Song $it") }
+        val queue = Queue()
+        queue.replace(songs, 0, "A list", shuffle = true, random = kotlin.random.Random(7))
+        val onPhone = setOf("s3", "s977")
+        val places = queue.order.withIndex().filter { (_, entry) -> queue.songs[entry].id in onPhone }.map { it.index }.filter { it > queue.cursor }
+        assertEquals(2, places.size)
+        // The next that plays is the one the queue will come to first, by its own order: not
+        // the nearer in the list, and not only if it is within the two hundred or so places
+        // the player itself holds.
+        val next = Recovery.nextThatPlays(queue.cursor, queue.order.size, queue.repeat) { queue.songs[queue.order[it]].id in onPhone }
+        assertEquals(places.min(), next)
+        assertTrue("one of them is beyond the player's own part of the queue", places.max() > 300)
+        // And from there, the other.
+        assertEquals(places.max(), Recovery.nextThatPlays(places.min(), queue.order.size, queue.repeat) { queue.songs[queue.order[it]].id in onPhone })
     }
 }

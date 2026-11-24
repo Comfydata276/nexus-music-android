@@ -124,8 +124,11 @@ class CarColdTest {
         assertEquals(listOf("Shuffle", "Song 2", "Song 4"), fromThePhone { titles(tree.children(CarNode.Album("al-1"))) })
         assertEquals(listOf("First Light"), fromThePhone { titles(tree.children(CarNode.Artist("ar-1"))) })
         assertEquals(listOf("First Light"), fromThePhone { titles(tree.children(CarNode.Genre("Folk"))) })
-        // A list the phone has no copy of is empty, at once: not a wait.
-        assertEquals(emptyList<String>(), fromThePhone { titles(tree.children(CarNode.AlbumsBy("newest"))) })
+        // A list of albums the phone has no copy of (Recently added, Recently played, Most
+        // played): the albums on the phone, at once. (It was empty.)
+        for (kind in listOf("newest", "recent", "frequent")) {
+            assertEquals(listOf("First Light"), fromThePhone { titles(tree.children(CarNode.AlbumsBy(kind))) })
+        }
         // Downloads.
         assertEquals(listOf("Songs", "Liked songs", "Mix", "First Light"), fromThePhone { titles(tree.children(CarNode.Downloads)) })
         // Each place on its own, as a car asks for one by id.
@@ -283,5 +286,95 @@ class CarColdTest {
         assertEquals("s4", chosen.songs[chosen.start].id)
         // A song with no album to speak of, that is on the phone: not asked of the server.
         assertEquals("s2", atOnce { tree.play(CarNode.Track("s2", ListRef.Album(""), -1)) }!!.songs.single().id)
+    }
+
+    // ---- The last local gaps (offline hardening 3, item 5) --------------------------------------
+
+    @Test
+    fun theAlbumsSortFoldersAnswerFromThePhoneWhileItIsNotKnown() {
+        val tree = neverKnown()
+        // None of the three lists is kept. (Each waited to know whether the server was there.)
+        for (kind in listOf("newest", "recent", "frequent")) {
+            assertEquals(listOf("First Light"), atOnce { titles(tree.children(CarNode.AlbumsBy(kind))) })
+        }
+        // One that is kept is shown as it is.
+        runBlocking { library.pages.put(library.albums(org.medianexus.music.net.AlbumList.Newest, 0, Library.GRID_PAGE), listOf(org.medianexus.music.net.Album(id = "al-9", name = "Slow Rivers"))) }
+        assertEquals(listOf("Slow Rivers"), atOnce { titles(tree.children(CarNode.AlbumsBy("newest"))) })
+    }
+
+    @Test
+    fun onePlaylistLookedUpByIdDoesNotWaitForTheListOfPlaylistsWhenItsOwnPageIsKept() {
+        // A playlist that is not downloaded; its own page is kept, the list of playlists is not.
+        runBlocking { library.pages.put(library.playlist("p7"), org.medianexus.music.net.Playlist(id = "p7", name = "Evening", songs = listOf(song(2), song(9)), songCount = 2)) }
+        // Not known whether the server is there, and it never will be: answered from its
+        // own page. (It was looked for only in the list of playlists, which was waited for.)
+        assertEquals("Evening", atOnce { neverKnown().item(CarNode.Playlist("p7")) }!!.title)
+        assertEquals("Mix", atOnce { neverKnown().item(CarNode.Playlist("p1")) }!!.title)
+        // Offline: the same, from the phone alone; and one with nothing that plays is not there.
+        offline = true
+        unsure = false
+        val tree = tree()
+        assertEquals("Evening", fromThePhone { tree.item(CarNode.Playlist("p7")) }!!.title)
+        runBlocking { library.pages.put(library.playlist("p8"), org.medianexus.music.net.Playlist(id = "p8", name = "Not here", songs = listOf(song(9)), songCount = 1)) }
+        assertEquals(null, fromThePhone { tree.item(CarNode.Playlist("p8")) })
+    }
+
+    /** A tree for which the server is out of reach or not yet known for the first `looks`
+     *  times it is asked, and after that is there: it "comes back" while a request that has
+     *  already answered from the phone is still being put together. Its answers, like its
+     *  list of playlists, are then the black hole's. */
+    private fun comingBack(looks: Int, unsureFirst: Boolean): CarTree {
+        val asked = java.util.concurrent.atomic.AtomicInteger()
+        fun early() = asked.incrementAndGet() <= looks
+        return CarTree(library, CarWords(), CarOffline(
+            now = { if (unsureFirst) false else early() },
+            availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true }),
+            downloads = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) },
+            unsure = { if (unsureFirst) early() else false },
+            settle = { kotlinx.coroutines.awaitCancellation() },
+        ))
+    }
+
+    @Test
+    fun anAnswerWorkedOutOnThePhoneIsNotHeldUpWhenTheServerComesBackMeanwhile() {
+        // The search has found its songs on the phone (the server was out of reach when it
+        // looked), and the server is back by the time it turns to the playlists. No list of
+        // playlists is kept: asked of the server now, that is a wait on the black hole.
+        for (unsureFirst in listOf(false, true)) {
+            for (looks in 1..4) {
+                val found = atOnce { comingBack(looks, unsureFirst).search("song 4") }
+                assertTrue("after $looks looks: $found", found.any { it.title == "Song 4" })
+            }
+            // A spoken request the same: "play First Light", "play Mix", "play Song 4".
+            for (looks in 2..8) {
+                assertEquals("after $looks looks", "album:al-1", atOnce { comingBack(looks, unsureFirst).forVoice(VoiceRequest(query = "First Light")) }!!.source)
+                assertEquals("after $looks looks", "playlist:p1", atOnce { comingBack(looks, unsureFirst).forVoice(VoiceRequest(query = "Mix")) }!!.source)
+                assertEquals("after $looks looks", "s4", atOnce { comingBack(looks, unsureFirst).forVoice(VoiceRequest(query = "Song 4")) }!!.let { it.songs[it.start].id })
+            }
+        }
+    }
+
+    @Test
+    fun whileItIsNotKnownAKeptPageWithNothingThatPlaysGivesWayToTheSongsOnThePhone() {
+        // Kept from before the server read its library again and gave the songs other ids:
+        // nothing in these pages is on the phone, and the songs that are, are downloaded.
+        fun old(n: Int) = song(n).copy(id = "old-$n")
+        runBlocking {
+            library.pages.put(library.album("al-1"), org.medianexus.music.net.Album(id = "al-1", name = "First Light", artist = "Paper Lanterns", songs = (1..4).map(::old)))
+            library.pages.put(library.playlist("p1"), org.medianexus.music.net.Playlist(id = "p1", name = "Mix", songs = listOf(old(4), old(1))))
+            library.pages.put(library.liked(), org.medianexus.music.net.Found(songs = listOf(old(2))))
+        }
+        val tree = neverKnown()
+        // (Offline they already gave way; while it wasn't known whether the server was
+        // there, the old page was shown: a folder of songs none of which would play.)
+        assertEquals(listOf("Shuffle", "Song 2", "Song 4"), atOnce { titles(tree.children(CarNode.Album("al-1"))) })
+        assertEquals(listOf("Shuffle", "Song 4"), atOnce { titles(tree.children(CarNode.Playlist("p1"))) })
+        assertEquals(listOf("Shuffle", "Song 2"), atOnce { titles(tree.children(CarNode.Liked)) })
+        // A song chosen there plays, from the phone.
+        val row = atOnce { tree.children(CarNode.Album("al-1")) }!!.first { it.title == "Song 4" }
+        assertEquals("s4", atOnce { tree.play(CarIds.parse(row.id) as CarNode.Track) }!!.let { it.songs[it.start].id })
+        // A kept page with something that plays is still shown whole, as when online.
+        runBlocking { library.pages.put(library.album("al-1"), org.medianexus.music.net.Album(id = "al-1", name = "First Light", songs = (1..4).map(::song))) }
+        assertEquals(listOf("Shuffle", "Song 1", "Song 2", "Song 3", "Song 4"), atOnce { titles(neverKnown().children(CarNode.Album("al-1"))) })
     }
 }
