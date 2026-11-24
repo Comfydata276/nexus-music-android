@@ -43,7 +43,7 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(__file__))
-from setup import PASSWORD, USER, Subsonic  # noqa: E402
+from setup import PASSWORD, USER, Subsonic, forget_missing  # noqa: E402
 
 FOLDER = "Big Library"
 SONGS_PER_ALBUM = 12
@@ -389,17 +389,6 @@ def scan(api, until, limit):
         if time.time() > deadline:
             raise SystemExit("the scan did not finish in %d minutes (it had %s songs)" % (limit // 60, status.get("count")))
         time.sleep(3)
-
-
-def forget_missing(base):
-    """Deletes the files Navidrome lists as missing, through its own interface's API."""
-    login = urllib.request.Request(base + "/auth/login", data=json.dumps({"username": USER, "password": PASSWORD}).encode(),
-                                   headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(login, timeout=30) as answer:
-        token = json.load(answer)["token"]
-    gone = urllib.request.Request(base + "/api/missing", method="DELETE", headers={"x-nd-authorization": "Bearer " + token})
-    with urllib.request.urlopen(gone, timeout=300):
-        pass
 
 
 def main():

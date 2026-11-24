@@ -14,7 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from setup import PASSWORD, USER, Subsonic  # noqa: E402
+from setup import PASSWORD, USER, Subsonic, forget_missing  # noqa: E402
 
 GENRE = "Paging test"
 FOLDER = "Paging Test"
@@ -46,6 +46,10 @@ def main():
     if what == "remove":
         shutil.rmtree(folder, ignore_errors=True)
         scan(api, lambda: albums_of_genre(api) == 0)
+        # The files are gone, but Navidrome keeps them as missing, and with them the genre:
+        # "Browse by genre" would still list "Paging test". Forgotten, then scanned again.
+        forget_missing(base)
+        scan(api, lambda: not any(g.get("value") == GENRE for g in api.call("getGenres").get("genres", {}).get("genre", [])))
         print("removed the genre %r" % GENRE)
         return
     count = int(what)

@@ -80,6 +80,21 @@ def remove_long(api):
             print("removed \"%s\"" % playlist["name"])
 
 
+def forget_missing(base):
+    """Deletes the files Navidrome lists as missing, through its own interface's API.
+
+    Navidrome keeps files that have gone as "missing" (in case they come back), with their
+    albums, artists and genre counts; removing them is its Missing files page's job, as an
+    administrator. Used by whatever takes music away (biglibrary.py, manyalbums.py)."""
+    login = urllib.request.Request(base + "/auth/login", data=json.dumps({"username": USER, "password": PASSWORD}).encode(),
+                                   headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(login, timeout=30) as answer:
+        token = json.load(answer)["token"]
+    gone = urllib.request.Request(base + "/api/missing", method="DELETE", headers={"x-nd-authorization": "Bearer " + token})
+    with urllib.request.urlopen(gone, timeout=300):
+        pass
+
+
 class Subsonic:
     def __init__(self, base, user, password):
         self.base, self.user, self.password = base, user, password
