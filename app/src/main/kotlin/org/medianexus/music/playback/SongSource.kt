@@ -573,6 +573,8 @@ class StreamFailure private constructor(message: String, reason: Int, val status
 class RideOut : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy() {
     override fun getRetryDelayMsFor(loadErrorInfo: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val error = loadErrorInfo.exception
+        // A station: the service's rejoin is the one thing that tries it again.
+        if (songIdOf(loadErrorInfo.loadEventInfo.dataSpec.uri) == null) return C.TIME_UNSET
         if (error is StreamFailure && (error.refused || error.offline || error.spent || error.moved || error.local)) return C.TIME_UNSET
         // A file that can't be read as audio (a damaged download, say) reads the same the
         // next time: not a connection to ride out. (Media3's own policy doesn't retry these;

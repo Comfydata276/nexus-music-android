@@ -1523,6 +1523,9 @@ class PlaybackService : MediaLibraryService() {
             delay(delayMs)
             if (waitingFor != wanted) return@launch
             waitingFor = null
+            // Paused or stopped meanwhile: no try; Play tries again (Media3 prepares the
+            // player when it is pressed).
+            if (!exo.playWhenReady) return@launch
             if (!wanted.stillStands(this@PlaybackService.era?.number, player.queue.currentUid(), failedNow())) return@launch
             // The player is to play again with nobody having asked it to just now, and after a
             // long outage Media3 may have let the foreground go with the player idle: in the
@@ -1732,6 +1735,8 @@ class PlaybackService : MediaLibraryService() {
         // The player's own error is not passed on as the cause: a playback error goes to
         // every app with a controller, cause and all.
         offline(error) -> PlaybackException(getString(R.string.cant_play_offline), null, error.errorCode)
+        // A station given up on after its rejoins: as a song that can't be played.
+        song?.radioUrl?.isNotEmpty() == true && player.stationGaveUp() -> PlaybackException(getString(R.string.couldnt_play_song), null, error.errorCode)
         network(error) && graph.localAccess.blocked.value -> PlaybackException(getString(R.string.car_local_network), null, error.errorCode, openAppButton())
         // Short, as Windows says it ("Reconnecting"): a car's player has a line for it under
         // the title. The phone's own Now Playing has room for the whole sentence, and is told

@@ -309,12 +309,30 @@ class AutoplayTest {
     // ---- Stations --------------------------------------------------------------------------
 
     @Test
-    fun aDroppedStationIsJoinedAgainAfterOneTwoFourAndEightSecondsThenNot() {
+    fun aDroppedStationIsJoinedAgainAfterOneTwoFourAndEightSecondsThenGivenUp() {
         val rejoins = Rejoins()
-        assertEquals(listOf(1_000L, 2_000L, 4_000L, 8_000L), (1..4).map { rejoins.next(7, it * 10_000L) })
-        assertNull(rejoins.next(7, 50_000))
-        // Three quiet minutes, or another entry: from the start again.
-        assertEquals(1_000L, rejoins.next(7, 50_000 + 3 * 60_000L + 1))
-        assertEquals(1_000L, rejoins.next(8, 400_000))
+        assertEquals(listOf(1_000L, 2_000L, 4_000L, 8_000L), (1..4).map { rejoins.next(7) })
+        assertFalse(rejoins.spent(7))
+        // The fourth rejoin dropped too: given up on, and stays so (M3b fixes 2, B3). It used
+        // to start again after three quiet minutes, whether or not it had played.
+        assertNull(rejoins.next(7))
+        assertTrue(rejoins.spent(7))
+        assertNull(rejoins.next(7))
+        // Played since, then dropped: a fresh count. Another entry: likewise.
+        rejoins.playing(7)
+        assertEquals(1_000L, rejoins.next(7))
+        assertEquals(1_000L, rejoins.next(8))
+    }
+
+    @Test
+    fun aStationsLoadIsNotRetriedByTheLoadPolicyOnlyBySongs() {
+        // The service's rejoin is the one thing that tries a station again (M3b fixes 2, B3).
+        fun info(uri: String) = androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo(
+            androidx.media3.exoplayer.source.LoadEventInfo(1, androidx.media3.datasource.DataSpec(android.net.Uri.parse(uri)), 0),
+            androidx.media3.exoplayer.source.MediaLoadData(androidx.media3.common.C.DATA_TYPE_MEDIA),
+            java.io.IOException("dropped"), 1,
+        )
+        assertEquals(androidx.media3.common.C.TIME_UNSET, RideOut().getRetryDelayMsFor(info("http://127.0.0.1:1/stream")))
+        assertEquals(1_000L, RideOut().getRetryDelayMsFor(info(songUri("s1"))))
     }
 }

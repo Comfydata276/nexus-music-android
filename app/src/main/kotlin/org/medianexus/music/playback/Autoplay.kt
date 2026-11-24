@@ -131,28 +131,32 @@ class AutoplayRunner(
 }
 
 /**
- * How soon a dropped station is joined again: 1, 2, 4 and 8 seconds after each drop of the same
- * entry within three minutes, and then not (null). A different entry, or three minutes without
- * a drop, starts again from one second. (Windows' `reconnect` waits, counted the way the
- * reader counts a song's stalls.)
+ * How soon a dropped station is joined again: 1, 2, 4 and 8 seconds (Windows' `reconnect`
+ * waits), and after the fourth, not (null): given up on ([spent]). A different entry, or the
+ * station having played since ([playing]), starts the count again.
  */
 class Rejoins {
     private var entry = -1L
-    private val drops = ArrayList<Long>()
+    private var count = 0
 
-    fun next(uid: Long, now: Long): Long? {
+    fun next(uid: Long): Long? {
         if (uid != entry) {
             entry = uid
-            drops.clear()
+            count = 0
         }
-        drops.removeAll { now - it > WINDOW_MILLIS }
-        drops += now
-        return WAITS.getOrNull(drops.size - 1)
+        return WAITS.getOrNull(count++)
     }
+
+    /** The station is playing: a later drop starts a fresh count. */
+    fun playing(uid: Long) {
+        if (uid == entry) count = 0
+    }
+
+    /** Joined again four times without playing in between, and dropped again. */
+    fun spent(uid: Long): Boolean = uid == entry && count > WAITS.size
 
     private companion object {
         val WAITS = longArrayOf(1_000, 2_000, 4_000, 8_000).toList()
-        const val WINDOW_MILLIS = 3 * 60_000L
     }
 }
 

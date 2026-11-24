@@ -235,6 +235,33 @@ class StartingTest {
     }
 
     @Test
+    fun aSongWaitingForTheServerIsNotTriedWhileThePersonHasPausedIt() {
+        // (M3b fixes 2, B3.) The server goes out of reach part-way through a song: the player
+        // waits to try again. The person pauses meanwhile: when the wait is over, no try is
+        // made (nothing asked of the server, the player still idle); Play tries.
+        val server = StandInServer().also { it.start() }
+        try {
+            server.signIn(app)
+            settle()
+            inside.player.play(songs(5), 2, "A list", playNow = false)
+            settle()
+            inside.player.play()
+            settle()
+            service.failedNow = { true }
+            inside.watcher.onPlayerError(androidx.media3.common.PlaybackException("gone", null, androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED))
+            settle()
+            inside.exo.stop()
+            inside.player.pause()
+            settle()
+            assertEquals(Player.STATE_IDLE, inside.exo.playbackState)
+            shadowOf(Looper.getMainLooper()).idleFor(16, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals("no try while paused", Player.STATE_IDLE, inside.exo.playbackState)
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
     fun mediaThreeIsNotTakenToHoldTheForegroundUnlessAndroidSaysTheServiceIsInIt() {
         inside.player.play(songs(3), 0, "A list", playNow = false)
         settle()

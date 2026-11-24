@@ -158,6 +158,11 @@ class QueuePlayer(
                 if (!playWhenReady) moved()
             }
 
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                // A station that is playing again: if it drops later, a fresh count of rejoins.
+                if (isPlaying && queue.current()?.radioUrl?.isNotEmpty() == true) queue.currentUid()?.let(rejoins::playing)
+            }
+
             override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
                 if (playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) moved()
             }
@@ -716,18 +721,24 @@ class QueuePlayer(
 
     private val rejoins = Rejoins()
 
+    /** The station playing has been given up on (see [rejoinStation]). */
+    fun stationGaveUp(): Boolean = queue.current()?.radioUrl?.isNotEmpty() == true && queue.currentUid()?.let(rejoins::spent) == true
+
     /**
      * A station's stream dropped (it failed, or ended, which a live stream doesn't do): it is
      * joined again from now, after 1, 2, 4 and 8 seconds (Windows' `reconnect`), unless it was
-     * paused or something else chosen meanwhile. False once it has dropped five times in
-     * three minutes: then it is the station that is at fault, and it is passed over.
+     * paused or something else chosen meanwhile. This is the one thing that tries a station
+     * again (Media3's own retries leave stations alone: see `RideOut`). False once it has been
+     * joined again four times without playing in between: then it is the station that is at
+     * fault, and it is passed over, saying so ([stationGaveUp]); nothing tries it again until
+     * the person chooses it. One that plays and drops later starts a fresh count.
      */
     fun rejoinStation(): Boolean {
         // Asked for only while playing is wanted: a load that fails after a pause (the
         // person's, or the sleep timer's) isn't joined again; and checked again when it acts.
         if (!exo.playWhenReady) return false
         val uid = queue.currentUid() ?: return false
-        val wait = rejoins.next(uid, android.os.SystemClock.elapsedRealtime()) ?: return false
+        val wait = rejoins.next(uid) ?: return false.also { invalidateState() }
         val asked = intent
         later(wait) {
             // Nothing done since: no pause, no stop, no other choice.
