@@ -377,4 +377,47 @@ class CarColdTest {
         runBlocking { library.pages.put(library.album("al-1"), org.medianexus.music.net.Album(id = "al-1", name = "First Light", songs = (1..4).map(::song))) }
         assertEquals(listOf("Shuffle", "Song 1", "Song 2", "Song 3", "Song 4"), atOnce { titles(neverKnown().children(CarNode.Album("al-1"))) })
     }
+
+    // ---- Offline loose ends, item 7 -------------------------------------------------------------
+
+    @Test
+    fun offlineAKeptListOfAlbumsWithNothingThatPlaysGivesWayToTheAlbumsOnThePhone() {
+        // Recently played and Most played are kept, and none of their albums is on the phone.
+        runBlocking {
+            for (order in listOf(org.medianexus.music.net.AlbumList.Recent, org.medianexus.music.net.AlbumList.Frequent)) {
+                library.pages.put(library.albums(order, 0, Library.GRID_PAGE), listOf(org.medianexus.music.net.Album(id = "al-9", name = "Slow Rivers")))
+            }
+        }
+        val tree = tree()
+        // The albums on the phone, as with no list kept. (Both were empty folders.)
+        for (kind in listOf("recent", "frequent")) {
+            assertEquals(listOf("First Light"), fromThePhone { titles(tree.children(CarNode.AlbumsBy(kind))) })
+        }
+    }
+
+    @Test
+    fun withTheServerThereAndNoPageKeptASongOrAnAlbumTheDownloadsHaveIsPlayedFromThem() {
+        // The server is known to be there (it has just gone silent: the black hole), and no
+        // page of the album is kept. Its songs 2 and 4 are downloaded, and an album of two
+        // songs is downloaded whole.
+        offline = false
+        unsure = false
+        fun other(n: Int) = song(n).copy(id = "t$n", album = "Second Wind", albumId = "al-2")
+        for (n in listOf(1, 2)) {
+            File(catalogue.dir, "t$n.flac").writeBytes(ByteArray(4))
+            catalogue.add(Downloaded(other(n), "t$n.flac", 4, at = 10L + n, suffix = "flac"))
+        }
+        catalogue.keep(DownloadedList("album:al-2", "Second Wind", songs = listOf("t1", "t2")))
+        val tree = tree()
+        // A song of the album chosen: the album as the downloads have it, from that song.
+        // (The album was asked of the server first, and waited on.)
+        val chosen = fromThePhone { tree.play(CarNode.Track("s4", ListRef.Album("al-1"), 1)) }!!
+        assertEquals("album:al-1", chosen.source)
+        assertEquals("s4", chosen.songs[chosen.start].id)
+        assertEquals(listOf("s2", "s4"), chosen.songs.map { it.id })
+        // A song by itself, downloaded.
+        assertEquals("s2", fromThePhone { tree.play(CarNode.Track("s2", ListRef.Album(""), -1)) }!!.songs.single().id)
+        // "Shuffle" on the album downloaded whole.
+        assertEquals(setOf("t1", "t2"), fromThePhone { tree.shuffled(ListRef.Album("al-2")) }!!.songs.map { it.id }.toSet())
+    }
 }

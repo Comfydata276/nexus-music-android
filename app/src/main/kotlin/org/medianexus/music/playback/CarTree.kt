@@ -458,7 +458,10 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
                 // is out of reach, or waits on it while that isn't known and the phone has
                 // an answer.)
                 val albums = first(library.albums(order, 0, Library.GRID_PAGE), part, again) { playableAlbums(playable()).takeIf { it.isNotEmpty() } }.orEmpty()
-                Listing(onlyPlayable(albums).map { albumEntry(it) }, inside = CarStyle.GRID)
+                // (Offline, a kept list with nothing on it that plays is no answer: the albums
+                // on the phone, as with no list kept. It was an empty folder.)
+                val shown = onlyPlayable(albums).ifEmpty { if (isOffline) playableAlbums(playable()) else emptyList() }
+                Listing(shown.map { albumEntry(it) }, inside = CarStyle.GRID)
             }
             is CarNode.AlbumLetter -> Listing(onlyPlayable(if (isOffline) playableAlbums(playable()) else everyAlbum(part, again)).filter { letterOf(it.name) == node.letter }.map { albumEntry(it) }, inside = CarStyle.GRID)
             CarNode.Artists -> {
@@ -755,9 +758,26 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
 
     // ---- Playing --------------------------------------------------------------------------
 
-    /** The songs of a list the car can play, what it is called and its route key. */
-    private suspend fun songsOf(list: ListRef): Triple<List<Song>, String, String>? = when (list) {
-        is ListRef.Album -> if (list.id.isEmpty()) null else albumSongs(list.id, part = false) {}.let { (songs, name) -> Triple(songs, name, "album:${list.id}") }
+    /**
+     * An album to play as the downloads' own record has it, **when no page of it is kept and
+     * the record has what was asked for**: the song `with`, if one was chosen; otherwise the
+     * whole album, downloaded whole and all arrived. Then it is played from the phone at once
+     * rather than from the server (which the car used to wait on, the songs on the phone).
+     * Null otherwise, and offline (which has its own way: [albumSongsOffline]).
+     */
+    private suspend fun downloadedInstead(id: String, with: String? = null): Pair<List<Song>, String>? {
+        if (isOffline || id.isEmpty()) return null
+        val state = downloadsNow()
+        val album = DownloadedViews.album(state, id) ?: return null
+        val has = if (with != null) album.songs.any { it.id == with } else album.whole && state.collections.firstOrNull { it.key == "album:$id" }?.songs?.all { s -> album.songs.any { it.id == s } } == true
+        if (!has || kept(library.album(id)) != null) return null
+        return album.songs to album.name
+    }
+
+    /** The songs of a list the car can play, what it is called and its route key (`with`:
+     *  the song chosen in it, if one was). */
+    private suspend fun songsOf(list: ListRef, with: String? = null): Triple<List<Song>, String, String>? = when (list) {
+        is ListRef.Album -> if (list.id.isEmpty()) null else (downloadedInstead(list.id, with) ?: albumSongs(list.id, part = false) {}).let { (songs, name) -> Triple(songs, name, "album:${list.id}") }
         is ListRef.Playlist -> playlistSongs(list.id, part = false) {}.let { (songs, name) -> Triple(songs, name, "playlist:${list.id}") }
         ListRef.Liked -> Triple(likedSongs(part = false) {}, words.likedSongs, "liked")
         // The Downloads tab's lists, as the downloads have them. Their own names as sources,
@@ -776,14 +796,15 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
 
     /** What choosing a song plays: its list, from it. Null if the song can't be found. */
     suspend fun play(track: CarNode.Track): PlayList? {
-        val known = if (track.list is ListRef.Album) runCatching { songsOf(track.list) }.getOrNull() else songsOf(track.list)
+        val known = if (track.list is ListRef.Album) runCatching { songsOf(track.list, track.songId) }.getOrNull() else songsOf(track.list, track.songId)
         val start = known?.first?.let { songs -> if (songs.getOrNull(track.index)?.id == track.songId) track.index else songs.indexOfFirst { it.id == track.songId } } ?: -1
         if (known == null || start < 0) {
             // A song with no album to speak of, or one its album doesn't hold (an old kept
             // page of it, a song kept from it separately): just the song, as a spoken request
             // plays it (offline, if it is on the phone). (Not yet known whether the server is
             // there: the phone's own, if it has it.)
-            val here = if (isOffline || isUnsure) playable().songs.firstOrNull { it.id == track.songId } else null
+            // (A downloaded song from the downloads' own record, whatever the server.)
+            val here = downloadsNow().downloaded[track.songId]?.song ?: if (isOffline || isUnsure) playable().songs.firstOrNull { it.id == track.songId } else null
             val song = here ?: if (isOffline || (isUnsure && settled())) return null else library.song(track.songId)
             return PlayList(listOf(song), 0, song.title, "", chosen = true)
         }
@@ -867,13 +888,14 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         }
         return when (choice) {
             is VoiceChoice.OfAlbum -> if (offlineNow) albumSongsOffline(choice.album.id).let { (songs, name) -> PlayList(songs, 0, name, "album:${choice.album.id}") }
-                else library.quick(library.album(choice.album.id)).let { PlayList(it.songs, 0, it.name, "album:${it.id}") }
+                else downloadedInstead(choice.album.id)?.let { (songs, name) -> PlayList(songs, 0, name, "album:${choice.album.id}") }
+                    ?: library.quick(library.album(choice.album.id)).let { PlayList(it.songs, 0, it.name, "album:${it.id}") }
             is VoiceChoice.OfPlaylist -> playlistSongs(choice.playlist.id, part = false, phoneOnly = offlineNow) {}.let { (songs, name) ->
                 PlayList(songs, 0, name.ifEmpty { choice.playlist.name }, "playlist:${choice.playlist.id}")
             }
             is VoiceChoice.OfSong -> {
                 val song = choice.song
-                val album = if (song.albumId.isEmpty()) null else runCatching { if (offlineNow) albumSongsOffline(song.albumId) else albumSongs(song.albumId, part = false) {} }.getOrNull()
+                val album = if (song.albumId.isEmpty()) null else runCatching { if (offlineNow) albumSongsOffline(song.albumId) else downloadedInstead(song.albumId, song.id) ?: albumSongs(song.albumId, part = false) {} }.getOrNull()
                 val at = album?.first?.indexOfFirst { it.id == song.id } ?: -1
                 if (album != null && at >= 0) PlayList(album.first, at, album.second, "album:${song.albumId}") else PlayList(listOf(song), 0, song.title, "")
             }

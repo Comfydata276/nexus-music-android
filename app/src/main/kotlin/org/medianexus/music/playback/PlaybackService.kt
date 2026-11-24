@@ -1846,7 +1846,8 @@ class PlaybackService : MediaLibraryService() {
                     if (item.localConfiguration?.tag is QueuePlayer.SongTag) return@mapNotNull item
                     val track = CarIds.parse(item.mediaId) as? CarNode.Track
                     val song = try {
-                        track?.let { tree.play(it) }?.let { it.songs[it.start] } ?: era.account.library.song(item.mediaId)
+                        // (A song downloaded is had from the downloads' own record, not the server.)
+                        track?.let { tree.play(it) }?.let { it.songs[it.start] } ?: era.account.catalogue.entry(item.mediaId)?.song ?: era.account.library.song(item.mediaId)
                     } catch (_: ApiError) {
                         null
                     } ?: return@mapNotNull null
