@@ -229,4 +229,33 @@ class OrderOfChoicesTest {
         settle()
         assertEquals("a start went ahead after a Pause", emptyList<String>(), acted.toList())
     }
+
+    @Test
+    fun playPausePlayAgainEndsPlayingWhatTheSecondPlayAskedFor() {
+        val inside = service.inside()
+        // What is loaded, playing.
+        val loaded = List(3) { Song(id = "here$it", title = "Here $it") }
+        app.graph.player.play(loaded, 0, "Loaded")
+        until("the list played") { inside.player.queue.current()?.id == "here0" && inside.exo.playWhenReady }
+        // Play on an album: its songs are looked up (held at the gate).
+        val gate = CompletableDeferred<Unit>()
+        val reached = CompletableDeferred<Unit>()
+        app.graph.player.afterLookup(scope, {
+            reached.complete(Unit)
+            gate.await()
+            List(3) { Song(id = "album$it", title = "Album $it") }
+        }) { songs -> app.graph.player.play(songs, 0, "The album") }
+        until("the lookup is out") { reached.isCompleted }
+        // Pause, and Play again, quickly: the second Play is on what is loaded.
+        app.graph.player.playPause()
+        settle()
+        app.graph.player.playPause()
+        settle()
+        // Then the album's songs arrive.
+        gate.complete(Unit)
+        settle()
+        settle()
+        assertEquals("here0", inside.player.queue.current()?.id)
+        assertEquals("not playing what the second Play asked for", true, inside.exo.playWhenReady)
+    }
 }
