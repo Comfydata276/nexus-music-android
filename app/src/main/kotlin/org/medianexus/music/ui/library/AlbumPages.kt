@@ -162,10 +162,20 @@ class AlbumPages(
         return true
     }
 
-    /** The page at `from` was shown from the phone's copy, and the server's differs. */
+    /**
+     * The page at `from` was shown from the phone's copy, and the server's differs. If it is
+     * the last page fetched, what it says about the rest goes with it: where the next page
+     * starts, and whether there is one. (A short copy kept when the library was smaller used
+     * to leave the list ended for good once the server's full page had replaced it.)
+     */
     private fun replaced(mine: Int, from: Int, page: List<Album>) {
         if (mine != generation || from !in later) return
         later[from] = page
+        if (later.lastKey() == from) {
+            offset = from + page.size
+            ended = page.size < pageSize
+            fetched++
+        }
         rebuild()
     }
 
@@ -176,5 +186,36 @@ class AlbumPages(
         for (part in later.values) for (album in part) if (shown.add(album.id)) list.add(album)
         albums.clear()
         albums.addAll(list)
+    }
+}
+
+/**
+ * Where the Albums grid was in each of its sorts: the first album in sight, how far it was
+ * scrolled past, and how many albums were loaded to get there. One for the whole page, not
+ * one per sort: a place kept in a slot that the sort is an input to is thrown away when the
+ * sort changes, so coming back to a sort used to open it at the top. Kept in the page's saved
+ * state ([save], [restore]), so it outlasts Android stopping the app too.
+ */
+class SortPlaces {
+    data class Place(val first: Int = -1, val offset: Int = 0, val loaded: Int = 0)
+
+    private val places = HashMap<Int, Place>()
+
+    fun of(sort: Int): Place = places[sort] ?: Place()
+
+    fun keep(sort: Int, place: Place) {
+        places[sort] = place
+    }
+
+    companion object {
+        /** Four numbers a sort: the sort, the first in sight, the offset, how many loaded. */
+        fun save(places: SortPlaces): IntArray =
+            places.places.flatMap { (sort, at) -> listOf(sort, at.first, at.offset, at.loaded) }.toIntArray()
+
+        fun restore(saved: IntArray): SortPlaces = SortPlaces().also { places ->
+            for (at in 0 until saved.size / 4) places.places[saved[at * 4]] = Place(saved[at * 4 + 1], saved[at * 4 + 2], saved[at * 4 + 3])
+        }
+
+        val Saver = androidx.compose.runtime.saveable.Saver<SortPlaces, IntArray>(save = { save(it) }, restore = { restore(it) })
     }
 }

@@ -6,6 +6,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -170,5 +171,64 @@ class AlbumPagesTest {
         pages.first(page(0))
         tell!!(listOf(Album(id = "stale")))
         assertEquals((0 until 4).map { "a$it" }, ids(pages))
+    }
+
+    @Test
+    fun aShortPageFromThePhoneThatTheServerFillsLetsLoadingCarryOn() = runBlocking {
+        // The phone kept the second page when the library had six albums: two of them. The
+        // library has ten now, and the server's copy of that page is a full one.
+        var putRight: ((List<Album>) -> Unit)? = null
+        val pages = AlbumPages(4) { offset, changed ->
+            if (offset == 4) {
+                putRight = changed
+                library.drop(4).take(2)
+            } else {
+                page(offset)
+            }
+        }
+        pages.first(page(0))
+        pages.more()
+        // As far as the phone's copy goes, that was the last page.
+        assertTrue(pages.ended)
+        putRight!!(page(4))
+        assertEquals((0 until 8).map { "a$it" }, ids(pages))
+        // The rows were put right; whether there is more, and where it starts, used to be
+        // left as the short copy had them, so the rest of the albums never loaded.
+        assertFalse("the server's full page still counted as the last", pages.ended)
+        assertTrue(pages.more())
+        assertEquals((0 until 10).map { "a$it" }, ids(pages))
+        assertTrue(pages.ended)
+    }
+
+    @Test
+    fun aFullPageFromThePhoneThatTheServerShortensEndsTheList() = runBlocking {
+        var putRight: ((List<Album>) -> Unit)? = null
+        val pages = AlbumPages(4) { offset, changed ->
+            if (offset == 4) putRight = changed
+            page(offset)
+        }
+        pages.first(page(0))
+        pages.more()
+        assertFalse(pages.ended)
+        // Albums were taken away on the server: its copy of that page is the last.
+        library = library.take(6)
+        putRight!!(page(4))
+        assertTrue(pages.ended)
+        assertFalse(pages.more())
+    }
+
+    @Test
+    fun eachSortKeepsAPlaceOfItsOwn() {
+        val places = SortPlaces()
+        places.keep(0, SortPlaces.Place(first = 40, offset = 12, loaded = 120))
+        // Another sort, scrolled a little.
+        assertEquals(SortPlaces.Place(), places.of(3))
+        places.keep(3, SortPlaces.Place(first = 6, offset = 0, loaded = 60))
+        // Back to the first: where it was, not the top.
+        assertEquals(SortPlaces.Place(first = 40, offset = 12, loaded = 120), places.of(0))
+        // And all of it survives Android stopping the app (the page's saved state).
+        val again = SortPlaces.restore(SortPlaces.save(places))
+        assertEquals(places.of(0), again.of(0))
+        assertEquals(places.of(3), again.of(3))
     }
 }

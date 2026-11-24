@@ -94,6 +94,8 @@ fun LibraryPage() {
     // another chip, and both when Android stops the app in the background.
     var part by rememberSaveable { mutableIntStateOf(0) }
     var sort by rememberSaveable { mutableIntStateOf(0) }
+    // And where the albums were in each sort, for the same reason.
+    val places = rememberSaveable(saver = SortPlaces.Saver) { SortPlaces() }
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.tab_library)) {
             IconButton(R.drawable.ic_settings, stringResource(R.string.settings), { ui.open(Route.Settings) }, tint = Theme.colors.text)
@@ -105,7 +107,7 @@ fun LibraryPage() {
         )
         when (part) {
             0 -> Playlists()
-            1 -> AlbumsPart(sort to { it: Int -> sort = it })
+            1 -> AlbumsPart(sort to { it: Int -> sort = it }, places)
             2 -> Artists()
             else -> Genres()
         }
@@ -117,9 +119,10 @@ fun LibraryPage() {
 fun AlbumsPage(route: Route.Albums) {
     val ui = LocalUi.current
     var sort by rememberSaveable { mutableIntStateOf(route.sort.coerceIn(0, ALBUM_SORTS.lastIndex)) }
+    val places = rememberSaveable(saver = SortPlaces.Saver) { SortPlaces() }
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.albums), onBack = ui.navigator::back)
-        AlbumsPart(sort to { it: Int -> sort = it })
+        AlbumsPart(sort to { it: Int -> sort = it }, places)
     }
 }
 
@@ -204,7 +207,7 @@ private fun ListRow(title: String, detail: String, onClick: () -> Unit, pinned: 
  * page's saved state, so coming back after Android has stopped the app finds the same place.
  */
 @Composable
-private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
+private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>, places: SortPlaces) {
     val ui = LocalUi.current
     val (sort, choose) = sorting
     val list = ALBUM_SORTS[sort.coerceIn(0, ALBUM_SORTS.lastIndex)].second
@@ -220,31 +223,29 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>) {
     }
     LaunchedEffect(pages, feed.page) { feed.value?.let { pages.first(it, feed.page.fresh) } }
     // A place of its own for each sort: one sort's place means nothing in another's list.
-    val grid = rememberSaveable(sort, saver = androidx.compose.foundation.lazy.grid.LazyGridState.Saver) { androidx.compose.foundation.lazy.grid.LazyGridState() }
-    // Where the grid was, and how many albums were loaded to get there: kept with the page's
-    // saved state. Each time the grid is made (after Android stopped the app, too) it first
-    // loads as far as that and goes there; so "restoring" is not saved, only the place.
-    var loaded by rememberSaveable(sort) { mutableIntStateOf(0) }
+    // Every sort's place is kept in one saved slot for the page (`places`), not in one the
+    // sort is an input to (which threw a sort's place away as soon as another was chosen).
+    // The grid itself is made afresh for each sort, and goes to the place kept for it.
+    val grid = remember(sort) { androidx.compose.foundation.lazy.grid.LazyGridState() }
+    // Each time the grid is made (another sort chosen and this one again, or after Android
+    // stopped the app) it first loads as far as it had got and goes there; so "restoring" is
+    // not saved, only the place.
     var restoring by remember(sort) { mutableStateOf(true) }
-    val wantFirst = rememberSaveable(sort) { intArrayOf(-1, 0) }
-    LaunchedEffect(pages, pages.albums.size) { if (!restoring) loaded = pages.albums.size }
+    LaunchedEffect(pages, pages.albums.size) { if (!restoring) places.keep(sort, places.of(sort).copy(loaded = pages.albums.size)) }
     LaunchedEffect(grid) {
         snapshotFlow { grid.firstVisibleItemIndex to grid.firstVisibleItemScrollOffset }.collect { (index, offset) ->
-            if (!restoring) {
-                wantFirst[0] = index
-                wantFirst[1] = offset
-            }
+            if (!restoring) places.keep(sort, places.of(sort).copy(first = index, offset = offset))
         }
     }
-    // Brought back (after the app was stopped, or to this chip): load as far as it had got,
-    // then go there. Only while the app is in front.
+    // Brought back: load as far as it had got, then go there. Only while the app is in front.
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(pages, feed.value != null, lifecycle) {
         if (feed.value == null || !restoring) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
             if (!restoring) return@repeatOnLifecycle
-            pages.loadUntil(loaded)
-            if (wantFirst[0] > 0) grid.scrollToItem(wantFirst[0], wantFirst[1])
+            val place = places.of(sort)
+            pages.loadUntil(place.loaded)
+            if (place.first > 0) grid.scrollToItem(place.first, place.offset)
             restoring = false
         }
     }

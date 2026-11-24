@@ -933,8 +933,11 @@ How it is built (M1b):
   progress, so loading carries on; a page cancelled on its way leaves the pager able to ask
   again; a refresh leaves the grid as it is until the server's first page comes (the kept
   copy of it doesn't replace it); a later page shown from the phone's copy is put right when
-  the server's arrives; coming back (after Android stopped the app too) loads as far as the
-  saved place before going there. Paging, like the pages' own feeds, runs only while the app
+  the server's arrives, and if it was the last page fetched, so are where the next starts and
+  whether there is one (a short page kept when the library was smaller no longer ends the list
+  for good); coming back (after Android stopped the app too) loads as far as the saved place
+  before going there. Each sort keeps its own place (`SortPlaces`, one saved slot for the
+  page), so choosing another sort and coming back finds the first where it was. Paging, like the pages' own feeds, runs only while the app
   is in front.
 - **Artist**: albums, then singles and EPs, newest first; play plays the songs of their
   first forty releases, newest first as Windows builds it, saying it is getting them and
