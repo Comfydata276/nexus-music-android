@@ -1871,7 +1871,9 @@ with X still missing; the other device being the Subsonic API from this machine;
   just after the second was done undid the second (right). The unit test holds the case.
 - Play, Pause, Play: not done (item 7).
 - The car check on the release build (`NEXUS_DEVICE=phone36 scripts/carcheck
-  org.medianexus.music --nexus`): 48 passed, 0 failed, 1 warning.
+  org.medianexus.music --nexus`): 48 passed, 0 failed, 1 warning; offline (`--mode offline`,
+  the server stopped, a playlist downloaded first): 24 passed, 0 failed, 1 warning ("No folder
+  is empty").
 
 
 ## Sound and lyrics (M4a)

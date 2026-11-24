@@ -175,8 +175,8 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
             // From its page, the copy the page was drawing as the menu opened; from a card, the
             // playlist as the kept list of playlists has it (whose it is, its name and count).
             val known = target.playlist ?: org.medianexus.music.ui.shell.rememberPageFeed("playlists") { it.playlists() }.value?.firstOrNull { it.id == target.id }
-            // While a change to it is on its way, these do nothing but say so, like every
-            // other change to it.
+            // While a change to it is on its way, these do nothing but say so (once the menu
+            // has gone: it would hide the words), like every other change to it.
             val busy = target.id in (ui.account?.playlists?.busy ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptySet()) }).collectAsStateWithLifecycle().value
             val saving = { ui.said(org.medianexus.music.library.Playlists.Unavailable.BUSY); Unit }
             // Offered only when it is known to be the account's own: not while its record
@@ -184,8 +184,8 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
             when {
                 known == null -> {}
                 ui.account?.playlists?.canEdit(known) == true -> {
-                    Entry(R.drawable.ic_pencil, stringResource(R.string.rename)) { if (busy) saving() else choose { ui.askRename(known) } }
-                    Entry(R.drawable.ic_trash_2, stringResource(R.string.delete_playlist), danger = true) { if (busy) saving() else choose { ui.askDelete(known) } }
+                    Entry(R.drawable.ic_pencil, stringResource(R.string.rename)) { choose { if (busy) saving() else ui.askRename(known) } }
+                    Entry(R.drawable.ic_trash_2, stringResource(R.string.delete_playlist), danger = true) { choose { if (busy) saving() else ui.askDelete(known) } }
                 }
                 else -> Note(stringResource(R.string.not_your_playlist, known.owner))
             }
