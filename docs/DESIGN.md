@@ -590,7 +590,8 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
   would move the others under the driver's thumb; Downloads is empty until something is
   downloaded).
   - Home: Liked songs, then what was played and added lately.
-  - Library: Albums, Artists, Genres.
+  - Library: Albums, Artists, Genres, Radio (the internet radio stations; there offline too,
+    and empty, so nothing moves under the driver's thumb).
   - Downloads: what is on the phone; this tab must work with no signal. "Songs" (every
     download, newest first), then the playlists and Liked songs downloaded whole, then the
     albums with anything downloaded, each with its cover; all read from the downloads' own
@@ -1397,6 +1398,76 @@ simplest form (described where it belongs above). What had to be decided on the 
 - **The account's server version** isn't shown under Account (Windows shows it): nothing keeps
   it yet.
 
+### How it is built, and what was decided (M3b, the rest of browsing)
+
+- **Changing a playlist** (`library/PlaylistEdit.kt`, a port of src/playlists.rs with its
+  tests; `library/Playlists.kt`). A removal or a move names the songs themselves, which copy
+  of a song included, and is carried out on the playlist as the server has it when it is sent
+  (Windows' `edit_playlist`: read the playlist, remove by the positions the songs have now, or
+  replace it with the reordered list). Additions go as Subsonic's `songIdToAdd`, renames and
+  deletions as such, a new playlist as `createPlaylist`.
+- **Offline: held, and sent in order, like a like** (decided; Windows has no offline editing,
+  and fails with its error). Every change to a playlist goes through the account's one ordered
+  sender (`Pending.PlaylistChange` in `held.json`), so playlist changes and likes, ratings and
+  plays all keep their order, and a change made in a dead spot is not lost. Because a change
+  says which songs it means, sending it later, to a playlist that has changed since, is as
+  safe as sending it now: this is what made holding the right choice. **Only a new playlist
+  isn't made offline** (the server gives it its id): "You're offline. A new playlist is made
+  on your server, so try again when you're back online." What can be edited offline is what
+  Library shows offline: the playlists on the phone.
+- **What is held wins over what the server says**: a playlist is shown as the server last
+  sent it with every change still on its way carried out on top, in order (`Playlists.onTop`,
+  applied to every copy fetched, through `Library.playlistShown`). A fetch of a playlist and
+  the sending of a change to it take turns, and a change is marked sent before its turn is
+  let go, so no copy shows a change twice.
+- **What can't be promised**, as for plays: Subsonic has no way to make a change safe to send
+  twice. Killed in the instant between the server taking a change and the phone recording it,
+  the app sends it again: a move comes to the same thing; a removal of one of several copies of
+  a song takes out another; songs added are added twice.
+- **Refused** (the playlist deleted elsewhere: 70; not this account's: 50): the change is
+  dropped, the playlist asked for again, and "That didn't save. …" said.
+- **Someone else's playlist**: the owner is not the account, or Navidrome says `readonly`.
+  It plays; its page says "This playlist belongs to <owner>. You can play it, but not change
+  it." and offers no handle, no removal and no rename or delete (Windows offers them and lets
+  the server refuse).
+- **Undo**: the last removal or move, within a minute (Windows' rule), from the toast (eight
+  seconds, Windows' `toast_with_undo`); it is another change, sent in its turn.
+- **Reordering** is in the playlist's own order only, as on Windows: a playlist nobody has
+  sorted opens newest added first (Windows' `list_sort`), so its handles appear once "Custom
+  order" is chosen. The handle takes the touch at once (a resting finger is not a long press
+  of the row). TalkBack has Move up and Move down on each row instead.
+- **The warning before adding** asks the server for the playlist as it is now (the phone's
+  copy offline); with Windows' words and choices, the cautious answer highlighted.
+- **Recommended** (Windows' `playlist_extras`): under a playlist of the account's own only
+  (one can only add to those), picked once when the page opens and not again while it stays
+  open, so adding one doesn't reshuffle the rest; nothing offline.
+- **Ratings** are shown where Windows shows them: the song's menu ("Rate", "Rated 3 stars")
+  and Song details. Held offline; a rating held from an earlier run is shown after a restart
+  (`Freshest` reads what is held).
+- **Song radio and autoplay** (`playback/Autoplay.kt`): looked for when the last song of the
+  queue *starts* (Windows looks near its end), so the music runs straight on. A song's radio
+  is a one-song queue named "<title> radio" that autoplay fills whatever the setting; the
+  queue's name is dropped when autoplay extends an ordinary list ("Next up"), kept for a radio.
+  Nothing starts by itself after a pause or stop. A song tapped in search starts its radio.
+- **Internet radio**: Radio is a row of Library's playlists (Windows has it in its sidebar)
+  and a folder of the car's Library. A station plays from its own address; its name stays the
+  title and the song it announces goes where the artist would. A stream that fails or ends is
+  joined again after 1, 2, 4 and 8 seconds (three quiet minutes start the count again), then
+  passed over; nothing is asked of the server about it. Offline, the Radio page says stations
+  stream live and can't play.
+- **Menus on cards**: a long press on an album, playlist or artist card opens its menu
+  (Windows' right-click), as does the "…" on an album's, playlist's or artist's header and on
+  each playlist in Library. Windows' "Export as CSV" isn't offered (no file to hand on a phone).
+- **Selecting several songs**: a long press on any list of songs (a playlist, an album, Liked
+  songs, the Songs page, search results, Recently played). Taps then choose; the bar in the
+  title bar's place has the X (Back too), the count, Add to playlist, the heart, and Windows'
+  several-songs menu. Chosen by place in the list itself; on the Songs page a newer copy of the
+  library (every second during the first fetch) drops the selection, as its places mean other
+  songs.
+- **"Save queue as playlist"** (the queue sheet's heading): what is playing and everything
+  after it, read from the service's own queue in the same process (`QueueNow`), not only the
+  part the sheet shows.
+
 ## Working with the Windows app
 
 The phone is one more device on the same account. These must match the Windows app byte
@@ -1521,10 +1592,12 @@ How it is built (M1b):
   and Remove. Below 400dp the songs' lengths are left out so their names have room. The
   sheet comes up to the foot of Now Playing's top bar, no further; in a short window on its
   side what it holds scrolls, its heading in sight, clear of a side navigation bar.
-- **A song's menu** has what works so far: Play next, Add to queue, like, Download (or Cancel
-  download, or Remove download, as it stands), Go to album, Go to
-  artist ("Go to <name>" for each credited artist when there are several, as Windows), Song
-  details, and Remove from queue from the queue. Nothing that does nothing yet is shown.
+- **A song's menu** is Windows' (`song_menu`), in its order and words: Play next, Add to
+  queue; Add to playlist, like, Rate, Download (or Cancel download, or Remove download, as it
+  stands); Go to album, Go to artist ("Go to <name>" for each credited artist when there are
+  several), Song details, Start radio from this song; Remove from this playlist (a playlist
+  the account can change) or Remove from queue (from the queue). A radio station has only
+  Play next and Add to queue. Nothing that does nothing is shown (M3b).
 - **Home**: the greeting, four quick tiles (two lines of two, as Windows on a narrow window),
   then Recently added, Recently played, Most played, It's been a while and Something
   different, each sideways. "Made for you" and "Artists you might like" come later.
@@ -1544,8 +1617,9 @@ How it is built (M1b):
   is in front.
 - **Artist**: albums, then singles and EPs, newest first; play plays the songs of their
   first forty releases, newest first as Windows builds it, saying it is getting them and
-  how many albums couldn't be fetched, if any. "Popular" and "Fans also like" need the server to ask Last.fm, which
-  the test server can't; they come with the rest of browsing (M3).
+  how many albums couldn't be fetched, if any. "Popular" (the server's top five) and "Fans also
+  like" (similar artists in the library) show when the server can say (it asks Last.fm), and
+  nothing in their place when it can't or offline (M3b).
 - **Search**: results as the words are typed (at once when the phone's copy of the library
   answers; 250 ms after the last key while the server still does; a newer search always
   replaces an older one), in Windows' order: the first four songs, then artists,
@@ -1557,7 +1631,7 @@ How it is built (M1b):
   words and every "Try again" is a request of its own (going back to words that failed asks
   again). It searches only while the app is in front. With nothing typed, "Browse by genre". Windows keeps
   no recent searches, so neither does the phone. A song chosen from the results plays the
-  results from it (Windows starts radio from it, which comes with M3).
+  song's radio, as Windows does (M3b).
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
   a like the server refused).

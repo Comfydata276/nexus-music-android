@@ -1497,6 +1497,77 @@ followed met the moment with nobody signed in ("no such cover"); it now waits fo
 objects of the sign-in it made. `DownloadsTest`'s progress tick holds the second song's
 transfer at two gates. Each passed 20 times in a row on its own, under load.
 
+## The rest of browsing (M3b): what was checked
+
+**Unit tests** (the whole suite passing in a scratch worktree of the commits, 800-odd tests):
+
+- `PlaylistEditTest`: Windows' four tests of src/playlists.rs, ported as they are, and the
+  phone's own (a playlist as shown with each song's details; an edit read back from the disk).
+- `PlaylistsTest`, two devices: the phone is the app's own playlists, sender (writing to a
+  file) and kept pages; the other device is the test changing the stand-in server directly,
+  at moments it chooses, with the phone's requests held at gates. A removal from a page that
+  is out of date (the server reversed and grown); the same song twice (a copy removed on each
+  side, and no second copy left to take); a removal crossing a reorder that lands while the
+  server is reading the playlist for it; a move whose neighbour went, and one with songs added
+  around it; two quick edits from the phone, the second waiting for the first; an edit held
+  offline, shown on top of a newer server copy, then sent; a fetch crossing a send (never
+  shown twice); a playlist deleted elsewhere (put right and said); undo of a removal (beside
+  songs added since) and of a move; a new playlist offline (refused) and online; someone
+  else's playlist, and Navidrome's `readonly`; the warning before adding; a rename and a
+  delete shown at once.
+- `AutoplayTest`: Windows' order of looking (similar, the genre, anything), never a song
+  already queued; the last song looking ahead once; an ended queue carrying on into what is
+  found; a deliberate stop meaning nothing starts; the setting off (a radio still carries on);
+  offline, a station last, repeat on; on a real ExoPlayer, what is found joining the queue it
+  was found for and no other; a station's rejoining waits.
+- `RecommendTest`; `HeldOrderTest` (item 8: a held like in Liked songs after a restart, a held
+  rating settling when sent later); `SongsGrowTest` (item 8); `ConvertedPlaybackTest`'s
+  stuck-player case (item 8).
+
+**On the Android 16 emulator** (`phone36`), debug build, against the test server, with the
+other device being `scripts/server api`; pictures in `~/.cache/nexus-music-android/shots/m3b/`
+(`default/`, `narrow/` at 360dp and 1.3 font, `side/`, `walk/`):
+
+- Morning mix in custom order: the other device added a song, then reordered the playlist on
+  the server; the phone, still showing the old order, dragged Arithmetic to the top. The
+  server ended with Arithmetic first and the other device's order and song kept; the page
+  followed; "Moved" with Undo, and Undo put it back on the server.
+- The other device added a second copy of Kindled; the phone removed its own (first) copy
+  from the row's menu: the server lost that copy and kept the other.
+- Short songs, downloaded, then offline mode: a song removed was shown gone at once and held
+  in `held.json` (nothing asked of the server); the other device added a song; offline mode
+  off: the removal was sent, the other device's song kept, the page caught up.
+- Guest's picks (someone else's): plays, says whose it is and that it can't be changed, no
+  handles.
+- Recommended under Gapless sweep (two songs: everything else similar was by the same artist,
+  Windows' two-per-artist rule); one added from its button, with no warning; the warning before
+  adding a song already there, in Windows' words, "Don't add" highlighted.
+- Rated 4 stars from the menu: the server has 4, and the menu says "Rated 4 stars".
+- Radio: a station of the rig's own (`scripts/server api createInternetRadioStation`, pointing
+  at a small endless MP3 stream with ICY titles served on this machine and passed to the
+  emulator with `adb reverse`): listed, played, "Test FM" as the title and "Test Artist - Song 1"
+  beneath; the stream dropped on purpose (and the station restarted): joined again a second
+  later and played on.
+- Search "lantern", Lantern Season tapped: "Playing from Lantern Season radio", the song then
+  thirty similar songs.
+- Short songs played from its last song: the queue ran on into similar songs ("Next up").
+- Selection: a long press, a second row tapped, "2 selected", Windows' several-songs menu;
+  Back left it.
+
+**The checks**: `scripts/check --release` passed (830 tests, lint clean, release APK
+6,456,446 bytes; 6,208,426 at 0.3.0's small fixes), and the whole suite twice more in a row
+with `--no-build-cache --rerun-tasks` (830 each, none failed). Its first run failed one test
+once (`HeldOrderTest`'s held rating), which found a real race in the sender (it said how many
+it held before what): put right in the same piece of work. The car check on the release build,
+Android 16 (`reports/m3b/`): 48 passed, none failed, one warning (the empty playlist); offline
+(`scripts/slowlink cut`), 24 passed, none failed. The check walks the tree's tabs but doesn't
+open Radio by name; its folder is tested in `CarColdTest` (offline, present and empty).
+
+**Not done here**: `scripts/cartour` of the Radio folder on the car emulator, the smoke tests
+on Android 12 and 17, `scripts/measure`, and TalkBack read aloud (the names are in
+`scripts/emu ui`: "Drag to move <title>", Move up and Move down, "Leave selection",
+"Add <title> to this playlist").
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
