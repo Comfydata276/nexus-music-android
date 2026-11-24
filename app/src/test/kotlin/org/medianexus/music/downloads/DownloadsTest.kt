@@ -48,7 +48,9 @@ import org.robolectric.shadows.ShadowNetworkInfo
  * The downloads on Media3's real download manager (its queue, its database, its tasks and
  * the way it stops them), with our own downloader, against a stand-in server. What is
  * waited for here is another thread's work (a download arriving): the test lets the main
- * thread run until it is so; the order of what happens is the test's to decide.
+ * thread run until it is so; the order of what happens is the test's to decide. A transfer
+ * that must still be on its way when something else happens is held at a [Gate], never
+ * slowed: a slowed one now and then finished first on a busy machine.
  */
 @RunWith(RobolectricTestRunner::class)
 class DownloadsTest {
@@ -71,9 +73,48 @@ class DownloadsTest {
     private val kept = mutableListOf<Pair<Boolean, Boolean>>()
     private var spare = 0L
 
-    /** The songs the server has, by id; `slow`: sent a little at a time. */
+    /** The songs the server has, by id. */
     private val files = HashMap<String, ByteArray>()
-    @Volatile private var slow = false
+
+    /**
+     * Where the server holds a song's transfer, its connection open: the next answer for the
+     * song from its start sends `after` bytes and waits there until the test lets the rest
+     * through (or the test ends: [stop] lets every gate through). Later answers for it are
+     * not held. What is on its way stays on its way for as long as the test needs, however
+     * slow or fast the machine is.
+     */
+    private class Gate(val after: Int) {
+        private val there = java.util.concurrent.CountDownLatch(1)
+        private val open = java.util.concurrent.CountDownLatch(1)
+
+        /** Whether the transfer has been sent as far as the gate (see [reached]). */
+        val isReached get() = there.count == 0L
+
+        fun letThrough() = open.countDown()
+
+        fun body(bytes: ByteArray) = object : mockwebserver3.MockResponseBody {
+            override val contentLength: Long = bytes.size.toLong()
+
+            override fun writeTo(sink: okio.BufferedSink) {
+                sink.write(bytes, 0, after).flush()
+                there.countDown()
+                open.await(HELD_MINUTES, TimeUnit.MINUTES)
+                sink.write(bytes, after, bytes.size - after).flush()
+            }
+        }
+    }
+
+    /** The gates not yet met, by song id, and every gate made. */
+    private val ahead = java.util.concurrent.ConcurrentHashMap<String, Gate>()
+    private val allGates: MutableList<Gate> = Collections.synchronizedList(mutableListOf())
+
+    /** Holds the next transfer of song `id` from its start once `after` bytes have gone. */
+    private fun gate(id: String, after: Int = 200_000) = Gate(after).also { ahead[id] = it; allGates += it }
+
+    private fun openGates() = synchronized(allGates) { allGates.forEach { it.letThrough() } }
+
+    /** Lets the main thread run until each of these transfers has got as far as its gate. */
+    private fun reached(vararg gates: Gate) = until("held on its way") { gates.all { it.isReached } }
 
     /** A song whose transfer is held twice on its way: after `first` bytes, and again after
      *  `second`, each until the test lets it through. */
@@ -115,7 +156,8 @@ class DownloadsTest {
                 if (bytes == null || id in missing) return MockResponse.Builder().code(404).setHeader("Content-Type", "application/json").body("{}").build()
                 val from = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toIntOrNull() ?: 0
                 val builder = MockResponse.Builder().setHeader("Content-Type", "audio/flac").setHeader("Accept-Ranges", "bytes").setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT").setHeader("Date", GatedServer.now())
-                if (slow) builder.throttleBody(16 * 1024, 40, TimeUnit.MILLISECONDS)
+                val gate = if (from == 0) ahead.remove(id) else null
+                if (gate != null) return builder.code(200).body(gate.body(bytes)).build()
                 val hold = twoGates
                 if (hold != null && hold.id == id && from == 0) {
                     return builder.code(200).body(object : mockwebserver3.MockResponseBody {
@@ -124,10 +166,10 @@ class DownloadsTest {
                         override fun writeTo(sink: okio.BufferedSink) {
                             sink.write(bytes, 0, hold.first).flush()
                             hold.reachedFirst.countDown()
-                            hold.openFirst.await(30, TimeUnit.SECONDS)
+                            hold.openFirst.await(HELD_MINUTES, TimeUnit.MINUTES)
                             sink.write(bytes, hold.first, hold.second - hold.first).flush()
                             hold.reachedSecond.countDown()
-                            hold.openSecond.await(30, TimeUnit.SECONDS)
+                            hold.openSecond.await(HELD_MINUTES, TimeUnit.MINUTES)
                             sink.write(bytes, hold.second, bytes.size - hold.second).flush()
                         }
                     }).build()
@@ -156,6 +198,9 @@ class DownloadsTest {
 
     @After
     fun stop() {
+        openGates()
+        twoGates?.let { it.openFirst.countDown(); it.openSecond.countDown() }
+        CrashPoints.at = null
         made.forEach { it.release() }
         idle()
         scope.cancel()
@@ -166,7 +211,7 @@ class DownloadsTest {
 
     /** Lets the main thread run until `ok`, as another thread's work finishes. */
     private fun until(what: String, ok: () -> Boolean) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+        val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(WAIT_MINUTES)
         while (true) {
             idle()
             if (ok()) return
@@ -267,19 +312,20 @@ class DownloadsTest {
     fun aDownloadMedia3StopsIsNeverTakenForFinished() {
         // Media3 takes a downloader that ends by being interrupted, without having been
         // stopped by Media3 itself, as having finished. Stopped part-way here (offline mode),
-        // the song must still be on its way, not downloaded.
-        slow = true
+        // the song must still be on its way, not downloaded. (Held at a gate with half of it
+        // sent, so it is.)
+        val gate = gate("s1")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val one = song("s1", size = 400_000)
         run { engine.download(listOf(one)) }
+        reached(gate)
         until("arriving") { engine.state.value.active.any { (it.state as? SongState.Fetching)?.fraction?.let { f -> f > 0.05f } == true } }
         reach.value = Reach(manual = true)
         until("held") { engine.state.value.held == Held.OFFLINE && engine.state.value.active.all { it.state == SongState.Waiting } }
         assertFalse(catalogue.has("s1"))
         assertEquals(Held.OFFLINE, engine.state.value.held)
         // On again: it carries on from where it stopped, by a range, and arrives whole.
-        slow = false
         reach.value = Reach()
         until("arrived") { catalogue.has("s1") }
         assertTrue(asked.any { (it.headers["Range"] ?: "").startsWith("bytes=") && it.headers["Range"] != "bytes=0-" })
@@ -288,17 +334,17 @@ class DownloadsTest {
 
     @Test
     fun theAppStoppedPartWayCarriesOnWhenItIsBack() {
-        slow = true
+        val gate = gate("s1")
         val first = downloads()
         until("ready") { first.state.value.settled }
         run { first.download(listOf(song("s1", size = 400_000), song("s2"))) }
+        reached(gate)
         until("arriving") { first.state.value.active.any { it.state is SongState.Fetching } }
         // The app is stopped (its manager goes with it, part-way).
         first.release()
         made.remove(first)
         idle()
         assertFalse(catalogue.has("s1"))
-        slow = false
         // Started again: what was waiting is read from Media3's list and carries on.
         val again = downloads()
         until("both") { catalogue.has("s1") && catalogue.has("s2") && !again.state.value.busy }
@@ -343,16 +389,16 @@ class DownloadsTest {
 
     @Test
     fun cancelledAndRemovedSongsLeaveNothingBehind() {
-        slow = true
+        val gate = gate("s1")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 400_000))) }
+        reached(gate)
         until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
         engine.cancel(listOf("s1"))
         until("gone") { !engine.state.value.busy }
         until("its part cleared") { catalogue.dir.listFiles()!!.none { it.name.endsWith(".part") } }
         assertFalse(catalogue.has("s1"))
-        slow = false
         run { engine.download(listOf(song("s2"))) }
         until("s2") { catalogue.has("s2") }
         val file = catalogue.fileOf("s2")!!
@@ -441,7 +487,10 @@ class DownloadsTest {
 
     @Test
     fun cancellingAListLeavesWhatAnotherListIsWaitingFor() {
-        slow = true
+        // The two songs of the first playlist are held on their way (Media3 runs two at once:
+        // the third waits its turn), so all of it is still on its way at the button.
+        gate("s1")
+        val held = gate("s2")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val (s1, s2, s3) = listOf(song("s1", size = 400_000), song("s2", size = 400_000), song("s3", size = 400_000))
@@ -449,7 +498,7 @@ class DownloadsTest {
         run { engine.toggle(list("playlist:p2", listOf(s2, s3)), listOf(s2, s3)) }
         // With all of it still on its way, the first playlist's button: it is cancelled.
         assertEquals(Downloads.Toggled.Cancelled, run { engine.toggle(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) })
-        slow = false
+        held.letThrough()
         until("the other list whole") { catalogue.has("s2") && catalogue.has("s3") && !engine.state.value.busy }
         assertFalse(catalogue.has("s1"))
         assertEquals(listOf("playlist:p2"), engine.state.value.collections.map { it.key })
@@ -483,8 +532,9 @@ class DownloadsTest {
     @Test
     fun twoAlbumsAskedForTogetherCannotBothPassACheckThatOnlyOneFits() {
         // Nothing arrives meanwhile, and there is room for one of them: each needs 300 MB,
-        // and all but 400 MB of what is free must be left spare.
-        slow = true
+        // and all but 400 MB of what is free must be left spare. (Each is held on its way.)
+        gate("a1", after = 64 * 1024)
+        gate("b1", after = 64 * 1024)
         val each = 300L * 1024 * 1024
         spare = catalogue.dir.usableSpace - 400L * 1024 * 1024
         val engine = downloads()
@@ -504,7 +554,7 @@ class DownloadsTest {
 
     @Test
     fun askingAgainForWhatIsOnItsWayDoesNotStartItAgain() {
-        slow = true
+        val gate = gate("s1")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val one = song("s1", size = 400_000)
@@ -513,10 +563,11 @@ class DownloadsTest {
         val answers = run { listOf(engine.download(listOf(one)), engine.download(listOf(one))) }
         assertTrue(answers[0] is Asked.Started)
         assertEquals(Asked.AlreadyDownloaded, answers[1])
+        reached(gate)
         until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
         // And again while it arrives.
         assertEquals(Asked.AlreadyDownloaded, run { engine.download(listOf(one)) })
-        slow = false
+        gate.letThrough()
         until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
         // It was fetched once, from its start: never stopped and begun again.
         assertEquals(listOf<String?>(null), asked.filter { it.url.queryParameter("id") == "s1" }.map { it.headers["Range"] })
@@ -564,11 +615,12 @@ class DownloadsTest {
 
     @Test
     fun theSameNetworkTurningMeteredStopsWifiOnlyDownloadsAtOnce() {
-        slow = true
+        val gate = gate("s1")
         settings.value = Settings(downloadWifiOnly = true)
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 400_000))) }
+        reached(gate)
         until("arriving") { engine.state.value.active.any { (it.state as? SongState.Fetching)?.fraction?.let { f -> f > 0.05f } == true } }
         // The network is the same one, and now counts as metered (a hotspot recognised as
         // one; the person marking it so).
@@ -581,7 +633,6 @@ class DownloadsTest {
         settings.value = Settings(downloadWifiOnly = false)
         until("any connection") { engine.state.value.held == Held.NETWORK }
         // Mobile data, and Wi-Fi only is off: it carries on, from where it stopped.
-        slow = false
         network.value = org.medianexus.music.net.NetworkNow(connected = true, unmetered = false)
         until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
         assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
@@ -589,23 +640,24 @@ class DownloadsTest {
 
     @Test
     fun stoppedByAndroidTheTransfersStopUntilItCarriesThemOnAgain() {
-        slow = true
+        val gate = gate("s1")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 400_000))) }
+        reached(gate)
         until("arriving") { engine.state.value.active.any { (it.state as? SongState.Fetching)?.fraction?.let { f -> f > 0.05f } == true } }
         // Android stops the job (its time is up; the network it was given went).
         engine.stoppedByAndroid(true)
         until("paused") { engine.state.value.held == Held.ANDROID && engine.state.value.active.all { it.state == SongState.Waiting } }
         // Nothing more arrives: the transfer itself has stopped, not only the watching of it.
+        // Its fetch has ended with the server still holding the rest of the song.
         val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
-        until("its fetch has let go") { made.last().state.value.active.none { it.state is SongState.Fetching } && part.length() > 0 }
+        until("its fetch has let go") { made.last().state.value.active.none { it.state is SongState.Fetching } && InFlight.count(catalogue.dir) == 0 && part.length() > 0 }
         val had = part.length()
         repeat(200) { idle() }
         assertEquals(had, part.length())
         assertFalse(catalogue.has("s1"))
         // The job runs again.
-        slow = false
         engine.stoppedByAndroid(false)
         until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
         assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
@@ -634,7 +686,7 @@ class DownloadsTest {
         val first = downloads()
         until("ready") { first.state.value.settled }
         run { first.download(listOf(song("s1"))) }
-        assertTrue("the first engine's fetch never got as far as its check", checking.await(120, TimeUnit.SECONDS))
+        assertTrue("the first engine's fetch never got as far as its check", checking.await(WAIT_MINUTES, TimeUnit.MINUTES))
         assertEquals(1, InFlight.count(catalogue.dir))
         // Signed out and straight back in to the same account: the old engine is released
         // (Media3 interrupts its tasks and doesn't wait for them), and a new one made on the
@@ -726,8 +778,11 @@ class DownloadsTest {
 
     /** Nothing of these songs is on the phone or on its way, and nothing arrives later. */
     private fun assertGoneForGood(engine: Downloads, ids: List<String>) {
-        slow = false
+        // Everything held on its way is let through: what had not really been stopped would
+        // now arrive. And every fetch has ended, so nothing can arrive after the look.
+        openGates()
         until("nothing on its way") { !engine.state.value.busy }
+        until("every fetch has let go") { InFlight.count(catalogue.dir) == 0 }
         until("no parts left") { catalogue.dir.listFiles()!!.none { it.name.endsWith(".part") || it.name.endsWith(".part.meta") } }
         run { engine.download(emptyList()) }
         repeat(30) { idle() }
@@ -740,12 +795,14 @@ class DownloadsTest {
 
     @Test
     fun removingAGroupFromTheDownloadsPageTakesEverySongOfItArrivedOrNot() {
-        slow = true
+        val gates = listOf(gate("s2"), gate("s3"))
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val songs = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000), song("s3", size = 2_400_000), song("s4"))
         run { engine.toggle(list("album:al-1", songs), songs) }
-        // One song of the album has arrived, and the others are on their way.
+        // One song of the album has arrived, and the others are on their way (two held at
+        // their gates, the last waiting its turn).
+        reached(*gates.toTypedArray())
         until("one arrived") { engine.state.value.downloaded.size == 1 && engine.state.value.active.size == 3 }
         // The Downloads page shows the album with what has arrived of it, and its button is
         // Remove: the page can only name the songs it shows.
@@ -761,14 +818,17 @@ class DownloadsTest {
 
     @Test
     fun aGroupThatIsNoListIsRemovedWholeToo() {
-        slow = true
+        val gates = listOf(gate("s2"), gate("s3"))
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         // Songs of one album downloaded one at a time, and one of another album beside them.
+        // The small ones first: the two big ones are held on their way, and Media3 runs two
+        // at once. (A song in its last steps as the group is removed is the next test's.)
         val album = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000), song("s3", size = 2_400_000))
         val other = song("s4", size = 20_000).copy(albumId = "al-2")
-        run { engine.download(album + other, own = true) }
+        run { engine.download(listOf(album[0], other) + album.drop(1), own = true) }
         until("the small ones arrived") { catalogue.has("s1") && catalogue.has("s4") }
+        reached(*gates.toTypedArray())
         assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("album:al-1", listOf("s1")) })
         assertGoneForGood(engine, album.map { it.id })
         // The other album's song is no part of it.
@@ -777,12 +837,57 @@ class DownloadsTest {
     }
 
     @Test
+    fun aSongInItsLastStepsAsItsGroupIsRemovedIsNotMarkedDownloadedAfterwards() {
+        // A song's fetch has verified it, put its file at its name and synced the folder, and
+        // has not yet marked it downloaded: it is held there. (That is what
+        // aGroupThatIsNoListIsRemovedWholeToo met now and then on a busy machine, as "s3 has a
+        // file": its last big song finishing as its album was removed.)
+        val file = File(catalogue.dir, "s3.flac")
+        val placed = java.util.concurrent.CountDownLatch(1)
+        val onward = java.util.concurrent.CountDownLatch(1)
+        CrashPoints.at = { point -> if (point == "placed" && file.exists() && placed.count > 0) { placed.countDown(); throughUninterrupted(onward) } }
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1")), own = true) }
+        until("s1") { catalogue.has("s1") && !engine.state.value.busy }
+        run { engine.download(listOf(song("s3")), own = true) }
+        check(placed.await(WAIT_MINUTES, TimeUnit.MINUTES)) { "s3 never got to its last step" }
+        // Its album is removed from the Downloads page, now.
+        assertEquals(Downloads.Toggled.Removed, run { engine.removeGroup("album:al-1", listOf("s1")) })
+        // The removal has done all it does (nothing is on its way, the songs are unmarked),
+        // and the song's file is at its name with nothing naming it.
+        until("removed") { !catalogue.has("s1") && !engine.state.value.busy }
+        check(file.exists() && !catalogue.has("s3"))
+        // The fetch goes on. It must not mark the song: it was removed. (It did, and the song
+        // was downloaded again, file and all, for nobody.)
+        onward.countDown()
+        assertGoneForGood(engine, listOf("s1", "s3"))
+        assertTrue(Catalogue(catalogue.dir).state.value.ids.isEmpty())
+    }
+
+    /** Waits for `latch` as a step that can't be interrupted does (a sync to the disk): an
+     *  interruption meanwhile is kept for what comes after. */
+    private fun throughUninterrupted(latch: java.util.concurrent.CountDownLatch) {
+        var interrupted = false
+        while (true) {
+            try {
+                latch.await(HELD_MINUTES, TimeUnit.MINUTES)
+                break
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
+    }
+
+    @Test
     fun aCancelFromTheDownloadsPageStopsEverythingOnItsWayAndLeavesWhatHasArrived() {
-        slow = true
+        val gates = listOf(gate("s2"), gate("s3"))
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val songs = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000), song("s3", size = 2_400_000))
         run { engine.toggle(list("album:al-1", songs), songs) }
+        reached(*gates.toTypedArray())
         until("one arrived") { engine.state.value.downloaded.size == 1 && engine.state.value.active.size == 2 }
         // (What the page's button offers while a song it shows is itself on its way.)
         assertEquals(Downloads.Toggled.Cancelled, run { engine.removeGroup("album:al-1", listOf("s1"), cancelOnly = true) })
@@ -793,7 +898,8 @@ class DownloadsTest {
 
     @Test
     fun aListsOwnCancelStopsASongATopUpQueuedThatThePageHasNotCaughtUpWith() {
-        slow = true
+        gate("s2")
+        gate("s3")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val page = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000))
@@ -815,7 +921,7 @@ class DownloadsTest {
 
     @Test
     fun aCancelOrARemovalThePhoneWillNotRecordSaysSoAndChangesNothing() {
-        slow = true
+        gate("s2")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 20_000)), own = true) }
@@ -920,7 +1026,9 @@ class DownloadsTest {
 
     @Test
     fun cancelAllIsNotUndoneByTheNextLookAtAList() {
-        slow = true
+        // The first two are held on their way; the third waits its turn.
+        gate("s1")
+        gate("s2")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val songs = listOf(song("s1", size = 400_000), song("s2", size = 400_000), song("s3", size = 400_000))
@@ -928,7 +1036,6 @@ class DownloadsTest {
         until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
         engine.cancelAll()
         until("stopped") { !engine.state.value.busy }
-        slow = false
         // The playlist's page arrives from the server, and the server is found to be back:
         // both used to fetch every cancelled song again.
         run { engine.follow(list("playlist:p1", songs), songs) }
@@ -952,7 +1059,7 @@ class DownloadsTest {
         val (s1, s2) = listOf(song("s1"), song("s2", size = 400_000))
         run { engine.toggle(list("playlist:p1", listOf(s1)), listOf(s1)) }
         until("s1") { catalogue.has("s1") && !engine.state.value.busy }
-        slow = true
+        gate("s2")
         run { engine.follow(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) }
         until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
         engine.cancelAll()
@@ -966,8 +1073,9 @@ class DownloadsTest {
     @Test
     fun aListForgottenWhileItsPageWasBeingLookedAtFetchesNothing() {
         // The page of a list downloaded whole has arrived and is being looked at (the write
-        // of its new order is held), and at that moment everything is cancelled.
-        slow = true
+        // of its new order is held), and at that moment everything is cancelled. (Its song is
+        // held on its way.)
+        gate("s1")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val (s1, s2) = listOf(song("s1", size = 400_000), song("s2", size = 400_000))
@@ -983,7 +1091,6 @@ class DownloadsTest {
         // Something asked for afterwards has arrived: had the look at the page asked for the
         // list's songs, Media3 (which starts downloads in the order asked) would have asked
         // the server for them before it.
-        slow = false
         run { engine.download(listOf(song("s9"))) }
         until("the later one") { catalogue.has("s9") && !engine.state.value.busy }
         assertFalse(catalogue.has("s2"))
@@ -1039,17 +1146,19 @@ class DownloadsTest {
         network.value = mobileData
         val both = FakeRoutes().also { routes = it }
         both.now.value = both.network("wifi")
-        slow = true
+        // The first two are held on their way while the default route flips.
+        val gates = listOf(gate("s1"), gate("s2"))
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 400_000), song("s2", size = 400_000), song("s3"))) }
+        reached(*gates.toTypedArray())
         until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
         // The default route flips between them as they arrive.
         repeat(6) {
             network.value = if (it % 2 == 0) wifi else mobileData
             repeat(5) { idle() }
         }
-        slow = false
+        gates.forEach { it.letThrough() }
         until("all three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
         // Every request for every song went by the Wi-Fi, and none by the default route.
         for (id in listOf("s1", "s2", "s3")) assertTrue("$id came by ${via(id)}", via(id).isNotEmpty() && via(id).all { it == "wifi" })
@@ -1085,11 +1194,12 @@ class DownloadsTest {
         network.value = mobileData
         val both = FakeRoutes().also { routes = it }
         both.now.value = both.network("wifi")
-        slow = true
+        val gate = gate("s1")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 2_400_000))) }
         val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
+        reached(gate)
         until("arriving") { part.length() > 100_000 }
         // The Wi-Fi goes (or the system says it has turned metered: the same word from it).
         // Mobile data is still there, and is the default route.
@@ -1106,7 +1216,6 @@ class DownloadsTest {
         assertTrue(engine.state.value.failed.isEmpty())
         assertTrue(arrived < 2_400_000)
         // Another unmetered network: carried on with, by that one alone.
-        slow = false
         both.now.value = both.network("home")
         until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
         assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
@@ -1118,11 +1227,12 @@ class DownloadsTest {
         // Wi-Fi only off, on mobile data: a download is under way by the default route.
         network.value = mobileData
         val both = FakeRoutes().also { routes = it }
-        slow = true
+        val gate = gate("s1")
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 2_400_000))) }
         val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
+        reached(gate)
         until("arriving") { part.length() > 100_000 }
         assertEquals(listOf<String?>(null), via("s1"))
         // Wi-Fi only is switched on, and there is no Wi-Fi.
@@ -1134,7 +1244,6 @@ class DownloadsTest {
         repeat(20) { idle() }
         assertEquals(arrived, part.length())
         // Wi-Fi comes: the rest arrives by it.
-        slow = false
         both.now.value = both.network("wifi")
         until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
         assertTrue("it came by ${via("s1")}", via("s1").drop(1).let { it.isNotEmpty() && it.all { v -> v == "wifi" } })
@@ -1228,14 +1337,18 @@ class DownloadsTest {
 
     @Test
     fun aDownloadIsStoppedCleanlyBeforeThePhoneIsFull() {
-        slow = true
+        // The first two (Media3 runs two at once) are held on their way; the third waits.
+        val gates = listOf(gate("s1"), gate("s2", after = 64 * 1024))
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         run { engine.download(listOf(song("s1", size = 2_400_000), song("s2"), song("s3"))) }
         val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
+        reached(*gates.toTypedArray())
         until("arriving") { part.length() > 100_000 }
         // Something else fills the phone meanwhile: less than half the spare room is left.
+        // And more arrives.
         spare = Long.MAX_VALUE / 2
+        gates.forEach { it.letThrough() }
         until("all stopped") { engine.state.value.failed.size == 3 && !engine.state.value.busy }
         assertEquals(setOf("The phone is nearly out of space."), engine.state.value.failed.map { it.reason }.toSet())
         assertTrue(engine.state.value.downloaded.size <= 1)
@@ -1246,7 +1359,6 @@ class DownloadsTest {
         assertEquals(0, via("s3").size)
         // Room again: Retry failed fetches them.
         spare = 0
-        slow = false
         run { engine.retryFailed() }
         until("all three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
     }
@@ -1261,8 +1373,9 @@ class DownloadsTest {
         until("three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
         // One more on its way, part-way; a cover kept with the downloads; a part some
         // earlier download left; something left lying; a failure on the list.
-        slow = true
+        val gate = gate("s4")
         run { engine.download(listOf(song("s4", size = 2_400_000))) }
+        reached(gate)
         until("arriving") { File(catalogue.dir, SongFetch.partName("s4.flac")).length() > 100_000 }
         File(catalogue.dir, "covers").mkdirs()
         File(catalogue.dir, "covers/al-1.640").writeBytes(ByteArray(23_000))
@@ -1294,12 +1407,12 @@ class DownloadsTest {
         until("ready") { engine.state.value.settled }
         val songs = listOf(song("s1"), song("s2", size = 2_400_000))
         run { engine.toggle(list("playlist:p1", songs), songs) }
-        check(hold.reachedFirst.await(30, TimeUnit.SECONDS)) { "the second song's transfer never began" }
+        check(hold.reachedFirst.await(WAIT_MINUTES, TimeUnit.MINUTES)) { "the second song's transfer never began" }
         until("one downloaded, one arriving") { engine.state.value.downloaded.size == 1 && engine.state.value.active.any { it.state is SongState.Fetching } }
         val first = engine.state.value
         // As the song arrives the state is published again and again with how far it has got.
         hold.openFirst.countDown()
-        check(hold.reachedSecond.await(30, TimeUnit.SECONDS)) { "the second song's transfer stopped short" }
+        check(hold.reachedSecond.await(WAIT_MINUTES, TimeUnit.MINUTES)) { "the second song's transfer stopped short" }
         engine.refresh()
         idle()
         until("further on") { engine.state.value !== first && engine.state.value.active != first.active }
@@ -1310,5 +1423,16 @@ class DownloadsTest {
         org.junit.Assert.assertSame(first.collections, later.collections)
         hold.openSecond.countDown()
         engine.cancelAll()
+    }
+
+    private companion object {
+        /** How long another thread is given to do what a test waits for before it is taken
+         *  never to happen: nothing here is ordered by time, so this only ends a test that
+         *  has already failed. */
+        const val WAIT_MINUTES = 2L
+
+        /** How long the server holds an answer at a gate the test never opens (each test
+         *  opens them all as it ends). */
+        const val HELD_MINUTES = 10L
     }
 }

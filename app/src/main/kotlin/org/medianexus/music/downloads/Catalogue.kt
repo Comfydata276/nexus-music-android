@@ -362,10 +362,13 @@ class Catalogue(
         out
     }
 
-    /** Adds a whole download. Only to be called once the file is in place (see the class). */
+    /** Adds a whole download. Only to be called once the file is in place (see the class).
+     *  Not if `calledOff` says so, asked in the same step as the mark (under the lock every
+     *  removal takes): then nothing is marked, and false is returned. */
     @Throws(IOException::class)
-    fun add(entry: Downloaded) {
+    fun add(entry: Downloaded, calledOff: () -> Boolean = { false }): Boolean {
         synchronized(lock) {
+            if (calledOff()) return false
             // The mark, on the disk before it is in memory: one line, synced.
             append(Change(add = entry))
             val before = songs.remove(entry.song.id)
@@ -376,6 +379,7 @@ class Catalogue(
             // A copy this one replaces (always under another name: see `SongFetch`): gone
             // only now, the new one marked, and shown, in its place.
             if (before != null && before.file != entry.file) File(dir, before.file).delete()
+            return true
         }
     }
 

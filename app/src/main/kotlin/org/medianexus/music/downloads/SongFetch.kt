@@ -196,6 +196,9 @@ class SongFetch(
     /** Whether the phone still has room for more (asked before it starts and as bytes
      *  arrive): once not, it stops with the plain reason, and what had arrived of it goes. */
     private val room: () -> Boolean = { true },
+    /** Whether the song has been removed or cancelled while it was fetched: asked as it is
+     *  marked, in the same step (see [finish]). */
+    private val calledOff: () -> Boolean = { false },
 ) {
     /** The network this fetch is bound to, if it is bound to one (its caller's note). */
     @Volatile var bound: Any? = null
@@ -501,13 +504,20 @@ class SongFetch(
         CrashPoints.reached("placed")
         CrashPoints.say { "${song.id}: verified and in place, ${arrived.bytes} bytes" }
         val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate, target.lastModified(), flaw = flaw)
-        try {
+        val marked = try {
             // The mark: only now is it a download (and only now does a copy it replaces go).
-            catalogue.add(entry)
+            // **Not if the song was removed or cancelled meanwhile**: a removal that came
+            // after the last look at `cancelled` found nothing marked to remove, and the mark
+            // would have made it a download again, file and all, for nobody.
+            catalogue.add(entry, calledOff)
         } catch (e: IOException) {
             // The copy it was to replace, and its entry, are as they were.
             target.delete()
             throw failure(e)
+        }
+        if (!marked) {
+            target.delete()
+            throw Cancelled()
         }
         return entry
     }

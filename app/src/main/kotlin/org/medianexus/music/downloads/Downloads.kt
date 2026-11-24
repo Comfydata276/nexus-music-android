@@ -214,6 +214,11 @@ class Downloads(
      *  each is read from the catalogue, not counted from Media3's events, which a song asked
      *  for again, or removed meanwhile, would throw out. */
     private val batch = LinkedHashSet<String>()
+
+    /** Songs removed or cancelled by hand since they were last asked for: a fetch of one
+     *  that is in its last steps as that happens never marks it downloaded (see
+     *  [SongFetch]'s `calledOff`). Read from the fetches' threads. */
+    private val calledOff: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private var ticking: Job? = null
     private var initialized = false
 
@@ -507,6 +512,7 @@ class Downloads(
         if (fresh.isEmpty()) return Asked.AlreadyDownloaded
         if (asks.isEmpty()) batch.clear()
         fresh.mapTo(batch) { it.id }
+        calledOff.removeAll(fresh.map { it.id }.toSet())
         for (song in fresh) {
             // (As the server converts it, if this phone is known not to play the file itself.)
             val form = savedForm(song, quality).let { if (!it.converted && catalogue.convertsFor(song)) convertedForm() else it }
@@ -690,6 +696,7 @@ class Downloads(
     /** Stops these songs' downloads, and nothing more. */
     private fun stop(ids: Collection<String>) = onMain {
         if (!::manager.isInitialized) return@onMain
+        calledOff += ids
         for (id in ids) {
             manager.removeDownload(id)
             asks.remove(id)
@@ -733,6 +740,8 @@ class Downloads(
     /** Deletes these songs' downloaded copies and stops any on their way, and nothing more:
      *  the files go off the main thread, in turn with every other change to the catalogue. */
     private fun drop(ids: Collection<String>) = onMain {
+        // (Before the unmarking below is so much as queued: see [calledOff].)
+        calledOff += ids
         if (::manager.isInitialized) for (id in ids) manager.removeDownload(id)
         ids.forEach { asks.remove(it) }
         later {
@@ -1159,6 +1168,7 @@ class Downloads(
                 // Half of what is always kept spare: the estimate made when this was asked
                 // for may be out, and other things fill a phone too.
                 room = { catalogue.dir.usableSpace >= spare() / 2 },
+                calledOff = { id in calledOff },
             ).also { it.bound = bound }
         }
 
