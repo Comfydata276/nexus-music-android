@@ -423,11 +423,16 @@ class PlayerConnection(
     fun jump(uid: Long) {
         if (uid == AppCommands.NONE) return
         steered.hands?.let { it.jump(uid); return }
+        // A choice, at the tap (order of choices): a lookup still out for something older gives way.
+        Choices.take()
         send(AppCommands.JUMP, Bundle().apply { putLong("uid", uid) })
     }
 
     fun playPause() {
         steered.hands?.let { it.toggle(); return }
+        // Resuming (or pausing) takes its place at the tap (order of choices): a lookup still
+        // out for something chosen before it gives way to it.
+        Choices.take()
         ownPlayPause()
     }
 
