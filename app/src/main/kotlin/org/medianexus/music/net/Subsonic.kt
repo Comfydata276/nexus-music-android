@@ -84,13 +84,23 @@ class Subsonic private constructor(
      *  told to [onReached]. */
     fun over(client: OkHttpClient): Subsonic = Subsonic(server, username, salt, token, client, offline, io)
 
+    /**
+     * The same sign-in, for requests that must never be sent twice (a change to a playlist:
+     * a removal sent again takes out another copy of the song, an add adds again). OkHttp
+     * sends a request again by itself when a pooled connection turns out dead, which can be
+     * after the server had it: that is switched off. Nothing else in the app's client sends a
+     * request again (no authenticator, redirects followed only as the server asks, nothing
+     * retried by `Subsonic` itself). Still told to [onReached].
+     */
+    fun once(): Subsonic = Subsonic(server, username, salt, token, http.newBuilder().retryOnConnectionFailure(false).build(), offline, io).also { it.onReached = onReached }
+
     /** In offline mode nothing is sent: requests fail straight away. */
     fun setOffline(on: Boolean) {
         offline.on = on
     }
 
     private fun checkOnline() {
-        if (offline.on) throw ApiError.Network("Offline mode is on.")
+        if (offline.on) throw ApiError.Network("Offline mode is on.", unsent = true)
     }
 
     // ------------------------------------------------------------------------------------
@@ -250,7 +260,7 @@ class Subsonic private constructor(
     private fun failed(e: IOException): ApiError.Network {
         val answered = answeredOverTls(e)
         onReached?.invoke(answered)
-        return ApiError.Network(networkHint(e), answered)
+        return ApiError.Network(networkHint(e), answered, unsent = neverLeft(e))
     }
 
     /** Opens connections ahead of need, so the first taps don't pay for setting them up. */
@@ -533,6 +543,23 @@ class Subsonic private constructor(
  * gave up on are read too.
  */
 internal fun networkHint(error: IOException): String = read(error).first
+
+/**
+ * Whether a request that failed certainly never reached the server: no connection could be
+ * made to send it on (the name not found, refused, no route, the connection not made in
+ * time). Anything else (a timeout waiting for the answer, a connection dropped) may have
+ * reached it.
+ */
+internal fun neverLeft(error: IOException): Boolean {
+    var cause: Throwable? = error
+    var depth = 0
+    while (cause != null && depth++ < 16) {
+        if (cause is java.net.ConnectException || cause is UnknownHostException || cause is java.net.NoRouteToHostException) return true
+        if (cause is SocketTimeoutException && cause.message.orEmpty().contains("connect", ignoreCase = true)) return true
+        cause = cause.cause
+    }
+    return false
+}
 
 /**
  * Whether a failure was the secure connection with a server that answered: its certificate

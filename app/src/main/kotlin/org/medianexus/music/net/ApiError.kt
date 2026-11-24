@@ -12,8 +12,10 @@ package org.medianexus.music.net
 sealed class ApiError(message: String) : Exception(message) {
     /** The server could not be reached at all; or, `answered`, it answered but the secure
      *  connection with it failed (its certificate, its TLS): then it is there, and nothing
-     *  about the way to it (the local-network permission above all) is to blame. */
-    class Network(val detail: String, val answered: Boolean = false) : ApiError("Can't reach the server. $detail")
+     *  about the way to it (the local-network permission above all) is to blame. `unsent`:
+     *  the request certainly never left the phone (no connection could be made to send it
+     *  on, or offline mode): what it asked for certainly wasn't done. */
+    class Network(val detail: String, val answered: Boolean = false, val unsent: Boolean = false) : ApiError("Can't reach the server. $detail")
 
     /** The server answered, but not with a Subsonic response (wrong URL, proxy page, …). */
     class NotSubsonic(val detail: String) :
