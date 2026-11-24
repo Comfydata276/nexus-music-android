@@ -214,4 +214,19 @@ class OrderOfChoicesTest {
         assertEquals("the song was made ready again after a Stop", androidx.media3.common.Player.STATE_IDLE, inside.exo.playbackState)
         assertEquals(androidx.media3.common.Player.STATE_IDLE, stopped)
     }
+
+    @Test
+    fun aPausePressedWhileAlreadyPausedTakesAPlace() {
+        val acted = java.util.Collections.synchronizedList(mutableListOf<String>())
+        // Paused (nothing playing), and a start still being looked up.
+        assertFalse(service.inside().exo.playWhenReady)
+        val gate = lookupOut(acted, "album")
+        // Pause, from a car or the notification (not the app's screens, which take a place at
+        // the tap themselves).
+        controller.pause()
+        settle()
+        gate.complete(Unit)
+        settle()
+        assertEquals("a start went ahead after a Pause", emptyList<String>(), acted.toList())
+    }
 }

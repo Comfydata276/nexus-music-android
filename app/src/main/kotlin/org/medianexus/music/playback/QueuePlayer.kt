@@ -242,6 +242,10 @@ class QueuePlayer(
     val ahead: Int get() = (queue.order.size - queue.cursor - 1).coerceAtLeast(0)
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        // A Pause is the person saying "not now", whatever the player was doing: it takes its
+        // place even when already paused, so a start still being looked up gives way to it
+        // (order of choices).
+        if (!playWhenReady) moved()
         if (playWhenReady) {
             if (!mayPlay()) return Futures.immediateVoidFuture()
             // A start that was refused left the player stopped (see refuseStart): a Play that
