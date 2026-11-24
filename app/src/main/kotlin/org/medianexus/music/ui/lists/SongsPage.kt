@@ -65,9 +65,6 @@ fun SongsPage() {
     }
 }
 
-/** What the Songs page shows for one order and one find: places in the copy's song table,
- *  for that very copy. */
-private class Shown(val copy: LibrarySnapshot, val view: ListView, val order: IntArray)
 
 /**
  * Every song in the library, the newest arrivals first, sortable and findable, as Windows
@@ -95,9 +92,11 @@ fun SongsContent() {
     // Worked out off the main thread (the newest-first order of the copy is a sort of every
     // song, made once a copy; a find or another order on top of it, at each change). What was
     // shown stays until the new arrangement is ready, if it is of the same copy.
-    val shown by produceState<Shown?>(null, copy, view) {
+    // What is shown for one order and one find: places in the copy's song table, for that very
+    // copy.
+    val shown by produceState<org.medianexus.music.library.Shown<LibrarySnapshot>?>(null, copy, view) {
         val snap = copy ?: return@produceState
-        if (value?.copy !== snap) value = null
+        if (value?.list !== snap) value = null
         value = withContext(Dispatchers.Default) {
             val job = coroutineContext[kotlinx.coroutines.Job]
             val newest = snap.newestFirst
@@ -110,7 +109,7 @@ fun SongsContent() {
                 Arrange.arrange(table.columns(newest), view, cancelled = { job?.isActive == false }) { Arrange.dayStart(table.createdMillis(newest[it]) / 1000) }
                     .let { at -> IntArray(at.size) { newest[at[it]] } }
             }
-            Shown(snap, view, order)
+            org.medianexus.music.library.Shown(snap, view, order)
         }
     }
     val marks = rememberDownloadMarks()
@@ -121,23 +120,23 @@ fun SongsContent() {
     val shuffle = if (key == from.source) queueShuffle else settings.lists[key]?.shuffle ?: false
     val list = rememberLazyListState()
     val now = shown
-    val table = now?.copy?.songs
+    val table = now?.list?.songs
+    // Rows of an arrangement that more typing (or another order, or a newer copy) has replaced
+    // are shown until the new one is ready, but a tap on them plays nothing (see Shown).
+    val tappable = now != null && copy != null && now.tappable(copy!!, view)
     val context = stringResource(R.string.songs)
     val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
 
     // The place of a song (by its place in the table) in the newest-first list: what the
     // service is told, and what marks the row playing. Made off the main thread, with the
     // arrangement.
-    val ownPlace = now?.copy?.newestPlace ?: IntArray(0)
+    val ownPlace = now?.list?.newestPlace ?: IntArray(0)
     fun play(row: Int, any: Boolean = false) {
         val n = now ?: return
+        if (!tappable) return
         val t = n.order.getOrNull(row) ?: return
-        val near = ArrayList<String>()
-        for (step in 1..org.medianexus.music.playback.StartPlace.NEIGHBOURS) {
-            n.order.getOrNull(row + step)?.let { near += n.copy.songs.id(it) }
-            n.order.getOrNull(row - step)?.let { near += n.copy.songs.id(it) }
-        }
-        player.playPage(key, ownPlace[t], n.copy.songs.id(t), near, context, anyStart = any, view = n.view)
+        // The arrangement on the screen (its find text and order), and the song tapped.
+        player.playPage(key, ownPlace[t], if (any) null else n.list.songs.id(t), context, anyStart = any, view = n.view)
     }
 
     when {

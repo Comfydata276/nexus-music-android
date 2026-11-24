@@ -38,10 +38,11 @@ object AppCommands {
 
     fun songsArg(list: List<Song>): String = json.encodeToString(songs, list)
 
-    private fun songsOf(args: Bundle): List<Song> = args.getString("songs")?.let { runCatching { json.decodeFromString(songs, it) }.getOrNull() }.orEmpty()
+    fun songsOf(args: Bundle): List<Song> = args.getString("songs")?.let { runCatching { json.decodeFromString(songs, it) }.getOrNull() }.orEmpty()
 
     /** A list longer than this that is a page the phone keeps is started by naming the
-     *  page, not by sending its songs. */
+     *  page, not by sending its songs. (Either way the PLAY says which song was tapped, and
+     *  how the list was arranged on the screen.) */
     const val MOST_SENT = 200
 
     /** Whether a PLAY names its list ("byPage") instead of carrying the songs. */
@@ -52,6 +53,18 @@ object AppCommands {
         0 -> false
         1 -> true
         else -> shuffleFor(args.getString("source").orEmpty())
+    }
+
+    /** What became of a PLAY. */
+    sealed interface Started {
+        class Ready(val queue: Queue) : Started
+
+        /** Offline, and nothing of the list plays. */
+        data object NothingOffline : Started
+
+        data object Gone : Started
+
+        data object Empty : Started
     }
 
     /**
@@ -67,55 +80,54 @@ object AppCommands {
         shuffle: Boolean,
         plays: ((Song) -> Boolean)? = null,
         dates: (source: String, songs: List<Song>) -> LongArray = { _, list -> LongArray(list.size) },
-    ): Queue? {
+    ): Started {
         val source = args.getString("source").orEmpty()
-        // Where to start: the place the screen named, unless the kept list has moved on
-        // since the screen drew it (see StartPlace.startIn). A place in the list's own order.
-        val start = StartPlace.startIn(songs, args.getInt("start"), args.getString("startId"), args.getStringArrayList("startNear").orEmpty()) ?: 0
-        // Sorted, or narrowed to what was typed in its find box: what is shown, in the order
-        // shown (Windows' `visible_songs`), worked out here from the list as the phone keeps it,
-        // as the screen worked it out. Each song still knows its place in the list itself.
-        val view = viewOf(args)?.takeIf { !it.isDefault }
-        val shown: IntArray? = view?.let { v ->
-            val added = if (v.sort == org.medianexus.music.library.ListView.ADDED) dates(source, songs) else null
-            org.medianexus.music.library.Arrange.arrange(songs.columns(), v) { added?.get(it) ?: 0 }
+        // Sorted, or narrowed to what was typed in its find box: what was shown, in the order
+        // shown (Windows' `visible_songs`), worked out here from the list as the phone keeps
+        // it, as the screen worked it out. Each song still knows its place in the list itself.
+        val view = viewOf(args)
+        val added = if (view?.sort == org.medianexus.music.library.ListView.ADDED) dates(source, songs) else null
+        val picked = StartPlace.pick(songs.columns(), { songs[it].id }, view, args.getInt("start"), args.getString("startId")?.takeIf { !args.getBoolean("anyStart") }) { added?.get(it) ?: 0 }
+        val rows = when (picked) {
+            is StartPlace.Picked.Rows -> picked
+            StartPlace.Picked.Gone -> return Started.Gone
+            StartPlace.Picked.Empty -> return Started.Empty
         }
-        if (shown != null && shown.isEmpty()) return null
+        val shown = rows.shown
         val list = shown?.map { songs[it] } ?: songs
         val places = shown?.toList() ?: songs.indices.toList()
-        val first = if (shown == null) start else shown.indexOf(start).takeIf { it >= 0 } ?: 0
         // Offline (`plays` given): only what can play, each still at its place in the list.
-        val cut = if (plays != null) playableOnly(list, first, plays) ?: return null else null
-        return player.prepare(
-            cut?.songs ?: list,
-            start = cut?.start ?: first,
-            context = args.getString("context").orEmpty(),
-            source = source,
-            // A list from a page is always the page's whole list, in its order: each song's
-            // place in it is its place here (what marks the row playing).
-            origins = if (source.isNotEmpty()) (cut?.origins?.map { places[it] } ?: places) else null,
-            sourceList = songs.map { it.id },
-            shuffle = shuffle,
-            anyStart = args.getBoolean("anyStart"),
+        val cut = if (plays != null) playableOnly(list, rows.first, plays) ?: return Started.NothingOffline else null
+        return Started.Ready(
+            player.prepare(
+                cut?.songs ?: list,
+                start = cut?.start ?: rows.first,
+                context = args.getString("context").orEmpty(),
+                source = source,
+                // A list from a page is always the page's whole list, in its order: each song's
+                // place in it is its place here (what marks the row playing).
+                origins = if (source.isNotEmpty()) (cut?.origins?.map { places[it] } ?: places) else null,
+                sourceList = songs.map { it.id },
+                shuffle = shuffle,
+                anyStart = args.getBoolean("anyStart"),
+                filter = view?.filter?.trim().orEmpty(),
+            ),
         )
     }
 
-    /** Says in a PLAY how the list is shown (sorted, narrowed), when it is anything but as
-     *  it comes. */
+    /** Says in a PLAY how the list was shown (sorted, narrowed) when the row was tapped:
+     *  the arrangement on the screen, whatever the find box says by now. */
     fun putView(args: Bundle, view: org.medianexus.music.library.ListView?) {
         if (view == null || view.isDefault) return
         args.putBoolean("view", true)
         args.putInt("sort", view.sort)
         args.putBoolean("descending", view.descending)
-        args.putString("filter", view.filter.take(MOST_FILTER))
+        args.putString("filter", view.filter)
     }
 
     fun viewOf(args: Bundle): org.medianexus.music.library.ListView? =
         if (!args.getBoolean("view")) null
-        else org.medianexus.music.library.ListView(args.getInt("sort").coerceIn(0, org.medianexus.music.library.ListView.SORTS - 1), args.getBoolean("descending"), args.getString("filter").orEmpty().take(MOST_FILTER))
-
-    /** What a find box sends, at most. */
-    private const val MOST_FILTER = 200
+        else org.medianexus.music.library.ListView(args.getInt("sort").coerceIn(0, org.medianexus.music.library.ListView.SORTS - 1), args.getBoolean("descending"), args.getString("filter").orEmpty())
 
     /** Carries out one, on the main thread. Returns false if it isn't one of these. (A PLAY
      *  that names a page is the service's to carry out: it has to read the page.) */
@@ -128,7 +140,7 @@ object AppCommands {
         dates: (source: String, songs: List<Song>) -> LongArray = { _, list -> LongArray(list.size) },
     ): Boolean {
         when (command.customAction) {
-            PLAY.customAction -> player.play(queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor), plays, dates) ?: return false)
+            PLAY.customAction -> player.play((queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor), plays, dates) as? Started.Ready)?.queue ?: return false)
             ENQUEUE.customAction -> player.enqueue(songsOf(args), args.getBoolean("playNext"))
             // Each of these names the entry it means by the entry's own number (see
             // Queue.dropUid), not by where it was on the screen when it was tapped.
@@ -143,44 +155,56 @@ object AppCommands {
 }
 
 /**
- * Where a list that a screen named, rather than sent, is started (see [AppCommands.queueFor]).
- * Plain Kotlin, apart from the commands, so it can be tested on its own.
+ * Where a list starts, in the arrangement a screen showed. Plain Kotlin, so it can be tested
+ * on its own.
  */
 object StartPlace {
-    /** How many songs either side of the one tapped a PLAY that names its page also names
-     *  (see [StartPlace.startIn]). */
-    const val NEIGHBOURS = 8
+    /** Where a PLAY's list starts, in the arrangement the screen showed (see [pick]). */
+    sealed interface Picked {
+        /** The rows to play (`shown`, places in the list; null: the list as it is) and the
+         *  row to start at. */
+        class Rows(val shown: IntArray?, val first: Int) : Picked
 
-    /** The songs around the one tapped, as the screen showed them, nearest first: the one
-     *  after it, the one before it, the second after, the second before, and so on. */
-    fun neighbours(songs: List<Song>, start: Int): ArrayList<String> {
-        val near = ArrayList<String>()
-        for (step in 1..NEIGHBOURS) {
-            songs.getOrNull(start + step)?.let { near += it.id }
-            songs.getOrNull(start - step)?.let { near += it.id }
-        }
-        return near
+        /** The song that was tapped isn't in the arrangement any more: nothing plays. */
+        data object Gone : Picked
+
+        /** Nothing to play. */
+        data object Empty : Picked
     }
 
     /**
-     * Where to start a list that was named rather than sent. `start` and `tapped` are the
-     * place and the song the screen named; `songs` is the list as the phone keeps it now,
-     * which may have moved on since the screen drew it. The song that was tapped, wherever
-     * it is now. If it has gone from the list: the nearest song to it that is still there
-     * (`near`, from [neighbours]: nearest first, whichever side of the tap it was on), which
-     * is the nearest thing to what was meant. With none of those left either there is no
-     * telling what was meant: the list from its first song. Never whatever happens to sit at
-     * the old place. Null if the list is empty: nothing to start.
+     * The arrangement a screen showed, worked out again from the list as the phone has it
+     * now (`songs`, `ids`), and the row of the song that was tapped (`startId`, which stood at
+     * `start` in the list). `view` is how the screen arranged it: its find text and order at
+     * the moment the arrangement was made, not whatever the find box says by the time of the
+     * tap. With no song named (the play button), the arrangement from its top. Plain Kotlin.
      */
-    fun startIn(songs: List<Song>, start: Int, tapped: String?, near: List<String>): Int? {
-        if (songs.isEmpty()) return null
-        if (tapped == null || songs.getOrNull(start)?.id == tapped) return start.coerceIn(0, songs.size - 1)
-        songs.indexOfFirst { it.id == tapped }.takeIf { it >= 0 }?.let { return it }
-        // Nearest to where it was, among the copies of that neighbour (a list can hold a song twice).
-        for (id in near) {
-            val places = songs.indices.filter { songs[it].id == id }
-            places.minByOrNull { kotlin.math.abs(it - start) }?.let { return it }
+    fun pick(songs: org.medianexus.music.library.SongColumns, ids: (Int) -> String, view: org.medianexus.music.library.ListView?, start: Int, startId: String?, added: (Int) -> Long = { 0 }): Picked {
+        val arranged = view?.takeIf { !it.isDefault }
+        val shown = arranged?.let { org.medianexus.music.library.Arrange.arrange(songs, it, added = added) }
+        val rows = shown ?: IntArray(songs.size) { it }
+        if (rows.isEmpty()) return Picked.Empty
+        val first = StartPlace.rowOf(ids, rows, start, startId) ?: return Picked.Gone
+        return Picked.Rows(shown, first)
+    }
+
+    /**
+     * The row of `rows` (places in a list whose ids `ids` gives) to start at. With a song
+     * named (`tapped`, which stood at place `start` in the list when the screen drew it): the
+     * row showing that place, if it still holds that song; else the first row that holds it,
+     * wherever the list has moved it; null if the arrangement doesn't hold it at all. Never
+     * a neighbour, nor whatever now sits at the old place: the person chose that song. With
+     * none named, the first row. Null too if there are no rows.
+     */
+    fun rowOf(ids: (Int) -> String, rows: IntArray, start: Int, tapped: String?): Int? {
+        if (rows.isEmpty()) return null
+        if (tapped == null) return 0
+        var first = -1
+        for ((row, place) in rows.withIndex()) {
+            if (ids(place) != tapped) continue
+            if (place == start) return row
+            if (first < 0) first = row
         }
-        return 0
+        return first.takeIf { it >= 0 }
     }
 }

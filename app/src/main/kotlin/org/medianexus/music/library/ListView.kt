@@ -59,9 +59,30 @@ data class ListView(val sort: Int = OWN, val descending: Boolean = false, val fi
         fun remember(prefs: ListPrefs?, view: ListView, at: Long): ListPrefs =
             (prefs ?: ListPrefs()).copy(sort = view.sort, descending = view.descending, sortChosen = true, at = at)
 
+        /**
+         * How a queue started from a list follows it as it changes (Windows' `order_for`): in
+         * the order the list remembers now, narrowed to what was typed in its find box when
+         * the queue was started (`filter`). A song that joins the list and doesn't match it
+         * doesn't join the queue.
+         */
+        fun following(key: String, prefs: ListPrefs?, filter: String): ListView =
+            (if (findable(key)) opening(key, prefs) else ListView()).copy(filter = filter)
+
         /** Whether a list's key is one of the lists that can be found in and sorted. */
         fun findable(key: String): Boolean = key.startsWith("playlist:") || key == "liked" || key == Library.SONGS
     }
+}
+
+/**
+ * One arrangement of a list as a screen shows it: which list (`list`, the very copy it was
+ * worked out from), how (`view`), and the result (`order`, places in the list). A screen
+ * keeps showing the last arrangement while a newer one is worked out off the main thread;
+ * its rows are not to be tapped meanwhile ([tappable]), since what a tap hands the player is
+ * this arrangement, and the person is already typing or choosing another.
+ */
+class Shown<L>(val list: L, val view: ListView, val order: IntArray) {
+    /** Whether this is the arrangement of `list` as `view` now has it. */
+    fun tappable(list: L, view: ListView): Boolean = this.list === list && this.view == view
 }
 
 /** What arranging a list needs of its songs, by place. */

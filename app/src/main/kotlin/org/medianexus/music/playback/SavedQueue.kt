@@ -33,6 +33,10 @@ data class SavedQueue(
     /** When the queue last changed, in seconds since 1970. */
     val stamp: Long = 0,
     @SerialName("source_list") val sourceList: List<String> = emptyList(),
+    /** The phone's own: what was typed in the find box of the list the queue was started
+     *  from, which it follows narrowed the same way. (Windows reads past a field it doesn't
+     *  know, and isn't asked to follow it; not part of the queue's shape.) */
+    @SerialName("list_filter") val listFilter: String = "",
 ) {
     /**
      * Whether it holds together: a queue that doesn't (a file cut short, edited by hand) is

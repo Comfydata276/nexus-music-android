@@ -114,7 +114,12 @@ fun SongListPage(
     val account = ui.account
     // Which songs are shown, in what order, as places in the list. Worked out off the main
     // thread for a long list; meanwhile, a list whose order is its own is shown as it is.
-    val shown = rememberShown(songs, view) { list -> account?.addedDates(key, list) ?: LongArray(list.size) }
+    val arranged = rememberShown(songs, view) { list -> account?.addedDates(key, list) ?: LongArray(list.size) }
+    val shown = arranged?.order
+    // A row of an arrangement that more typing (or another order) has replaced is shown until
+    // the new one is ready, but a tap on it does nothing: what a tap plays is the arrangement
+    // it was made on, and the person has moved on from it.
+    val tappable = arranged != null && songs != null && arranged.tappable(songs, view)
     val list = rememberLazyListState()
     val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
     // As the queue has it if this is the list playing, else as the list remembers it.
@@ -152,7 +157,7 @@ fun SongListPage(
                         when {
                             from.isList(key) -> player.playPause()
                             playOverride != null -> playOverride()
-                            !songs.isNullOrEmpty() -> shown?.firstOrNull()?.let { ui.play(songs, it, context, key, anyStart = true, view = view) }
+                            !songs.isNullOrEmpty() && tappable -> shown?.firstOrNull()?.let { ui.play(songs, it, context, key, anyStart = true, view = arranged!!.view) }
                         }
                     },
                     shuffle = shuffle,
@@ -216,7 +221,7 @@ fun SongListPage(
                             val current = from.isRow(key, index, song.id)
                             TrackRow(
                                 base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
-                                onClick = { ui.play(songs, index, context, key, view = view) },
+                                onClick = { if (tappable) ui.play(songs, index, context, key, view = arranged!!.view) },
                                 onMore = { ui.menu = SongMenu(song) },
                                 showCover = !look.album,
                                 showNumber = look.album,
@@ -234,30 +239,30 @@ fun SongListPage(
 
 /**
  * Which of `songs` a list shows, in what order, for `view` (see [org.medianexus.music.library.Arrange]),
- * as places in `songs`; null while that is being worked out. A list as it comes is itself at
- * once; a short one is worked out there and then; a long one (thousands of songs, a sort's
- * keys for each) off the main thread, and until it is ready the list shows what it showed
- * for these songs before, if anything. `dates` gives when each song was added, for "Date
- * added"; it is asked only for that order.
+ * as places in `songs`, with the songs and the view it was worked out for; null while there
+ * is none. A list as it comes is itself at once; a short one is worked out there and then; a
+ * long one (thousands of songs, a sort's keys for each) off the main thread, and until it is
+ * ready the list shows what it showed for these songs before, if anything (whose rows are not
+ * to be tapped: see [org.medianexus.music.library.Shown.tappable]). `dates` gives when each
+ * song was added, for "Date added"; it is asked only for that order.
  */
 @Composable
-fun rememberShown(songs: List<Song>?, view: org.medianexus.music.library.ListView, dates: (List<Song>) -> LongArray): IntArray? {
+fun rememberShown(songs: List<Song>?, view: org.medianexus.music.library.ListView, dates: (List<Song>) -> LongArray): org.medianexus.music.library.Shown<List<Song>>? {
     if (songs == null) return null
-    if (view.isDefault) return remember(songs) { IntArray(songs.size) { it } }
+    if (view.isDefault) return remember(songs, view) { org.medianexus.music.library.Shown(songs, view, IntArray(songs.size) { it }) }
     val work = { cancelled: () -> Boolean ->
-        org.medianexus.music.library.Arrange.arrange(songs.columns(), view, cancelled, (if (view.sort == org.medianexus.music.library.ListView.ADDED) dates(songs) else null).let { d -> { i: Int -> d?.get(i) ?: 0L } })
+        org.medianexus.music.library.Shown(songs, view, org.medianexus.music.library.Arrange.arrange(songs.columns(), view, cancelled, (if (view.sort == org.medianexus.music.library.ListView.ADDED) dates(songs) else null).let { d -> { i: Int -> d?.get(i) ?: 0L } }))
     }
     if (songs.size <= ARRANGED_AT_ONCE) return remember(songs, view) { work { false } }
-    val arranged by androidx.compose.runtime.produceState<Pair<List<Song>, IntArray>?>(null, songs, view) {
-        val keep = value?.takeIf { it.first === songs }
-        value = keep
+    val arranged by androidx.compose.runtime.produceState<org.medianexus.music.library.Shown<List<Song>>?>(null, songs, view) {
+        value = value?.takeIf { it.list === songs }
         // Stopped part-way when another keystroke or order replaces it.
-        value = songs to kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             val job = coroutineContext[kotlinx.coroutines.Job]
             work { job?.isActive == false }
         }
     }
-    return arranged?.takeIf { it.first === songs }?.second
+    return arranged?.takeIf { it.list === songs }
 }
 
 /** A list this long or shorter is arranged as it is drawn: well under a frame's time. */

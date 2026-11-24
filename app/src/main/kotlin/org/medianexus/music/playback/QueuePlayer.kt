@@ -478,7 +478,8 @@ class QueuePlayer(
         sourceList: List<String> = emptyList(),
         shuffle: Boolean,
         anyStart: Boolean = false,
-    ): Queue = Queue().apply { replace(songs, start, context, source, origins, sourceList, shuffle, anyStart, random) }.also(::ready)
+        filter: String = "",
+    ): Queue = Queue().apply { replace(songs, start, context, source, origins, sourceList, shuffle, anyStart, random, filter) }.also(::ready)
 
     /**
      * Makes the media items the player will want first for a queue that isn't its own yet

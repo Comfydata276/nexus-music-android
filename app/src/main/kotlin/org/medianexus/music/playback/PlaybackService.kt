@@ -767,7 +767,7 @@ class PlaybackService : MediaLibraryService() {
         // CarTree.stale).
         next.scope.launch {
             now.pages.changes.collect { (key, value) ->
-                if (key == player.queue.source) songsIn(value)?.let { songs -> player.follow(key, songs, orderOf(key, songs)) }
+                if (key == player.queue.source) songsIn(value)?.let { songs -> player.follow(key, songs, orderOf(key, songs, player.queue.filter)) }
                 for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
             }
         }
@@ -910,9 +910,9 @@ class PlaybackService : MediaLibraryService() {
 
     /** The order a list's page shows these songs in, as places in it, with the order the list
      *  remembers (Windows' `order_for`): what a queue started from it follows. */
-    private fun orderOf(key: String, songs: List<Song>): List<Int> {
-        if (!org.medianexus.music.library.ListView.findable(key)) return songs.indices.toList()
-        val view = org.medianexus.music.library.ListView.opening(key, graph.settings.value.lists[key])
+    private fun orderOf(key: String, songs: List<Song>, filter: String): List<Int> {
+        // Narrowed as it was when the queue was started from it (ListView.following).
+        val view = org.medianexus.music.library.ListView.following(key, graph.settings.value.lists[key], filter)
         if (view.isDefault) return songs.indices.toList()
         val added = if (view.sort == org.medianexus.music.library.ListView.ADDED) addedDates(key, songs) else null
         return org.medianexus.music.library.Arrange.arrange(songs.columns(), view) { added?.get(it) ?: 0 }.toList()
@@ -1862,7 +1862,9 @@ class PlaybackService : MediaLibraryService() {
                     if (AppCommands.byPage(args)) {
                         playPage(player.beginStart(), args)
                     } else {
-                        AppCommands.handle(player, customCommand, args, ::shuffleFor, playsOffline(), ::addedDates).also { if (!it) graph.toasts.show(getString(R.string.cant_play_offline)) }
+                        // A short list, sent whole: the same arrangement and song as by page.
+                        started(AppCommands.queueFor(player, args, AppCommands.songsOf(args), AppCommands.shuffleOf(args, ::shuffleFor), playsOffline(), ::addedDates), args.getString("source").orEmpty())
+                            ?.let { player.play(it); true } ?: false
                     }
                 }
                 else -> AppCommands.handle(player, customCommand, args, ::shuffleFor)
@@ -1900,33 +1902,38 @@ class PlaybackService : MediaLibraryService() {
             val shuffle = AppCommands.shuffleOf(args, ::shuffleFor)
             // Read, and made into a queue, off the main thread: it is thousands of songs.
             val plays = playsOffline()
-            var none = false
-            val next = withContext(Dispatchers.Default) {
+            val result = withContext(Dispatchers.Default) {
                 // A list of the downloads is read from their own record, like the car's
                 // Downloads tab; any other from the library's kept copy.
                 val songs = era.account.downloads?.let { org.medianexus.music.downloads.DownloadedViews.songsFor(it.state.value, source) }
                     ?: era.account.library.keptSongs(source)
-                songs?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle, plays, ::addedDates) ?: run { none = true; null } }
+                // The arrangement the screen showed, from the song tapped (see StartPlace.pick).
+                if (songs.isNullOrEmpty()) AppCommands.Started.Empty else AppCommands.queueFor(player, args, songs, shuffle, plays, ::addedDates)
             }
             // Something else has been chosen while this was being read (or the account has
             // gone, which overtakes every start): that stands.
             if (!player.stands(mine) || era !== this@PlaybackService.era) return@launch
-            if (none) {
-                graph.toasts.show(getString(R.string.cant_play_offline))
-                return@launch
-            }
-            if (next == null) {
-                // The list has nothing in it any more (emptied since the screen drew it, or
-                // the phone has cleared its copy away). Nothing is started, what was playing
-                // carries on, and the person is told why their tap did nothing.
-                graph.toasts.show(getString(R.string.list_is_empty_now))
-                if (BuildConfig.DEBUG) android.util.Log.w(TAG, "nothing kept to start $source from")
-                return@launch
-            }
             // (Asks once more, at the moment of playing.)
-            player.playFor(mine, next)
+            started(result, source)?.let { player.playFor(mine, it) }
         }
         return true
+    }
+
+    /**
+     * The queue a PLAY came to, or null if it came to nothing, in which case what was playing
+     * carries on and the person is told why their tap did nothing: offline, nothing of it
+     * plays; the song tapped isn't in the list as it was shown any more (it is never swapped
+     * for another); or the list has nothing in it any more (emptied since the screen drew it,
+     * or the phone has cleared its copy away).
+     */
+    private fun started(result: AppCommands.Started, source: String): Queue? = when (result) {
+        is AppCommands.Started.Ready -> result.queue
+        AppCommands.Started.NothingOffline -> null.also { graph.toasts.show(getString(R.string.cant_play_offline)) }
+        AppCommands.Started.Gone -> null.also { graph.toasts.show(getString(R.string.song_not_in_list_now)) }
+        AppCommands.Started.Empty -> null.also {
+            graph.toasts.show(getString(R.string.list_is_empty_now))
+            if (BuildConfig.DEBUG) android.util.Log.w(TAG, "nothing kept to start $source from")
+        }
     }
 
     /** Who a controller is (see [Access]). */

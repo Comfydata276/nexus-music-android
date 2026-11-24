@@ -310,7 +310,10 @@ class PlayerConnection(
      * Plays a list from one of its songs. `context` is what it is, in words ("Slow Rivers");
      * `source` the route key of the page it came from ("album:<id>"), so the list's shuffle
      * is remembered and its playing row marked; a list with a source is the page's whole
-     * list, in its order. `shuffle` null plays it as it was last played.
+     * list, in its order. `shuffle` null plays it as it was last played. `view` is how the
+     * list was arranged on the screen the tap was made on (sorted, narrowed to what was
+     * typed): the player plays that arrangement, from the song at `start`, or nothing if it
+     * isn't there any more. `anyStart`: no song was chosen (the play button).
      */
     fun play(
         songs: List<Song>,
@@ -326,15 +329,13 @@ class PlayerConnection(
         // 20,000 songs out here and reading them back there would hold the main thread
         // for both. A short list, or one put together on the spot, is sent as it is.
         if (songs.size > AppCommands.MOST_SENT && keptPage(source)) {
-            // The song that was tapped, and the ones around it: if the phone's copy of the
-            // list has changed by the time the service reads it, the song is found again, or
-            // failing that its nearest neighbour.
-            playPage(source, start, songs.getOrNull(start)?.id, StartPlace.neighbours(songs, start), context, shuffle, anyStart, view)
+            playPage(source, start, songs.getOrNull(start)?.id, context, shuffle, anyStart, view)
             return
         }
         send(AppCommands.PLAY, Bundle().apply {
             putString("songs", AppCommands.songsArg(songs))
             putInt("start", start)
+            songs.getOrNull(start)?.id?.let { putString("startId", it) }
             putString("context", context)
             putString("source", source)
             putInt("shuffle", when (shuffle) { null -> -1; true -> 1; false -> 0 })
@@ -346,16 +347,14 @@ class PlayerConnection(
     /**
      * Plays a list the phone keeps, by naming it (`source`) rather than sending its songs:
      * the service reads it where the screen read it. `start` is the place of the song tapped
-     * in the list's own order, `startId` that song and `near` the songs around it (see
-     * [StartPlace]). `view` is how the list is shown, if sorted or narrowed: what plays is
-     * what is shown, in the order shown. For the Songs page, whose 50,000 songs the screen
-     * never holds as songs, this is the only way.
+     * in the list's own order and `startId` that song; `view` how the screen arranged the list
+     * (see [play]). For the Songs page, whose 50,000 songs the screen never holds as songs,
+     * this is the only way.
      */
     fun playPage(
         source: String,
         start: Int,
         startId: String?,
-        near: ArrayList<String>,
         context: String,
         shuffle: Boolean? = null,
         anyStart: Boolean = false,
@@ -363,7 +362,6 @@ class PlayerConnection(
     ) = send(AppCommands.PLAY, Bundle().apply {
         putBoolean("byPage", true)
         startId?.let { putString("startId", it) }
-        putStringArrayList("startNear", near)
         putInt("start", start)
         putString("context", context)
         putString("source", source)

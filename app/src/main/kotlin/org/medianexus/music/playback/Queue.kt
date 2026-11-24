@@ -49,6 +49,9 @@ class Queue internal constructor(order: MutableList<Int>) {
     /** The ids of every song in that page's list, as last seen. */
     var sourceList = mutableListOf<String>()
         private set
+    /** What was typed in that page's find box when the queue was started from it: as the
+     *  list changes, the queue follows it narrowed the same way (see `ListView.following`). */
+    var filter = ""
     var shuffle = false
     var repeat = Repeat.OFF
 
@@ -110,6 +113,7 @@ class Queue internal constructor(order: MutableList<Int>) {
         order = other.order
         origins = other.origins
         sourceList = other.sourceList
+        filter = other.filter
         cursor = other.cursor
         context = other.context
         source = other.source
@@ -133,8 +137,10 @@ class Queue internal constructor(order: MutableList<Int>) {
         shuffle: Boolean = this.shuffle,
         anyStart: Boolean = false,
         random: Random = Random.Default,
+        filter: String = "",
     ) {
         revision++
+        this.filter = filter
         songs.clear()
         list.mapTo(songs) { if (it.queued) it.copy(queued = false) else it }
         uids.clear()
@@ -170,6 +176,7 @@ class Queue internal constructor(order: MutableList<Int>) {
         while (origins.size > songs.size) origins.removeAt(origins.size - 1)
         sourceList.clear()
         sourceList.addAll(saved.sourceList)
+        filter = saved.listFilter
     }
 
     fun clear() {
@@ -182,6 +189,7 @@ class Queue internal constructor(order: MutableList<Int>) {
         cursor = 0
         context = ""
         source = ""
+        filter = ""
     }
 
     // ---- Moving through it ----------------------------------------------------------------
@@ -492,6 +500,7 @@ class Queue internal constructor(order: MutableList<Int>) {
         origins = origins.toList(),
         stamp = stamp,
         sourceList = sourceList.toList(),
+        listFilter = filter,
     )
 }
 

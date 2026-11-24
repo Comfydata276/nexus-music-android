@@ -121,6 +121,7 @@
     <string name="passed_over_out_of_reach">Can\'t reach your server: skipped to a song on this phone</string>
     <string name="cant_play_offline">That isn\'t downloaded, so it can\'t play while you\'re offline</string>
     <string name="list_is_empty_now">There\'s nothing in that list any more.</string>
+    <string name="song_not_in_list_now">That song isn\'t in the list as it was shown any more, so nothing was started.</string>
     <string name="nothing_to_play">Nothing to play yet. Like some songs, or play something on your phone.</string>
     <!-- The screens (M1b) -->
     <string name="good_morning">Good morning</string>
