@@ -62,14 +62,15 @@ fun AlbumPage(route: Route.Album) {
     val ui = LocalUi.current
     val res = LocalResources.current
     val feed = rememberPageFeed(route.key) { it.album(route.id) }
-    if (fromDownloads(route.key, feed)) {
+    if (fromDownloads(route.key, feed, feed.value?.songs)) {
         org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(route.key, route.title))
         return
     }
-    // Offline with no copy of the page and nothing of it downloaded, an album shown because
-    // songs of it are kept from being played is what the phone has of it.
+    // Offline with no copy of the page (or a kept page with nothing of it on the phone: kept
+    // from before its songs were replaced) and nothing of it downloaded, an album shown
+    // because songs of it are kept from being played is what the phone has of it.
     val phone = org.medianexus.music.ui.downloads.playableOffline()
-    val album = feed.value ?: remember(phone, route.id) { phone?.let { org.medianexus.music.library.OnThePhone.album(it, route.id) } }
+    val album = remember(feed.value, phone, route.id) { org.medianexus.music.library.OnThePhone.albumShown(feed.value, phone, route.id) }
     val hero = if (album == null) {
         HeroData(stringResource(R.string.kind_album), route.title, route.artist, cover = route.cover)
     } else {
@@ -122,7 +123,7 @@ fun AlbumPage(route: Route.Album) {
 fun PlaylistPage(route: Route.Playlist) {
     val res = LocalResources.current
     val feed = rememberPageFeed(route.key) { it.playlist(route.id) }
-    if (fromDownloads(route.key, feed)) {
+    if (fromDownloads(route.key, feed, feed.value?.songs)) {
         org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(route.key, route.name))
         return
     }
@@ -150,7 +151,7 @@ fun PlaylistPage(route: Route.Playlist) {
 fun LikedPage() {
     val res = LocalResources.current
     val feed = rememberPageFeed(Route.Liked.key) { it.liked() }
-    if (fromDownloads(Route.Liked.key, feed)) {
+    if (fromDownloads(Route.Liked.key, feed, feed.value?.songs)) {
         org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(Route.Liked.key))
         return
     }
@@ -172,13 +173,16 @@ fun LikedPage() {
 }
 
 /**
- * Offline, with no copy of the page kept, an album or a list that is downloaded (an album
- * with anything of it downloaded, a list downloaded whole) is shown as the downloads have it,
- * rather than as a page that can't be had.
+ * Offline, with no copy of the page kept, or a kept copy with nothing in it on the phone (kept
+ * from before its songs were replaced), an album or a list that is downloaded (an album with
+ * anything of it downloaded, a list downloaded whole) is shown as the downloads have it,
+ * rather than as a page that can't be had or played. `songs` are the kept page's.
  */
 @Composable
-private fun fromDownloads(key: String, feed: org.medianexus.music.ui.shell.PageFeed<*>): Boolean {
-    if (feed.value != null || feed.page.error == null) return false
+private fun fromDownloads(key: String, feed: org.medianexus.music.ui.shell.PageFeed<*>, songs: List<org.medianexus.music.net.Song>?): Boolean {
+    val phone = org.medianexus.music.ui.downloads.playableOffline()
+    val stale = remember(songs, phone) { org.medianexus.music.library.OnThePhone.keptIsStale(songs, phone) }
+    if (!stale && (feed.value != null || feed.page.error == null)) return false
     val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
     val has by remember(marks, key) {
         androidx.compose.runtime.derivedStateOf {

@@ -37,6 +37,29 @@ object OnThePhone {
 
     /** One album as far as the phone has it: its songs among these, in disc and track
      *  order. Null if none of them is on it. */
+    /**
+     * Offline (`phone` the songs that play, null online), whether a kept page's songs are
+     * none of them on the phone to play: a page kept from before its songs were replaced
+     * (scanned again with other ids, or a playlist edited since), say. Then what the phone
+     * has of the album or list is shown rather than it (see [albumShown]).
+     */
+    fun keptIsStale(kept: List<Song>?, phone: List<Song>?): Boolean {
+        if (kept == null || phone == null) return false
+        val here = phone.mapTo(HashSet()) { it.id }
+        return kept.none { it.id in here }
+    }
+
+    /**
+     * The album a page shows: the kept page, unless offline it has nothing on the phone in it
+     * while the phone has songs of the album (then those, as the phone has them); with no
+     * kept page, what the phone has of it, if anything.
+     */
+    fun albumShown(kept: Album?, phone: List<Song>?, id: String): Album? {
+        if (phone == null) return kept
+        if (kept != null && !keptIsStale(kept.songs, phone)) return kept
+        return album(phone, id) ?: kept
+    }
+
     fun album(songs: List<Song>, id: String): Album? {
         val of = songs.filter { it.albumId == id }.sortedWith(compareBy({ it.discNumber }, { it.track }, { it.title.lowercase() }))
         val first = of.firstOrNull() ?: return null
