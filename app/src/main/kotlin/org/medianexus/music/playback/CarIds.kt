@@ -43,6 +43,10 @@ sealed interface CarNode {
     data object DownloadedSongs : CarNode
     data class DownloadedAlbum(val id: String) : CarNode
     data class DownloadedList(val key: String) : CarNode
+
+    /** One of the "Made for you" mixes (Home), by its id ("on-repeat", "genre:Rock",
+     *  "rule:<id>"): a list of songs like any other. */
+    data class Mix(val id: String) : CarNode
 }
 
 /** What a "Tap to try again" entry loads again: a folder, by its id, or a search. */
@@ -62,6 +66,8 @@ sealed interface ListRef {
     data object DownloadedSongs : ListRef
     data class DownloadedAlbum(val id: String) : ListRef
     data class DownloadedList(val key: String) : ListRef
+    /** A "Made for you" mix. */
+    data class Mix(val id: String) : ListRef
 }
 
 object CarIds {
@@ -95,6 +101,7 @@ object CarIds {
         CarNode.DownloadedSongs -> "downloads-songs"
         is CarNode.DownloadedAlbum -> "downloads-album/${escape(node.id)}"
         is CarNode.DownloadedList -> "downloads-list/${escape(node.key)}"
+        is CarNode.Mix -> "mix/${escape(node.id)}"
     }
 
     private fun list(list: ListRef): String = when (list) {
@@ -105,6 +112,7 @@ object CarIds {
         ListRef.DownloadedSongs -> "downloads-songs"
         is ListRef.DownloadedAlbum -> "downloads-album/${escape(list.id)}"
         is ListRef.DownloadedList -> "downloads-list/${escape(list.key)}"
+        is ListRef.Mix -> "mix/${escape(list.id)}"
     }
 
     private fun listOf(parts: List<String>): ListRef? = when {
@@ -115,6 +123,7 @@ object CarIds {
         parts.size == 2 && parts[0] == "downloads-list" -> ListRef.DownloadedList(parts[1])
         parts.size == 2 && parts[0] == "album" -> ListRef.Album(parts[1])
         parts.size == 2 && parts[0] == "playlist" -> ListRef.Playlist(parts[1])
+        parts.size == 2 && parts[0] == "mix" -> ListRef.Mix(parts[1])
         else -> null
     }
 
@@ -162,6 +171,7 @@ object CarIds {
                 "albums-by" -> CarNode.AlbumsBy(parts[1]).takeIf { parts[1] in ALBUM_ORDERS }
                 "downloads-album" -> CarNode.DownloadedAlbum(parts[1])
                 "downloads-list" -> CarNode.DownloadedList(parts[1])
+                "mix" -> CarNode.Mix(parts[1])
                 else -> null
             }
             parts[0] == "track" && parts.size >= 4 -> {

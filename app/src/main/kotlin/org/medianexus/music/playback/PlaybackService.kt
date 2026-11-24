@@ -117,6 +117,7 @@ class PlaybackService : MediaLibraryService() {
                 settle = { graph.watch.state.first { it.sure } },
                 liked = { account.likes.isLiked(it) },
             ),
+            mixes = { account.mixes.state.value },
         )
         val kept = KeptSongs(
             account.keptSongsDir, graph.database,
@@ -228,6 +229,9 @@ class PlaybackService : MediaLibraryService() {
             downloads = getString(R.string.downloads),
             songCount = { resources.getQuantityString(R.plurals.song_count, it, it) },
             albumCount = { resources.getQuantityString(R.plurals.album_count, it, it) },
+            madeForYou = getString(R.string.made_for_you),
+            mixTitle = { org.medianexus.music.ui.mixes.MixText.title(resources, it) },
+            mixAbout = { org.medianexus.music.ui.mixes.MixText.about(resources, it) },
         )
 
         // One HTTP client for everything, so audio shares the warm connections; for audio,
@@ -849,6 +853,25 @@ class PlaybackService : MediaLibraryService() {
         // The library copy arriving or changing: songs held that came without levelling
         // values may find them there.
         next.scope.launch { now.copy.state.collect { copy -> if (era === next) sound.songsHeld(songsHeld(), copy) } }
+        // The "Made for you" mixes were worked out again (a play, a like, a newer copy of the
+        // library, the day): Home, and any mix the car has open, are told to look again.
+        // Only what changed: they are worked out again at every song that starts.
+        next.scope.launch {
+            var shown: List<Pair<String, String>>? = null
+            var songs: Map<String, Int> = emptyMap()
+            now.mixes.state.collect { set ->
+                val mixes = set?.mixes.orEmpty()
+                val home = mixes.map { it.id to it.cardCover }
+                val inside = mixes.associate { it.id to it.places.contentHashCode() }
+                val ids = buildList {
+                    if (shown != null && home != shown) add(CarIds.format(CarNode.Home))
+                    for (id in asked) (CarIds.parse(id) as? CarNode.Mix)?.let { if (inside[it.id] != songs[it.id]) add(id) }
+                }
+                shown = home
+                songs = inside
+                for (id in ids.distinct()) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
+            }
+        }
         // What is downloaded changed: the car's Downloads tab, and anything of it open, is
         // told to look again.
         now.downloads?.let { downloads ->

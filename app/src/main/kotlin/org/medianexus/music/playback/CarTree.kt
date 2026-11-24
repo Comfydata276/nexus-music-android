@@ -64,6 +64,10 @@ data class CarWords(
     val downloads: String = "Downloads",
     val songCount: (Int) -> String = { if (it == 1) "1 song" else "$it songs" },
     val albumCount: (Int) -> String = { if (it == 1) "1 album" else "$it albums" },
+    val madeForYou: String = "Made for you",
+    /** A mix's name, and the line under it (Windows' words: `MixText`). */
+    val mixTitle: (org.medianexus.music.library.Mix) -> String = { it.name.ifEmpty { it.id } },
+    val mixAbout: (org.medianexus.music.library.Mix) -> String = { "" },
 )
 
 /** A list to play, from one of its songs, and where it came from. `shuffle` null plays it
@@ -118,7 +122,13 @@ class CarOffline(
 /** What a queue of radio stations says it came from, on the phone and in the car. */
 const val RADIO_STATIONS = "radio-stations"
 
-class CarTree(private val library: Library, private val words: CarWords = CarWords(), private val offline: CarOffline? = null) {
+class CarTree(
+    private val library: Library,
+    private val words: CarWords = CarWords(),
+    private val offline: CarOffline? = null,
+    /** The "Made for you" mixes as they stand (see `MixBook`): under Home, as lists of songs. */
+    private val mixes: () -> org.medianexus.music.library.MixSet? = { null },
+) {
     /** The tabs. */
     fun tabs(): List<CarEntry> = listOf(
         CarEntry(CarIds.format(CarNode.Home), words.home, icon = R.drawable.ic_house, browsable = true, inside = CarStyle.GRID),
@@ -504,6 +514,8 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             CarNode.DownloadedSongs -> songs(DownloadedViews.songs(downloadsNow()), ListRef.DownloadedSongs, offlineOnly = false)
             is CarNode.DownloadedAlbum -> songs(DownloadedViews.album(downloadsNow(), node.id)?.songs.orEmpty(), ListRef.DownloadedAlbum(node.id), offlineOnly = false)
             is CarNode.DownloadedList -> songs(DownloadedViews.playlist(downloadsNow(), node.key)?.songs.orEmpty(), ListRef.DownloadedList(node.key), offlineOnly = false)
+            // (Offline, the songs that play, each named by its place in the whole mix.)
+            is CarNode.Mix -> songs(mixOf(node.id)?.songs.orEmpty(), ListRef.Mix(node.id))
             is CarNode.Track, is CarNode.Shuffle, is CarNode.Part -> null
         }
     }
@@ -608,6 +620,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         )
         is CarNode.Part -> CarEntry(CarIds.format(node), "${node.from + 1}–${node.to}", browsable = true)
         is CarNode.Shuffle -> shuffled(node.list)?.let { shuffleEntry(node.list, it.songs.size) }
+        is CarNode.Mix -> mixOf(node.id)?.let { mix -> CarEntry(CarIds.format(node), words.mixTitle(mix), subtitle = words.mixAbout(mix), cover = mix.cardCover, icon = R.drawable.ic_list_music, browsable = true, inside = CarStyle.LIST) }
         // Offline, each from what is on the phone (and null if it isn't): never the server.
         // Not yet known whether the server is there: from the phone if the phone has it.
         is CarNode.Album -> if (isOffline) (kept(library.album(node.id)) ?: playableAlbums(playable()).firstOrNull { it.id == node.id })?.let { albumEntry(it) }
@@ -648,6 +661,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         return buildList {
             if (likedPlays > 0) add(CarEntry(CarIds.format(CarNode.Liked), words.likedSongs, subtitle = words.songCount(likedPlays),
                 cover = songs.firstOrNull { it.coverArt.isNotEmpty() && plays(it) }?.coverArt.orEmpty(), icon = R.drawable.ic_heart, browsable = true, inside = CarStyle.LIST))
+            addAll(madeForYou())
             r.orEmpty().filter { it.id in have.albums }.forEach { add(albumEntry(it, group = words.recentlyPlayed, tag = "recent")) }
             n.orEmpty().filter { it.id in have.albums }.forEach { add(albumEntry(it, group = words.recentlyAdded, tag = "new")) }
             if (r == null && n == null) playableAlbums(have).take(2 * HOME_ROW).forEach { add(albumEntry(it, group = words.albums)) }
@@ -658,6 +672,7 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         val cover = l?.songs?.firstOrNull { it.coverArt.isNotEmpty() }?.coverArt.orEmpty()
         add(CarEntry(CarIds.format(CarNode.Liked), words.likedSongs, subtitle = l?.let { words.songCount(it.songs.size) }.orEmpty(),
             cover = cover, icon = R.drawable.ic_heart, browsable = true, inside = CarStyle.LIST))
+        addAll(madeForYou())
         r.orEmpty().forEach { add(albumEntry(it, group = words.recentlyPlayed, tag = "recent")) }
         n.orEmpty().forEach { add(albumEntry(it, group = words.recentlyAdded, tag = "new")) }
     }
@@ -693,6 +708,26 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
             library.quick(library.albums(AlbumList.Recent, 0, HOME_ROW))
         }
         homeOf(l, r, n)
+    }
+
+    /**
+     * Home's "Made for you" (as the phone's Home row): each mix a folder of its songs, from
+     * the mixes as they stand, worked out on the phone (no server, no waiting). Offline, a mix
+     * with nothing that plays isn't shown; one that has something lists what plays.
+     */
+    private fun madeForYou(): List<CarEntry> = mixes()?.mixes.orEmpty().mapNotNull { mix ->
+        val playing = if (isOffline) mix.songs.filter(::plays) else null
+        if (playing != null && playing.isEmpty()) return@mapNotNull null
+        val cover = playing?.firstOrNull { it.coverArt.isNotEmpty() }?.coverArt ?: mix.cardCover
+        CarEntry(CarIds.format(CarNode.Mix(mix.id)), words.mixTitle(mix), subtitle = words.mixAbout(mix), cover = cover,
+            icon = R.drawable.ic_list_music, browsable = true, group = words.madeForYou, inside = CarStyle.LIST)
+    }
+
+    /** A mix by its id: among those on Home, or worked out by itself (one no longer among
+     *  them: a car that kept its folder). Null with no copy of the library yet. */
+    private fun mixOf(id: String): org.medianexus.music.library.Mix? {
+        val set = mixes() ?: return null
+        return set.find(id) ?: org.medianexus.music.library.Mixes.one(set.from, id)
     }
 
     /** Folders for each letter that names start with, in order, "#" last. */
@@ -799,6 +834,8 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         ListRef.DownloadedSongs -> Triple(DownloadedViews.songs(downloadsNow()), words.downloads, "downloads")
         is ListRef.DownloadedAlbum -> DownloadedViews.album(downloadsNow(), list.id)?.let { Triple(it.songs, it.name, "downloads:album:${list.id}") }
         is ListRef.DownloadedList -> DownloadedViews.playlist(downloadsNow(), list.key)?.let { Triple(it.songs, if (list.key == "liked") words.likedSongs else it.list.name, "downloads:${list.key}") }
+        // A mix, as it stands, under Windows' name for where it was played from.
+        is ListRef.Mix -> mixOf(list.id)?.let { Triple(it.songs, words.mixTitle(it), "mix:${list.id}") }
     }
 
     /** What "Shuffle" at the top of a list plays: the whole list, shuffled, starting anywhere.
