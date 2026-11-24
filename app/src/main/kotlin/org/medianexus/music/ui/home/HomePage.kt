@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -87,6 +88,11 @@ fun HomePage() {
     // is: the title bar's pill says so once.
     val error = recent.page.error?.takeIf { phone == null }
     val refresh = { feeds.forEach { it.refresh() } }
+    val list = androidx.compose.foundation.lazy.rememberLazyListState()
+    // The downloads' shelf arrives above what is shown (going offline): a list keeps its
+    // first item in place, which would leave the new shelf out of sight above it. Near the
+    // top, the page goes to the top to show it.
+    LaunchedEffect(downloaded.isNotEmpty()) { if (downloaded.isNotEmpty() && list.firstVisibleItemIndex <= 1) list.scrollToItem(0) }
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(HomeModel.greeting(LocalTime.now().hour))) {
             IconButton(R.drawable.ic_settings, stringResource(R.string.settings), { ui.open(Route.Settings) }, tint = Theme.colors.text)
@@ -99,7 +105,7 @@ fun HomePage() {
                 nothingYet -> SkeletonRows()
                 shelves.isEmpty() && tiles.isEmpty() && downloaded.isEmpty() && feeds.none { it.page.checking } ->
                     PageStatus(PageState.Empty(stringResource(R.string.home_empty), icon = R.drawable.ic_house))
-                else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                else -> LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
                     if (error != null) item(key = "failed", contentType = "failed") { FailedStrip(error.message.orEmpty(), refresh) }
                     if (downloaded.isNotEmpty()) item(key = "downloaded", contentType = "shelf") {
                         Shelf(

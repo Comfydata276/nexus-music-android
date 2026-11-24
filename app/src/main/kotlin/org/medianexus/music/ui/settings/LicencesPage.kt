@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -53,9 +54,28 @@ fun LicencesPage(onBack: () -> Unit) {
             items(licences, key = { it.file }) { licence ->
                 Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     BasicText(licence.name, Modifier.semantics { heading() }, style = Theme.type.heading.copy(color = Theme.colors.text))
-                    BasicText(texts[licence.file].orEmpty().trim(), style = Theme.type.caption.copy(color = Theme.colors.muted))
+                    BasicText(remember(texts, licence.file) { reflowed(texts[licence.file].orEmpty()) }, style = Theme.type.caption.copy(color = Theme.colors.muted))
                 }
             }
         }
     }
+}
+
+/**
+ * A licence's text as its file has it, with the lines of each paragraph joined: the files
+ * are wrapped at about seventy letters, which on a phone's width breaks every line twice.
+ * Blank lines, rules and lines in capitals (headings) keep their breaks.
+ */
+internal fun reflowed(text: String): String = text.trim().split(Regex("\\n\\s*\\n")).joinToString("\n\n") { paragraph ->
+    val lines = paragraph.lines().map { it.trim() }
+    val out = StringBuilder()
+    for ((at, line) in lines.withIndex()) {
+        if (at > 0) {
+            val before = lines[at - 1]
+            val keep = line.startsWith("-") || before.startsWith("-") || line == line.uppercase() || before == before.uppercase() || line.matches(Regex("^(\\d+[.)]|[a-z]\\)|\\(\\w\\)).*"))
+            out.append(if (keep) '\n' else ' ')
+        }
+        out.append(line)
+    }
+    out.toString()
 }

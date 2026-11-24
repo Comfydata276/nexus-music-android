@@ -58,7 +58,7 @@ sealed interface Sheet {
 }
 
 /** The sheet [Ui.sheet] names, over everything, in the colours of the song's menu. */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
     val ui = LocalUi.current
@@ -102,7 +102,9 @@ fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
                         stringResource(if (manual) R.string.offline_on_title else R.string.unreachable_title),
                         stringResource(if (manual) R.string.offline_mode_detail else R.string.unreachable_detail),
                     )
-                    Row(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                    // (A button too wide to sit beside the other, with large type on a narrow
+                    // phone, goes under it rather than being cut short.)
+                    androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(stringResource(R.string.downloads), onClick = { choose { ui.open(Route.Downloads) } })
                         if (manual) {
                             TextButton(stringResource(R.string.turn_off_offline), primary = true, onClick = { choose { ui.graph.settings.update { it.copy(offline = false) } } })
@@ -113,7 +115,9 @@ fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
                 }
                 is Sheet.Confirm -> {
                     Words(sheet.title, sheet.detail)
-                    Row(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                    // (A button too wide to sit beside the other, with large type on a narrow
+                    // phone, goes under it rather than being cut short.)
+                    androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(stringResource(R.string.cancel), onClick = { choose {} })
                         TextButton(sheet.confirm, danger = true, onClick = { choose(sheet.onConfirm) })
                     }

@@ -167,7 +167,7 @@ private fun Storage(graph: Graph) {
     }
     val downloads = org.medianexus.music.ui.downloads.downloadsNow()
     val summary = org.medianexus.music.ui.downloads.summary(res, downloads)
-    SettingRow(stringResource(R.string.downloaded_songs), stringResource(R.string.downloaded_songs_detail, summary)) {
+    SettingRow(stringResource(R.string.downloaded_songs), stringResource(R.string.downloaded_songs_detail, summary), stacked = true) {
         TextButton(stringResource(R.string.remove_all), danger = true, enabled = downloads.downloaded.isNotEmpty() || downloads.busy, onClick = {
             // Windows removes at once. Everything downloaded is a lot to lose to a thumb that
             // brushed the button, and fetching it back may need Wi-Fi the phone hasn't got: said

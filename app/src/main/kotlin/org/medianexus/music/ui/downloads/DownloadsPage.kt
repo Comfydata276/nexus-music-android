@@ -112,19 +112,12 @@ fun DownloadsContent(titled: Boolean) {
     val key = DownloadedViews.SOURCE
     val title = stringResource(R.string.downloads)
     val colors = Theme.colors
+    val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item(key = "head", contentType = "head") {
-            Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).padding(top = if (titled) 8.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                BasicText(stringResource(R.string.on_this_phone), style = Theme.type.label.copy(color = colors.text))
-                if (titled) {
-                    BasicText(title, Modifier.semantics { heading() }, style = Theme.type.title.copy(color = colors.text, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp))
-                }
-                BasicText(summary(res, state), style = Theme.type.body.copy(color = colors.muted))
-            }
-        }
-        item(key = "actions", contentType = "actions") {
-            val busy = state.busy
+        // On its side a phone has the height for a line or two: the play button goes beside
+        // the words, as an album's page puts it.
+        val actions = @Composable { inline: Boolean ->
             ActionBar(
                 title = title,
                 canPlay = view.songs.isNotEmpty(),
@@ -134,14 +127,28 @@ fun DownloadsContent(titled: Boolean) {
                 },
                 shuffle = if (key == from.source) queueShuffle else settings.lists[key]?.shuffle ?: false,
                 onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
+                inline = inline,
                 // While anything is on its way, the batch, and the button cancels it all (as
                 // Windows' button does on its Downloads page).
-                download = if (!busy) null else DownloadButton(1, state.batchDone + state.batchFailed, state.batchTotal, state.progress) {
+                download = if (!state.busy) null else DownloadButton(1, state.batchDone + state.batchFailed, state.batchTotal, state.progress) {
                     account?.downloads?.cancelAll()
                     ui.toast(res.getString(R.string.downloads_cancelled))
                 },
             )
         }
+        item(key = "head", contentType = "head") {
+            Row(Modifier.fillMaxWidth().padding(start = Theme.dimens.pagePad, end = if (sideways) Theme.dimens.pagePad else 0.dp).padding(top = if (titled) 8.dp else 0.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    BasicText(stringResource(R.string.on_this_phone), style = Theme.type.label.copy(color = colors.text))
+                    if (titled) {
+                        BasicText(title, Modifier.semantics { heading() }, style = Theme.type.title.copy(color = colors.text, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp))
+                    }
+                    BasicText(summary(res, state), style = Theme.type.body.copy(color = colors.muted))
+                }
+                if (sideways) actions(true)
+            }
+        }
+        if (!sideways) item(key = "actions", contentType = "actions") { actions(false) }
         // Why what is waiting isn't moving, or how far the batch has got.
         val held = when (state.held) {
             Held.WIFI -> res.getString(R.string.waiting_for_wifi)
