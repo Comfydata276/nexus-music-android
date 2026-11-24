@@ -74,6 +74,17 @@ class DownloadsTest {
     /** The songs the server has, by id; `slow`: sent a little at a time. */
     private val files = HashMap<String, ByteArray>()
     @Volatile private var slow = false
+
+    /** A song whose transfer is held twice on its way: after `first` bytes, and again after
+     *  `second`, each until the test lets it through. */
+    private class TwoGates(val id: String, val first: Int, val second: Int) {
+        val reachedFirst = java.util.concurrent.CountDownLatch(1)
+        val openFirst = java.util.concurrent.CountDownLatch(1)
+        val reachedSecond = java.util.concurrent.CountDownLatch(1)
+        val openSecond = java.util.concurrent.CountDownLatch(1)
+    }
+
+    @Volatile private var twoGates: TwoGates? = null
     @Volatile private var missing = setOf<String>()
 
     private val made = mutableListOf<Downloads>()
@@ -105,6 +116,22 @@ class DownloadsTest {
                 val from = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toIntOrNull() ?: 0
                 val builder = MockResponse.Builder().setHeader("Content-Type", "audio/flac").setHeader("Accept-Ranges", "bytes").setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT").setHeader("Date", GatedServer.now())
                 if (slow) builder.throttleBody(16 * 1024, 40, TimeUnit.MILLISECONDS)
+                val hold = twoGates
+                if (hold != null && hold.id == id && from == 0) {
+                    return builder.code(200).body(object : mockwebserver3.MockResponseBody {
+                        override val contentLength: Long = bytes.size.toLong()
+
+                        override fun writeTo(sink: okio.BufferedSink) {
+                            sink.write(bytes, 0, hold.first).flush()
+                            hold.reachedFirst.countDown()
+                            hold.openFirst.await(30, TimeUnit.SECONDS)
+                            sink.write(bytes, hold.first, hold.second - hold.first).flush()
+                            hold.reachedSecond.countDown()
+                            hold.openSecond.await(30, TimeUnit.SECONDS)
+                            sink.write(bytes, hold.second, bytes.size - hold.second).flush()
+                        }
+                    }).build()
+                }
                 return if (from > 0) {
                     builder.code(206).setHeader("Content-Range", "bytes $from-${bytes.size - 1}/${bytes.size}").body(Buffer().write(bytes, from, bytes.size - from)).build()
                 } else {
@@ -1260,14 +1287,19 @@ class DownloadsTest {
 
     @Test
     fun aProgressTickHandsOnTheVeryListsOfWhatIsDownloaded() {
-        slow = true
+        // The second song's transfer is held at two gates, so that it is arriving, and then
+        // further on, and not yet whole, whatever the machine's speed: a tick lands between.
+        val hold = TwoGates("s2", first = 64 * 1024, second = 1_200_000).also { twoGates = it }
         val engine = downloads()
         until("ready") { engine.state.value.settled }
         val songs = listOf(song("s1"), song("s2", size = 2_400_000))
         run { engine.toggle(list("playlist:p1", songs), songs) }
+        check(hold.reachedFirst.await(30, TimeUnit.SECONDS)) { "the second song's transfer never began" }
         until("one downloaded, one arriving") { engine.state.value.downloaded.size == 1 && engine.state.value.active.any { it.state is SongState.Fetching } }
         val first = engine.state.value
         // As the song arrives the state is published again and again with how far it has got.
+        hold.openFirst.countDown()
+        check(hold.reachedSecond.await(30, TimeUnit.SECONDS)) { "the second song's transfer stopped short" }
         engine.refresh()
         idle()
         until("further on") { engine.state.value !== first && engine.state.value.active != first.active }
@@ -1276,6 +1308,7 @@ class DownloadsTest {
         // grouping from them has nothing to make again.
         org.junit.Assert.assertSame(first.downloaded, later.downloaded)
         org.junit.Assert.assertSame(first.collections, later.collections)
+        hold.openSecond.countDown()
         engine.cancelAll()
     }
 }

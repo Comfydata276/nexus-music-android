@@ -52,10 +52,17 @@ class StandInServer {
 
     /**
      * Signs the app in to this server, and returns once the account's objects are there.
-     * (Waited for here, before a test begins: it is other threads' work.)
+     * (Waited for here, before a test begins: it is other threads' work.) The objects of
+     * this sign-in, not the last one's: signed out and in again as the same person, the
+     * accounts may not yet have let the old ones go, and are briefly with nobody after.
      */
     fun signIn(app: Application, username: String = "tester") {
         app.graph.session.signIn(address, username, "a password")
-        runBlocking { withTimeout(30_000) { app.graph.accounts.state.first { it?.account?.username == username } } }
+        runBlocking {
+            withTimeout(30_000) {
+                val signedIn = app.graph.session.state.first { it is org.medianexus.music.SessionState.SignedIn && it.account.username == username } as org.medianexus.music.SessionState.SignedIn
+                app.graph.accounts.state.first { it?.api === signedIn.api }
+            }
+        }
     }
 }
