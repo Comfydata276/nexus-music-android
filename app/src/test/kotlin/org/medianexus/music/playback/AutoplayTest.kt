@@ -208,6 +208,32 @@ class AutoplayTest {
     }
 
     @Test
+    fun aStopBeatsAStartBeingPrepared() {
+        // (M3b fixes 2, B1.) A start being made ready in the service (a page named by a screen,
+        // a car's choice, still looking things up) and then Stop: the start doesn't go ahead.
+        val (exo, player) = realPlayer().let { it.exo to it.player }
+        try {
+            player.play(songs("q", 2), 0, "Slow Rivers")
+            idle()
+            val start = player.beginStart()
+            assertTrue(player.stands(start))
+            player.stop()
+            idle()
+            assertFalse("a stop beats it", player.stands(start))
+            // And a pause does too.
+            val again = player.beginStart()
+            player.play()
+            idle()
+            player.pause()
+            idle()
+            assertFalse("a pause beats it", player.stands(again))
+        } finally {
+            player.release()
+            exo.release()
+        }
+    }
+
+    @Test
     fun aStationWhoseLoadFailsAfterThePauseIsNotJoinedAgain() {
         val (exo, player) = realPlayer().let { it.exo to it.player }
         try {

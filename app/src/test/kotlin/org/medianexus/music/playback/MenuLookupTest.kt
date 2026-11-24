@@ -103,4 +103,21 @@ class MenuLookupTest {
         settle()
         assertEquals(false, acted)
     }
+
+    @Test
+    fun ofTwoTapsTheLaterWinsWhicheverLookupFinishesFirst() {
+        // (M3b fixes 2, B1.) Two collections' Play, both needing a lookup, tapped in turn.
+        val acted = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val first = CompletableDeferred<Unit>()
+        val second = CompletableDeferred<Unit>()
+        app.graph.player.afterLookup(scope, { first.await(); listOf(Song(id = "a")) }) { acted += "first" }
+        app.graph.player.afterLookup(scope, { second.await(); listOf(Song(id = "b")) }) { acted += "second" }
+        // The earlier tap's lookup comes back first: it has been overtaken.
+        first.complete(Unit)
+        settle()
+        second.complete(Unit)
+        until("the later lookup came back") { acted.isNotEmpty() || errors.isNotEmpty() }
+        settle()
+        assertEquals(listOf("second"), acted.toList())
+    }
 }

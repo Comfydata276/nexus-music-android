@@ -95,39 +95,34 @@ class QueuePlayer(
     //
     // Something asked to start playing may have to look things up first (the car choosing a
     // song, a spoken request, a long page named by a screen), and by the time it is ready
-    // something else may have been chosen. Each start takes a number as it begins
-    // ([beginStart]); only the newest stands. Whether one still stands is asked twice: when
-    // its queue is handed to the session ([stage]), and again when the session's items reach
-    // this player ([handleSetMediaItems]), because the session delivers them later and a
-    // choice can be made in between. A change of account overtakes every start ([clear]).
+    // something else may have been chosen, or the music stopped. Each start takes its place in
+    // the one order of the person's choices as it begins ([beginStart], [Choices]); it stands
+    // only while nothing has taken a later place (another choice, a pause, a stop). Whether
+    // one still stands is asked twice: when its queue is handed to the session ([stage]), and
+    // again when the session's items reach this player ([handleSetMediaItems]), because the
+    // session delivers them later and a choice can be made in between. A change of account
+    // overtakes every start ([clear]).
 
-    private var starts = 0L
-
-    /** Something has been asked to start playing: its number. Every start before it has
-     *  been overtaken. */
-    fun beginStart(): Long {
-        moved()
-        return ++starts
-    }
+    /** Something has been asked to start playing: its place. Every start before it has been
+     *  overtaken. */
+    fun beginStart(): Long = Choices.take()
 
     // ---- What the person last did -------------------------------------------------------------
     //
-    // Two things act later than they were asked for: a radio station joined again after a
+    // Two more things act later than they were asked for: a radio station joined again after a
     // drop, and autoplay's songs arriving after the queue ended. Each notes [intent] when it is
-    // asked for and acts only if it hasn't moved by the time it would, on this thread.
+    // asked for and acts only if nothing has taken a later place by the time it would.
 
-    /** Moves on with everything that says what was going on is no longer wanted: a pause or a
-     *  stop (the person's, or the player's own at the end of a song for the sleep timer), the
-     *  sound taken away (audio focus), another start. */
-    var intent = 0L
-        private set
+    /** The place of the newest choice: a pause or a stop (the person's, or the player's own
+     *  at the end of a song for the sleep timer), the sound taken away (audio focus), a start. */
+    val intent: Long get() = Choices.latest
 
     private fun moved() {
-        intent++
+        Choices.take()
     }
 
-    /** Whether the start with this number is still the newest. */
-    fun stands(ticket: Long): Boolean = ticket == starts
+    /** Whether the start with this place is still the newest choice. */
+    fun stands(ticket: Long): Boolean = Choices.stands(ticket)
 
     /** A queue handed to the session and not yet come back as media items: the entry numbers
      *  of the items handed over, which start it was for (null: not a start, but the queue as

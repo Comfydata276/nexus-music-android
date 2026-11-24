@@ -330,8 +330,15 @@ class PlaybackService : MediaLibraryService() {
         // Fetching ahead stops the moment offline mode goes on, or the server is gone.
         scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().collect { aheadNow() } }
         scope.launch { graph.settings.state.map { it.cacheAhead to it.cacheLimitMb }.distinctUntilChanged().collect { aheadNow() } }
-        // Offline, or back: the car's tabs show something else now (only what plays).
-        scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().drop(1).collect { if (era != null) reload() } }
+        // Offline, or back: the car's tabs show something else now (only what plays). Offline
+        // mode switched on takes its place in the order of choices: whatever was waiting to
+        // start music (a lookup, a start, a rejoin) is overtaken by it.
+        scope.launch {
+            graph.watch.state.map { it.offline }.distinctUntilChanged().drop(1).collect { offline ->
+                if (offline) Choices.take()
+                if (era != null) reload()
+            }
+        }
         // And when it becomes known whether the server is there, after the moment of not
         // knowing at a cold start: what the car was shown meanwhile came from the phone alone
         // (and without covers that aren't on it), so it is told to look again.

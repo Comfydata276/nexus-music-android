@@ -338,26 +338,23 @@ class PlayerConnection(
 
     /** Sends a PLAY made by [playArgs] or [pageArgs]. */
     fun play(args: Bundle) {
-        chosen++
+        Choices.take()
         send(AppCommands.PLAY, args)
     }
 
-    /** Moves on with every choice of music sent (a list played, songs queued). */
-    @Volatile var chosen = 0L
-        private set
-
     /**
      * Does `act` with what `lookup` finds (a collection's songs, which may take a while), on the
-     * main thread, where the controller must be called: and only if, by then, nothing else has
-     * been chosen and the same account is signed in. A slow lookup can't take over from
-     * something chosen since it was asked for.
+     * main thread, where the controller must be called: and only if, by then, nothing has taken
+     * a later place in the order of choices than this tap (another choice, a pause, a stop: see
+     * [Choices]) and the same account is signed in. Of two taps whose lookups are both out,
+     * the later wins, whichever finishes first.
      */
     fun afterLookup(scope: kotlinx.coroutines.CoroutineScope, lookup: suspend () -> List<Song>?, act: (List<Song>) -> Unit) {
-        val asked = chosen
+        val asked = Choices.take()
         val who = accounts.state.value
         scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
             val songs = lookup() ?: return@launch
-            if (chosen != asked || accounts.state.value !== who) return@launch
+            if (!Choices.stands(asked) || accounts.state.value !== who) return@launch
             act(songs)
         }
     }
@@ -369,7 +366,7 @@ class PlayerConnection(
     fun addToQueue(songs: List<Song>) = enqueue(songs, playNext = false)
 
     private fun enqueue(songs: List<Song>, playNext: Boolean) {
-        chosen++
+        Choices.take()
         send(AppCommands.ENQUEUE, AppCommands.enqueueArgs(songs, playNext))
     }
 
