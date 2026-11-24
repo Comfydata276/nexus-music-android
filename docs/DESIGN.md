@@ -1745,7 +1745,9 @@ How it is built (M3a, finding music):
   a song came twice, the copy is stamped out of date (count -1) and the next ordinary check
   fetches it. No refusing, no retries, no comparison with the server's count. Nothing is
   fetched while the server scans. A copy Android cleared is written again from memory; a
-  resumed fetch uses only pages kept under its own scan.
+  resumed fetch uses only pages kept under its own scan. Whether there is another page is
+  decided by how many the server returned (kept with each page), not by what is left once a
+  song twice is set aside, so a resumed fetch never ends early.
 - **A tap hands over what was drawn** (changed by the small fixes, item 1): the screen leaves
   the very list its rows were made from and the order it drew them in (the packed table, or
   the page's list, and the rows' places) in a holder in the process (`playback/Drawn`: a few

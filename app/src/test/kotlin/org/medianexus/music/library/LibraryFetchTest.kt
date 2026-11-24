@@ -189,6 +189,28 @@ class LibraryFetchTest {
     }
 
     @Test
+    fun aResumedFetchDoesNotEndAtAPageThatCameFullWithASongTwice() = runBlocking {
+        // The second page, as the server returns it, has one song twice: ten songs, nine
+        // different. It is kept with the one once.
+        val listed = thirty.toMutableList().also { it[13] = it[12] }
+        val server = Server(listed)
+        server.gates[2] = CompletableDeferred()
+        val fetch = scope.async { copy(server).check() }
+        withTimeout(10_000) { server.reached.getOrPut(2) { CompletableDeferred() }.await() }
+        // The app ended there, with two pages kept.
+        fetch.cancelAndJoin()
+        server.gates.clear()
+        server.pagesAsked.clear()
+        val again = copy(server)
+        assertTrue(again.check())
+        // Carried on from the third page: the second, read back, came full from the server.
+        // It used to read as nine of ten, and the fetch ended there, a library of nineteen
+        // songs kept as whole.
+        assertEquals(listOf(2, 3), server.pagesAsked)
+        assertEquals(listed.distinct(), ids(again.ready))
+    }
+
+    @Test
     fun aResumedFetchUsesOnlyPagesOfTheSameScan() = runBlocking {
         val server = Server(thirty)
         server.gates[2] = CompletableDeferred()

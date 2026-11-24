@@ -374,12 +374,15 @@ class LibraryCopy(
         val largest: Int get() = maxOf(artists, albums, songs)
     }
 
-    /** One page of a fetch: what it asked for, and what came. */
-    class Part(val page: Int, val asked: Asked, val found: Found) {
-        /** What the page after it asks for: more of each kind only while each came full. */
+    /** One page of a fetch: what it asked for, what came, and how many of each kind the server
+     *  returned (`returned`, before anything was set aside: a song twice in one page is kept
+     *  once, and a page read back from the phone holds no more than that). */
+    class Part(val page: Int, val asked: Asked, val found: Found, val returned: Asked = Asked(found.artists.size, found.albums.size, found.songs.size)) {
+        /** What the page after it asks for: more of each kind only while each came full, as
+         *  the server returned it. */
         fun next(size: Int) = counted().next(size)
 
-        fun counted() = Counted(asked, found.artists.size, found.albums.size, found.songs.size)
+        fun counted() = Counted(asked, returned.artists, returned.albums, returned.songs)
 
         /** A page as far as the next one needs it: how many of each kind it asked for and got. */
         class Counted(val asked: Asked, val artists: Int, val albums: Int, val songs: Int) {
@@ -435,7 +438,8 @@ internal object CopyFile {
     private const val MAGIC = 0x4E584C43 // "NXLC"
     private const val VERSION = 1
     private const val COPY = 1
-    private const val PAGE = 2
+    // (2 was a page without the server's counts: read as nothing, and fetched again.)
+    private const val PAGE = 4
     private const val BEGAN = 3
 
     fun write(file: File, copy: LibrarySnapshot) = writeChecked(file, COPY) { out ->
@@ -457,6 +461,10 @@ internal object CopyFile {
         out.count(part.asked.artists)
         out.count(part.asked.albums)
         out.count(part.asked.songs)
+        // How many the server returned, whatever is set aside below: whether there is more.
+        out.count(part.returned.artists)
+        out.count(part.returned.albums)
+        out.count(part.returned.songs)
         val songs = SongTable.Builder().apply { part.found.songs.forEach { add(it) } }.build()
         songs.write(out)
         writeAlbums(out, part.found.albums)
@@ -468,11 +476,12 @@ internal object CopyFile {
         val stamp = readStamp(input)
         val page = input.int()
         val asked = LibraryCopy.Asked(SongTable.count(input), SongTable.count(input), SongTable.count(input))
+        val returned = LibraryCopy.Asked(SongTable.count(input), SongTable.count(input), SongTable.count(input))
         val table = SongTable.read(input)
         val songs = List(table.size) { table.song(it) }
         // In the order written: albums, then artists.
         val albums = readAlbums(input)
-        stamp to LibraryCopy.Part(page, asked, Found(artists = readArtists(input), albums = albums, songs = songs))
+        stamp to LibraryCopy.Part(page, asked, Found(artists = readArtists(input), albums = albums, songs = songs), returned)
     }
 
     fun writeBegan(file: File, stamp: CopyStamp, pageSize: Int) = writeChecked(file, BEGAN) { out ->
