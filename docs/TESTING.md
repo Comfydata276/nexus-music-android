@@ -131,6 +131,21 @@ own, and waits for the server to read them; `manyalbums --remove` deletes the fo
 scans again. For checking paging: a grid of sixty at a time, the genre page loading them
 all, coming back deep into Albums after Android has stopped the app.
 
+**A large library.** `scripts/server biglibrary` adds 50,000 distinct made-up songs
+(`biglibrary 20000` for another number) in a folder of the library of their own, `Big
+Library`: about 700 artists, six albums each, twelve songs an album, titles from word lists,
+the same every time, a few artists with accented names. Each song is its own file, but a tiny
+one (`tools/library/biglibrary.py`): an ID3 tag and three MPEG frames, the first a Xing
+header giving a frame and byte count, from which the server reads a length of its own for
+each (two to seven minutes; TagLib believes a Xing header only with both counts). About 600
+bytes a song, 215 MB on disk for 50,000 (a filesystem block each); made in a second or two,
+read by the server in about 100 seconds. They don't play (three frames of silence); they are
+for listing, searching and sorting. `biglibrary --remove` deletes the folder, has the server
+forget the files it then lists as missing (Navidrome keeps them, with their albums and genre
+counts, until an administrator removes them: "Browse by genre" would otherwise still list
+twelve genres of thousands of songs), and scans again. Without that step, a removal once left
+the server holding 780 MB and 50,000 missing songs.
+
 One thing learned making it, in case a real library shows the same: Navidrome files an
 album's songs as two albums when only some of them carry a release date, and it reads an
 M4A's single date as a release date too. The generator writes a release date to every
@@ -985,6 +1000,74 @@ APK 6,112,634 bytes (before: 6,062,082); cold start 511 ms median, 506 to 541 (5
 566); idle 87.4 MB (83.1); playing 96.8 MB, 96.4 in the background (93.2, 92.8); the
 100-song playlist 8.99% slow frames (10.07%). One run each: about 4 MB more memory, which is
 within what two runs of one build have differed by here, and not shown to be the hardening's.
+
+## The library on the phone, search and the Songs page (M3a)
+
+Debug builds answer to `DebugControl --es library say|memory|search|forget` (see
+`DebugLibrary`): how the copy stands (songs, whole or arriving, room on the phone, whether
+search is the phone's); what one copy costs in the heap (a second copy read from the same
+file, the heap measured after collecting before and after, then its index and its
+newest-first order); how fast it is searched, a keystroke at a time (`--es queries
+"a|b"`, or the rig's own words), five times each; and the copy taken off the phone for
+timing a first fetch. `--es killat library-page-<n>` ends the app (SIGKILL) just after page n
+of a fetch is kept. Debug builds log, tag `NexusSearch`, how soon after a keystroke its
+results were drawn (never the words); Diagnostics says how long each fetch took
+(`library copy: … in N s`).
+
+To time anything about search or a page in a build that isn't debuggable (the debug build
+with `isDebuggable = false` for the measurement only), note that `BuildConfig.DEBUG` is then
+false too and the `NexusSearch` line is not written; the measurement below forced it on in a
+build made for the purpose, never committed.
+
+**Measured with 50,100 songs** (`biglibrary`, then taken away), November 2026:
+
+| What | How | Number |
+|---|---|---|
+| First fetch, the whole copy | Diagnostics, from a phone with none | 12.9 s on Android 17 (release), 21.8 s on 16 (debug), 5.9 s on 9 (release); 101 pages of 500 |
+| Carrying on after being killed | `killat library-page-30`, then opened | the 31 pages kept were used; the other 70 in 8.7 s (debug, Android 16) |
+| On the phone | `copy.bin` | 9,473 KB |
+| Over the air | the server's answers, compressed | about 38 KB a page of 500 songs: about 4 MB in all |
+| In memory | `library memory`, Android 16 | the copy 12.2 MB, its search index 1.8 MB, the newest-first order 0.2 MB |
+| Reading it at start-up | the same | 30 ms (not debuggable), 99 ms (debug); the index 87 ms, the order 21 ms |
+| The app with it, against the build before | `scripts/measure`, Android 17 release, the same day, the 100-song playlist | Java heap while playing 28 to 29 MB (14.0 before); PSS playing 98.4 and 106.7 MB (92.3); idle 72.9 and 96.6 MB (81.3: idle swings with collection); cold start 611 and 676 ms median (617) |
+| A keystroke's search | `library search`, seven words typed a letter at a time, five times each | median 1.0 to 2.6 ms, slowest 4.0 ms (not debuggable); 4.6 to 9.2 ms, slowest 13.8 ms (debug) |
+| Keystroke to results on the screen | `NexusSearch`, four phrases with slips typed a letter every 0.3 s, and deleted, in the Search tab (100 keystrokes) | median 36 ms, 90% within 64 ms, slowest 301 ms (the first, as the results list is first composed) |
+| Opening the Songs page | `dumpsys gfxinfo` reset, the Songs chip tapped, three times | 4 to 8 frames; the slowest frame 97 ms the first time after start, 32 ms after that |
+| Scrolling the Songs page | `scripts/measure … --tap Library --tap Songs --flings 16`, release, Android 16 | 2.9% slow frames, 95% under 27 ms (the 100-song playlist, same emulator: 8 to 10%) |
+| The APK | `scripts/check --release` | 6,217,014 bytes (6,112,634 before) |
+
+**Checked on the emulators** (pictures under `~/.cache/nexus-music-android/shots/m3a/`:
+`walk/` numbered as the walk went, `default/`, `narrow/` at 360dp and 1.3 font scale, `side/`
+on its side, `android17/`, `android9/`; reports under `reports/m3a/`):
+
+- Android 16, debug: the first copy arriving (search the server's until whole, then the
+  phone's); Library's Songs chip with 50,100 songs, found ("silver harbour": three) and sorted
+  (Title, turned round, remembered through a restart); a song tapped in the found and sorted
+  list played the three shown, from it ("item 2 of 3"), its row marked. The Search tab with
+  slips ("brandstorm" found Zoë Brändström, artist first; "silvr harbor" offline found only
+  the two songs on the phone and said so). Recently played from Home: empty while the only
+  song played was playing (as Windows), then that song; `history.json` and `added.json` in
+  Windows' form. A song's menu, Song details. Killed after page 30 of a first fetch: the 31
+  pages kept were used, the rest fetched in 8.7 s.
+- At 360dp and 1.3 font and on its side: every new screen holds. On its side the Songs page
+  first stacked its count, play button and find box so that no song was in the first view;
+  they now share one line.
+- The car, release build, Android 16 (`reports/m3a/`): the whole check 48 passed, none failed
+  (one warning); with `--query lantren --voice …` 52 and none, the misspelt search answered
+  in 98 ms by the phone's copy and every spoken request played the right thing; with the
+  server cut (`scripts/slowlink cut`, 32 songs downloaded) `--mode offline --query lantren` 25
+  and none (search from the phone in 27 ms), and the whole check 49 and none.
+- Android 17 (release): the first copy in 12.9 s; Songs; "lantrn sesaon" found "Lantern
+  Season" first; no crash. Android 9 (release): the first copy in 5.9 s, Songs, Recently
+  played, search with a slip, a song played from the Songs page; no crash of the app (the one
+  tombstone is the system's `surfaceflinger`, as before).
+
+**Not measured or not checked here**: TalkBack read aloud (the names are in `scripts/emu ui`:
+"Find in this list", "Sort: Title, ascending", each order in the sheet with its way round,
+"Recently played"); a real library's vocabulary (the made-up one has a few hundred distinct
+words, a real one tens of thousands: each typed word is compared with each distinct word, so
+expect a keystroke's search to take several times longer there, still a few milliseconds on
+a phone); a real phone's speed; the first fetch over mobile data (only the rig's local link).
 
 ## What is not covered
 

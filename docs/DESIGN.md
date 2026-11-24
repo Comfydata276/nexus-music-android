@@ -699,8 +699,9 @@ How it is built (M1a):
 - **Answers from the server** are decoded from the stream straight into the models, never
   as a JSON tree first (a 12 MB playlist as a tree cost 80 to 100 MB), keeping what Windows
   makes of an answer: an absent section is empty, one sent as null is malformed.
-- **Library copy**: every artist, album and song, kept compactly for instant search; the
-  search and its ranking are a port of `src/search.rs` so both apps find the same things.
+- **Library copy** (`LibraryCopy`, `SongTable`): every artist, album and song, kept compactly
+  for instant search and the Songs page; the search and its ranking are a port of
+  `src/search.rs` so both apps find the same things. See "The library on the phone" below.
 - **Covers**: one store. Each cover is fetched once at 640 px (Windows' largest) and cut
   down locally, 300 MB at most per account; Now Playing alone asks for a second, 1200 px
   copy, as its cover is nearly the phone's width, and shows the 640 px one until it
@@ -1110,13 +1111,14 @@ How it is built (M1b):
   side what it holds scrolls, its heading in sight, clear of a side navigation bar.
 - **A song's menu** has what works so far: Play next, Add to queue, like, Download (or Cancel
   download, or Remove download, as it stands), Go to album, Go to
-  artist (each credited artist when there are several), and Remove from queue from the
-  queue. Nothing that does nothing yet is shown.
+  artist ("Go to <name>" for each credited artist when there are several, as Windows), Song
+  details, and Remove from queue from the queue. Nothing that does nothing yet is shown.
 - **Home**: the greeting, four quick tiles (two lines of two, as Windows on a narrow window),
   then Recently added, Recently played, Most played, It's been a while and Something
   different, each sideways. "Made for you" and "Artists you might like" come later.
-- **Library**: chips for Playlists, Albums, Artists, Genres and Downloads. Liked songs heads the
-  playlists, then the pinned ones, then the rest by name. Albums have Windows' seven sorts
+- **Library**: chips for Playlists, Albums, Artists, Songs, Genres and Downloads (Windows'
+  sidebar order). Liked songs heads the playlists, then Recently played, then the pinned ones,
+  then the rest by name. Albums have Windows' seven sorts
   as a second row of chips, sixty at a time as the grid scrolls; Home's "Show all" opens them.
   Paging (`AlbumPages`): a page that brings only albums already shown still counts as
   progress, so loading carries on; a page cancelled on its way leaves the pager able to ask
@@ -1132,8 +1134,9 @@ How it is built (M1b):
   first forty releases, newest first as Windows builds it, saying it is getting them and
   how many albums couldn't be fetched, if any. "Popular" and "Fans also like" need the server to ask Last.fm, which
   the test server can't; they come with the rest of browsing (M3).
-- **Search**: results as the words are typed (250 ms after the last key; a newer search
-  always replaces an older one), in Windows' order: the first four songs, then artists,
+- **Search**: results as the words are typed (at once when the phone's copy of the library
+  answers; 250 ms after the last key while the server still does; a newer search always
+  replaces an older one), in Windows' order: the first four songs, then artists,
   albums and playlists, with the artists first when one matches the words better than any
   song does, judged by a port of Windows' scoring (`SearchRank`), and the playlists whose
   name has every typed word as the start of a word; chips narrow to one kind. Results, and
@@ -1242,6 +1245,130 @@ How it is built (M2b):
   with what is kept now, and Fetch ahead); the account and Sign out; the version, Diagnostics
   and Licences (the fonts' OFL, Lucide's ISC and the known media apps' Apache notice, in full).
 
+How it is built (M3a, finding music):
+
+- **The library on the phone** (`LibraryCopy`, a port of Windows' `search::Library` and
+  `load_library`). Every artist, album and song of the account, fetched with `search3` and no
+  words, 500 of each at a time, in the background; checked against the server's scan status
+  when the account is taken on, every five minutes while the app is in use (its screens in
+  front, or something playing), and when the server can be asked again; fetched again when
+  `is_stale` says so (another number of songs at once; another scan with the same number after
+  fifteen minutes; a day old, for the play counts, only on a network that isn't metered).
+  Never while the server is scanning. A newer copy is fetched beside the one in use, which
+  stays until the new one is whole. It belongs to the account (the account's cache folder,
+  `library/`; its work stops with the account).
+  - **Its form, in memory** (`SongTable`): a song is a place in columns. Numbers in arrays of
+    numbers (track, disc, year, length, rates, plays, rating; size and times as longs; the
+    four levelling values as floats), and every piece of text songs share (album, artist,
+    their ids, the cover's id, format, genre, the list of who is credited) kept once and
+    referred to by number. Only the id and the title are a song's own. A `Song` is made when
+    one is wanted: a row as it is drawn, a result, the queue. Times are kept to the
+    millisecond and given back in the standard form, not character for character (a time that
+    can't be read is kept as it was). 50,100 songs come to 12.2 MB of the app's heap, and the
+    search index to 1.8 MB more (TESTING.md, "The library on the phone"). Held as objects,
+    the same songs are well over a hundred megabytes.
+  - **Its form, on the phone**: one file, `copy.bin` (9.5 MB for 50,100 songs), written whole
+    or not at all, with a mark and version at the start and a CRC-32 at the end; read whole
+    (30 ms in a release build), checked once, and taken apart in memory (`Packer`,
+    `Unpacker`), with every count and reference checked as it is read. A file that doesn't
+    pass is as good as not there, and is fetched again.
+  - **Ready while still loading; killed mid-fetch.** Each page is written to a file of its own
+    as it arrives (`fetching/page-NNNNN.bin`), beside a note of the scan status the fetch
+    began with (`began.bin`). The first time, what has arrived is published once a second, so
+    the Songs page fills as it comes. Started again with the server saying the same, the fetch
+    carries on from the first page it hasn't got (the pages it has are shown at once);
+    with anything else it starts from nothing. A page that can't be read is fetched again, with
+    every page after it. Whole, the pages become `copy.bin` and go.
+  - **A server that lists nothing to an empty search** (not Navidrome) leaves a copy with no
+    songs; that is not taken for a library, and search stays the server's.
+- **Search on the phone** (`SearchIndex`, a port of `Index` in src/search.rs with its tests;
+  `PhoneSearch`). Every distinct word once; every distinct name (an album's, an artist's, a
+  title) once, as its words; each typed word compared with each distinct word once per
+  keystroke, then everything rated from those comparisons with Windows' scores (`SearchRank`):
+  forgiving a slip or two, the short-word rule, the name's start counting nearly as much as
+  the whole word, a matching artist first (`artistFirst`, carried in `Found`), liked songs
+  (the account's likes as they stand) 0.25 above others, equal matches in the library's
+  order. The best so many of each kind are kept as they are found, not sorted from all.
+  It answers the Search tab, the car's search and spoken requests (through `Library.search`)
+  once the first copy is whole; until then the server does, as on Windows. Off the main
+  thread; a search more typing has replaced is cancelled and stops part-way. **Offline** the
+  songs that play are searched (`LocalSearch`) with the same index and scores: an index of
+  those songs and their albums and artists, kept while they don't change (known by the songs
+  themselves, every field: another account can use the same ids).
+- **The Songs page** (`SongsContent`; Library's Songs chip, and `Route.Songs`): every song,
+  newest first as Windows' `all_songs` orders them (when added, then album, then track),
+  from the copy: there at once with or without the server. The page holds places, not songs:
+  50,100 rows are an array of numbers, and a row's `Song` is made as the row is shown. The
+  newest-first order is worked out once per copy, off the main thread. A song tapped plays
+  what is shown, in the order shown, from it, by name (`PlayerConnection.playPage`): the
+  service reads every song from the copy itself (`Library.keptSongs("songs")`), so 50,000 songs
+  never cross from the screen. On its side, the count, the play button and the find box share
+  one line, so the first view has songs in it.
+- **Finding and sorting in a list** (`ListView`, `Arrange`: a port of `TrackView`; `FindAndSort`)
+  on a playlist, Liked songs and the Songs page. Windows' find box ("Find in this list") and
+  sort button side by side under the list's play button; the button opens the orders as a
+  sheet ("Sort by": Custom order for a playlist, Default order otherwise, Title, Artist, Album,
+  Duration, Date added), the one in use marked with a tick or the way it runs. Choosing the
+  order in use turns it round; dates start newest first. Each list remembers its order in its
+  `ListPrefs` under its route key ("playlist:<id>", "liked", "songs") with Windows' numbers and
+  the time chosen, so the sync milestone can share them; a playlist or Liked songs nobody has
+  sorted opens newest added first (`list_sort`). What was typed is forgotten when the page goes,
+  as on Windows. A list of up to 600 songs is arranged as it is drawn; a longer one off the
+  main thread, the list as it was meanwhile.
+  - **Playing from a found or sorted list plays what is shown, in the order shown.** The
+    command carries (or names) the list as the phone keeps it and how it is shown
+    (`AppCommands.putView`); the service arranges it the same way (`queueFor`). Each song in the
+    queue keeps its place in the list itself, so the row playing is marked in any order, and
+    when the list changes the queue follows it in the order the list remembers (`orderOf`, as
+    Windows' `order_for`).
+  - **Date added**: a playlist's own notes (`Added`, a port of src/added.rs with its tests and
+    file, `added.json`: every copy of a playlist read is looked at, and a song that turns up
+    later is dated), else the day the song joined the library; Liked songs, when each was
+    liked; the Songs page, the day each joined the library.
+- **Recently played** (`RecentlyPlayed`): the last hundred songs that started playing, newest
+  first, the same song starting again straight after itself not counted twice (Windows'
+  `record_played`; recorded whether or not plays are reported). Kept per account in
+  Windows' `history.json` form; `merge_history` is ported with its test for the sync
+  milestone. Its page lists them, each playing again by itself when tapped, the song playing
+  now left off the top as Windows' panel leaves it. Reached from Home's title bar (Lucide's
+  history icon) and from Library, under Liked songs.
+- **A song's details** (`SongDetails`, from its menu): Windows' lines, in its words (artist or
+  artists, album, track and disc, year, genre, length, format with rate, bit depth and bit
+  rate, size, levelling tags or "none", plays and when last, your rating, added to the
+  library), and where it is on the phone: "Downloaded as" (Windows' line), downloading,
+  waiting, kept from playing it, or not on this phone.
+
+### What the design left open, and what was decided (M3a)
+
+- **The library copy lives in the account's cache folder**, beside the kept pages: it can
+  always be fetched again (about 4 MB over the air for 50,000 songs, compressed), and the
+  system clears caches only when short of room, oldest first.
+- **The daily refresh waits for a network that isn't metered** (Windows refreshes every day
+  on any); a library that changed is fetched on any network.
+- **While the first copy arrives, search asks the server** (it has everything); the Songs page
+  shows what has arrived, with how far it has got. The brief's "search covers what has
+  arrived" is met offline, where what plays is searched whatever the copy's state.
+- **Offline search is the same index and scores over the songs that play**, not the copy's
+  index filtered: it finds a downloaded song the copy doesn't have (removed from the server
+  since), and works before any copy exists.
+- **"The preview of best matches as you type"** is the Search tab itself, which now answers
+  every keystroke at once: a phone has no search box over every page for a preview to drop
+  from. Its "All" view is Windows' order (artists first when one matches best).
+- **The sort control is a button that opens a sheet** of Windows' orders, beside the find box,
+  as Windows' `SortButton` opens its menu; not a row of chips (six orders and a find box
+  don't fit a 360dp line at 1.3 font).
+- **Songs is a chip of Library**, between Artists and Genres as in Windows' sidebar, and a
+  page of its own (`Route.Songs`) for anything that opens it.
+- **Recently played** is reached from Home's title bar and from Library's list under Liked
+  songs (Windows has it as a tab beside the queue).
+- **The Songs page's header** is its count ("50100 songs, newest first", Windows' words and
+  number form) without a cover or a second title: the chip, or the title bar, names it.
+- **A queue started from the Songs page doesn't follow a newer copy of the library**: a
+  refreshed 50,000-song copy would be compared with the queue on the main thread. It plays on
+  as started.
+- **Details**: "On this phone" is the phone's own line (Windows has only "Downloaded as");
+  the play count is the one the song was shown with, not asked of the server again.
+
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed
 on release builds only.
@@ -1264,7 +1391,8 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
 - **M3 The rest of browsing.** Songs page, genres, sort and filter, playlist editing that is
   safe from two devices (port `src/playlists.rs`) with undo, the local search, Recently
   played, ratings, radio stations, song radio, autoplay, recommendations, menus,
-  multi-select.
+  multi-select. M3a (built): the library on the phone, the local search, the Songs page,
+  finding and sorting in a list, Recently played, a song's details, "Go to" each artist.
 - **M4 Sound.** Quality switch, levelling, equaliser, mono, crossfade, sleep timer, lyrics.
 - **M5 In step with your other devices.** Saved queue and "Continue here", the sync
   playlist, "Your stats", "Made for you" and mixes of your own.

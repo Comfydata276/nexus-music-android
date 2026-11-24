@@ -9,7 +9,9 @@ Each song is its own file, but a tiny one: an ID3 tag (title, artist, album, alb
 track, disc, year, genre) and three MPEG audio frames, the first of which is a Xing header
 that says how many frames (and bytes) the song has. Nothing reads further than that to find a song's
 length, so the server lists each with a length of its own (two to seven minutes) while the
-file is about half a kilobyte: 50,000 songs are 30 MB on disk rather than 200 GB. They don't
+file is about 600 bytes: 50,000 songs are about 215 MB on disk (each file takes a block of the
+filesystem's) rather than several hundred gigabytes. Made in a second or two, read by the
+server in under two minutes. They don't
 play (there are three frames of silence); they are there to be listed, searched and sorted.
 
 The names are made up from word lists, the same every time (the order of generation is the
@@ -19,12 +21,14 @@ artists have accented names, so folding is exercised at scale too.
 The files go in their own folder of the library (music/Big Library), so taking them away is
 deleting that folder and scanning again. Nothing else in the library is touched.
 """
+import json
 import os
 import random
 import shutil
 import struct
 import sys
 import time
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(__file__))
 from setup import PASSWORD, USER, Subsonic  # noqa: E402
@@ -176,7 +180,7 @@ def generate(folder, count):
 
 
 def scan(api, until, limit):
-    api.call("startScan", fullScan="false")
+    api.call("startScan", fullScan="true")
     deadline = time.time() + limit
     while True:
         status = api.call("getScanStatus")["scanStatus"]
@@ -185,6 +189,17 @@ def scan(api, until, limit):
         if time.time() > deadline:
             raise SystemExit("the scan did not finish in %d minutes (it had %s songs)" % (limit // 60, status.get("count")))
         time.sleep(3)
+
+
+def forget_missing(base):
+    """Deletes the files Navidrome lists as missing, through its own interface's API."""
+    login = urllib.request.Request(base + "/auth/login", data=json.dumps({"username": USER, "password": PASSWORD}).encode(),
+                                   headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(login, timeout=30) as answer:
+        token = json.load(answer)["token"]
+    gone = urllib.request.Request(base + "/api/missing", method="DELETE", headers={"x-nd-authorization": "Bearer " + token})
+    with urllib.request.urlopen(gone, timeout=300):
+        pass
 
 
 def main():
@@ -197,7 +212,13 @@ def main():
     if what == "remove":
         had = sum(len(files) for _, _, files in os.walk(folder))
         shutil.rmtree(folder, ignore_errors=True)
-        status = scan(api, lambda s: s.get("count", 0) <= before - had or had == 0, 1800)
+        scan(api, lambda s: s.get("count", 0) <= before - had or had == 0, 1800)
+        # Navidrome keeps files that have gone as "missing" (in case they come back), with
+        # their albums, artists and genre counts: "Browse by genre" would still list the big
+        # library's genres with thousands of songs. Removing them is its own Missing files
+        # page's job, as an administrator; a scan after that tidies up the rest.
+        forget_missing(base)
+        status = scan(api, lambda s: True, 600)
         print("removed the big library: the server has %s songs" % status.get("count"))
         return
     count = int(what)
