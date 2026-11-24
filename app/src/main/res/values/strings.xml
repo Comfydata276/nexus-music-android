@@ -19,6 +19,15 @@
     <string name="track_paused">Paused</string>
     <string name="track_unavailable">Unavailable</string>
     <string name="show_all">Show all</string>
+    <string name="show_fewer">Show fewer</string>
+    <plurals name="more_waiting">
+        <item quantity="one">and %1$d more waiting</item>
+        <item quantity="other">and %1$d more waiting</item>
+    </plurals>
+    <plurals name="more_failed">
+        <item quantity="one">and %1$d more that couldn\'t be downloaded</item>
+        <item quantity="other">and %1$d more that couldn\'t be downloaded</item>
+    </plurals>
     <string name="loading">Loading…</string>
     <string name="page_failed">Couldn\'t load this page</string>
     <string name="try_again">Try again</string>

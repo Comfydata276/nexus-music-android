@@ -1022,4 +1022,27 @@ class DownloadsTest {
         val again = Catalogue(catalogue.dir)
         assertTrue(again.state.value.ids.isEmpty() && again.state.value.collections.isEmpty() && again.wanting.isEmpty())
     }
+
+    // ---- What the screens' grouping is made from (offline hardening 2, item 7) -----------------
+
+    @Test
+    fun aProgressTickHandsOnTheVeryListsOfWhatIsDownloaded() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val songs = listOf(song("s1"), song("s2", size = 2_400_000))
+        run { engine.toggle(list("playlist:p1", songs), songs) }
+        until("one downloaded, one arriving") { engine.state.value.downloaded.size == 1 && engine.state.value.active.any { it.state is SongState.Fetching } }
+        val first = engine.state.value
+        // As the song arrives the state is published again and again with how far it has got.
+        engine.refresh()
+        idle()
+        until("further on") { engine.state.value !== first && engine.state.value.active != first.active }
+        val later = engine.state.value
+        // What is downloaded, and the lists, are the same objects: a page that makes its
+        // grouping from them has nothing to make again.
+        org.junit.Assert.assertSame(first.downloaded, later.downloaded)
+        org.junit.Assert.assertSame(first.collections, later.collections)
+        engine.cancelAll()
+    }
 }

@@ -143,3 +143,36 @@ fun playableOffline(): List<Song>? {
     }
     return if (offline) playable else null
 }
+
+/**
+ * Offline: the playlists there are to show ([org.medianexus.music.library.OnThePhone.playlists]):
+ * every one downloaded whole, whether or not the server's list of playlists is kept or has
+ * it, and of the kept list (`kept`) those with a song that plays. Worked out off the main
+ * thread (one kept page is looked at for each playlist that isn't downloaded). Null while
+ * the server answers: then the list is the server's.
+ */
+@Composable
+fun playlistsOffline(kept: List<org.medianexus.music.net.Playlist>?): List<org.medianexus.music.net.Playlist>? {
+    val ui = LocalUi.current
+    val marks = rememberDownloadMarks()
+    val offline by remember(marks) { derivedStateOf { marks.offline } }
+    val lists by remember(marks) { derivedStateOf { marks.now.collections } }
+    val downloaded by remember(marks) { derivedStateOf { marks.now.downloaded } }
+    val account = ui.account
+    val shown by androidx.compose.runtime.produceState<List<org.medianexus.music.net.Playlist>?>(null, offline, kept, lists, downloaded, account) {
+        value = if (!offline || account == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val whole = org.medianexus.music.downloads.DownloadedViews.playlists(marks.now)
+                .filter { it.list.key.startsWith("playlist:") && it.songs.isNotEmpty() }
+                .map { org.medianexus.music.net.Playlist(id = it.list.key.removePrefix("playlist:"), name = it.list.name, owner = it.list.by, songCount = it.songs.size, coverArt = it.list.coverArt.ifEmpty { it.songs.firstOrNull { s -> s.coverArt.isNotEmpty() }?.coverArt.orEmpty() }) }
+            // (Of the kept list's others, those whose own kept page has a song that plays.)
+            val have = whole.mapTo(HashSet()) { it.id }
+            val playing = HashSet<String>()
+            for (playlist in kept.orEmpty()) {
+                if (playlist.id in have) continue
+                if (runCatching { account.library.pages.kept(account.library.playlist(playlist.id)) }.getOrNull()?.songs?.any(account.availability::plays) == true) playing += playlist.id
+            }
+            org.medianexus.music.library.OnThePhone.playlists(kept, whole) { it.id in playing }
+        }
+    }
+    return if (offline) shown ?: emptyList() else null
+}

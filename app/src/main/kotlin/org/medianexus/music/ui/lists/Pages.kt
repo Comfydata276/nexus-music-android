@@ -66,7 +66,10 @@ fun AlbumPage(route: Route.Album) {
         org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(route.key, route.title))
         return
     }
-    val album = feed.value
+    // Offline with no copy of the page and nothing of it downloaded, an album shown because
+    // songs of it are kept from being played is what the phone has of it.
+    val phone = org.medianexus.music.ui.downloads.playableOffline()
+    val album = feed.value ?: remember(phone, route.id) { phone?.let { org.medianexus.music.library.OnThePhone.album(it, route.id) } }
     val hero = if (album == null) {
         HeroData(stringResource(R.string.kind_album), route.title, route.artist, cover = route.cover)
     } else {
@@ -98,7 +101,9 @@ fun AlbumPage(route: Route.Album) {
             ui.toast(res.getString(if (now) R.string.added_to_liked_albums else R.string.removed_from_liked_albums))
         },
         below = {
-            val more = others?.value?.albums?.filter { it.id != route.id }.orEmpty()
+            // (Offline, only those with something on the phone: everything shown opens.)
+            val here = phone?.let { org.medianexus.music.library.OnThePhone.albumIds(it) }
+            val more = others?.value?.albums?.filter { it.id != route.id && (here == null || it.id in here) }.orEmpty()
             if (more.isNotEmpty()) {
                 item(key = "more", contentType = "shelf") {
                     Shelf(
@@ -191,7 +196,15 @@ fun ArtistPage(route: Route.Artist) {
     val ui = LocalUi.current
     val res = LocalResources.current
     val feed = rememberPageFeed(route.key) { it.artist(route.id) }
-    val artist = feed.value
+    // Offline, an artist is who the songs on the phone say they are: their albums with
+    // something that plays, each of which opens. (The server's page of them, kept or not,
+    // lists albums that can't be opened; and with none kept there was no page at all, though
+    // Library had just shown the artist.)
+    val phone = org.medianexus.music.ui.downloads.playableOffline()
+    val kept = feed.value
+    val artist = if (phone == null) kept else remember(phone, route.id, kept) {
+        org.medianexus.music.library.OnThePhone.artist(phone, route.id, kept?.name ?: route.name)?.copy(coverArt = kept?.coverArt ?: route.cover) ?: kept?.copy(albums = emptyList())
+    }
     val hero = HeroData(
         stringResource(R.string.kind_artist),
         artist?.name ?: route.name,
@@ -210,6 +223,12 @@ fun ArtistPage(route: Route.Artist) {
         onPlay = { shuffle ->
             val library = ui.account?.library ?: return@ArtistLayout
             val name = artist?.name.orEmpty()
+            if (phone != null) {
+                // Offline: their songs on the phone, by album as the page shows them.
+                val songs = org.medianexus.music.library.OnThePhone.songsBy(phone, route.id).sortedWith(compareByDescending<org.medianexus.music.net.Song> { it.year }.thenBy { it.album }.thenBy { it.discNumber }.thenBy { it.track })
+                if (songs.isEmpty()) ui.toast(res.getString(R.string.cant_play_offline)) else ui.play(songs, 0, name, route.key, shuffle = shuffle, anyStart = true)
+                return@ArtistLayout
+            }
             // In the order the page shows them, as Windows builds it: newest first, then by
             // name (Windows' `PlaySource::Albums`), the first forty.
             val albums = artist?.albums.orEmpty().sortedWith(compareByDescending<Album> { it.year }.thenBy { it.name }).take(40)

@@ -130,9 +130,12 @@ fun AlbumsPage(route: Route.Albums) {
     val ui = LocalUi.current
     var sort by rememberSaveable { mutableIntStateOf(route.sort.coerceIn(0, ALBUM_SORTS.lastIndex)) }
     val places = rememberSaveable(saver = SortPlaces.Saver) { SortPlaces() }
+    // Offline (Home's "Show all" then): the albums on the phone, each of which opens. The
+    // server's sorts page through the server, and would show albums that can't be opened.
+    val phone = org.medianexus.music.ui.downloads.playableOffline()
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.albums), onBack = ui.navigator::back)
-        AlbumsPart(sort to { it: Int -> sort = it }, places)
+        if (phone != null) OnPhone(phone, PhonePart.ALBUMS) else AlbumsPart(sort to { it: Int -> sort = it }, places)
     }
 }
 
@@ -144,23 +147,12 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
     val settings by ui.graph.settings.state.collectAsStateWithLifecycle()
     val liked = likedSongs()
     val pinned = settings.pinnedPlaylists
-    // Offline, the playlists with something that plays: downloaded whole, or kept with a song
-    // that plays (looked at off the main thread: one kept page each).
-    val library = ui.account?.library
-    val availability = ui.account?.availability
-    val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
-    val downloadedLists by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.now.collections } }
-    val playing by androidx.compose.runtime.produceState<Set<String>?>(null, phone != null, feed.value, downloadedLists) {
-        val all = feed.value
-        value = if (phone == null || all == null || library == null || availability == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            val whole = downloadedLists.mapTo(HashSet()) { it.key }
-            all.filter { playlist ->
-                "playlist:${playlist.id}" in whole || runCatching { library.pages.kept(library.playlist(playlist.id)) }.getOrNull()?.songs?.any(availability::plays) == true
-            }.mapTo(HashSet()) { it.id }
-        }
-    }
-    val playlists = remember(feed.value, pinned, playing) {
-        feed.value?.filter { playing?.contains(it.id) ?: true }
+    // Offline: every playlist downloaded whole (from the downloads' own record: the server's
+    // list of playlists may not be kept, or may not have it), and of the kept list those with
+    // a song that plays. Each opens from what is on the phone.
+    val onPhone = org.medianexus.music.ui.downloads.playlistsOffline(feed.value)
+    val playlists = remember(feed.value, pinned, onPhone) {
+        (if (phone != null) onPhone else feed.value)
             ?.sortedWith(compareBy<Playlist> { pinned.indexOf(it.id).let { at -> if (at < 0) Int.MAX_VALUE else at } }.thenBy { it.name.lowercase() })
     }
     Refreshable(feed.refreshing, feed::refresh) {
@@ -185,7 +177,9 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                 }
             }
             when {
-                playlists == null && phone != null -> {}
+                // (Offline with no playlist on the phone: Liked songs and Recently played
+                // above are the list.)
+                phone != null && playlists.isNullOrEmpty() -> {}
                 playlists == null && error != null -> item(key = "error") { PageStatus(PageState.Error(error.message.orEmpty()), onRetry = feed::refresh) }
                 playlists == null -> item(key = "loading") { SkeletonRows() }
                 playlists.isEmpty() -> item(key = "empty") {

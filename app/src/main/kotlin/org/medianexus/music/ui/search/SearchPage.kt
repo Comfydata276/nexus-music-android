@@ -94,7 +94,10 @@ fun SearchPage() {
     LaunchedEffect(model) { snapshotFlow { box.text.toString() }.collect { model.type(it) } }
     val state by model.state.collectAsStateWithLifecycle()
     var kind by rememberSaveable { mutableIntStateOf(0) }
-    val playlists = rememberPageFeed("playlists") { it.playlists() }.value.orEmpty()
+    // Offline: the playlists on the phone (every one downloaded whole, kept list or no; and
+    // none that has nothing to play), as Library lists them.
+    val listed = rememberPageFeed("playlists") { it.playlists() }.value
+    val playlists = org.medianexus.music.ui.downloads.playlistsOffline(listed) ?: listed.orEmpty()
     val keyboard = LocalSoftwareKeyboardController.current
     val kinds = listOf(R.string.search_all, R.string.songs, R.string.artists, R.string.albums, R.string.playlists).map { stringResource(it) }
 

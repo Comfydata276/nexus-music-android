@@ -104,7 +104,15 @@ fun DownloadsContent(titled: Boolean) {
     val likedName = stringResource(R.string.liked_songs)
     // Worked out again only when what is downloaded changes, not as each song arrives (twice
     // a second while it does).
-    val view = remember(state.downloaded, state.collections, likedName) { DownloadsView.of(state, likedName) }
+    // (A progress tick is given the grouping already made: see DownloadsViews.)
+    val views = remember { DownloadsViews() }
+    val view = views.of(state, likedName)
+    // Everything waiting and everything that failed are folded to their first few until
+    // opened: with thousands of either, the music that is downloaded stays in reach below.
+    val allActiveState = androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    val allFailedState = androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    val allActive = allActiveState.value
+    val allFailed = allFailedState.value
     val player = ui.player
     val from by player.from.collectAsStateWithLifecycle()
     val queueShuffle by player.shuffle.collectAsStateWithLifecycle()
@@ -173,7 +181,9 @@ fun DownloadsContent(titled: Boolean) {
                     Overall(state.progress)
                 }
             }
-            itemsIndexed(state.active, key = { _, it -> "active/${it.song.id}" }, contentType = { _, _ -> "song" }) { index, active ->
+            val waiting = Folded.of(state.active, allActive)
+            if (allActive && waiting.shown.size > Folded.MOST + 1) item(key = "active-fewer", contentType = "more") { More("", stringResource(R.string.show_fewer)) { allActiveState.value = false } }
+            itemsIndexed(waiting.shown, key = { _, it -> "active/${it.song.id}" }, contentType = { _, _ -> "song" }) { index, active ->
                 val song = active.song
                 val row = remember(song) { rowOf(song) }
                 TrackRow(
@@ -191,6 +201,9 @@ fun DownloadsContent(titled: Boolean) {
                     },
                 )
             }
+            if (waiting.more > 0) item(key = "active-more", contentType = "more") {
+                More(res.getQuantityString(R.plurals.more_waiting, waiting.more, waiting.more), stringResource(R.string.show_all)) { allActiveState.value = true }
+            }
         }
         if (state.failed.isNotEmpty()) {
             item(key = "failed", contentType = "heading") {
@@ -207,7 +220,9 @@ fun DownloadsContent(titled: Boolean) {
                     }
                 }
             }
-            itemsIndexed(state.failed, key = { _, it -> "failed/${it.song.id}" }, contentType = { _, _ -> "song" }) { index, failed ->
+            val failures = Folded.of(state.failed, allFailed)
+            if (allFailed && failures.shown.size > Folded.MOST + 1) item(key = "failed-fewer", contentType = "more") { More("", stringResource(R.string.show_fewer)) { allFailedState.value = false } }
+            itemsIndexed(failures.shown, key = { _, it -> "failed/${it.song.id}" }, contentType = { _, _ -> "song" }) { index, failed ->
                 val song = failed.song
                 val row = remember(song) { rowOf(song) }
                 TrackRow(
@@ -217,6 +232,9 @@ fun DownloadsContent(titled: Boolean) {
                     mark = RowMark(SongState.Failed(failed.reason), unavailable = marks.offline && !marks.playsNow(song)),
                     detail = failed.reason,
                 )
+            }
+            if (failures.more > 0) item(key = "failed-more", contentType = "more") {
+                More(res.getQuantityString(R.plurals.more_failed, failures.more, failures.more), stringResource(R.string.show_all)) { allFailedState.value = true }
             }
         }
         when {
@@ -245,6 +263,20 @@ fun DownloadsContent(titled: Boolean) {
                 }
             }
         }
+    }
+}
+
+/** The foot (or head) of a folded section: how many more there are, and the way to open
+ *  it (or fold it again). */
+@Composable
+private fun More(words: String, action: String, onAction: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = Theme.dimens.pagePad, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        BasicText(words, Modifier.weight(1f), style = Theme.type.body.copy(color = Theme.colors.muted), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        TextButton(action, onClick = onAction)
     }
 }
 

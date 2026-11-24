@@ -93,4 +93,79 @@ class DownloadsViewTest {
         assertEquals(listOf("Ambient" to 1, "Folk" to 2), OnThePhone.genres(songs).map { it.name to it.songCount })
         assertEquals(setOf("a", "b"), OnThePhone.albumIds(songs))
     }
+
+    // ---- The phone's screens offline (offline hardening 2, item 7) -----------------------------
+
+    @Test
+    fun aDownloadedPlaylistIsListedWhetherOrNotTheServersListIsKeptOrHasIt() {
+        fun playlist(id: String, count: Int = 3) = org.medianexus.music.net.Playlist(id = id, name = "List $id", songCount = count)
+        val downloaded = listOf(playlist("mine", count = 2))
+        // The server's list of playlists is not on the phone at all (Android cleared it).
+        assertEquals(listOf("mine"), OnThePhone.playlists(null, downloaded) { false }.map { it.id })
+        // It is kept, from before the playlist was made: the downloaded one is still listed,
+        // and of the kept ones only those with something that plays.
+        val kept = listOf(playlist("a"), playlist("b"), playlist("c"))
+        assertEquals(listOf("mine", "b"), OnThePhone.playlists(kept, downloaded) { it.id == "b" }.map { it.id })
+        // Kept and downloaded: once, in the server's order, counted as what is on the phone.
+        val both = OnThePhone.playlists(listOf(playlist("a"), playlist("mine", count = 40), playlist("b")), downloaded) { it.id == "a" }
+        assertEquals(listOf("a", "mine"), both.map { it.id })
+        assertEquals(2, both.last().songCount)
+    }
+
+    @Test
+    fun anArtistAndAnAlbumOfflineAreWhatTheSongsOnThePhoneSay() {
+        val songs = listOf(
+            song("a", album = "al1", track = 2).copy(year = 2019), song("b", album = "al1", track = 1).copy(year = 2019), song("c", album = "al2", track = 1),
+            song("d", album = "al9").copy(artistId = "ar2", artist = "Someone else", artists = listOf(org.medianexus.music.net.Credit(id = "ar1", name = "Artist"))),
+            song("e", album = "al8").copy(artistId = "ar3", artist = "Nobody"),
+        )
+        // Everything of theirs, credited or outright, by album: each of which is on the phone.
+        val artist = OnThePhone.artist(songs, "ar1")!!
+        assertEquals("Artist", artist.name)
+        assertEquals(setOf("al1", "al2", "al9"), artist.albums.map { it.id }.toSet())
+        assertEquals(listOf("a", "b", "c", "d"), OnThePhone.songsBy(songs, "ar1").map { it.id })
+        assertNull(OnThePhone.artist(songs, "ar7"))
+        // An album: its songs on the phone, in its own order.
+        val album = OnThePhone.album(songs, "al1")!!
+        assertEquals(listOf("b", "a"), album.songs.map { it.id })
+        assertEquals("Album al1", album.name)
+        assertNull(OnThePhone.album(songs, "al7"))
+    }
+
+    // ---- The Downloads page with thousands waiting or failed (offline hardening 2, item 7) ------
+
+    @Test
+    fun aSectionOfThousandsIsFoldedToItsFirstFewWithACount() {
+        val waiting = (1..5_000).map { Active(song("s$it"), SongState.Waiting) }
+        val folded = Folded.of(waiting, open = false)
+        assertEquals(Folded.MOST, folded.shown.size)
+        assertEquals(5_000 - Folded.MOST, folded.more)
+        assertEquals("s1", folded.shown.first().song.id)
+        // Opened: all of it.
+        assertEquals(5_000 to 0, Folded.of(waiting, open = true).let { it.shown.size to it.more })
+        // A handful is shown as it is; and one over the handful too ("and 1 more" would take
+        // the room the row does).
+        assertEquals(3 to 0, Folded.of(waiting.take(3), open = false).let { it.shown.size to it.more })
+        assertEquals(Folded.MOST + 1 to 0, Folded.of(waiting.take(Folded.MOST + 1), open = false).let { it.shown.size to it.more })
+        assertEquals(Folded.MOST to 2, Folded.of(waiting.take(Folded.MOST + 2), open = false).let { it.shown.size to it.more })
+    }
+
+    @Test
+    fun aProgressTickIsGivenTheGroupingAlreadyMade() {
+        val views = DownloadsViews()
+        val songs = downloaded(song("a") to 10, song("b") to 20)
+        val lists = listOf(DownloadedList("album:al1", "Album", songs = listOf("a", "b")))
+        val first = DownloadsState(downloaded = songs, collections = lists, active = listOf(Active(song("c"), SongState.Fetching(0.1f))))
+        val view = views.of(first, "Liked songs")
+        // The same downloads, a song a little further on: the very grouping made before.
+        org.junit.Assert.assertSame(view, views.of(first.copy(active = listOf(Active(song("c"), SongState.Fetching(0.6f)))), "Liked songs"))
+        org.junit.Assert.assertSame(view, views.of(first.copy(active = emptyList(), batchDone = 1), "Liked songs"))
+        // The room they take measured anew is told, with the same grouping.
+        val measured = views.of(first.copy(occupied = 4_096), "Liked songs")
+        assertEquals(4_096L, measured.bytes)
+        org.junit.Assert.assertSame(view.albums, measured.albums)
+        // A song arrives: made again.
+        val more = views.of(first.copy(downloaded = songs + downloaded(song("c") to 5)), "Liked songs")
+        assertEquals(3, more.songs.size)
+    }
 }

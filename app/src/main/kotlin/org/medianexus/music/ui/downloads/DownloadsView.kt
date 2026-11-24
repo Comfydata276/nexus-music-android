@@ -52,3 +52,42 @@ data class DownloadsView(
         }
     }
 }
+
+/**
+ * The page's grouping, worked out again **only when what is downloaded changes**: a state
+ * that differs from the last only in how far a song has got (twice a second while one
+ * arrives) is given the grouping already made. Told apart by whether the downloaded songs
+ * and the lists are the very same objects as last time, which they are from one tick to the
+ * next (the engine hands on the catalogue's own), so asking costs nothing however many
+ * thousand songs there are.
+ */
+class DownloadsViews {
+    private var from: Triple<Map<String, org.medianexus.music.downloads.Downloaded>, List<org.medianexus.music.downloads.DownloadedList>, String>? = null
+    private var made: DownloadsView? = null
+
+    fun of(state: DownloadsState, likedName: String): DownloadsView {
+        val was = from
+        made?.let { if (was != null && was.first === state.downloaded && was.second === state.collections && was.third == likedName) return it.takeIf { v -> v.bytes == state.bytes } ?: it.copy(bytes = state.bytes).also { v -> made = v } }
+        return DownloadsView.of(state, likedName).also {
+            from = Triple(state.downloaded, state.collections, likedName)
+            made = it
+        }
+    }
+}
+
+/**
+ * A section of the Downloads page that can run to thousands of rows (everything waiting,
+ * everything that failed), **folded**: its first few, and how many more there are, until it
+ * is opened. What is downloaded is below these sections; a queue of five thousand waiting
+ * songs put all five thousand ahead of the music.
+ */
+data class Folded<T>(val shown: List<T>, val more: Int) {
+    companion object {
+        /** Rows shown of a folded section. */
+        const val MOST = 5
+
+        /** (One over is shown whole: "and 1 more" takes the room the row would.) */
+        fun <T> of(all: List<T>, open: Boolean, most: Int = MOST): Folded<T> =
+            if (open || all.size <= most + 1) Folded(all, 0) else Folded(all.subList(0, most), all.size - most)
+    }
+}
