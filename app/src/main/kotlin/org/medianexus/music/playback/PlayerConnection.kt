@@ -361,7 +361,9 @@ class PlayerConnection(
     fun play(args: Bundle) {
         // Showing another player: it is played there (or, in a friend's jam, added).
         steered.hands?.let { Steered.play(it, args); return }
-        Choices.take()
+        // Its place in the order of choices is taken here, at the tap, and goes with it: the
+        // service plays it only if nothing has taken a later place by the time it lands.
+        args.putLong(AppCommands.PLACE, Choices.take())
         send(AppCommands.PLAY, args)
     }
 

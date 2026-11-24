@@ -47,6 +47,13 @@ object AppCommands {
      *  how the list was arranged on the screen.) */
     const val MOST_SENT = 200
 
+    /** A PLAY's place in the order of choices, taken at the tap (see [Choices]). */
+    const val PLACE = "place"
+
+    /** The place a PLAY carries; for one that carries none (sent by an older build of the
+     *  screens in this same process: none now), a new one. */
+    fun placeOf(args: Bundle, take: () -> Long): Long = args.getLong(PLACE, 0L).takeIf { it > 0 } ?: take()
+
     /** Whether a PLAY names its list ("byPage") instead of carrying the songs. */
     fun byPage(args: Bundle): Boolean = args.getBoolean("byPage")
 

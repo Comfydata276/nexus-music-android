@@ -2190,12 +2190,16 @@ class PlaybackService : MediaLibraryService() {
                     holdForeground(why = "for a list chosen in the app")
                     // The list as the screen drew it, left for the player (see Drawn).
                     val drawn = Drawn.take(AppCommands.drawnOf(args))
+                    // Its place in the order of choices is the tap's, carried with it: if
+                    // anything has taken a later place since (the sound taken away, a choice
+                    // in the car, offline mode switched on), it is dropped (order of choices).
+                    val place = AppCommands.placeOf(args, player::beginStart)
                     if (AppCommands.byPage(args)) {
-                        playPage(player.beginStart(), args, drawn)
+                        playPage(place, args, drawn)
                     } else {
                         // A short list, sent whole: the same arrangement and song as by page.
                         started(AppCommands.queueFor(player, args, drawn?.songs ?: AppCommands.songsOf(args), AppCommands.shuffleOf(args, ::shuffleFor), playsOffline(), ::addedDates, drawn), args.getString("source").orEmpty())
-                            ?.let { player.play(it); true } ?: false
+                            ?.let { player.playFor(place, it) } ?: false
                     }
                 }
                 else -> AppCommands.handle(player, customCommand, args, ::shuffleFor)

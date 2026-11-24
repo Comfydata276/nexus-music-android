@@ -120,4 +120,23 @@ class OrderOfChoicesTest {
         settle()
         assertFalse("the older lookup replaced the entry tapped", "album" in acted)
     }
+
+    @Test
+    fun aPlayFromAListIsPlayedAtTheTapsPlaceOrNotAtAll() {
+        val songs = List(3) { Song(id = "late$it", title = "Late $it") }
+        // Tapped on the phone: its place taken at the tap and carried.
+        val args = PlayerConnection.playArgs(songs, 0, "A list")
+        args.putLong(AppCommands.PLACE, Choices.take())
+        // On its way, something else takes a later place (a choice in the car, say).
+        val car = Choices.take()
+        controller.sendCustomCommand(androidx.media3.session.SessionCommand(AppActions.PLAY, android.os.Bundle.EMPTY), args)
+        settle()
+        assertFalse("the older tap took the player", service.inside().player.queue.songs.any { it.id.startsWith("late") })
+        assertEquals(true, Choices.stands(car))
+        // Delivered with nothing newer chosen, the same tap plays.
+        val again = PlayerConnection.playArgs(songs, 0, "A list")
+        again.putLong(AppCommands.PLACE, Choices.take())
+        controller.sendCustomCommand(androidx.media3.session.SessionCommand(AppActions.PLAY, android.os.Bundle.EMPTY), again)
+        until("the tap played") { service.inside().player.queue.current()?.id == "late0" }
+    }
 }
