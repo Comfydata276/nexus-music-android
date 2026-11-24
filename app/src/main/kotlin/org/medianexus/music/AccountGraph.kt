@@ -127,7 +127,12 @@ class AccountGraph(
         // The phone wouldn't take a write the sender depends on, or the server answered a
         // change with an error that says nothing about it: tried again in a while.
         tryLater = { heldAgainLater() },
-        answered = { change, taken -> likes.answered(change, taken) },
+        // A change that had been held has had its answer, however long after it was made:
+        // whoever made it is told, as a change sent straight away tells its maker on return.
+        answered = { change, taken ->
+            likes.answered(change, taken)
+            freshest.settled(change, taken)
+        },
         moved = { likes.heldChanged() },
     )
 
@@ -278,8 +283,7 @@ class AccountGraph(
     suspend fun submit(change: Pending) {
         freshest.reported(change)
         // Settled when the server has it, or has refused it: what is shown follows the server
-        // again. (Held for later, it settles in a later pass, which says nothing of each
-        // change: until then, and for this run, the change made here is what is shown.)
+        // again. (Held for later, it settles in a later pass, which tells `answered` above.)
         val outcome = try {
             held.submit(change)
         } catch (e: kotlinx.coroutines.CancellationException) {

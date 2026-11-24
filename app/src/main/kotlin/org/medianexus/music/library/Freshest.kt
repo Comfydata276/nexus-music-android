@@ -18,8 +18,9 @@ import org.medianexus.music.store.Pending
  * replaces every sighting read before it (the row drawn from the copy is then the newest).
  * What the app itself has just reported comes on top: a play is counted until the server is
  * seen to have it (a sighting whose last play is as late as it); a rating made here is shown
- * until the account's sender says it settled (the server took it, or refused it), and is then
- * forgotten, so that what the server says shows again: taken, that is the rating made.
+ * until the account's sender says it settled (the server took it, or refused it), however long
+ * after it was made that was (one held offline settles in a later pass, which says so too), and
+ * is then forgotten, so that what the server says shows again: taken, that is the rating made.
  *
  * Kept in memory for the account's time; safe from any thread.
  */

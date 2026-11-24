@@ -1796,8 +1796,9 @@ How it is built (M3a, finding music):
   was asked for; a newer copy of the library over pages read before it); on top, a play
   reported here until the server is seen to have it, and a rating made here until the sender
   says it settled (taken: then the server's word, which is that rating; refused: forgotten).
-  A rating held for later settles in a later pass, which says nothing of each change: it
-  stays shown until the account goes (small fixes, item 7).
+  A rating held for later settles in a later pass, and the sender says so then, however
+  long that took (`HeldChanges.answered`, which tells the account for every change that had
+  been held; M3b, item 8).
 
 ### What the finding-music fixes decided
 

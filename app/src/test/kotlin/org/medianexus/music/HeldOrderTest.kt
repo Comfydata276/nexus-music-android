@@ -85,6 +85,7 @@ class HeldOrderTest {
             val id = request.url.queryParameter("id").orEmpty()
             var body = ""
             when (endpoint) {
+                "setRating" -> asked += "setRating $id"
                 "star", "unstar" -> {
                     asked += "$endpoint $id"
                     changes.trySend("$endpoint $id")
@@ -299,6 +300,23 @@ class HeldOrderTest {
         assertEquals("[]", heldFile.readText())
         assertEquals(listOf("star s1", "star s2", "star s2"), server.asked.toList())
         assertTrue(account.likes.isLiked("s2"))
+    }
+
+    @Test
+    fun aRatingHeldOfflineSettlesWhenItIsSentLaterAndTheServersWordShowsAgain() = runBlocking {
+        // Offline mode: three stars, held on the phone. Its details show three.
+        val rating = Pending.Rating(song.id, 3, at = 1)
+        assertEquals(Unit, account.submit(rating))
+        assertEquals(listOf<Pending>(rating), account.held.all())
+        assertEquals(3, account.freshest.of(song).userRating)
+        // Back online: the sender sends it in a later pass, which is not the maker's.
+        offlineModeOff().complete(Unit)
+        account.held.waiting.first { it == 0 }
+        assertEquals(listOf("setRating s1"), server.asked.toList())
+        // Changed to five on another device and read here afterwards: five. (The held rating
+        // settled without saying so, and three stayed shown over the server for the run.)
+        account.freshest.saw(listOf(song.copy(userRating = 5)))
+        assertEquals(5, account.freshest.of(song).userRating)
     }
 
     @Test
