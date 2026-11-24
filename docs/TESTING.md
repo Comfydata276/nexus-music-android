@@ -1421,6 +1421,67 @@ and 1.3 font, `side/`):
 Not checked here: TalkBack with the fast-scroll handle (it is hidden from screen readers,
 which scroll the list as before); the Android 16 emulator (in use by the other engineer).
 
+### The small fixes after the second review of finding music: what was checked
+
+Each of the ten items has a test that was seen to fail on the code before it (run against
+the commit before, in a scratch worktree, or with the new path switched off), and passes
+now. Items 1 and 2 go through what the screen really sends and what the service really
+resolves (`DrawnPlaysTest`): the playback service itself, a real named start held at a gate
+(`PlaybackService.beforeNamedStart`) after the Songs page's tap from a found, sorted view
+and after a 260-song playlist's tap; meanwhile the library copy (or the playlist's page) is
+replaced by one where the tapped song has moved and its neighbours are others; released,
+the first song and the whole queue are what was drawn. Offline, the tapped song's download
+removed while held: nothing starts and the person is told; the play button still passes
+over to the first that plays. The fast-scroll handle is tested with real touches on a real
+Compose list (`FastScrollTouchTest`): a row's "…" under the edge opens with the handle
+hidden and showing, a drag moves the list, and a drag lifted before a frame still gets
+there.
+
+On the Android 17 emulator against the big library (`scripts/server --instance big`,
+50,100 songs, then 50,120), debug build; pictures in
+`~/.cache/nexus-music-android/m3a-small-fixes/shots/`:
+
+- **Item 1.** The link slowed to 40 KB/s; during the first fetch (3,000 songs in, the page
+  redrawing as pages arrived) a row far down Songs tapped: it played, and "Next from Songs"
+  was the rows drawn after it, in order. Again during a refresh (20 one-song albums added;
+  the refresh ran 13:25:18 to 13:28:11, the tap at 13:25:44): the same.
+- **Item 4.** The app killed at 25,000 songs into the first fetch and opened again: "library
+  copy: 50100 songs … carrying on after 46 pages kept from before"; the server says 50,100.
+- **Item 5.** That refresh was stamped as the server stood (no "changed while it was
+  fetched" note) and isn't fetched again.
+- **Item 2.** Slow Rivers downloaded, then one song's download removed; offline, the Songs
+  page found "slow rivers": a tap on that song, between downloaded ones, started nothing
+  (the song playing went on); a downloaded row played. (Offline the album page shows only
+  what plays, so there the race exists only between drawing and tapping: the gate test.)
+- **Item 3.** On Songs at the default size and at 360dp with 1.3 font: a row's "…" under the
+  handle's edge opened its menu with the handle showing and hidden; a drag on the handle
+  took the list half-way through. TalkBack is installed on the image: the handle is in the
+  accessibility tree as an adjustable control (a `SeekBar` node at the edge, always, hidden
+  or not); TalkBack's own gestures on it were not driven (injected taps don't move its focus
+  reliably).
+- **Item 6, in the car** (`scripts/carcheck org.medianexus.music --nexus --query orchard
+  --voice "song:Glass Orchard|artist=Juniper Vale=>Juniper Vale;any:glass orchard by paper
+  lanterns=>Glass Orchard;any:lullaby by paper lanterns=>Paper Lanterns;song:Lullaby=>Lullaby;any:early
+  orchad=>Early Orchard"`): 51 passed, none failed, two warnings (the empty playlist; no
+  artwork for the made-up songs). "Glass Orchard" asked of Juniper Vale, who have none,
+  played Juniper Vale's music, not Paper Lanterns' song; "Lullaby by Paper Lanterns" played
+  theirs. The cold-start case ("Dune" on the phone, "Duke" only on the server, before it is
+  known whether the server is there) is `VoiceMisspeltTest`, held at the wait to know: on
+  this rig the server answers within milliseconds of a cold start, too soon to catch by hand.
+- Items 7 to 10 are in unit tests only (`FreshestTest`, `QueueFollowTest`,
+  `SearchSpeedTest`, `SavedQueueTest`). Item 8 offline on a device needs a playlist changed
+  on the server while the phone is offline, which can't happen; the joining rule is tested.
+
+`scripts/check --release`: built, lint clean, release APK 6,208,426 bytes; one unit test
+failed that run (`DownloadsTest.aProgressTickHandsOnTheVeryListsOfWhatIsDownloaded`, timing:
+see below). The whole suite then passed three times in a row (`--no-build-cache
+--rerun-tasks`, 768 tests each). Two tests that depended on timing were made to wait on
+the thing itself: `CoverAddressTest`'s sign-in helper (`StandInServer.signIn`) returned on
+the old account's objects, still standing for a moment after a sign-out, and the read that
+followed met the moment with nobody signed in ("no such cover"); it now waits for the
+objects of the sign-in it made. `DownloadsTest`'s progress tick holds the second song's
+transfer at two gates. Each passed 20 times in a row on its own, under load.
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
