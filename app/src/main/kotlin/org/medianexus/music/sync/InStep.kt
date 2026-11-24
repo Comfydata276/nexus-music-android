@@ -5,6 +5,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import org.medianexus.music.net.ApiError
@@ -98,9 +101,23 @@ class InStep(
         /** The server didn't say whose the playlist is, or what its comment is: nothing is
          *  read into that, and nothing written on the strength of it. */
         NOT_STATED,
+        /** This phone's clock and the server's disagree: what the server has was taken in, and
+         *  nothing was written. */
+        CLOCK_WRONG,
         /** The server couldn't be asked, or refused: tried again at the next look. */
         FAILED,
     }
+
+    private val wrongClock = MutableStateFlow(false)
+
+    /**
+     * This phone's clock disagrees with the server's by more than [CLOCK_SLACK_SECONDS], as
+     * last compared. While it does the phone takes in what other devices share and shares
+     * nothing itself: a time put on a choice by a clock that is ahead is one no other device
+     * can ever beat, and a clock far enough ahead would take word of a song's removal for
+     * long forgotten and drop it. What changed here waits (it is kept) until the clocks agree.
+     */
+    val clockWrong: StateFlow<Boolean> = wrongClock.asStateFlow()
 
     private val again = AtomicBoolean(false)
     private var soon: Job? = null
@@ -169,6 +186,11 @@ class InStep(
         // A comment that isn't in the answer is not known: read as empty, it would be a
         // record with nothing in it, and the phone's own would be written over everything.
         val comment = if (read == null) "" else read.value.comment ?: return notStated("what the playlist's comment is")
+        // The server's clock, by the answer just read (a server that gives none can't be
+        // compared with, and is taken to agree).
+        val wrong = (read?.serverTime ?: listed.serverTime)?.let { kotlin.math.abs(now - it) > CLOCK_SLACK_SECONDS } ?: false
+        if (wrong && !wrongClock.value) note("in step: this phone's clock and the server's disagree by more than five minutes; nothing is shared from here until they agree")
+        wrongClock.value = wrong
         return when (val settled = settler.settle(comment, SharedText.write(local), now)) {
             Settled.Unreadable -> {
                 note("in step: the shared record on the server isn't one this version can read; it was left as it is")
@@ -182,6 +204,11 @@ class InStep(
                 if (settled.laterLayout) Outcome.NEWER_LAYOUT else Outcome.MORE_THAN_KNOWN
             }
             is Settled.Merged -> {
+                if (wrong) {
+                    // What the server has is taken in; nothing of this phone's is written.
+                    if (comment.isNotEmpty()) SharedText.read(comment)?.let { phone.take(it) }
+                    return Outcome.CLOCK_WRONG
+                }
                 val merged = SharedText.read(settled.text) ?: return Outcome.FAILED
                 // A record is made on the server, or an empty one filled, only when the phone
                 // has something of the person's to put in it: a phone with nothing to say
@@ -213,6 +240,9 @@ class InStep(
 
         /** How often to look for changes made elsewhere. */
         const val LOOK_MILLIS = 60_000L
+
+        /** How far this phone's clock may be from the server's and still be shared from. */
+        const val CLOCK_SLACK_SECONDS = 5 * 60L
 
         private val turns = HashMap<String, Mutex>()
 

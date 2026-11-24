@@ -60,6 +60,7 @@
     <string name="account">Account</string>
     <string name="signed_in_as">Signed in as %1$s</string>
     <string name="keep_in_step">Keep my devices in step</string>
+    <string name="keep_in_step_clock">This phone\'s clock is wrong, so its changes aren\'t being shared.</string>
     <string name="playlist_name_reserved">Nexus Music keeps that name for itself, for keeping your devices in step. Choose another.</string>
     <string name="keep_in_step_detail">Your queue, Recently played, pinned playlists, each list\'s shuffle and sort, the dates songs were added and the theme follow you to Nexus Music on other devices. Kept on your server in a playlist named “Nexus Music sync”, which other apps will show; leave it be.</string>
     <string name="playing_elsewhere">Playing on another device</string>

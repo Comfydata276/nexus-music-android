@@ -299,7 +299,9 @@ class AccountGraph(
                 if (store.value.deviceId.isEmpty()) store.update { if (it.deviceId.isEmpty()) it.copy(deviceId = org.medianexus.music.sync.QueueShare.newDeviceId()) else it }
                 org.medianexus.music.sync.QueueShare.deviceName(store.value.deviceId)
             },
-            may = ::mayShare, scope = scope, pause = pause,
+            // (Not while this phone's clock is wrong: a queue saved then would be told to
+            // other devices as changed at a time that never was.)
+            may = { mayShare() && step?.clockWrong?.value != true }, scope = scope, pause = pause,
         )
     }
 

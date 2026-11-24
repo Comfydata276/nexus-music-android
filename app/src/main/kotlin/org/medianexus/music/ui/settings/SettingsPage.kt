@@ -228,7 +228,10 @@ private fun Account(graph: Graph) {
     // or written to it.
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     val inStep = stringResource(R.string.keep_in_step)
-    SettingRow(inStep, stringResource(R.string.keep_in_step_detail)) {
+    // Said under it while this phone's clock disagrees with the server's: what changes here
+    // is kept, and shared once the clock is right.
+    val clockWrong by (graph.accounts.state.collectAsStateWithLifecycle().value?.step?.clockWrong ?: androidx.compose.runtime.remember { kotlinx.coroutines.flow.MutableStateFlow(false) }).collectAsStateWithLifecycle()
+    SettingRow(inStep, stringResource(R.string.keep_in_step_detail) + if (clockWrong && settings.sync) " " + stringResource(R.string.keep_in_step_clock) else "") {
         Toggle(settings.sync, { on -> graph.settings.update { it.copy(sync = on) } }, inStep)
     }
 }

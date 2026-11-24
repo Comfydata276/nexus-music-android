@@ -109,8 +109,8 @@ class InStepTest {
         }
     }
 
-    private fun step(server: Server, device: Device, may: () -> Boolean = { true }, notes: MutableList<String> = ArrayList(), account: String = "acct-${System.nanoTime()}", pause: suspend (Long) -> Unit = {}) =
-        InStep(server, device, username = "Tester", account = account, may = may, scope = scope, clock = { NOW }, pause = pause, note = { notes += it })
+    private fun step(server: Server, device: Device, may: () -> Boolean = { true }, notes: MutableList<String> = ArrayList(), account: String = "acct-${System.nanoTime()}", pause: suspend (Long) -> Unit = {}, clock: () -> Long = { NOW }) =
+        InStep(server, device, username = "Tester", account = account, may = may, scope = scope, clock = clock, pause = pause, note = { notes += it })
 
     private fun text(shared: Shared) = SharedText.write(shared)
 
@@ -332,6 +332,48 @@ class InStepTest {
         // With one pin of the person's, it is filled.
         assertEquals(InStep.Outcome.DONE, step(empty, Device(holds = Shared(layout = 1, pins = listOf("p"), pinsAt = NOW - 9))).exchange())
         assertEquals(listOf("p"), SharedText.read(empty.comment("a")!!)!!.pins)
+    }
+
+    // ---- a clock that is wrong ----------------------------------------------------------------
+
+    @Test
+    fun aPhoneWhoseClockDisagreesWithTheServersTakesInAndSharesNothing() = runBlocking {
+        val removed = SharedNote(emptyList(), NOW - 10)
+        val record = pc.copy(added = mapOf("p1" to mapOf("gone" to removed)))
+        for (off in listOf(3_600L, -3_600L, 301L, 100 * 24 * 3_600L)) {
+            val server = Server().apply { put("a", text(record)) }
+            // The phone has a pin of its own to tell of, stamped by its own clock.
+            var phoneClock = NOW + off
+            val device = Device(holds = Shared(layout = 1, pins = listOf("mine"), pinsAt = NOW + off, history = listOf(Play("heard-here", NOW + off))))
+            val notes = ArrayList<String>()
+            val step = step(server, device, notes = notes, clock = { phoneClock })
+            assertEquals("$off", InStep.Outcome.CLOCK_WRONG, step.exchange())
+            // Nothing written: not its pin (which, from a clock an hour ahead, no PC could
+            // beat for an hour), and not the record with the PC's word of a removal dropped
+            // (which is what a clock a hundred days ahead makes of it).
+            assertTrue("$off", server.writes.isEmpty())
+            assertEquals(text(record), server.comment("a"))
+            assertTrue(step.clockWrong.value)
+            assertEquals(1, notes.size)
+            // What the server has was taken in all the same.
+            assertEquals(record, device.took.single())
+            // Again: still not shared, and said only once.
+            assertEquals(InStep.Outcome.CLOCK_WRONG, step.exchange())
+            assertEquals(1, notes.size)
+            // The clock put right: what the phone holds is shared then.
+            phoneClock = NOW + 200
+            assertEquals(InStep.Outcome.DONE, step.exchange())
+            assertFalse(step.clockWrong.value)
+            assertEquals(1, server.writes.size)
+        }
+        // Within five minutes either way, or with a server that gives no time: shared.
+        for (time in listOf<Long?>(NOW + 299, NOW - 300, null)) {
+            val server = Server().apply { put("a", text(pc)); this.time = time }
+            val step = step(server, Device(holds = Shared(layout = 1, pins = listOf("mine"), pinsAt = NOW)))
+            assertEquals(InStep.Outcome.DONE, step.exchange())
+            assertFalse(step.clockWrong.value)
+            assertEquals(1, server.writes.size)
+        }
     }
 
     // ---- a write with no answer ------------------------------------------------------------------
