@@ -55,6 +55,23 @@ class SavedQueueTest {
     }
 
     @Test
+    fun aQueuePlayedAgainWithAnotherFindTextSavesIt() {
+        val queueFile = File(folder.root, "queue.json")
+        val saved = SavedQueue(songs, listOf(0, 1), 0, 0.0, "Mix", "playlist:p", listOf(0, 1), sourceList = listOf("a", "b"), listFilter = "a")
+        QueueFiles(queueFile, File(folder.root, "queue-place.json")).save(saved)
+        // Read back (the app started again), then played again from the same list with another
+        // find text that happens to show the same rows: the same shape, another filter.
+        val files = QueueFiles(queueFile, File(folder.root, "queue-place.json"))
+        files.load()
+        files.save(saved.copy(listFilter = "b"))
+        // It used to keep "a": the queue went on following the list narrowed by the old text.
+        assertEquals("b", QueueFiles(queueFile, File(folder.root, "queue-place.json")).load()!!.listFilter)
+        // And on the same file again, without reading it back first.
+        files.save(saved.copy(listFilter = ""))
+        assertEquals("", QueueFiles(queueFile, File(folder.root, "queue-place.json")).load()!!.listFilter)
+    }
+
+    @Test
     fun aQueueThatDoesNotHoldTogetherIsNotPutBack() {
         val queueFile = File(folder.root, "queue.json")
         queueFile.writeText("""{"songs":[{"id":"a"}],"order":[0,1],"cursor":0}""")

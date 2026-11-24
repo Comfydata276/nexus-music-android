@@ -102,6 +102,10 @@ fun queueShape(ids: List<String>, order: List<Int>, context: String, source: Str
 class QueueFiles(private val queueFile: File, private val placeFile: File) {
     private var savedShape: ULong? = null
 
+    /** The find text the queue on disk was written with: not part of its shape (Windows
+     *  doesn't know it), but a queue played again with another is written again. */
+    private var savedFilter = ""
+
     /** Which hand-over the queue on disk came from (see [KeptQueue]); 0 when it was read
      *  from disk, cleared, or isn't known. A place is only ever written beside the queue it
      *  was handed over with. */
@@ -115,6 +119,7 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
         val saved = read(queueFile, SavedQueue.serializer())?.takeIf { it.valid } ?: return null
         val shape = saved.shape()
         savedShape = shape
+        savedFilter = saved.listFilter
         val place = read(placeFile, QueuePlace.serializer())
         return if (place != null && place.shape == shape && place.cursor in saved.order.indices) {
             saved.copy(cursor = place.cursor, position = place.position, stamp = maxOf(saved.stamp, place.stamp))
@@ -136,13 +141,14 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
         }
         val shape = queue.shape()
         try {
-            if (shape != savedShape) {
+            if (shape != savedShape || queue.listFilter != savedFilter) {
                 // Until the new queue is in place, no place may be written beside the old
                 // one on the strength of this hand-over.
                 savedToken = 0
                 // Straight into the file: a long queue is too big to build as text first.
                 writeAtomically(queueFile) { out -> json.encodeToStream(SavedQueue.serializer(), queue, out) }
                 savedShape = shape
+                savedFilter = queue.listFilter
             }
             savedToken = token
         } catch (_: IOException) {
