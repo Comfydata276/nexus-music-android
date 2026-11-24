@@ -250,6 +250,63 @@ class SoundProcessorTest {
         assertEquals(44_100, loud.size)
     }
 
+    /**
+     * Rule 3: the equaliser's memory of past samples follows the sound. A seek (the sink
+     * flushed, nothing drained) from sustained bass into silence, the bass shelf raised 12 dB:
+     * what follows is silence from its first sample, with nothing of the bass ringing into it.
+     * A gapless join keeps it (the album test above).
+     */
+    @Test
+    fun after_a_seek_nothing_of_the_bass_before_it_rings_on() {
+        val processor = SoundProcessor().also { it.sound = Sound.of(Settings(equalizer = true, eqGains = listOf(12f, 0f, 0f, 0f, 0f, 0f)), false) }
+        val rig = Rig(processor)
+        val timeline = timelineOf(song("a"))
+        rig.begin(timeline, 0)
+        rig.feed(steady(6000, (0.15 * 32767).toInt().toShort()))
+        rig.sink.flush() // a seek
+        rig.tap.samples.clear()
+        rig.pts = 5_000_000
+        rig.sink.play()
+        rig.feed(steady(2000, 0))
+        rig.end()
+        val out = rig.left()
+        assertEquals(2000, out.size)
+        assertTrue("silence from the first sample: ${out.take(8)}", out.all { it.toInt() == 0 })
+    }
+
+    /** Rule 3, the other way: a seek into the same song's same place goes on from nothing, and
+     *  a gapless join carries on from what came before (fed as one song or as two, the same). */
+    @Test
+    fun a_gapless_join_keeps_the_filters_memory_and_a_seek_does_not() {
+        val settings = Sound.of(Settings(equalizer = true, eqGains = listOf(12f, 6f, 0f, 0f, 0f, 3f)), false)
+        val input = sine(8000, hz = 70.0, level = 0.2)
+        val timeline = timelineOf(song("a", album = "x", track = 1), song("b", album = "x", track = 2))
+        val joined = Rig(SoundProcessor().also { it.sound = settings })
+        joined.begin(timeline, 0)
+        joined.feed(input.copyOfRange(0, 4000))
+        joined.begin(timeline, 1)
+        joined.feed(input.copyOfRange(4000, 8000))
+        joined.end()
+        val whole = Rig(SoundProcessor().also { it.sound = settings })
+        whole.begin(timeline, 0)
+        whole.feed(input)
+        whole.end()
+        assertTrue("a join is one continuous sound", whole.left().contentEquals(joined.left()))
+        val seeked = Rig(SoundProcessor().also { it.sound = settings })
+        seeked.begin(timeline, 0)
+        seeked.feed(input.copyOfRange(0, 4000))
+        seeked.sink.flush()
+        seeked.tap.samples.clear()
+        seeked.sink.play()
+        seeked.feed(input.copyOfRange(4000, 8000))
+        seeked.end()
+        val fresh = Rig(SoundProcessor().also { it.sound = settings })
+        fresh.begin(timeline, 0)
+        fresh.feed(input.copyOfRange(4000, 8000))
+        fresh.end()
+        assertTrue("after a seek, as if the song began there", fresh.left().contentEquals(seeked.left()))
+    }
+
     @Test
     fun a_new_songs_gain_begins_on_its_first_sample() {
         val processor = levelled()

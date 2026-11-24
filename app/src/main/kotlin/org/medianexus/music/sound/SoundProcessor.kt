@@ -115,6 +115,10 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     private var rampFrames = 1f
     private var lastSound: Sound? = null
 
+    /** Everything up to here was drained through to the end (the sink does that before a
+     *  gapless join), so what comes next follows on from it. */
+    private var drained = false
+
     /** The song being processed: its period, its levelling values, and whether it plays as
      *  part of its album (decided as it begins, as Windows decides when a song loads). */
     private var period: Any? = null
@@ -179,10 +183,19 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         // plays is ramped.
         retarget(s, immediate = joined || formatChanged)
         lastSound = s
-        if (formatChanged) filters.clear()
+        // The equaliser remembers what has passed only across sound that really is one: the
+        // sink drained everything before this flush (a gapless join). Any other flush (a seek,
+        // another song chosen, a new queue, a reset) is a break, and nothing rings over it.
+        if (!drained) filters.clear()
+        drained = false
+    }
+
+    override fun onQueueEndOfStream() {
+        drained = true
     }
 
     override fun onReset() {
+        drained = false
         period = null
         hasSong = false
         songTags = null
