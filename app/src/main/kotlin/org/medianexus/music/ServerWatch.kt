@@ -96,6 +96,12 @@ class ServerWatch(
      * begins; an answer is acted on only if no ask begun after it has already been. The
      * loop's periodic ask used to go out beside whatever [check] had in flight: a slow one
      * that failed after a quicker, later one had succeeded put the app back out of reach.
+     *
+     * **Asking whether it is the newest, and acting on it, are one step** under [lock], for
+     * every way an ask can end (also "may not ask", which used to skip the question): asked
+     * first and acted on after, an ask that had been given up for a newer one could still put
+     * its answer over the newer one's. Everything else that changes [state] takes the same
+     * lock; what is to be told to the rest of the app is told after it is let go.
      */
     private val turns = java.util.concurrent.atomic.AtomicLong()
     private var applied = 0L
@@ -141,21 +147,22 @@ class ServerWatch(
      * answer; until it has answered or failed to, the state says it isn't [Reach.sure].
      */
     fun begin(networkThere: Boolean) {
-        if (now.value.manual) return
-        if (!networkThere) {
-            assumed = true
-            gone()
-            // (Asked all the same: a server on the phone itself, or over a link Android
-            // doesn't count as a network, answers.)
-            check()
-            return
+        synchronized(lock) {
+            if (now.value.manual) return
+            if (networkThere) {
+                now.value = now.value.copy(sure = false)
+            } else {
+                assumed = true
+                gone()
+            }
         }
-        now.value = now.value.copy(sure = false)
-        ask(first = true)
+        // (Asked all the same with no network: a server on the phone itself, or over a link
+        // Android doesn't count as a network, answers.)
+        if (networkThere) ask(first = true) else check()
     }
 
     /** The phone has lost its network: the server is out of reach until it answers. */
-    fun noNetwork() {
+    fun noNetwork() = synchronized(lock) {
         if (!now.value.manual && !now.value.unreachable) gone()
     }
 
@@ -168,17 +175,19 @@ class ServerWatch(
      * and the downloads started against a server nobody had heard from.
      */
     fun manual(on: Boolean) {
-        val was = now.value
-        if (was.manual == on) return
-        if (on) {
-            switchedOff = false
-            now.value = was.copy(manual = true)
-            return
+        synchronized(lock) {
+            val was = now.value
+            if (was.manual == on) return
+            if (on) {
+                switchedOff = false
+                now.value = was.copy(manual = true)
+                return
+            }
+            // (Its first answer after this is no return worth announcing: see [answered].)
+            switchedOff = true
+            goneAt = clock()
+            now.value = was.copy(manual = false, unreachable = true, sure = false)
         }
-        // (Its first answer after this is no return worth announcing: see [answered].)
-        switchedOff = true
-        goneAt = clock()
-        now.value = was.copy(manual = false, unreachable = true, sure = false)
         ask(first = true, afresh = true)
     }
 
@@ -218,107 +227,107 @@ class ServerWatch(
             loop = null
             asking?.cancel()
             asking = null
+            assumed = false
+            now.value = now.value.copy(unreachable = false, sure = true)
         }
-        assumed = false
-        now.value = now.value.copy(unreachable = false, sure = true)
     }
 
     private suspend fun askOnce(first: Boolean = false) {
         val asked = generation.get()
         val turn = turns.incrementAndGet()
-        if (!mayAsk()) {
-            gone()
-            return
+        // (May not be asked: the same as no answer.)
+        val error: ApiError? = if (!mayAsk()) {
+            NOT_ASKED
+        } else {
+            try {
+                if (first) firstPing() else ping()
+                null
+            } catch (e: ApiError) {
+                e
+            }
         }
-        val error = try {
-            if (first) firstPing() else ping()
-            null
-        } catch (e: ApiError) {
-            e
-        }
-        // The account this was asked for has gone meanwhile: its answer is nobody's.
-        if (generation.get() != asked) return
-        // An ask begun after this one has already been answered: this answer is the older
-        // news, and changes nothing.
-        synchronized(lock) {
+        val tell: (() -> Unit)? = synchronized(lock) {
+            // The account this was asked for has gone meanwhile: its answer is nobody's.
+            if (generation.get() != asked) return
+            // An ask begun after this one has already been answered: this answer is the older
+            // news, and changes nothing. Asked and acted on in one step (see [turns]).
             if (turn < applied) return
             applied = turn
-        }
-        when {
-            error == null -> answered()
-            error.signInRefused -> {
-                now.value = now.value.copy(sure = true)
-                switchedOff = false
-                signInGone()
+            when {
+                error == null -> answered()
+                error.signInRefused -> {
+                    now.value = now.value.copy(sure = true)
+                    switchedOff = false
+                    signInGone
+                }
+                // No answer, an error page from something in front of the server, or an
+                // error from the server itself: none of those is the server back, and none a
+                // reason to sign out (Windows' check_connection). Carry on with what's on the
+                // phone and keep asking.
+                else -> {
+                    switchedOff = false
+                    gone()
+                    null
+                }
             }
-            // No answer, an error page from something in front of the server, or an error
-            // from the server itself: none of those is the server back, and none a reason to
-            // sign out (Windows' check_connection). Carry on with what's on the phone and
-            // keep asking.
-            else -> {
-                switchedOff = false
-                gone()
-            }
         }
+        tell?.invoke()
     }
 
     /** The server answered a ping: back, if it was out of reach; caught up with, if offline
-     *  mode has just been switched off. */
-    private fun answered() {
-        if (now.value.manual) return
+     *  mode has just been switched off. Under [lock]; returns what is to be told after it. */
+    private fun answered(): (() -> Unit)? {
+        if (now.value.manual) return null
         // Found there straight after offline mode was switched off: caught up with, and
         // nothing said (the switch was in the person's hand).
         val quiet = switchedOff
         switchedOff = false
-        if (now.value.unreachable) {
-            back(quiet)
-        } else {
-            if (!now.value.sure) now.value = now.value.copy(sure = true)
-            if (quiet) caughtUp()
-        }
+        if (now.value.unreachable) return back(quiet)
+        if (!now.value.sure) now.value = now.value.copy(sure = true)
+        return if (quiet) caughtUp else null
     }
 
+    /** Under [lock]. */
     private fun gone() {
         if (now.value.manual) return
         if (!now.value.unreachable) goneAt = clock()
         now.value = now.value.copy(unreachable = true, sure = true)
-        synchronized(lock) {
-            if (loop?.isActive == true) return
-            loop = scope.launch {
-                while (true) {
-                    // Less often the longer it has been gone.
-                    delay(againAfter(clock() - goneAt, againMillis))
-                    if (!now.value.unreachable) break
-                    // And only while something wants to know: with the app out of sight,
-                    // nothing playing and nothing waiting, the server is left alone (and
-                    // asked at once when that changes: see [nudge]).
-                    // (Through the one way of asking: never beside an ask already out.)
-                    if (!now.value.manual && mayAsk() && wanted()) ask()
-                }
+        if (loop?.isActive == true) return
+        loop = scope.launch {
+            while (true) {
+                // Less often the longer it has been gone.
+                delay(againAfter(clock() - goneAt, againMillis))
+                if (!now.value.unreachable) break
+                // And only while something wants to know: with the app out of sight, nothing
+                // playing and nothing waiting, the server is left alone (and asked at once
+                // when that changes: see [nudge]).
+                // (Through the one way of asking: never beside an ask already out.)
+                if (!now.value.manual && mayAsk() && wanted()) ask()
             }
         }
     }
 
-    private fun back(quiet: Boolean = false) {
+    /** Under [lock]; returns what is to be told after it. */
+    private fun back(quiet: Boolean): (() -> Unit)? {
         val was = now.value
-        if (!was.unreachable) return
+        if (!was.unreachable) return null
         now.value = was.copy(unreachable = false, sure = true)
-        synchronized(lock) {
-            loop?.cancel()
-            loop = null
-        }
+        loop?.cancel()
+        loop = null
         // Taken to be out of reach only because the phone had no network when the app
         // started (or `quiet`: only until this check, offline mode having just been switched
         // off): caught up with, and nothing said.
         if (assumed || quiet) {
             assumed = false
-            caughtUp()
-        } else {
-            cameOnline()
+            return caughtUp
         }
+        return cameOnline
     }
 
     companion object {
+        /** An ask that may not be made (see `mayAsk`). */
+        private val NOT_ASKED = ApiError.Network("Not asked.")
+
         /** How often the server is asked again when it has just gone out of reach, as on
          *  Windows. */
         const val AGAIN_MILLIS = 15_000L

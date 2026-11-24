@@ -934,6 +934,11 @@ How it is built (M1a):
     periodic ask used to go out beside one already in flight, and a slow failure could undo a
     later success). Something that wants to know now (the app coming to the front, Play, a
     network back) gives up an ask that has been out more than four seconds for a new one.
+    **Asking whether an answer is the newest, and acting on it, are one step** under one
+    lock, for every way an ask can end (an ask that may not be made, for want of the
+    permission to reach the home network, used to skip the question, and one given up for a
+    newer ask could put the app out of reach of a server it had just heard from); everything
+    else that changes where the app stands takes the same lock.
 - **Changes for the server go through one sender, once, in order** (`HeldChanges`): likes,
   ratings and plays are written to the phone (`held.json`) and then sent in their turn.
   There is no other way to the server, so nothing overtakes a change that is waiting: a like

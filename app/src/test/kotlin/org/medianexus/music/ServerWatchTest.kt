@@ -1,6 +1,7 @@
 package org.medianexus.music
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -447,5 +448,68 @@ class ServerWatchTest {
         runCurrent()
         assertFalse(watch.state.value.unreachable)
         assertEquals(1, online)
+    }
+
+    // ---- Asking whether it is the newest, and acting on it, are one step (offline hardening 3, item 7)
+
+    @Test
+    fun anAskGivenUpForANewerOneCannotPutItsAnswerOverTheNewerOnes() = kotlinx.coroutines.runBlocking {
+        // On real threads: the ask that is given up is held at a gate inside it, which is
+        // opened only once the newer ask has been answered and acted on. Nothing waits on
+        // time; the limit is only so that a test gone wrong at the gate fails.
+        kotlinx.coroutines.withTimeout(60_000) {
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            try {
+                val time = java.util.concurrent.atomic.AtomicLong()
+                val reply = java.util.concurrent.atomic.AtomicReference<() -> Unit> { throw ApiError.Network("gone") }
+                val came = java.util.concurrent.atomic.AtomicInteger()
+                // Whether the server may be asked (the permission to reach the home network):
+                // the next ask's question about it stands at the gate, and is then answered no.
+                val armed = java.util.concurrent.atomic.AtomicBoolean()
+                val atGate = java.util.concurrent.CountDownLatch(1)
+                val gate = java.util.concurrent.CountDownLatch(1)
+                val watch = ServerWatch(
+                    scope, ping = { reply.get()() }, cameOnline = { came.incrementAndGet() }, signInGone = {},
+                    mayAsk = {
+                        if (armed.compareAndSet(true, false)) {
+                            atGate.countDown()
+                            gate.await()
+                            false
+                        } else {
+                            true
+                        }
+                    },
+                    clock = { time.get() },
+                )
+                try {
+                    // Out of reach.
+                    watch.check()
+                    watch.state.first { it.unreachable }
+                    // An ask goes out, and stands at the gate.
+                    armed.set(true)
+                    watch.check()
+                    atGate.await()
+                    val old = scope.coroutineContext[kotlinx.coroutines.Job]!!.children.toList()
+                    // A few seconds on the app comes to the front: that ask is given up for a
+                    // new one, which the server answers. It is back.
+                    time.addAndGet(ServerWatch.STALE_ASK_MILLIS + 1)
+                    reply.set {}
+                    watch.nudge()
+                    watch.state.first { !it.unreachable }
+                    // The old ask now comes to its end: it may not ask, which is "no answer".
+                    // It is the older news. (It used to act on that without asking whether it
+                    // was the newest, and put the app out of reach of a server it had just
+                    // heard from.)
+                    gate.countDown()
+                    old.forEach { it.join() }
+                    assertFalse(watch.state.value.unreachable)
+                    assertEquals(1, came.get())
+                } finally {
+                    gate.countDown()
+                }
+            } finally {
+                scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+            }
+        }
     }
 }
