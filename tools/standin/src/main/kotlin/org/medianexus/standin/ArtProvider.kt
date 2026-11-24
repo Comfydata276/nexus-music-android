@@ -18,6 +18,10 @@ import java.io.FileNotFoundException
  * picture is a coloured square with a letter, drawn on first request.
  */
 class ArtProvider : ContentProvider() {
+    private companion object {
+        val LOCK = Any()
+    }
+
     override fun onCreate() = true
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
@@ -26,21 +30,36 @@ class ArtProvider : ContentProvider() {
         if (mode != "r") throw SecurityException("artwork is read-only")
         val key = uri.lastPathSegment?.takeIf { it.matches(Regex("[a-z0-9]+")) } ?: throw FileNotFoundException(uri.toString())
         val file = File(context.cacheDir, "art/$key.png")
-        if (!file.exists()) {
-            file.parentFile?.mkdirs()
-            val size = 400
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            val hue = (key.hashCode() and 0xffff) % 360
-            canvas.drawColor(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.6f, 0.75f)))
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 220f; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
-            val letter = key.first().uppercase() + key.last()
-            canvas.drawText(letter, size / 2f, size / 2f + 80f, paint)
-            val part = File(file.path + ".part")
-            part.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            part.renameTo(file)
+        // Drawn the first time it is asked for, one at a time. Without the lock, two readers
+        // at once (on the car emulator, the car's own media screens and the probe both read
+        // the same pictures as they open) wrote the same part file over each other, and the
+        // damaged picture stayed in the cache: the probe's art.readable failed there only.
+        synchronized(LOCK) {
+            if (!whole(file)) {
+                file.parentFile?.mkdirs()
+                val size = 400
+                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                val hue = (key.hashCode() and 0xffff) % 360
+                canvas.drawColor(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.6f, 0.75f)))
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 220f; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+                val letter = key.first().uppercase() + key.last()
+                canvas.drawText(letter, size / 2f, size / 2f + 80f, paint)
+                val part = File(file.path + ".part")
+                part.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                part.renameTo(file)
+            }
         }
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
+
+    /** A picture already drawn, and whole (one damaged by an earlier, unlocked build of this
+     *  fixture is drawn again). */
+    private fun whole(file: File): Boolean {
+        if (!file.isFile || file.length() < 8) return false
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.path, bounds)
+        return bounds.outWidth > 0
     }
 
     override fun getType(uri: Uri) = "image/png"

@@ -157,6 +157,10 @@ class Probe : Instrumentation() {
             longPause()
             return
         }
+        if (mode == "offline") {
+            offline(root)
+            return
+        }
 
         check("root.search", "Says it can search (the car shows a search button)",
             rootExtras?.getBoolean(SEARCH_SUPPORTED) == true,
@@ -1107,6 +1111,56 @@ class Probe : Instrumentation() {
     }
 
     /** When nobody is signed in, the car should be told so in words, not shown a blank. */
+    /**
+     * `--mode offline`, with the server out of reach (stopped, or the phone in flight mode):
+     * what a car shows with no signal. Every folder still opens within the limit; the
+     * Downloads tab lists what is on the phone and a song chosen there plays; a song chosen
+     * in any other tab plays too (offline, they show only what can be played); search and a
+     * spoken request find what is on the phone. Something must have been downloaded first.
+     */
+    private fun offline(root: String) {
+        val tree = browse(root)
+        artwork(tree)
+        val tabs = tree.firstOrNull()?.children.orEmpty()
+        val downloadsTab = tabs.firstOrNull { it.description.title?.toString() == (args.getString("downloads_tab") ?: "Downloads") }
+        check("offline.downloads_tab", "There is a Downloads tab", downloadsTab != null, "tabs: " + tabs.joinToString { "\"${it.description.title}\"" })
+        if (downloadsTab == null) return
+        val underDownloads = tree.filter { it.id == downloadsTab.mediaId || it.path.startsWith("/${downloadsTab.description.title}") }
+        val downloaded = underDownloads.flatMap { songs(tree, it) }.distinctBy { it.mediaId }
+        check("offline.downloads", "Downloads lists what is on the phone, with no server", downloaded.isNotEmpty(),
+            "no songs under Downloads (download something first)", "${downloaded.size} songs under ${underDownloads.size} folders")
+        if (downloaded.isEmpty()) return
+
+        fun plays(item: MediaItem, id: String, title: String) {
+            quiet()
+            onMain { controls.playFromMediaId(item.mediaId, null) }
+            val ms = waitFor { playing() }
+            check(id, title, ms >= 0, "\"${item.description.title}\": ${whyNotPlaying()}", "now ${nowPlaying()}", ms)
+        }
+        plays(downloaded.random(), "offline.play_download", "A song chosen in Downloads plays")
+        // Elsewhere: offline, every song a tab lists is one that can play.
+        val elsewhere = tree.filter { it !in underDownloads && it.depth > 0 }.flatMap { songs(tree, it) }.distinctBy { it.mediaId }
+        if (elsewhere.isEmpty()) {
+            record("offline.play_elsewhere", "WARN", "A song chosen in another tab plays", "no songs listed outside Downloads")
+        } else {
+            elsewhere.shuffled().take(3).forEachIndexed { n, item -> plays(item, "offline.play_elsewhere.${n + 1}", "A song listed in another tab plays (offline, only what can play is listed)") }
+        }
+        // Search and a spoken request look in what is on the phone.
+        val word = downloaded.flatMap { it.description.title.toString().split(" ") }.firstOrNull { it.length >= 4 && it.all(Char::isLetter) }
+        if (word != null) {
+            val t0 = SystemClock.elapsedRealtime()
+            val (found, error) = searchFor(word)
+            check("offline.search", "Search finds what is on the phone", !found.isNullOrEmpty(), error ?: "nothing found for \"$word\"",
+                "\"$word\": ${found?.size} results", SystemClock.elapsedRealtime() - t0)
+            val title = downloaded.first { it.description.title.toString().contains(word) }.description.title.toString()
+            quiet()
+            onMain { controls.playFromSearch(title, voiceExtras("song", title, emptyMap())) }
+            val ms = waitFor { playing() && playingMatches(title) }
+            check("offline.voice", "\"Play $title\" plays it, from the phone", ms >= 0, "${whyNotPlaying()}; now ${nowPlaying()}", "now ${nowPlaying()}", ms)
+        }
+        quiet()
+    }
+
     private fun signedOut(root: String) {
         val asked = SystemClock.elapsedRealtime()
         // Before anything is asked of it: a car showing only its player (the home screen's

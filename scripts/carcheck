@@ -34,6 +34,10 @@ usage: scripts/carcheck <package> [options]     check an installed app
                         the queue must survive the app's own commands sent by a controller
                         that isn't the app, and intents made to look like taps on the
                         notification (with --nexus, the app's own command names too)
+  --mode offline        with the server out of reach (scripts/server stop, or flight mode)
+                        and something downloaded: every folder still opens, Downloads lists
+                        what is on the phone, and songs chosen there, in the other tabs,
+                        from search and by voice all play
   --mode long_pause     only: play, pause, stay connected for eleven minutes (--pause-s N
                         for another wait), and press Play: what a car does after a long stop
   --warm                don't remove the app from memory first (to measure it as it is,
