@@ -208,7 +208,7 @@ fun Ui.togglePin(id: String) {
 /** "Add to playlist": New playlist, then the account's own playlists (Windows' picker). */
 fun Ui.pickPlaylist(songs: List<Song>) {
     val wanted = songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }
-    if (wanted.isEmpty()) return
+    if (wanted.isEmpty() || !said(account?.playlists?.reachableNow())) return
     sheet = Sheet.Drawn { choose -> PlaylistPicker(wanted, choose) }
 }
 

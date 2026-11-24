@@ -152,7 +152,8 @@ fun PlaylistPage(route: Route.Playlist) {
         HeroData(stringResource(R.string.kind_playlist), playlist.name, playlist.owner, facts, playlist.coverArt, playlist = true)
     }
     // Changed only if it is known to be the account's own: someone else's plays, and says why
-    // it can't be changed. And only with the server there: changes are never kept for later.
+    // it can't be changed. And only with the server there: changes are never kept for later,
+    // so without it the menus' changes say why, and there is nothing to drag.
     val mine = kept != null && playlists?.canEdit(kept) == true
     val online = !org.medianexus.music.ui.downloads.reachNow().let { it.offline || !it.sure }
     SongListPage(
@@ -163,7 +164,8 @@ fun PlaylistPage(route: Route.Playlist) {
         feed = feed,
         empty = stringResource(if (mine) R.string.playlist_empty_editable else R.string.playlist_empty),
         downloadable = true,
-        editable = playlist.takeIf { mine && online },
+        editable = playlist.takeIf { mine },
+        draggable = online,
         onMore = { page -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, kept, page = page)) },
         note = if (kept != null && !mine) stringResource(R.string.not_your_playlist, kept.owner) else null,
         below = { if (mine && online && playlist != null) recommendations(playlist) },

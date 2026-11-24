@@ -90,6 +90,8 @@ fun SongListPage(
     /** The playlist these songs are, where the account may change it: its songs can be
      *  dragged into another order (in its own order) and taken out. */
     editable: org.medianexus.music.net.Playlist? = null,
+    /** Whether its songs can be dragged now (the server there to take the change). */
+    draggable: Boolean = true,
     /** The header's "…" (the page's own menu), if it has one: given what the page drew and
      *  its play button, for the menu to act on. */
     onMore: ((org.medianexus.music.ui.menu.FromPage) -> Unit)? = null,
@@ -145,7 +147,7 @@ fun SongListPage(
     // A playlist's songs in its own order can be dragged by their handles (see PlaylistDrag).
     val drag = remember(key) { PlaylistDrag() }
     androidx.compose.runtime.LaunchedEffect(songs) { drag.reset() }
-    val canDrag = editable != null && view.isDefault && !selection.active
+    val canDrag = editable != null && draggable && view.isDefault && !selection.active
     // As the queue has it if this is the list playing, else as the list remembers it.
     val shuffle = if (key == from.source) queueShuffle else settings.lists[key]?.shuffle ?: false
     val playingHere = from.isList(key) && !from.paused
