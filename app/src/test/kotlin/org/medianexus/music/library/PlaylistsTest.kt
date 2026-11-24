@@ -342,10 +342,17 @@ class PlaylistsTest {
         val said = listen()
         playlists.remove(page, listOf(1))
         said.await()
+        // After saying so, the playlist is read again to catch up (the page's read, the
+        // change's own, then this one): waited for, so it can't land after the count below.
+        withTimeout(10_000) { while (server.count("get") < 3) kotlinx.coroutines.delay(5) }
         settled()
-        val asked = server.asked.size
+        // Only what changes a playlist is counted: nothing more may be sent.
+        val writes = { server.asked.count { !it.startsWith("get ") } }
+        val before = writes()
         assertFalse(playlists.undoLast(page))
-        assertEquals(asked, server.asked.size)
+        kotlinx.coroutines.delay(100)
+        assertEquals(before, writes())
+        assertEquals(1, server.count("remove"))
     }
 
     @Test
