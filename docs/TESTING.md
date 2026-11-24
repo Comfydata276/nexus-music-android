@@ -2034,8 +2034,12 @@ out; it now holds at most eight frames, as a real decoder's few buffers do. At d
 whole unit suite passed twice in a row with `--no-build-cache` and every task run again, 895
 tests each time, none failed; `scripts/check --release` failed once on
 `DownloadsTest.theSameNetworkTurningMeteredStopsWifiOnlyDownloadsAtOnce` (a 30-second wait on
-another thread, which passed in both runs of the suite: a timing failure under load, not the
-sound's), and passed run again (its tests then up to date from the second run of the suite).
+another thread, which passed in both runs of the suite), and passed run again (its tests then
+up to date from the second run of the suite). Called a timing failure under load here, it was
+the test's own order: it kept the song in flight with a 16 KB / 40 ms throttle, and assumed the
+400 KB song took longer to arrive than the network's change took to stop it. Fixed in 8e0ce28,
+which holds the transfer at a gate on the stand-in server instead (and did the same for every
+test of the class that used the throttle); 3b92072 then did the like for `WifiOnlyTest`'s waits.
 
 ## Your stats and the mixes (M5b): what was checked
 
@@ -2108,9 +2112,14 @@ bytes; 6,458,194 before the milestone). The whole suite three times with `--no-b
 --rerun-tasks`: 896 tests each; runs 1 and 3 failed one test,
 `DownloadsTest.aGroupThatIsNoListIsRemovedWholeToo` ("s3 has a file": an album removed while a
 2.4 MB song is still arriving), run 2 failed none. That test passed run alone, twice here and
-once at the build before the milestone; nothing on its path was changed by this work. It looks
-like a timing failure under the full suite's load (the machine's load average was 5), and is
-left for whoever owns the downloads.
+once at the build before the milestone; nothing on its path was changed by this work. It was
+taken here for a timing failure under the full suite's load and left for whoever owns the
+downloads. It was not: it was a real fault in the app, fixed in 8e0ce28. A song whose fetch was
+in its last steps (file in place, not yet marked downloaded) as its album was removed was
+marked downloaded afterwards, and stayed downloaded, file and all, for nobody. The test met it
+often only because its order (two downloads at once) made the album's removal fall just as the
+second big song was ending. `aSongInItsLastStepsAsItsGroupIsRemovedIsNotMarkedDownloadedAfterwards`
+forces that moment.
 
 **Not checked here**: `scripts/cartour` of "Made for you" in the car's own screens (the car
 emulator was another engineer's); TalkBack read aloud (the names are in `scripts/emu ui`:
@@ -2151,7 +2160,8 @@ the shared checkout didn't build at those moments for other engineers' work in p
 other engineers' unfinished work): `scripts/check --release` passed (908 tests, lint clean,
 release APK 6,583,390 bytes), and the whole suite twice in a row with `--no-build-cache
 --rerun-tasks`, 908 tests each, none failed. (`DownloadsTest.aGroupThatIsNoListIsRemovedWholeToo`,
-which failed under load in M5b's runs, passed in all three.)
+which failed in M5b's runs, passed in all three: the fault in the app it met was fixed in
+8e0ce28.)
 
 ## In step with other devices (M5a): what was checked
 
