@@ -145,11 +145,6 @@ class PhoneShared(
     /** The dates on screen may have changed. */
     private val datesChanged: () -> Unit = {},
 ) : StepPhone {
-    override var playlist: String
-        get() = settings.value.let { if (Belongs.ready(it, account)) it.syncPlaylist else "" }
-        // Remembered, so the next start needn't look for it.
-        set(id) = settings.update { if (Belongs.ready(it, account) && it.syncPlaylist != id) it.copy(syncPlaylist = id) else it }
-
     override suspend fun record(): Shared? {
         val now = settings.value
         // Not before the choices in the settings are this account's own, nor before its

@@ -8,16 +8,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import org.medianexus.music.net.ApiError
-import org.medianexus.music.net.Playlist
+import org.medianexus.music.net.StatedPlaylist
+import org.medianexus.music.net.Timed
 
-/** What an exchange asks of the server: the account's playlists as the server lists them
+/** What an exchange asks of the server: the account's playlists as the server states them
  *  (the sync playlist among them), and the one write, of the record. */
 interface StepServer {
-    suspend fun playlists(): List<Playlist>
-    suspend fun playlist(id: String): Playlist
+    suspend fun playlists(): List<StatedPlaylist>
 
-    /** A new, empty playlist of this name. */
-    suspend fun create(name: String): Playlist
+    /** One playlist, and the server's clock as it answered. */
+    suspend fun playlist(id: String): Timed<StatedPlaylist>
+
+    /** A new, empty playlist of this name: its id. */
+    suspend fun create(name: String): String
 
     /** Replaces the playlist's comment (and keeps the playlist private). The whole value:
      *  sent again, it comes to the same. */
@@ -26,9 +29,6 @@ interface StepServer {
 
 /** What an exchange asks of the phone: what it has to share, and to take in what came back. */
 interface StepPhone {
-    /** The id of the playlist that holds the record, once known ("" before). */
-    var playlist: String
-
     /**
      * What this phone has to share (Windows' `shared_here`), or null while any part of it has
      * not been read from the phone for this account. An exchange with part of the phone's
@@ -56,8 +56,9 @@ interface StepPhone {
  * **What the phone is more careful about than Windows** (its PCs can't defend themselves):
  * it takes no part until everything it shares has been read from the phone
  * ([StepPhone.record]); it leaves alone a comment it can't read ([KotlinSettler]); it uses a
- * playlist only if it is the account's own, by name and owner, known id or not; and it makes
- * the playlist only having just been told by the server that there is none.
+ * playlist only if it is the account's own, by name and owner, the lowest id of them at every
+ * exchange; and it makes the playlist only having just been told by the server that there is
+ * none.
  */
 class InStep(
     private val server: StepServer,
@@ -146,8 +147,7 @@ class InStep(
         val local = phone.record() ?: return Outcome.NOT_READ_YET
         val now = clock()
         val playlist = find() ?: return Outcome.NOT_NOW
-        phone.playlist = playlist.id
-        return when (val settled = settler.settle(playlist.comment, SharedText.write(local), now)) {
+        return when (val settled = settler.settle(playlist.comment.orEmpty(), SharedText.write(local), now)) {
             Settled.Unreadable -> {
                 note("in step: the shared record on the server isn't one this version can read; it was left as it is")
                 Outcome.UNREADABLE
@@ -172,32 +172,25 @@ class InStep(
     }
 
     /** Whether a playlist is the one the record is kept in: by name, and the account's own. */
-    private fun isRecord(playlist: Playlist): Boolean =
-        playlist.name == PLAYLIST_NAME && (playlist.owner.isEmpty() || playlist.owner.lowercase() == username.lowercase())
+    private fun isRecord(playlist: StatedPlaylist): Boolean =
+        playlist.id.isNotEmpty() && playlist.name == PLAYLIST_NAME && (playlist.owner.isNullOrEmpty() || playlist.owner.lowercase() == username.lowercase())
 
     /**
-     * The playlist that holds the record, with its comment as the server has it now: the one
-     * known from before, if it is still there under its name; else found as Windows finds it
-     * (by name and owner, the lowest id when there are several), or made, if the server has
-     * just said there is none. Null if it may no longer be made.
+     * The playlist that holds the record, with its comment as the server has it now: of the
+     * playlists of that name that are the account's own, **the one with the lowest id, looked
+     * for afresh at every exchange** (by bytes, as Windows compares ids). Nothing is
+     * remembered between exchanges: a phone that went on using the id it knew, after a lower
+     * one appeared (two devices that each made one, having found none), would never meet the
+     * devices that use the lower again. Made if the server has just said there is none. Null
+     * if it may no longer be made.
      */
-    private suspend fun find(): Playlist? {
-        val known = phone.playlist
-        if (known.isNotEmpty()) {
-            val there = try {
-                server.playlist(known)
-            } catch (_: ApiError.Server) {
-                // Deleted from another app: find it again, or start a new one.
-                null
-            }
-            if (there != null && there.id.isNotEmpty() && isRecord(there)) return there
-        }
-        val mine = server.playlists().filter { it.id.isNotEmpty() && isRecord(it) }.map { it.id }
+    private suspend fun find(): StatedPlaylist? {
+        val mine = server.playlists().filter(::isRecord).map { it.id }
         val id = mine.minWithOrNull { a, b -> SharedText.bytewise(a, b) } ?: run {
             if (!may()) return null
-            server.create(PLAYLIST_NAME).id.ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
+            server.create(PLAYLIST_NAME).ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
         }
-        return server.playlist(id).takeIf { it.id.isNotEmpty() && isRecord(it) } ?: throw ApiError.NotSubsonic("The playlist isn't the one asked for.")
+        return server.playlist(id).value.takeIf(::isRecord) ?: throw ApiError.NotSubsonic("The playlist isn't the one asked for.")
     }
 
     companion object {

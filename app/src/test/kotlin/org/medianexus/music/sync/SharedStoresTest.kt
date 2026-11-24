@@ -192,6 +192,36 @@ class SharedStoresTest {
 
     // ---- the playlist that holds the record is never among the playlists ---------------------------
 
+    @Test
+    fun aPlaylistOfThePersonsOwnCannotTakeTheReservedName() {
+        val playlists = org.medianexus.music.library.Playlists
+        assertTrue(playlists.reserved("Nexus Music sync"))
+        assertTrue(playlists.reserved("  Nexus Music sync "))
+        assertFalse(playlists.reserved("Nexus Music sync 2"))
+        assertFalse(playlists.reserved("nexus music sync"))
+        // Making one of that name, or renaming one to it, is refused before anything is asked
+        // of the server.
+        val asked = ArrayList<String>()
+        val server = object : org.medianexus.music.library.PlaylistServer {
+            override suspend fun playlist(id: String): Playlist = error("not asked")
+            override suspend fun createPlaylist(name: String, songIds: List<String>): Playlist = Playlist(id = "new").also { asked += "create $name" }
+            override suspend fun renamePlaylist(id: String, name: String) { asked += "rename $name" }
+            override suspend fun addToPlaylist(id: String, songIds: List<String>) = Unit
+            override suspend fun replacePlaylist(id: String, songIds: List<String>) = Unit
+            override suspend fun removeManyFromPlaylist(id: String, positions: List<Int>) = Unit
+            override suspend fun deletePlaylist(id: String) = Unit
+        }
+        val pages = PageCache(folder.newFolder(), scope, Dispatchers.Unconfined)
+        val mine = org.medianexus.music.library.Playlists(
+            server, pages, { org.medianexus.music.store.PageSpec("playlists", kotlinx.serialization.builtins.ListSerializer(Playlist.serializer())) { emptyList() } },
+            { org.medianexus.music.store.PageSpec("playlist:$it", Playlist.serializer()) { error("not asked") } }, reachable = { true }, username = "tester", scope = scope,
+        )
+        val reserved = org.medianexus.music.library.Playlists.Unavailable.RESERVED_NAME
+        assertEquals(reserved, mine.create("Nexus Music sync", emptyList()))
+        assertEquals(reserved, mine.rename(Playlist(id = "p1", name = "Road trip", owner = "tester"), " Nexus Music sync"))
+        assertTrue(asked.isEmpty())
+    }
+
     private fun answer(body: String) = MockResponse.Builder().code(200).setHeader("Content-Type", "application/json")
         .body("""{"subsonic-response":{"status":"ok","version":"1.16.1",$body}}""").build()
 

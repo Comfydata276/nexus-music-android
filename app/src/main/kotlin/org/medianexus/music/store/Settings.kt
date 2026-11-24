@@ -98,7 +98,8 @@ data class Settings(
     val sync: Boolean = true,
     /** A made-up name for this device, so it can tell its own saved queue from others'. */
     val deviceId: String = "",
-    /** The id of the playlist that holds what's shared between devices, once known. */
+    /** (No longer used: the playlist that holds what's shared between devices is looked for
+     *  afresh at every exchange. Read past in a file that has it.) */
     val syncPlaylist: String = "",
     /** When the pins and the theme were last changed, to settle which device's are newer. */
     val pinsAt: Long = 0,

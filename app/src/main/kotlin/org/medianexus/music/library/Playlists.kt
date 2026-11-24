@@ -111,6 +111,8 @@ class Playlists(
         /** It holds songs missing from the library, so it can't be removed from or reordered
          *  by the rows shown ([Playlist.hidesSongs]). */
         MISSING_SONGS,
+        /** The name is the one the app keeps for the playlist it shares between devices in. */
+        RESERVED_NAME,
     }
 
     /** What is changed: rows taken out, or the whole order (a move, or an Undo). */
@@ -206,10 +208,10 @@ class Playlists(
 
     /** A new playlist with these songs. */
     fun create(name: String, songs: List<Song>, done: (Boolean) -> Unit = {}): Unavailable? =
-        begin("new:" + java.util.UUID.randomUUID(), null, Change.Create(name, songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }), done)
+        if (reserved(name)) Unavailable.RESERVED_NAME else begin("new:" + java.util.UUID.randomUUID(), null, Change.Create(name, songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }), done)
 
     fun rename(record: Playlist, name: String, done: (Boolean) -> Unit = {}): Unavailable? =
-        if (name.isBlank()) null else begin(record.id, record, Change.Rename(name.trim()), done)
+        if (name.isBlank()) null else if (reserved(name)) Unavailable.RESERVED_NAME else begin(record.id, record, Change.Rename(name.trim()), done)
 
     fun delete(record: Playlist, done: (Boolean) -> Unit = {}): Unavailable? = begin(record.id, record, Change.Delete, done)
 
@@ -399,5 +401,12 @@ class Playlists(
     companion object {
         /** How long after a removal or move it can be taken back (Windows' minute). */
         const val UNDO_MILLIS = 60_000L
+
+        /**
+         * Whether a name for a playlist is the one the app keeps for itself: a playlist of the
+         * person's own called "Nexus Music sync" would be taken, by this app on every device,
+         * for the one it shares between devices in, hidden from every list, and written into.
+         */
+        fun reserved(name: String): Boolean = name.trim() == org.medianexus.music.sync.PLAYLIST_NAME
     }
 }

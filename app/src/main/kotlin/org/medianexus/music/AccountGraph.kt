@@ -278,10 +278,10 @@ class AccountGraph(
     val step: org.medianexus.music.sync.InStep? = shared?.let { phone ->
         org.medianexus.music.sync.InStep(
             object : org.medianexus.music.sync.StepServer {
-                override suspend fun playlists() = api.playlists()
-                override suspend fun playlist(id: String) = api.playlist(id)
+                override suspend fun playlists() = api.playlistsStated()
+                override suspend fun playlist(id: String) = api.playlistStated(id)
                 // Made once: a request sent twice would make two.
-                override suspend fun create(name: String) = api.once().createPlaylist(name, emptyList())
+                override suspend fun create(name: String) = api.once().createPlaylist(name, emptyList()).id
                 override suspend fun setComment(id: String, comment: String) = api.setPlaylistComment(id, comment)
             },
             phone, account.username, account.key, ::mayShare, scope, pause = pause, note = wiring?.note ?: {},

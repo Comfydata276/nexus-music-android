@@ -12,8 +12,8 @@ import org.medianexus.music.store.writeAtomically
 /**
  * Whose the shared choices are.
  *
- * The pins, each list's shuffle and sort, the time the theme was chosen and the sync
- * playlist's id live in the phone's settings, where every screen reads them. Settings are the
+ * The pins, each list's shuffle and sort and the time the theme was chosen live in the
+ * phone's settings, where every screen reads them. Settings are the
  * phone's, not an account's; but these are shared into an account's record on the server,
  * where that person's PCs take them for that person's own. So they belong to one account at
  * a time ([Settings.sharedFor]), and when another account is taken on they are put away with
@@ -39,7 +39,6 @@ object Belongs {
         /** The theme chosen under this account ("" for none) and when. */
         val theme: String = "",
         val themeAt: Long = 0,
-        val syncPlaylist: String = "",
     )
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -66,7 +65,7 @@ object Belongs {
         // Put away with the account they belong to...
         val leaving = settings.value
         if (leaving.sharedFor != account && leaving.sharedFor.isNotEmpty()) {
-            val kept = Kept(leaving.pinnedPlaylists, leaving.pinsAt, leaving.lists, if (leaving.themeOwn) leaving.theme else "", if (leaving.themeOwn) leaving.themeAt else 0, leaving.syncPlaylist)
+            val kept = Kept(leaving.pinnedPlaylists, leaving.pinsAt, leaving.lists, if (leaving.themeOwn) leaving.theme else "", if (leaving.themeOwn) leaving.themeAt else 0)
             try {
                 val data = dataOf(leaving.sharedFor)
                 data.mkdirs()
@@ -97,7 +96,6 @@ object Belongs {
                 theme = if (own) mine.theme else now.theme,
                 themeAt = if (own) mine.themeAt else 0,
                 themeOwn = own,
-                syncPlaylist = mine.syncPlaylist,
             )
         }
     }

@@ -94,9 +94,9 @@ class InStepLiveTest {
         val shared = PhoneShared(settings, account, added, history, log, read = { true }, playlists = { null }, songs = { ids -> ids.mapNotNull { id -> runCatching { api.song(id) }.getOrNull()?.takeIf { it.id == id } }.associateBy { it.id } })
         val step = InStep(
             object : StepServer {
-                override suspend fun playlists() = api.playlists()
-                override suspend fun playlist(id: String) = api.playlist(id)
-                override suspend fun create(name: String) = api.once().createPlaylist(name, emptyList())
+                override suspend fun playlists() = api.playlistsStated()
+                override suspend fun playlist(id: String) = api.playlistStated(id)
+                override suspend fun create(name: String) = api.once().createPlaylist(name, emptyList()).id
                 override suspend fun setComment(id: String, comment: String) = api.setPlaylistComment(id, comment)
             },
             shared, user, account, may = { on }, scope = scope, pause = {},
@@ -169,7 +169,6 @@ class InStepLiveTest {
             assertEquals(listOf(p1, p2), s.pinnedPlaylists)
             assertEquals("Ocean", s.theme)
             assertEquals(4, s.lists.getValue("playlist:$p1").sort)
-            assertEquals(id, s.syncPlaylist)
         }
         assertEquals(listOf(songs[1].title, songs[0].title), phone.history.state.value.map { it.song.title })
         assertEquals(listOf(songs[0].id to t - 450, songs[1].id to t - 400), phone.log.shared())
@@ -245,9 +244,12 @@ class InStepLiveTest {
         say("10. With two sync playlists, the phone uses the one Windows uses: the lowest id.")
         val other = windows("plant", "tester", "--new", "yes", "--text", """{"nexus_music_sync":1,"pins":["other"],"pins_at":5}""").text("playlist")!!
         val lowest = peek().text("playlist")!!
+        // A phone that has been exchanging with the higher one, and a new one, both go to the
+        // lowest: the first's pins (the PC's, held on the phone) are written into it.
         val third = Phone("third phone")
         third.exchange()
-        assertEquals(lowest, third.settings.value.syncPlaylist)
+        phone.exchange()
+        assertEquals(listOf(p2, p1), SharedText.read(windows("peek", "tester").text("comment")!!)!!.pins)
         assertEquals(2, peek().getValue("sync_playlists").jsonPrimitive.int)
         say("   two there ($id and $other); both use $lowest")
         runBlocking { api.deletePlaylist(if (lowest == id) other else id) }

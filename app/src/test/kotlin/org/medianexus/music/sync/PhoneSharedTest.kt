@@ -253,7 +253,7 @@ class PhoneSharedTest {
     @Test
     fun nothingChosenUnderOneAccountIsSharedIntoAnothersRecord() {
         val first = Phone("a")
-        settings.update { it.copy(pinnedPlaylists = listOf("pa"), pinsAt = 100, theme = "Rose", themeAt = 110, themeOwn = true, lists = mapOf("liked" to ListPrefs(shuffle = true, at = 120)), syncPlaylist = "sync-a") }
+        settings.update { it.copy(pinnedPlaylists = listOf("pa"), pinsAt = 100, theme = "Rose", themeAt = 110, themeOwn = true, lists = mapOf("liked" to ListPrefs(shuffle = true, at = 120))) }
         first.history.played(Song(id = "heard-by-a"))
         first.log.add("heard-by-a", 130)
         first.added.changed("pa", emptyList(), listOf("s"), 140)
@@ -266,7 +266,6 @@ class PhoneSharedTest {
         // The second account: no pins, no list choices, no notes, no plays; and the theme the
         // phone was left showing is not its to tell of. Exactly a fresh phone's record.
         assertEquals(Shared(layout = 1), second.record())
-        assertEquals("", second.shared.playlist)
         // (The phone still looks as it did.)
         assertEquals("Rose", settings.value.theme)
         // A theme chosen now is this account's.
@@ -275,12 +274,11 @@ class PhoneSharedTest {
 
         // Back as the first: its own choices are as they were, the theme it chose with them.
         first.close()
-        val again = Phone("a")
+        Phone("a")
         val s = settings.value
         assertEquals(listOf("pa") to 100L, s.pinnedPlaylists to s.pinsAt)
         assertEquals(Triple("Rose", 110L, true), Triple(s.theme, s.themeAt, s.themeOwn))
         assertEquals(mapOf("liked" to ListPrefs(shuffle = true, at = 120)), s.lists)
-        assertEquals("sync-a", again.shared.playlist)
     }
 
     @Test

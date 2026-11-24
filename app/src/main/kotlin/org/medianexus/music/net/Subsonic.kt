@@ -192,6 +192,7 @@ class Subsonic private constructor(
         // Read and decoded together, off the caller's thread: an answer can be megabytes.
         val (status, answer) = send(request, Http.API_TIMEOUT_SECONDS * 1000) { response ->
             val reading = Answer<T>()
+            reading.date = response.header("Date")
             try {
                 response.body.byteStream().use { json.decodeFromStream(Envelope(field, serializer, reading), it) }
             } catch (e: IllegalArgumentException) {
@@ -394,6 +395,19 @@ class Subsonic private constructor(
     suspend fun createPlaylist(name: String, songIds: List<String>): Playlist {
         val params = listOf("name" to name) + songIds.map { "songId" to it }
         return call("createPlaylist", params, "playlist", Playlist.serializer(), ::Playlist)
+    }
+
+    /** The account's playlists as the server states them (see [StatedPlaylist]), without
+     *  their songs. */
+    suspend fun playlistsStated(): List<StatedPlaylist> =
+        call("getPlaylists", emptyList(), "playlists", StatedWrap.serializer(), ::StatedWrap).playlist.map { it.stated() }
+
+    /** One playlist as the server states it, without its songs, and the server's clock as it
+     *  answered. */
+    suspend fun playlistStated(id: String): Timed<StatedPlaylist> {
+        val answer = request("getPlaylist", listOf("id" to id), "playlist", Stated.serializer())
+        val stated = answer.value?.takeIf { answer.present } ?: Stated()
+        return Timed(stated.stated(), answer.date?.let(::httpDate))
     }
 
     /** Replaces a playlist's comment, and keeps the playlist private. */
@@ -659,7 +673,25 @@ private class Answer<T> {
     var sentNull = false
     /** The section is being read now: what goes wrong is the section's fault. */
     var inField = false
+    /** The answer's `Date`, as the server wrote it. */
+    var date: String? = null
 }
+
+/** An HTTP date ("Tue, 24 Nov 2026 20:12:28 GMT") as seconds since 1970; null if it isn't one. */
+internal fun httpDate(text: String): Long? = try {
+    java.time.ZonedDateTime.parse(text.trim(), java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toEpochSecond()
+} catch (_: java.time.format.DateTimeParseException) {
+    null
+}
+
+/** A playlist with only what keeping in step asks of it, each part null where the server
+ *  left it out. (Its songs are passed over.) */
+@Serializable
+private class Stated(val id: String = "", val name: String = "", val owner: String? = null, val comment: String? = null) {
+    fun stated() = StatedPlaylist(id, name, owner, comment)
+}
+
+@Serializable private class StatedWrap(val playlist: List<Stated> = emptyList())
 
 /**
  * Reads `{"subsonic-response": {"status": …, "error": …, <field>: …}}` as it arrives, into
