@@ -286,7 +286,14 @@ class AccountGraph(
         // with Wi-Fi only on, on Wi-Fi).
         downloads?.let { d ->
             scope.launch {
-                kotlinx.coroutines.flow.combine(d.state.map { it.downloaded.keys }.distinctUntilChanged(), reach.map { it.offline }.distinctUntilChanged()) { ids, _ -> ids }
+                // Looked at again whenever lyrics may next be fetched: the downloads change, the
+                // server comes back, the network or the Wi-Fi-only setting changes.
+                kotlinx.coroutines.flow.combine(
+                    d.state.map { it.downloaded.keys }.distinctUntilChanged(),
+                    reach.map { it.offline }.distinctUntilChanged(),
+                    wiring?.network ?: kotlinx.coroutines.flow.flowOf(null),
+                    settings.map { it.downloadWifiOnly }.distinctUntilChanged(),
+                ) { ids, _, _, _ -> ids }
                     .collect { ids -> lyrics.downloaded(ids) { !settings.value.downloadWifiOnly || wiring?.network?.value?.unmetered != false } }
             }
         }

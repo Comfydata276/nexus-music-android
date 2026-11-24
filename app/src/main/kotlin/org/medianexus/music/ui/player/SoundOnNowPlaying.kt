@@ -206,7 +206,7 @@ fun LyricsPanel(song: Song, modifier: Modifier = Modifier) {
                 Status(stringResource(R.string.no_lyrics), stringResource(if (s.offline) R.string.no_lyrics_offline else R.string.no_lyrics_detail), Modifier.fillMaxWidth())
                 UpNextList()
             }
-            is LyricsShown.Lines -> Lines(s)
+            is LyricsShown.Lines -> Lines(s, song.duration * 1000L)
         }
     }
 }
@@ -256,7 +256,7 @@ private fun UpNextList() {
 }
 
 @Composable
-private fun Lines(lyrics: LyricsShown.Lines) {
+private fun Lines(lyrics: LyricsShown.Lines, songMs: Long) {
     val ui = LocalUi.current
     val colors = Theme.colors
     val list = rememberLazyListState()
@@ -301,7 +301,8 @@ private fun Lines(lyrics: LyricsShown.Lines) {
                 past -> colors.faint
                 else -> colors.muted
             }
-            val seek = if (lyrics.timed) {
+            // (A line timed past the song's end is shown, but is no place to seek to.)
+            val seek = if (lyrics.seekable(index, songMs)) {
                 val label = stringResource(R.string.lyric_line_seek)
                 Modifier.clickable(role = Role.Button, onClickLabel = label) { ui.player.seek(lyrics.times[index]) }
             } else {

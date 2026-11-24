@@ -2420,15 +2420,18 @@ class PlaybackService : MediaLibraryService() {
      *  Saver on or offline (Windows fetches the next five). */
     private fun lyricsAhead() {
         val account = era?.account ?: return
-        val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
-        val count = when {
-            graph.watch.offline -> return
-            connectivity?.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED -> return
-            connectivity?.isActiveNetworkMetered == true -> FetchAhead.ON_MOBILE_DATA
-            else -> 5
-        }
         val now = player.queue.current() ?: return
-        account.lyrics.ahead(listOf(now.id) + FetchAhead.upcoming(player.queue, count) { false })
+        val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+        // The network is looked at before each request, not once for the batch: place 0 is
+        // the song playing, 1 the next.
+        account.lyrics.ahead(listOf(now.id) + FetchAhead.upcoming(player.queue, 5) { false }) { place ->
+            when {
+                graph.watch.offline -> false
+                connectivity?.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED -> false
+                connectivity?.isActiveNetworkMetered == true -> place <= FetchAhead.ON_MOBILE_DATA
+                else -> true
+            }
+        }
     }
 
     // ---- A call in progress -----------------------------------------------------------------

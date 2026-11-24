@@ -91,7 +91,7 @@ class LyricsTest {
         val shown = lyrics.forSong("s")
         advanceUntilIdle()
         assertEquals(LyricsShown.None(offline = true), shown.value)
-        lyrics.ahead(listOf("s", "t"))
+        lyrics.ahead(listOf("s", "t")) { true }
         advanceUntilIdle()
         assertEquals(0, asked.get())
     }
@@ -101,23 +101,23 @@ class LyricsTest {
         val asked = mutableListOf<String>()
         var clock = 0L
         val lyrics = book({ asked += it; if (it == "none") null else timed }, now = { clock })
-        lyrics.ahead(listOf("a", "none", "b"))
+        lyrics.ahead(listOf("a", "none", "b")) { true }
         advanceUntilIdle()
         assertEquals(listOf("a", "none", "b"), asked)
         // The same songs again in this run: not asked.
-        lyrics.ahead(listOf("a", "none", "b"))
+        lyrics.ahead(listOf("a", "none", "b")) { true }
         advanceUntilIdle()
         assertEquals(3, asked.size)
         // A new run (a new book over the same folders) the next hour: only the one that had
         // none is asked again; a day later, all of them.
         clock = System.currentTimeMillis()
         val next = book({ asked += it; timed }, now = { clock })
-        next.ahead(listOf("a", "none", "b"))
+        next.ahead(listOf("a", "none", "b")) { true }
         advanceUntilIdle()
         assertEquals(listOf("a", "none", "b", "none"), asked)
         clock += LyricsBook.FRESH_MS + 60_000
         val later = book({ asked += it; timed }, now = { clock })
-        later.ahead(listOf("a", "b"))
+        later.ahead(listOf("a", "b")) { true }
         advanceUntilIdle()
         assertEquals(listOf("a", "none", "b", "none", "a", "b"), asked)
     }
@@ -157,5 +157,67 @@ class LyricsTest {
         val gains = ReplayGain(trackGain = -7.6f, albumGain = -4.1f, trackPeak = 0.98f, albumPeak = 0.98f)
         Catalogue(dir).add(Downloaded(Song(id = "s", title = "S", replayGain = gains), "s.flac", 3, at = 1, suffix = "flac"))
         assertEquals(gains, Catalogue(dir).state.value.songs["s"]?.song?.replayGain)
+    }
+
+    // ---- Rule 7 of the fixes ---------------------------------------------------------------
+
+    /** Opened offline, nothing kept: said so. Opened again once the server is back: asked
+     *  again, and shown. (The view used to be remembered as it was, and never asked again.) */
+    @Test
+    fun opened_again_once_the_server_is_back_it_asks_again() = runTest {
+        var online = false
+        val lyrics = book({ timed }, offline = { !online })
+        val first = lyrics.forSong("s")
+        advanceUntilIdle()
+        assertEquals(LyricsShown.None(offline = true), first.value)
+        online = true
+        val again = lyrics.forSong("s")
+        advanceUntilIdle()
+        assertEquals(LyricsShown.of(timed), again.value)
+        assertEquals(timed, lyrics.kept("s")?.lyrics)
+    }
+
+    /** One result per song: what fetching ahead finds reaches a view that is open. */
+    @Test
+    fun what_fetching_ahead_finds_is_what_the_open_view_shows() = runTest {
+        var reachable = false
+        val lyrics = book({ if (reachable) timed else throw java.io.IOException("gone") })
+        val shown = lyrics.forSong("s")
+        advanceUntilIdle()
+        assertEquals("couldn't ask, nothing kept", LyricsShown.None(offline = false), shown.value)
+        assertNull("and \"couldn't ask\" is not kept as none", lyrics.kept("s"))
+        reachable = true
+        lyrics.ahead(listOf("s")) { true }
+        advanceUntilIdle()
+        assertEquals(LyricsShown.of(timed), shown.value)
+    }
+
+    /** The network is looked at before each request: it turns metered (or Data Saver goes
+     *  on) after the first, and nothing more is fetched. */
+    @Test
+    fun fetching_ahead_looks_at_the_network_before_each_request() = runTest {
+        val asked = mutableListOf<String>()
+        var allowed = true
+        val lyrics = book({ asked += it; allowed = false; timed })
+        lyrics.ahead(listOf("a", "b", "c")) { allowed }
+        advanceUntilIdle()
+        assertEquals(listOf("a"), asked)
+        // Allowed again: what wasn't fetched is still to be (it wasn't counted as asked).
+        allowed = true
+        lyrics.ahead(listOf("a", "b", "c")) { true }
+        advanceUntilIdle()
+        assertEquals(listOf("a", "b", "c"), asked)
+    }
+
+    /** Times out of order: shown as plain lyrics (Windows does nothing about them). A line
+     *  timed past the song's end is shown but is no place to seek to. */
+    @Test
+    fun times_out_of_order_are_plain_and_a_line_past_the_end_is_not_a_place_to_seek() {
+        val muddled = Lyrics(true, listOf(LyricLine(5000, "Two"), LyricLine(1000, "One")))
+        assertFalse((LyricsShown.of(muddled) as LyricsShown.Lines).timed)
+        val long = LyricsShown.of(Lyrics(true, listOf(LyricLine(1000, "In"), LyricLine(25_000, "Past the end")))) as LyricsShown.Lines
+        assertTrue(long.timed)
+        assertTrue(long.seekable(0, songMs = 20_000))
+        assertFalse(long.seekable(1, songMs = 20_000))
     }
 }

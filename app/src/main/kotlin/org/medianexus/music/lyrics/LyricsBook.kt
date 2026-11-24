@@ -27,14 +27,22 @@ sealed interface LyricsShown {
     /** The lines, and when each starts if they are timed (milliseconds; empty otherwise). */
     class Lines(val lines: List<String>, val times: LongArray) : LyricsShown {
         val timed: Boolean get() = times.isNotEmpty()
+
+        /** Whether line `i` is a place to seek to: timed, and inside the song. */
+        fun seekable(i: Int, songMs: Long): Boolean = timed && (songMs <= 0 || times[i] < songMs)
+
+        override fun equals(other: Any?) = other is Lines && other.lines == lines && other.times.contentEquals(times)
+        override fun hashCode() = lines.hashCode() * 31 + times.contentHashCode()
     }
 
     companion object {
         /** Windows' `show_lyrics`: timed only if the server says synced and every line has a
-         *  time. */
+         *  time; and here, only if those times are in order (Windows does nothing about times
+         *  that aren't: they are shown as plain lyrics). */
         fun of(found: Lyrics?, offline: Boolean = false): LyricsShown {
             if (found == null || found.line.isEmpty()) return None(offline)
-            val timed = found.synced && found.line.all { it.start != null }
+            val timed = found.synced && found.line.all { it.start != null } &&
+                found.line.zipWithNext().all { (a, b) -> a.start!! <= b.start!! }
             return Lines(found.line.map { it.value.trim() }, if (timed) LongArray(found.line.size) { found.line[it].start ?: 0 } else LongArray(0))
         }
 
@@ -82,15 +90,21 @@ class LyricsBook(
     private var aheadJob: Job? = null
     private var downloadsJob: Job? = null
 
-    /** What to show for a song: what's kept at once, then the server's answer. Each song's
-     *  is asked of the server once while it is remembered here (the last 16). */
-    fun forSong(id: String): StateFlow<LyricsShown> = synchronized(shown) {
-        shown[id]?.let { return it.asStateFlow() }
-        val flow = MutableStateFlow<LyricsShown>(LyricsShown.Looking)
-        shown[id] = flow
-        if (shown.size > 16) shown.remove(shown.keys.first())
+    /**
+     * What to show for a song: one result for it, which the view and fetching ahead both
+     * update. Each opening of a song's lyrics (each call) shows what's kept at once and, with
+     * the server there, asks it again, showing (and keeping) what it says if that differs.
+     * What couldn't be asked is never kept as "none".
+     */
+    fun forSong(id: String): StateFlow<LyricsShown> {
+        val flow = synchronized(shown) {
+            shown[id] ?: MutableStateFlow<LyricsShown>(LyricsShown.Looking).also {
+                shown[id] = it
+                if (shown.size > 16) shown.remove(shown.keys.first())
+            }
+        }
         scope.launch { load(id, flow) }
-        flow.asStateFlow()
+        return flow.asStateFlow()
     }
 
     private suspend fun load(id: String, flow: MutableStateFlow<LyricsShown>) {
@@ -100,35 +114,40 @@ class LyricsBook(
             if (had == null) flow.value = LyricsShown.None(offline = true)
             return
         }
-        val found = runCatching { ask(id) }
-        found.onSuccess { lyrics ->
-            withContext(io) { keep(id, lyrics) }
-            // Only shown again if they differ, so the view isn't disturbed for nothing.
-            if (had == null || had.lyrics != lyrics) flow.value = LyricsShown.of(lyrics)
-        }.onFailure {
+        runCatching { ask(id) }
+            .onSuccess { found(id, it) }
             // The server couldn't be asked: what's kept stays; with nothing kept, say so.
-            if (had == null) flow.value = LyricsShown.None(offline = offline())
-        }
+            .onFailure { if (had == null) flow.value = LyricsShown.None(offline = offline()) }
+    }
+
+    /** What the server said of a song: kept, and shown wherever it is being looked at (only
+     *  if it differs, so the view isn't disturbed for nothing). */
+    private suspend fun found(id: String, lyrics: Lyrics?) {
+        withContext(io) { keep(id, lyrics) }
+        val flow = synchronized(shown) { shown[id] } ?: return
+        val now = LyricsShown.of(lyrics)
+        if (flow.value != now) flow.value = now
     }
 
     /**
-     * Fetches the lyrics of these songs (the one playing and the next few) so they're on hand
-     * before anyone opens them. Each song is asked about once a run; one asked lately (a day)
-     * that had some isn't asked again, and one that had none is, since lyrics get added to a
-     * library after the songs do (Windows' `fetch_lyrics_ahead`).
+     * Fetches the lyrics of these songs (the one playing, then the next few) so they're on
+     * hand before anyone opens them. Whether the network allows the one at each place is
+     * asked just before its request (`mayFetch`), not once for the batch. Each song is asked
+     * about once a run; one asked lately (a day) that had some isn't asked again, and one
+     * that had none is, since lyrics get added to a library after the songs do (Windows'
+     * `fetch_lyrics_ahead`).
      */
-    fun ahead(ids: List<String>) {
-        if (offline() || ids.isEmpty()) return
-        val wanted = synchronized(asked) { ids.filter { it.isNotEmpty() && asked.add(it) } }
-        if (wanted.isEmpty()) return
+    fun ahead(ids: List<String>, mayFetch: (Int) -> Boolean) {
+        if (ids.isEmpty()) return
         val before = aheadJob
         aheadJob = scope.launch {
             before?.join()
-            for (id in wanted) {
-                if (offline()) return@launch
+            for ((place, id) in ids.withIndex()) {
+                if (id.isEmpty() || offline() || !mayFetch(place)) continue
+                if (!synchronized(asked) { asked.add(id) }) continue
                 val had = withContext(io) { kept(id) }
                 if (had != null && had.lyrics != null && had.ageMs < FRESH_MS) continue
-                runCatching { ask(id) }.onSuccess { withContext(io) { keep(id, it) } }
+                runCatching { ask(id) }.onSuccess { found(id, it) }
             }
         }
     }
