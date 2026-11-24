@@ -3,11 +3,11 @@ package org.medianexus.music.sync
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.Added
 import org.medianexus.music.store.AddedNote
-import org.medianexus.music.store.DEFAULT_THEME
 import org.medianexus.music.store.ListPrefs
 import org.medianexus.music.store.PlayLog
 import org.medianexus.music.store.RecentlyPlayed
 import org.medianexus.music.store.Settings
+import org.medianexus.music.store.Waiting
 import org.medianexus.music.store.SettingsStore
 
 /**
@@ -38,38 +38,25 @@ object Sharing {
         else -> listOf("playlist:", "album:", "artist:", "genre:", "mix:").any { key.startsWith(it) && key.length > it.length }
     }
 
-    /** A time for sharing: a choice with none is given Windows' "long ago", so it is passed
-     *  on but loses to anything chosen since. Never now. */
-    private fun timed(at: Long): Long = if (at == 0L) LONG_AGO else at
-
-    /** When the pins were last changed, as shared: none set, and no time, is "never". */
-    fun pinsAt(settings: Settings): Long = if (settings.pinsAt == 0L && settings.pinnedPlaylists.isNotEmpty()) LONG_AGO else settings.pinsAt
-
-    /**
-     * The theme the phone has to tell this account's other devices of, and when it was
-     * chosen: the one showing, if it was chosen under this account or came from its record
-     * and is one Windows has; else none. The default theme with no time on it is passed on as
-     * that, with no time: it was never chosen.
-     */
-    fun theme(settings: Settings): Pair<String, Long> = when {
-        !settings.themeOwn || settings.theme !in WINDOWS_THEMES -> "" to 0L
-        settings.themeAt == 0L && settings.theme != DEFAULT_THEME -> settings.theme to LONG_AGO
-        else -> settings.theme to settings.themeAt
-    }
-
     /** One list's choices as shared, or null if they are the phone's alone: a key Windows
      *  doesn't have, or an order it has no number for. */
     fun prefs(key: String, prefs: ListPrefs): SharedPrefs? =
         if (!windowsKey(key) || prefs.sort !in 0..WINDOWS_SORT_MOST) null
-        else SharedPrefs(prefs.shuffle, prefs.sort.toULong(), prefs.descending, prefs.sortChosen, timed(prefs.at))
+        else SharedPrefs(prefs.shuffle, prefs.sort.toULong(), prefs.descending, prefs.sortChosen, prefs.at)
 
-    /** The settings' part of what the phone has to share: the pins, the theme and each
-     *  list's choices, each with the time it has. */
+    /**
+     * The settings' part of what the phone has to share: the pins, the theme and each list's
+     * choices **as last agreed with the server**, each with the time it has there. Not what
+     * the phone shows: the person's changes since are not in this, and are made to the
+     * record itself at the exchange ([Changes.onto]). So nothing here carries a time of the
+     * phone's own making, and a phone that has agreed nothing yet has nothing to say.
+     */
     fun choices(settings: Settings): Shared {
-        val (theme, themeAt) = theme(settings)
+        val agreed = settings.agreed
         val lists = HashMap<String, SharedPrefs>()
-        for ((key, mine) in settings.lists) prefs(key, mine)?.let { lists[key] = it }
-        return Shared(layout = LAYOUT, pins = settings.pinnedPlaylists, pinsAt = pinsAt(settings), theme = theme, themeAt = themeAt, lists = lists)
+        for ((key, mine) in agreed.lists) prefs(key, mine)?.let { lists[key] = it }
+        val theme = agreed.theme in WINDOWS_THEMES
+        return Shared(layout = LAYOUT, pins = agreed.pins, pinsAt = agreed.pinsAt, theme = if (theme) agreed.theme else "", themeAt = if (theme) agreed.themeAt else 0, lists = lists)
     }
 
     /**
@@ -87,32 +74,52 @@ object Sharing {
     }
 
     /**
-     * The settings with what came back from the server taken in, where it's newer than
-     * what's here (Windows' `take_shared`). "Here" is what the settings hold at this moment,
-     * not what was sent: a choice made while the exchange was out is newer than anything it
-     * brings back, and stays.
+     * The settings with what came back from the server taken in (Windows' `take_shared`):
+     * what is agreed becomes the record's, where the record's is newer; the changes that
+     * were made to the record before it was written (`applied`) are forgotten; and what the
+     * phone shows is the agreed with the changes still waiting on top. "Still waiting" is
+     * read from the settings at this moment: a change made while the exchange was out is
+     * among them, and stays, on screen and to be shared.
      */
-    fun taken(settings: Settings, theirs: Shared): Settings {
-        var out = settings
-        if (Merge.pinsNewer(theirs.pinsAt, theirs.pins, pinsAt(settings), settings.pinnedPlaylists)) {
-            out = out.copy(pinnedPlaylists = theirs.pins, pinsAt = theirs.pinsAt)
-        }
+    fun taken(settings: Settings, theirs: Shared, applied: List<Waiting> = emptyList()): Settings {
+        val before = settings.agreed
+        var agreed = before
+        if (Merge.pinsNewer(theirs.pinsAt, theirs.pins, before.pinsAt, before.pins)) agreed = agreed.copy(pins = theirs.pins, pinsAt = theirs.pinsAt)
         // A theme this phone doesn't have is left for the devices that do.
-        if (theirs.theme in WINDOWS_THEMES) {
-            val (mine, mineAt) = theme(settings)
-            if (Merge.themeNewer(theirs.themeAt, theirs.theme, mineAt, mine)) out = out.copy(theme = theirs.theme, themeAt = theirs.themeAt, themeOwn = true)
+        if (theirs.theme in WINDOWS_THEMES && Merge.themeNewer(theirs.themeAt, theirs.theme, before.themeAt, before.theme)) {
+            agreed = agreed.copy(theme = theirs.theme, themeAt = theirs.themeAt)
         }
         var lists: HashMap<String, ListPrefs>? = null
         for ((key, prefs) in theirs.lists) {
-            val mine = settings.lists[key]
-            // (Compared as it would be shared: with the time it has, or "long ago" for none.)
-            val shared = mine?.let { SharedPrefs(it.shuffle, it.sort.coerceAtLeast(0).toULong(), it.descending, it.sortChosen, timed(it.at)) }
+            val mine = before.lists[key]
+            val shared = mine?.let { SharedPrefs(it.shuffle, it.sort.coerceAtLeast(0).toULong(), it.descending, it.sortChosen, it.at) }
             if (shared == null || Merge.rank(prefs, shared) > 0) {
-                val taken = ListPrefs(prefs.shuffle, minOf(prefs.sort, Int.MAX_VALUE.toULong()).toInt(), prefs.descending, prefs.sortChosen, prefs.at)
-                if (taken != mine) (lists ?: HashMap(settings.lists).also { lists = it })[key] = taken
+                (lists ?: HashMap(before.lists).also { lists = it })[key] =
+                    ListPrefs(prefs.shuffle, minOf(prefs.sort, Int.MAX_VALUE.toULong()).toInt(), prefs.descending, prefs.sortChosen, prefs.at)
             }
         }
-        lists?.let { out = out.copy(lists = it) }
+        lists?.let { agreed = agreed.copy(lists = it) }
+        // Each change that was applied is gone, once: one made again meanwhile still waits.
+        val waiting = ArrayList(settings.waiting)
+        for (change in applied) waiting.remove(change)
+
+        // What the phone shows. Where the record says nothing (no pins and no time on them, a
+        // list it has no entry for, no theme), what the phone has of its own stays.
+        var out = settings.copy(agreed = agreed, waiting = waiting)
+        if (agreed.pins.isNotEmpty() || agreed.pinsAt != 0L) out = out.copy(pinnedPlaylists = Changes.shown(agreed.pins, waiting))
+        if (agreed.theme.isNotEmpty()) out = out.copy(theme = waiting.lastOrNull { it.what == Changes.THEME }?.key ?: agreed.theme)
+        if (agreed.lists.isNotEmpty()) {
+            val shown = HashMap(settings.lists)
+            for ((key, prefs) in agreed.lists) {
+                val here = settings.lists[key]
+                // An order only the phone offers is the phone's own choice for that list: it
+                // stays unless the one arriving was chosen after it.
+                val own = here != null && here.sort !in 0..WINDOWS_SORT_MOST && prefs.at <= here.at
+                val made = Changes.shown(prefs, key, waiting)
+                shown[key] = if (own) made.copy(sort = here!!.sort, descending = here.descending, sortChosen = here.sortChosen, at = here.at) else made
+            }
+            out = out.copy(lists = shown)
+        }
         return out
     }
 
@@ -164,18 +171,23 @@ class PhoneShared(
         )
     }
 
-    /** The choices in the settings as the last exchange left them: a change to them since
+    /** What is waiting in the settings as the last exchange left it: a change to it since
      *  is one made here, to pass on. */
-    @Volatile var settled: Shared? = null
+    @Volatile var settled: List<Waiting> = emptyList()
         private set
 
-    override suspend fun take(theirs: Shared) {
+    override fun withChanges(merged: Shared, now: Long): Changed {
+        val waiting = settings.value.let { if (Belongs.ready(it, account)) it.waiting else emptyList() }
+        return Changed(Changes.onto(merged, waiting, now), waiting)
+    }
+
+    override suspend fun take(theirs: Shared, applied: List<Waiting>) {
         // Only into settings that are still this account's: an exchange that comes back
         // after the account has gone changes nothing.
         settings.update {
             if (!Belongs.ready(it, account)) return@update it
             // (Noted before the settings change, so whoever follows them sees it was this.)
-            Sharing.taken(it, theirs).also { taken -> settled = Sharing.choices(taken) }
+            Sharing.taken(it, theirs, applied).also { taken -> settled = taken.waiting }
         }
         if (!Belongs.ready(settings.value, account)) return
         if (added.merge(Sharing.added(theirs.added))) datesChanged()

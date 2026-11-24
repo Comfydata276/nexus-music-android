@@ -201,10 +201,9 @@ fun openCardMenu(ui: Ui, card: org.medianexus.music.ui.parts.CardData) {
 
 /** Pins a playlist to the top of Library, or unpins it (Windows' "Pin to top"). */
 fun Ui.togglePin(id: String) {
-    graph.settings.update { s ->
-        val was = id in s.pinnedPlaylists
-        s.copy(pinnedPlaylists = s.pinnedPlaylists.filter { it != id } + if (was) emptyList() else listOf(id), pinsAt = System.currentTimeMillis() / 1000)
-    }
+    // Kept as the change ("pin this", "unpin this"), to be made to the pins as the server
+    // has them at the next exchange: never as a new list of pins with the time on it.
+    graph.settings.update { s -> org.medianexus.music.sync.Changes.pin(s, id, on = id !in s.pinnedPlaylists) }
 }
 
 // ---- Playlists: the picker, new, rename, delete, the warning before adding ------------------

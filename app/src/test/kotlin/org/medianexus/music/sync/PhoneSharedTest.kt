@@ -86,8 +86,9 @@ class PhoneSharedTest {
     fun aFreshPhoneHasNothingToSayAndAddsNothingToAPCsRecord() {
         val phone = Phone("a")
         val record = phone.record()!!
-        // No pins, no time on them; the default theme with no time on it; nothing else.
-        assertEquals(Shared(layout = 1, theme = "Violet"), record)
+        // No pins, no theme, no list's choices, no time on anything: nothing at all.
+        assertEquals(Shared(layout = 1), record)
+        assertFalse(record.says)
         // Put together with what a PC wrote, by the one function the app uses: nothing to write.
         val settled = KotlinSettler.settle(SharedText.write(pc), SharedText.write(record), 1_795_000_000) as Settled.Merged
         assertFalse(settled.write)
@@ -98,10 +99,10 @@ class PhoneSharedTest {
     fun whatIsTakenInIsSharedBackWithTheTimeItCameWith() {
         val phone = Phone("a")
         phone.take(pc)
-        // Everything the PC had is here now...
+        // Everything the PC had is here now, shown...
         val s = settings.value
-        assertEquals(listOf("p1", "p2") to 1_700_000_000L, s.pinnedPlaylists to s.pinsAt)
-        assertEquals("Ember" to 1_700_000_100L, s.theme to s.themeAt)
+        assertEquals(listOf("p1", "p2"), s.pinnedPlaylists)
+        assertEquals("Ember", s.theme)
         assertEquals(ListPrefs(shuffle = true, sort = 3, descending = true, sortChosen = true, at = 1_700_000_200), s.lists["playlist:p1"])
         assertEquals(listOf("s2", "s1"), phone.history.state.value.map { it.song.id })
         assertEquals(listOf("s1" to 1_700_000_400L, "s2" to 1_700_000_500L), phone.log.shared())
@@ -113,20 +114,23 @@ class PhoneSharedTest {
     }
 
     @Test
-    fun theDefaultThemeIsNeverGivenATime() {
-        assertEquals("Violet" to 0L, Sharing.theme(Settings()))
-        // A theme with no time that isn't the default was chosen before times were kept:
-        // passed on as "long ago", which loses to anything chosen since. Never now.
-        assertEquals("Ocean" to LONG_AGO, Sharing.theme(Settings(theme = "Ocean")))
-        assertEquals("Ocean" to 77L, Sharing.theme(Settings(theme = "Ocean", themeAt = 77)))
-        // The look another account left the phone in is not this account's to tell of.
-        assertEquals("" to 0L, Sharing.theme(Settings(theme = "Ocean", themeAt = 77, themeOwn = false)))
-        // Nor a name Windows doesn't have.
-        assertEquals("" to 0L, Sharing.theme(Settings(theme = "Sunset", themeAt = 77)))
-        // Pins: none, with no time, is "never"; some, with no time, "long ago".
-        assertEquals(0L, Sharing.pinsAt(Settings()))
-        assertEquals(LONG_AGO, Sharing.pinsAt(Settings(pinnedPlaylists = listOf("p"))))
-        assertEquals(9L, Sharing.pinsAt(Settings(pinnedPlaylists = emptyList(), pinsAt = 9)))
+    fun whatThePhoneShowsIsNotWhatItOffers() {
+        val phone = Phone("a")
+        // Pins, a theme and a list's choices on the phone that were never agreed with the
+        // server (they were there before it could keep in step, or the person has just made
+        // them): shown, and not offered as the pins, the theme or the list's choices.
+        settings.update { it.copy(pinnedPlaylists = listOf("mine"), theme = "Ocean", lists = mapOf("liked" to ListPrefs(shuffle = true, sort = 2, at = 50))) }
+        settings.update { Changes.pin(it, "also-mine", on = true) }
+        assertEquals(Shared(layout = 1), phone.record())
+        // What was agreed is offered, with the times it has in the record and no others.
+        phone.take(pc)
+        assertEquals(pc.pins to pc.pinsAt, phone.record()!!.let { it.pins to it.pinsAt })
+        assertEquals(pc.theme to pc.themeAt, phone.record()!!.let { it.theme to it.themeAt })
+        // The phone goes on showing its own where the record says nothing (the list the PC
+        // has no choices for), and the pin still waiting on top of the PC's.
+        assertEquals(listOf("p1", "p2", "also-mine"), settings.value.pinnedPlaylists)
+        assertEquals(ListPrefs(shuffle = true, sort = 2, at = 50), settings.value.lists["liked"])
+        assertEquals("Ember", settings.value.theme)
     }
 
     // ---- rule 2: never what it has not loaded -----------------------------------------------------
@@ -139,7 +143,7 @@ class PhoneSharedTest {
         phone.read = true
         assertTrue(phone.record() != null)
         // The choices in the settings are another account's (this one not yet taken on).
-        settings.update { it.copy(sharedFor = "someone-else", pinnedPlaylists = listOf("theirs"), pinsAt = 5) }
+        settings.update { it.copy(sharedFor = "someone-else", pinnedPlaylists = listOf("theirs"), agreed = org.medianexus.music.store.Agreed(pins = listOf("theirs"), pinsAt = 5)) }
         assertNull(phone.record())
         // And nothing is taken into them either.
         phone.take(pc)
@@ -180,37 +184,64 @@ class PhoneSharedTest {
             "artist:ar1" to ListPrefs(shuffle = true, at = 20), "genre:Rock" to ListPrefs(shuffle = true, at = 21), "mix:on-repeat" to ListPrefs(shuffle = true, at = 22),
             "playlist:" to ListPrefs(shuffle = true, at = 23),
         )
-        val shared = Sharing.choices(Settings(lists = lists)).lists
+        // Even held as agreed (taken in from a record that had them), only Windows' own go back.
+        val held = Settings(agreed = org.medianexus.music.store.Agreed(lists = lists))
+        val shared = Sharing.choices(held).lists
         assertEquals(setOf("playlist:p1", "songs", "downloads", "album:al1", "artist:ar1", "genre:Rock", "mix:on-repeat"), shared.keys)
         assertEquals(SharedPrefs(shuffle = true, sort = 5u, descending = true, sortChosen = true, at = 10), shared["playlist:p1"])
-        // The shared value is left as it was: merged with a PC's record, the PC's choice for
-        // the list whose order the phone couldn't say stays the PC's.
+        // Chosen here: an order of the phone's own, or a choice for a list of the phone's
+        // own, never waits to be shared, and is never made to the record.
+        var s = Settings()
+        s = Changes.sort(s, "playlist:p2", sort = 6, descending = false, now = 30)
+        s = Changes.shuffle(s, "downloads:album:al1", on = true, now = 31)
+        s = Changes.shuffle(s, "mix:rule:3", on = true, now = 32)
+        assertTrue(s.waiting.isEmpty())
+        assertEquals(6, s.lists.getValue("playlist:p2").sort)
+        // The shared value is left as it was: the PC's choice for that list stays the PC's.
         val server = Shared(layout = 1, lists = mapOf("playlist:p2" to SharedPrefs(sort = 2u, at = 5)))
-        assertEquals(SharedPrefs(sort = 2u, at = 5), Merge.merge(Sharing.choices(Settings(lists = lists)), server, 0).lists["playlist:p2"])
+        val forced = listOf(org.medianexus.music.store.Waiting(Changes.SORT, "playlist:p2", sort = 6), org.medianexus.music.store.Waiting(Changes.SHUFFLE, "downloads:liked", on = true))
+        assertEquals(server, Changes.onto(server, forced, 40))
+    }
+
+    @Test
+    fun anOrderOnlyThePhoneOffersStaysUnlessTheOneArrivingIsNewer() {
+        val phone = Phone("a")
+        settings.update { Changes.sort(it, "playlist:p2", sort = 6, descending = true, now = 100) }
+        // A PC's choice for that list, made before the phone's: the phone keeps its own order.
+        phone.take(Shared(layout = 1, lists = mapOf("playlist:p2" to SharedPrefs(shuffle = true, sort = 2u, at = 90))))
+        assertEquals(ListPrefs(shuffle = true, sort = 6, descending = true, sortChosen = true, at = 100), settings.value.lists["playlist:p2"])
+        // One made after it: that is the list's order now.
+        phone.take(Shared(layout = 1, lists = mapOf("playlist:p2" to SharedPrefs(shuffle = true, sort = 4u, sortChosen = true, at = 110))))
+        assertEquals(ListPrefs(shuffle = true, sort = 4, descending = false, sortChosen = true, at = 110), settings.value.lists["playlist:p2"])
     }
 
     @Test
     fun aThemeThePhoneDoesNotHaveIsLeftForTheDevicesThatDo() {
         val phone = Phone("a")
-        settings.update { it.copy(theme = "Ocean", themeAt = 50) }
+        phone.take(Shared(layout = 1, theme = "Ocean", themeAt = 50))
         phone.take(Shared(layout = 1, theme = "Sunset", themeAt = 99))
-        assertEquals("Ocean" to 50L, settings.value.theme to settings.value.themeAt)
+        assertEquals("Ocean" to 50L, settings.value.let { it.theme to it.agreed.themeAt })
     }
 
     // ---- taking in ------------------------------------------------------------------------------
 
     @Test
-    fun aChoiceMadeHereSinceIsNewerThanWhatComesBack() {
+    fun aChoiceMadeHereSinceStaysWhenTheSameRecordComesBack() {
         val phone = Phone("a")
         phone.take(pc)
-        // Unpinned on the phone, later than the PC's pins.
-        settings.update { it.copy(pinnedPlaylists = listOf("p2"), pinsAt = 1_700_000_900) }
+        // Unpinned on the phone.
+        settings.update { Changes.pin(it, "p1", on = false) }
         phone.take(pc)
         assertEquals(listOf("p2"), settings.value.pinnedPlaylists)
-        assertEquals(listOf("p2") to 1_700_000_900L, phone.record()!!.let { it.pins to it.pinsAt })
-        // A PC's later change wins in its turn.
-        phone.take(pc.copy(pins = emptyList(), pinsAt = 1_700_001_000))
-        assertTrue(settings.value.pinnedPlaylists.isEmpty())
+        // A PC's later change is taken in, and the phone's own is still made on top of it.
+        phone.take(pc.copy(pins = listOf("p1", "p2", "p3"), pinsAt = 1_700_001_000))
+        assertEquals(listOf("p2", "p3"), settings.value.pinnedPlaylists)
+        // Written with the record (the exchange hands the changes it applied back): done with.
+        val changed = phone.shared.withChanges(pc.copy(pins = listOf("p1", "p2", "p3"), pinsAt = 1_700_001_000), 1_795_000_000)
+        assertEquals(listOf("p2", "p3") to 1_795_000_000L, changed.record.pins to changed.record.pinsAt)
+        runBlocking { phone.shared.take(changed.record, changed.applied) }
+        assertTrue(settings.value.waiting.isEmpty())
+        assertEquals(listOf("p2", "p3") to 1_795_000_000L, phone.record()!!.let { it.pins to it.pinsAt })
     }
 
     @Test
@@ -253,7 +284,8 @@ class PhoneSharedTest {
     @Test
     fun nothingChosenUnderOneAccountIsSharedIntoAnothersRecord() {
         val first = Phone("a")
-        settings.update { it.copy(pinnedPlaylists = listOf("pa"), pinsAt = 100, theme = "Rose", themeAt = 110, themeOwn = true, lists = mapOf("liked" to ListPrefs(shuffle = true, at = 120))) }
+        first.take(Shared(layout = 1, pins = listOf("pa"), pinsAt = 100, theme = "Rose", themeAt = 110, lists = mapOf("liked" to SharedPrefs(shuffle = true, at = 120))))
+        settings.update { Changes.pin(it, "pa2", on = true) }
         first.history.played(Song(id = "heard-by-a"))
         first.log.add("heard-by-a", 130)
         first.added.changed("pa", emptyList(), listOf("s"), 140)
@@ -263,31 +295,40 @@ class PhoneSharedTest {
         val second = Phone("b")
         // The first account's objects, if any is still about, say nothing and take nothing in.
         assertNull(first.record())
-        // The second account: no pins, no list choices, no notes, no plays; and the theme the
-        // phone was left showing is not its to tell of. Exactly a fresh phone's record.
+        assertTrue(first.shared.withChanges(Shared(layout = 1), 5).applied.isEmpty())
+        // The second account: no pins, no list choices, no notes, no plays, nothing waiting;
+        // and the theme the phone was left showing is not its to tell of. A fresh phone's record.
         assertEquals(Shared(layout = 1), second.record())
+        assertTrue(settings.value.waiting.isEmpty() && settings.value.pinnedPlaylists.isEmpty() && settings.value.lists.isEmpty())
+        assertTrue(second.shared.withChanges(Shared(layout = 1), 5).applied.isEmpty())
         // (The phone still looks as it did.)
         assertEquals("Rose", settings.value.theme)
-        // A theme chosen now is this account's.
-        settings.update { it.copy(theme = "Green", themeAt = 200, themeOwn = true) }
-        assertEquals("Green" to 200L, second.record()!!.let { it.theme to it.themeAt })
+        // A theme chosen now is this account's, and waits to be shared into its record.
+        settings.update { Changes.theme(it, "Green") }
+        assertEquals("Green", second.shared.withChanges(Shared(layout = 1), 200).record.theme)
 
-        // Back as the first: its own choices are as they were, the theme it chose with them.
+        // Back as the first: what it showed, what it had agreed and what was waiting are as
+        // they were, the theme it had with them.
         first.close()
         Phone("a")
         val s = settings.value
-        assertEquals(listOf("pa") to 100L, s.pinnedPlaylists to s.pinsAt)
-        assertEquals(Triple("Rose", 110L, true), Triple(s.theme, s.themeAt, s.themeOwn))
-        assertEquals(mapOf("liked" to ListPrefs(shuffle = true, at = 120)), s.lists)
+        assertEquals(listOf("pa", "pa2"), s.pinnedPlaylists)
+        assertEquals(org.medianexus.music.store.Agreed(listOf("pa"), 100, "Rose", 110, mapOf("liked" to ListPrefs(shuffle = true, at = 120))), s.agreed)
+        assertEquals(listOf(org.medianexus.music.store.Waiting(Changes.PIN, "pa2")), s.waiting)
+        assertEquals("Rose", s.theme)
     }
 
     @Test
-    fun choicesFromBeforeAccountsOwnedThemBelongToWhoeverIsSignedIn() {
-        // Settings as an earlier version left them: no owner.
-        settings.update { Settings(pinnedPlaylists = listOf("p"), pinsAt = 5, theme = "Ocean", themeAt = 6) }
+    fun whatThePhoneHeldBeforeItCouldKeepInStepIsItsOwnAndNobodysRecord() {
+        // Settings as a build without syncing left them: no owner, and times put on by rules
+        // since thrown out (under whichever account was signed in then).
+        settings.update { Settings(pinnedPlaylists = listOf("p"), pinsAt = 5, theme = "Ocean", themeAt = 6, lists = mapOf("liked" to ListPrefs(shuffle = true, sort = 2, sortChosen = true, at = 7))) }
         val phone = Phone("a")
         assertEquals("a", settings.value.sharedFor)
-        assertEquals(listOf("p") to 5L, phone.record()!!.let { it.pins to it.pinsAt })
-        assertEquals("Ocean" to 6L, phone.record()!!.let { it.theme to it.themeAt })
+        // Still what the phone shows...
+        assertEquals(Triple(listOf("p"), "Ocean", true), settings.value.let { Triple(it.pinnedPlaylists, it.theme, it.lists.getValue("liked").shuffle) })
+        // ...and none of it is in what the phone has to say, with any time.
+        assertEquals(Shared(layout = 1), phone.record())
+        assertTrue(phone.shared.withChanges(Shared(layout = 1), 99).let { it.applied.isEmpty() && it.record == Shared(layout = 1) })
     }
 }

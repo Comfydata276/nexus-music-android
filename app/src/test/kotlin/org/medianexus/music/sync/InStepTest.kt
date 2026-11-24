@@ -33,64 +33,6 @@ class InStepTest {
     @After
     fun stop() = scope.cancel()
 
-    /** A server's playlists, and everything asked of it. */
-    private class Server(val owner: String = "tester") : StepServer {
-        val lists = LinkedHashMap<String, StatedPlaylist>()
-        var reads = 0
-        var listed = 0
-        val writes = ArrayList<Pair<String, String>>()
-        val made = ArrayList<String>()
-        private var next = 100
-
-        /** Held before each call goes through, by the tests that interleave two devices. */
-        var gate: suspend (what: String) -> Unit = {}
-
-        /** A write that reaches the server and gets no answer. */
-        var loseAnswers = 0
-
-        /** The server's own clock, as its answers give it (null: it gives none). */
-        var time: Long? = NOW
-
-        fun put(id: String, comment: String?, name: String = PLAYLIST_NAME, by: String? = owner) {
-            lists[id] = StatedPlaylist(id = id, name = name, comment = comment, owner = by)
-        }
-
-        fun comment(id: String) = lists.getValue(id).comment
-
-        override suspend fun playlists(): Timed<List<StatedPlaylist>> {
-            gate("list")
-            listed++
-            return Timed(lists.values.toList(), time)
-        }
-
-        override suspend fun playlist(id: String): Timed<StatedPlaylist> {
-            gate("read")
-            reads++
-            return Timed(lists[id] ?: throw ApiError.Server(70, "not found"), time)
-        }
-
-        override suspend fun create(name: String): String {
-            gate("make")
-            val id = "new${next++}"
-            made += id
-            put(id, "", name)
-            return id
-        }
-
-        override suspend fun setComment(id: String, comment: String) {
-            gate("write")
-            if (lists[id]?.owner?.lowercase() != owner.lowercase()) throw ApiError.Server(50, "not yours")
-            lists[id] = lists.getValue(id).copy(comment = comment)
-            writes += id to comment
-            if (loseAnswers > 0) {
-                loseAnswers--
-                throw ApiError.Network("The connection dropped.")
-            }
-        }
-
-        fun asked() = reads + listed + writes.size + made.size
-    }
-
     /** A device: what it holds, as one record. Taking in is Windows' rule (the newer). */
     private class Device(var holds: Shared?) : StepPhone {
         val took = ArrayList<Shared>()
@@ -100,7 +42,9 @@ class InStepTest {
 
         override suspend fun record(): Shared? = holds
 
-        override suspend fun take(theirs: Shared) {
+        override fun withChanges(merged: Shared, now: Long) = Changed(merged, emptyList())
+
+        override suspend fun take(theirs: Shared, applied: List<org.medianexus.music.store.Waiting>) {
             meanwhile()
             took += theirs
             val mine = holds ?: return
@@ -109,7 +53,7 @@ class InStepTest {
         }
     }
 
-    private fun step(server: Server, device: Device, may: () -> Boolean = { true }, notes: MutableList<String> = ArrayList(), account: String = "acct-${System.nanoTime()}", pause: suspend (Long) -> Unit = {}, clock: () -> Long = { NOW }) =
+    private fun step(server: PretendServer, device: Device, may: () -> Boolean = { true }, notes: MutableList<String> = ArrayList(), account: String = "acct-${System.nanoTime()}", pause: suspend (Long) -> Unit = {}, clock: () -> Long = { NOW }) =
         InStep(server, device, username = "Tester", account = account, may = may, scope = scope, clock = clock, pause = pause, note = { notes += it })
 
     private fun text(shared: Shared) = SharedText.write(shared)
@@ -130,7 +74,7 @@ class InStepTest {
 
     @Test
     fun anExchangeAskedForBeforeThePhoneHasReadItsOwnSendsNothing() = runBlocking {
-        val server = Server().apply { put("a", text(pc)) }
+        val server = PretendServer().apply { put("a", text(pc)) }
         val device = Device(holds = null)
         assertEquals(InStep.Outcome.NOT_READ_YET, step(server, device).exchange())
         // Not a question, not a write: an empty list that means "not read yet" never leaves.
@@ -145,7 +89,7 @@ class InStepTest {
     fun aFreshPhoneLeavesThePCsRecordExactlyAsItIs() = runBlocking {
         // The text as the Windows app itself wrote it (its own order of fields and maps).
         val windows = """{"nexus_music_sync":1,"pins":["p1","p2"],"pins_at":1700000000,"theme":"Ember","theme_at":1700000100,"lists":{"playlist:p1":{"shuffle":true,"sort":3,"descending":true,"sort_chosen":true,"at":1700000200},"liked":{"shuffle":false,"sort":5,"descending":true,"sort_chosen":true,"at":1700000250}},"added":{"p1":{"s9":{"times":[],"at":1794000000},"s1":{"times":[1700000300],"at":1700000300}}},"history":[["s2",1700000500],["s1",1700000400]],"plays":[["s2",1700000500],["s1",1700000400]],"play_sources":[["s1",1700000400,"playlist:p1"]]}"""
-        val server = Server().apply { put("a", windows) }
+        val server = PretendServer().apply { put("a", windows) }
         val device = Device(holds = nothing)
         assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
         assertTrue("nothing was written", server.writes.isEmpty())
@@ -164,7 +108,7 @@ class InStepTest {
     fun aCommentThatIsNotARecordIsLeftAloneAndSaidInDiagnostics() = runBlocking {
         // (A comment of spaces among them: only the empty text is "nothing shared yet".)
         for (comment in listOf("My sync playlist, do not delete", """{"nexus_music_sync":1,"pins":["a","b""", """{"pins":null}""", "null", """{"nexus_music_sync":4294967296}""", "  \n ", " ")) {
-            val server = Server().apply { put("a", comment) }
+            val server = PretendServer().apply { put("a", comment) }
             val notes = ArrayList<String>()
             val device = Device(holds = pc)
             assertEquals(comment, InStep.Outcome.UNREADABLE, step(server, device, notes = notes).exchange())
@@ -180,7 +124,7 @@ class InStepTest {
     @Test
     fun aRecordInALaterLayoutIsReadAndNeverWritten() = runBlocking {
         val later = """{"nexus_music_sync":2,"pins":["z"],"pins_at":1790000000,"shape":{"of":"things to come"}}"""
-        val server = Server().apply { put("a", later) }
+        val server = PretendServer().apply { put("a", later) }
         val device = Device(holds = pc)
         assertEquals(InStep.Outcome.NEWER_LAYOUT, step(server, device).exchange())
         assertTrue(server.writes.isEmpty())
@@ -197,7 +141,7 @@ class InStepTest {
             """{"nexus_music_sync":1,"pins":["z"],"pins_at":1790000000,"lists":{"liked":{"shuffle":true,"at":9,"columns":[1,2]}}}""",
             """{"nexus_music_sync":1,"pins":["z"],"pins_at":1790000000,"added":{"p":{"s":{"times":[4],"at":4,"by":"pc"}}}}""",
         )) {
-            val server = Server().apply { put("a", text) }
+            val server = PretendServer().apply { put("a", text) }
             val notes = ArrayList<String>()
             val device = Device(holds = pc)
             assertEquals(InStep.Outcome.MORE_THAN_KNOWN, step(server, device, notes = notes).exchange())
@@ -210,7 +154,7 @@ class InStepTest {
 
     @Test
     fun fieldsThisVersionDoesNotKnowAreWrittenBackAsTheyWere() = runBlocking {
-        val server = Server().apply { put("a", """{"nexus_music_sync":1,"devices":{"pc":[1,2.50,{"x":null}]},"pins":[],"pins_at":0,"note":"later"}""") }
+        val server = PretendServer().apply { put("a", """{"nexus_music_sync":1,"devices":{"pc":[1,2.50,{"x":null}]},"pins":[],"pins_at":0,"note":"later"}""") }
         val device = Device(holds = pc)
         assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
         val wrote = server.writes.single().second
@@ -222,7 +166,7 @@ class InStepTest {
 
     @Test
     fun thePlaylistIsFoundByNameAndOwnerTheLowestIdOfSeveral() = runBlocking {
-        val server = Server().apply {
+        val server = PretendServer().apply {
             put("zz", text(Shared(layout = 1, pins = listOf("wrong"), pinsAt = 5)))
             put("b2", text(pc))
             put("a9", "someone else's", by = "guest")
@@ -238,7 +182,7 @@ class InStepTest {
     @Test
     fun theLowestIdThatIsOursIsUsedAtEveryExchangeNotOneRemembered() = runBlocking {
         // Two devices each made one, having found none: this phone has been using "m7".
-        val server = Server().apply { put("m7", text(pc.copy(pins = listOf("mine"), pinsAt = 1_700_000_900))) }
+        val server = PretendServer().apply { put("m7", text(pc.copy(pins = listOf("mine"), pinsAt = 1_700_000_900))) }
         val device = Device(holds = nothing)
         val step = step(server, device)
         assertEquals(InStep.Outcome.DONE, step.exchange())
@@ -263,22 +207,22 @@ class InStepTest {
     @Test
     fun thePlaylistIsMadeOnlyWhenTheServerSaysThereIsNoneAndSharingIsOn() = runBlocking {
         // None there: made, and the record written into it.
-        val server = Server().apply { put("c1", "not it", name = "Road trip") }
+        val server = PretendServer().apply { put("c1", "not it", name = "Road trip") }
         val device = Device(holds = pc)
         assertEquals(InStep.Outcome.DONE, step(server, device).exchange())
         assertEquals(1, server.made.size)
         assertEquals(pc, SharedText.read(server.comment(server.made[0])!!))
         // Sharing off, or the server out of reach: nothing is asked, read, made or written.
-        val quiet = Server()
+        val quiet = PretendServer()
         assertEquals(InStep.Outcome.NOT_NOW, step(quiet, Device(holds = pc), may = { false }).exchange())
         assertEquals(0, quiet.asked())
         // Switched off while the server was being asked what it has: not made.
         var on = true
-        val late = Server().apply { gate = { if (it == "list") on = false } }
+        val late = PretendServer().apply { gate = { if (it == "list") on = false } }
         assertEquals(InStep.Outcome.NOT_NOW, step(late, Device(holds = pc), may = { on }).exchange())
         assertTrue(late.made.isEmpty() && late.writes.isEmpty())
         // The list of playlists can't be had: nothing is made on the strength of that.
-        val down = Server().apply { gate = { if (it == "list") throw ApiError.Network("The connection timed out.") } }
+        val down = PretendServer().apply { gate = { if (it == "list") throw ApiError.Network("The connection timed out.") } }
         assertEquals(InStep.Outcome.FAILED, step(down, Device(holds = pc)).exchange())
         assertTrue(down.made.isEmpty())
     }
@@ -291,7 +235,7 @@ class InStepTest {
         // has been told to treat as minimal. The PC's record is there all the while.
         for (phone in listOf(nothing, pc.copy(pins = listOf("mine"), pinsAt = NOW - 5))) {
             // Neither stated.
-            val neither = Server().apply { put("a", comment = null, by = null) }
+            val neither = PretendServer().apply { put("a", comment = null, by = null) }
             val notes = ArrayList<String>()
             assertEquals(InStep.Outcome.NOT_STATED, step(neither, Device(holds = phone), notes = notes).exchange())
             // Nothing written into it, and no second one made beside it.
@@ -299,17 +243,17 @@ class InStepTest {
             assertEquals(1, notes.size)
             // The owner stated, the comment left out: read as empty, the phone's own record
             // would be written over everything the PCs had put there.
-            val noComment = Server().apply { put("a", comment = null) }
+            val noComment = PretendServer().apply { put("a", comment = null) }
             val device = Device(holds = phone)
             assertEquals(InStep.Outcome.NOT_STATED, step(noComment, device).exchange())
             assertTrue(noComment.writes.isEmpty() && noComment.made.isEmpty())
             assertTrue(device.took.isEmpty())
             // The comment stated, the owner left out: not known to be ours.
-            val noOwner = Server().apply { put("a", comment = text(pc), by = null) }
+            val noOwner = PretendServer().apply { put("a", comment = text(pc), by = null) }
             assertEquals(InStep.Outcome.NOT_STATED, step(noOwner, Device(holds = phone)).exchange())
             assertTrue(noOwner.writes.isEmpty() && noOwner.made.isEmpty())
             // One that is stated to be ours beside one that isn't stated: ours is used.
-            val both = Server().apply { put("a", comment = "whose?", by = null); put("b", comment = text(pc)) }
+            val both = PretendServer().apply { put("a", comment = "whose?", by = null); put("b", comment = text(pc)) }
             assertEquals(InStep.Outcome.DONE, step(both, Device(holds = nothing)).exchange())
             assertTrue(both.writes.isEmpty() && both.made.isEmpty())
         }
@@ -318,11 +262,11 @@ class InStepTest {
     @Test
     fun aPhoneWithNothingToSayMakesNoRecordAndFillsNoEmptyOne() = runBlocking {
         // No playlist at all: none is made.
-        val none = Server().apply { put("c1", "not it", name = "Road trip") }
+        val none = PretendServer().apply { put("c1", "not it", name = "Road trip") }
         assertEquals(InStep.Outcome.DONE, step(none, Device(holds = nothing)).exchange())
         assertTrue(none.made.isEmpty() && none.writes.isEmpty())
         // An empty one (just made by another device, not yet written): left empty.
-        val empty = Server().apply { put("a", "") }
+        val empty = PretendServer().apply { put("a", "") }
         assertEquals(InStep.Outcome.DONE, step(empty, Device(holds = nothing)).exchange())
         assertTrue(empty.writes.isEmpty())
         assertEquals("", empty.comment("a"))
@@ -341,7 +285,7 @@ class InStepTest {
         val removed = SharedNote(emptyList(), NOW - 10)
         val record = pc.copy(added = mapOf("p1" to mapOf("gone" to removed)))
         for (off in listOf(3_600L, -3_600L, 301L, 100 * 24 * 3_600L)) {
-            val server = Server().apply { put("a", text(record)) }
+            val server = PretendServer().apply { put("a", text(record)) }
             // The phone has a pin of its own to tell of, stamped by its own clock.
             var phoneClock = NOW + off
             val device = Device(holds = Shared(layout = 1, pins = listOf("mine"), pinsAt = NOW + off, history = listOf(Play("heard-here", NOW + off))))
@@ -368,7 +312,7 @@ class InStepTest {
         }
         // Within five minutes either way, or with a server that gives no time: shared.
         for (time in listOf<Long?>(NOW + 299, NOW - 300, null)) {
-            val server = Server().apply { put("a", text(pc)); this.time = time }
+            val server = PretendServer().apply { put("a", text(pc)); this.time = time }
             val step = step(server, Device(holds = Shared(layout = 1, pins = listOf("mine"), pinsAt = NOW)))
             assertEquals(InStep.Outcome.DONE, step.exchange())
             assertFalse(step.clockWrong.value)
@@ -380,7 +324,7 @@ class InStepTest {
 
     @Test
     fun aWriteThatGetsNoAnswerIsSafeToMakeAgain() = runBlocking {
-        val server = Server().apply { put("a", text(pc.copy(pins = listOf("old"), pinsAt = 5))) }
+        val server = PretendServer().apply { put("a", text(pc.copy(pins = listOf("old"), pinsAt = 5))) }
         val device = Device(holds = pc)
         val step = step(server, device)
         // It reached the server; the phone never heard.
@@ -398,7 +342,7 @@ class InStepTest {
 
     @Test
     fun aSecondExchangeWaitsForNothingAndAnotherFollowsTheFirst() = runBlocking {
-        val server = Server().apply { put("a", text(nothing)) }
+        val server = PretendServer().apply { put("a", text(nothing)) }
         val device = Device(holds = pc)
         val held = CompletableDeferred<Unit>()
         val reached = CompletableDeferred<Unit>()
@@ -421,7 +365,7 @@ class InStepTest {
 
     @Test
     fun aChangeMadeHereDuringAnExchangeIsNeitherLostNorSentStale() = runBlocking {
-        val server = Server().apply { put("a", text(pc)) }
+        val server = PretendServer().apply { put("a", text(pc)) }
         // The phone holds what the PC has; then, while an exchange is out, the person unpins.
         val device = Device(holds = pc)
         val unpinned = pc.copy(pins = listOf("p2"), pinsAt = NOW - 1)
@@ -460,7 +404,7 @@ class InStepTest {
         // two devices' steps can fall, each held at a gate until its turn: no sleeps.
         val orders = listOf("AABB", "ABAB", "ABBA", "BAAB", "BABA", "BBAA")
         for (order in orders) {
-            val server = Server().apply { put("r", "") }
+            val server = PretendServer().apply { put("r", "") }
             val turns = order.map { CompletableDeferred<Unit>() }
             val done = order.map { CompletableDeferred<Unit>() }
             fun gateFor(who: Char): suspend (String) -> Unit {
@@ -519,7 +463,7 @@ class InStepTest {
 
     @Test
     fun anExchangeThatFailsLeavesThePhoneAsItWas() = runBlocking {
-        val server = Server().apply { put("a", text(pc)) }
+        val server = PretendServer().apply { put("a", text(pc)) }
         server.gate = { if (it == "read") throw ApiError.Network("The connection dropped.") }
         val device = Device(holds = nothing)
         assertEquals(InStep.Outcome.FAILED, step(server, device).exchange())

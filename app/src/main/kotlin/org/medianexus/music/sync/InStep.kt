@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.Mutex
 import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.StatedPlaylist
 import org.medianexus.music.net.Timed
+import org.medianexus.music.store.Waiting
 
 /** What an exchange asks of the server: the account's playlists as the server states them
  *  (the sync playlist among them), and the one write, of the record. */
@@ -40,10 +41,21 @@ interface StepPhone {
      */
     suspend fun record(): Shared?
 
+    /**
+     * The record with the person's changes made here, and still waiting, made to it: each on
+     * top of the item as `merged` has it, with a time (from `now`) only on an item a change
+     * really altered. And which changes those were, to be forgotten once it is written.
+     */
+    fun withChanges(merged: Shared, now: Long): Changed
+
     /** Takes in what came back from the server, where it's newer than what's here (Windows'
-     *  `take_shared`). Throws `IOException` if the phone couldn't keep it. */
-    suspend fun take(theirs: Shared)
+     *  `take_shared`), and forgets the changes that were `applied` to it. Throws
+     *  `IOException` if the phone couldn't keep it. */
+    suspend fun take(theirs: Shared, applied: List<Waiting> = emptyList())
 }
+
+/** A record with the phone's waiting changes made to it, and the changes that were. */
+class Changed(val record: Shared, val applied: List<Waiting>)
 
 /**
  * Keeping the phone in step with the person's other devices: the exchange of the shared
@@ -210,16 +222,21 @@ class InStep(
                     return Outcome.CLOCK_WRONG
                 }
                 val merged = SharedText.read(settled.text) ?: return Outcome.FAILED
+                // What the person changed here since the last exchange is made to the record
+                // now, on top of what the server has: never to what the phone happened to hold.
+                val changed = phone.withChanges(merged, now)
+                val record = changed.record
                 // A record is made on the server, or an empty one filled, only when the phone
                 // has something of the person's to put in it: a phone with nothing to say
                 // writes nothing.
-                if (settled.write && (comment.isNotEmpty() || merged.says)) {
+                if ((settled.write || record != merged) && (comment.isNotEmpty() || record.says)) {
                     // (Switched off, or the server gone, while this was being worked out.)
                     if (!may()) return Outcome.NOT_NOW
                     val into = id ?: server.create(PLAYLIST_NAME).ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
-                    server.setComment(into, settled.text)
+                    server.setComment(into, if (record != merged) SharedText.write(record) else settled.text)
                 }
-                phone.take(merged)
+                // Only now are the changes forgotten: written, or found to change nothing.
+                phone.take(record, changed.applied)
                 Outcome.DONE
             }
         }

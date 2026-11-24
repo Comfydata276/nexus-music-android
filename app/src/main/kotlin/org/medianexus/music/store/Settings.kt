@@ -19,6 +19,28 @@ data class ListPrefs(
     val at: Long = 0,
 )
 
+/**
+ * A change the person made on this phone to something shared between devices, kept as the
+ * change and not as a new value: `what` is "pin" or "unpin" (`key`: the playlist), "shuffle"
+ * (`key`: the list, `on`), "sort" (`key`: the list, `sort`, `descending`) or "theme" (`key`:
+ * its name). See `sync/Changes.kt`.
+ */
+@Serializable
+data class Waiting(val what: String = "", val key: String = "", val on: Boolean = false, val sort: Int = 0, val descending: Boolean = false)
+
+/** What this phone last agreed with the server, of the choices shared between devices: each
+ *  with the time it has in the shared record. Never a time of the phone's own making, except
+ *  as written to the server with the change that earned it. */
+@Serializable
+data class Agreed(
+    val pins: List<String> = emptyList(),
+    val pinsAt: Long = 0,
+    /** Empty: none agreed. */
+    val theme: String = "",
+    val themeAt: Long = 0,
+    val lists: Map<String, ListPrefs> = emptyMap(),
+)
+
 /** An equaliser curve saved under a name of the user's own. */
 @Serializable
 data class SavedCurve(val name: String = "", val gains: List<Float> = FLAT)
@@ -101,19 +123,26 @@ data class Settings(
     /** (No longer used: the playlist that holds what's shared between devices is looked for
      *  afresh at every exchange. Read past in a file that has it.) */
     val syncPlaylist: String = "",
-    /** When the pins and the theme were last changed, to settle which device's are newer. */
+    /** (No longer used, and read past: times an earlier build put on the pins and the theme
+     *  as they were changed here. The times that count are in [agreed].) */
     val pinsAt: Long = 0,
     val themeAt: Long = 0,
+    /**
+     * What this phone last agreed with the server for the account in [sharedFor], of the
+     * pins, the theme and each list's choices; and the person's changes to them made here
+     * since, still waiting to be shared. The pins, lists and theme above are what the phone
+     * shows: the agreed ones with the waiting changes on top (and, where nothing is agreed,
+     * whatever the phone has of its own). Only [agreed] and [waiting] are ever shared, and a
+     * waiting change gets a time only as it is written to the server (`sync/Changes.kt`).
+     */
+    val agreed: Agreed = Agreed(),
+    val waiting: List<Waiting> = emptyList(),
     /** Which account the choices that are shared between devices belong to (its storage
      *  key): the pins and their time, each list's choices, the theme's time and the sync
      *  playlist's id. They are shared into that account's record and no other's: when
      *  another account is taken on they are put away with the one they belong to, and that
      *  account's own brought out (see `sync/Belongs.kt`). Empty until an account first is. */
     val sharedFor: String = "",
-    /** The theme showing was chosen under the account in `sharedFor`, or came from its
-     *  record. False when it is only what the phone was left showing by another account:
-     *  then the phone has nothing to say about the theme to this account's other devices. */
-    val themeOwn: Boolean = true,
 
     // ---- The phone's own ----
     /** Android 17's local-network permission was refused and the system won't ask again:

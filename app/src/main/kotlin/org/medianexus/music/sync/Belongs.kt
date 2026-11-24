@@ -4,28 +4,30 @@ import java.io.File
 import java.io.IOException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.medianexus.music.store.Agreed
 import org.medianexus.music.store.ListPrefs
 import org.medianexus.music.store.Settings
 import org.medianexus.music.store.SettingsStore
+import org.medianexus.music.store.Waiting
 import org.medianexus.music.store.writeAtomically
 
 /**
  * Whose the shared choices are.
  *
- * The pins, each list's shuffle and sort and the time the theme was chosen live in the
- * phone's settings, where every screen reads them. Settings are the
- * phone's, not an account's; but these are shared into an account's record on the server,
- * where that person's PCs take them for that person's own. So they belong to one account at
- * a time ([Settings.sharedFor]), and when another account is taken on they are put away with
- * the account they belong to (`in-step.json`, in its own data) and that account's own are
+ * The pins, each list's shuffle and sort and the theme live in the phone's settings, where
+ * every screen reads them, with what was last agreed with the server and the changes still
+ * waiting to be shared ([Settings.agreed], [Settings.waiting]). Settings are the phone's, not
+ * an account's; but these are shared into an account's record on the server, where that
+ * person's PCs take them for that person's own. So they belong to one account at a time
+ * ([Settings.sharedFor]), and when another account is taken on they are put away with the
+ * account they belong to (`in-step.json`, in its own data) and that account's own are
  * brought out: nothing chosen under one account is ever shared into another's record, and
  * signing back in finds one's choices as they were. (The Windows app keeps them in its one
  * settings file whoever is signed in, and shares them with whoever is.)
  *
- * The theme itself stays the phone's look. Brought out with an account is the theme that was
- * chosen under it; an account with none takes the look the phone has, and has nothing to say
- * about it to its other devices until a theme is chosen under it or comes from its record
- * ([Settings.themeOwn]).
+ * The theme stays the phone's look: an account that has none of its own takes the look the
+ * phone has, and has nothing to say about it to its other devices until a theme is chosen
+ * under it or comes from its record.
  *
  * This runs as the account is taken on, before anything of the account exists to read the
  * settings (`Graph.accounts`); the exchange asks [ready] and takes no part until it is so.
@@ -33,12 +35,13 @@ import org.medianexus.music.store.writeAtomically
 object Belongs {
     @Serializable
     private data class Kept(
+        // What the phone showed for this account...
         val pinnedPlaylists: List<String> = emptyList(),
-        val pinsAt: Long = 0,
         val lists: Map<String, ListPrefs> = emptyMap(),
-        /** The theme chosen under this account ("" for none) and when. */
         val theme: String = "",
-        val themeAt: Long = 0,
+        // ...what it had agreed with the server, and what was still waiting to be shared.
+        val agreed: Agreed = Agreed(),
+        val waiting: List<Waiting> = emptyList(),
     )
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -57,15 +60,16 @@ object Belongs {
         val before = settings.value
         if (before.sharedFor == account) return
         if (before.sharedFor.isEmpty()) {
-            // The first account since these choices had an owner: they are its own (an
-            // earlier version of the app, which shared nothing, had one set for everyone).
-            settings.update { if (it.sharedFor.isEmpty()) it.copy(sharedFor = account) else it }
+            // Settings that have belonged to no account (a phone that has never kept in
+            // step): what they hold stays as the phone's own, shown and not shared. Nothing
+            // in them is agreed with anyone, and nothing is waiting.
+            settings.update { if (it.sharedFor.isEmpty()) it.copy(sharedFor = account, agreed = Agreed(), waiting = emptyList()) else it }
             if (settings.value.sharedFor == account) return
         }
         // Put away with the account they belong to...
         val leaving = settings.value
         if (leaving.sharedFor != account && leaving.sharedFor.isNotEmpty()) {
-            val kept = Kept(leaving.pinnedPlaylists, leaving.pinsAt, leaving.lists, if (leaving.themeOwn) leaving.theme else "", if (leaving.themeOwn) leaving.themeAt else 0)
+            val kept = Kept(leaving.pinnedPlaylists, leaving.lists, leaving.theme, leaving.agreed, leaving.waiting)
             try {
                 val data = dataOf(leaving.sharedFor)
                 data.mkdirs()
@@ -87,15 +91,14 @@ object Belongs {
         } ?: Kept()
         settings.update { now ->
             if (now.sharedFor == account) return@update now
-            val own = mine.theme.isNotEmpty()
             now.copy(
                 sharedFor = account,
                 pinnedPlaylists = mine.pinnedPlaylists,
-                pinsAt = mine.pinsAt,
                 lists = mine.lists,
-                theme = if (own) mine.theme else now.theme,
-                themeAt = if (own) mine.themeAt else 0,
-                themeOwn = own,
+                // (The phone's look is left as it is for an account that has none of its own.)
+                theme = mine.theme.ifEmpty { now.theme },
+                agreed = mine.agreed,
+                waiting = mine.waiting,
             )
         }
     }

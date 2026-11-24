@@ -6,7 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
-import org.medianexus.music.store.ListPrefs
 import org.medianexus.music.store.Settings
 
 /** Work for the car that must neither run on the main thread nor be waited on for ever. */
@@ -48,11 +47,12 @@ object Remembered {
      * was started it played in order.
      */
     fun with(settings: Settings, shuffle: Boolean, repeat: Int, source: String, nowSeconds: Long): Settings {
-        val lists = if (source.isNotEmpty() && (settings.lists[source]?.shuffle ?: false) != shuffle) {
-            settings.lists + (source to (settings.lists[source] ?: ListPrefs()).copy(shuffle = shuffle, at = nowSeconds))
+        // (The list's own choice is kept as the change, for other devices: sync/Changes.kt.)
+        val listed = if (source.isNotEmpty() && (settings.lists[source]?.shuffle ?: false) != shuffle) {
+            org.medianexus.music.sync.Changes.shuffle(settings, source, shuffle, nowSeconds)
         } else {
-            settings.lists
+            settings
         }
-        return settings.copy(shuffle = shuffle, repeat = repeat, lists = lists)
+        return listed.copy(shuffle = shuffle, repeat = repeat)
     }
 }

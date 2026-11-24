@@ -178,7 +178,7 @@ class InStepLiveTest {
         assertEquals(pcWrote, peek().text("comment"))
 
         say("4. The phone unpins one: the PC's next exchange has it unpinned, and writes nothing.")
-        phone.settings.update { it.copy(pinnedPlaylists = listOf(p2), pinsAt = now()) }
+        phone.settings.update { Changes.pin(it, p1, on = false) }
         assertEquals(InStep.Outcome.DONE, phone.exchange())
         assertFalse(pc.exchange().getValue("wrote").jsonPrimitive.boolean)
         assertEquals(listOf(p2), pc.holds().pins)
@@ -229,19 +229,19 @@ class InStepLiveTest {
         assertEquals(InStep.Outcome.NEWER_LAYOUT, phone.exchange())
         assertEquals(later, peek().text("comment"))
         assertEquals(listOf("from-the-future"), phone.settings.value.pinnedPlaylists)
-        // (Put back as it was, for what follows; the phone's own pins with it.)
+        // (Put back as it was, for what follows. The phone holds the later layout's pins as
+        // agreed, with their time, which is after anything here: a new phone takes its place.)
         windows("plant", "tester", "--text", before)
-        phone.settings.update { it.copy(pinnedPlaylists = listOf(p2, p1), pinsAt = pc.holds().pinsAt) }
 
         say("9. Signed in as another account: nothing of the first's is shared into the second's record.")
         val guest = Phone("phone, as the second account", user = "guest")
         assertEquals(InStep.Outcome.DONE, guest.exchange())
         // (With nothing of its own to say, it makes no record at all.)
         assertEquals(0, peek("guest").getValue("sync_playlists").jsonPrimitive.int)
-        guest.settings.update { it.copy(pinnedPlaylists = listOf("guests-own"), pinsAt = now()) }
+        guest.settings.update { Changes.pin(it, "guests-own", on = true) }
         assertEquals(InStep.Outcome.DONE, guest.exchange())
         val theirs = SharedText.read(peek("guest").text("comment")!!)!!
-        assertEquals(Shared(layout = 1, pins = listOf("guests-own"), pinsAt = theirs.pinsAt, theme = "Violet"), theirs)
+        assertEquals(Shared(layout = 1, pins = listOf("guests-own"), pinsAt = theirs.pinsAt), theirs)
         assertEquals(before, peek().text("comment"))
         assertEquals(1, peek().getValue("sync_playlists").jsonPrimitive.int)
 
@@ -252,7 +252,7 @@ class InStepLiveTest {
         // lowest: the first's pins (the PC's, held on the phone) are written into it.
         val third = Phone("third phone")
         third.exchange()
-        phone.exchange()
+        second.exchange()
         assertEquals(listOf(p2, p1), SharedText.read(windows("peek", "tester").text("comment")!!)!!.pins)
         assertEquals(2, peek().getValue("sync_playlists").jsonPrimitive.int)
         say("   two there ($id and $other); both use $lowest")

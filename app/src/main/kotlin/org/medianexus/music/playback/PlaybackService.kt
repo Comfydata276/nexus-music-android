@@ -2420,10 +2420,7 @@ class PlaybackService : MediaLibraryService() {
     private fun rememberShuffle(source: String, shuffle: Boolean) {
         if (source.isEmpty()) return
         val now = System.currentTimeMillis() / 1000
-        graph.settings.update { s ->
-            val prefs = s.lists[source] ?: org.medianexus.music.store.ListPrefs()
-            if (prefs.shuffle == shuffle) s else s.copy(lists = s.lists + (source to prefs.copy(shuffle = shuffle, at = now)))
-        }
+        graph.settings.update { s -> if ((s.lists[source]?.shuffle ?: false) == shuffle) s else org.medianexus.music.sync.Changes.shuffle(s, source, shuffle, now) }
     }
 
     /**

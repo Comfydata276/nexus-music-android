@@ -405,9 +405,9 @@ class AccountGraph(
             added.changedHere = { step.shareSoon() }
             recentlyPlayed.changedHere = { step.shareSoon() }
             scope.launch {
-                settings.map { if (org.medianexus.music.sync.Belongs.ready(it, account.key)) org.medianexus.music.sync.Sharing.choices(it) else null }
+                settings.map { if (org.medianexus.music.sync.Belongs.ready(it, account.key)) it.waiting else null }
                     .distinctUntilChanged().drop(1)
-                    .collect { now -> if (now != null && now != shared?.settled) step.shareSoon() }
+                    .collect { now -> if (!now.isNullOrEmpty() && now != shared?.settled) step.shareSoon() }
             }
             // The server back, or sharing switched on: a look at once. Switched off, what
             // another device was playing is no longer offered.

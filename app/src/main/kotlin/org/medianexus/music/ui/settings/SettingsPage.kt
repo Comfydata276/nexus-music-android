@@ -111,8 +111,9 @@ private fun Appearance(graph: Graph) {
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     SettingRow(stringResource(R.string.theme), stringResource(R.string.theme_detail), stacked = true) {
         ThemeSwatches(settings.theme) { name ->
-            // Chosen here, now, under this account: its other devices take it as the newer.
-            graph.settings.update { it.copy(theme = name, themeAt = System.currentTimeMillis() / 1000, themeOwn = true) }
+            // Chosen here: shown at once, and kept as the change for the account's other
+            // devices (sync/Changes.kt).
+            graph.settings.update { org.medianexus.music.sync.Changes.theme(it, name) }
         }
     }
 }
