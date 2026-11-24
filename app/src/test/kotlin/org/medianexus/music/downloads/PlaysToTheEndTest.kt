@@ -350,7 +350,7 @@ class PlaysToTheEndTest {
         val counting = AudioCheck { file, suffix, stop -> looks.incrementAndGet(); Media3AudioCheck.system.inspect(file, suffix, stop) }
         val (catalogue, engine) = appStarted(counting)
         until("all four whole") {
-            !engine.state.value.busy && listOf("good", "hurt", "short", "alac").all { catalogue.has(it) && catalogue.entries().first { e -> e.song.id == it }.checked == Media3AudioCheck.VERSION }
+            !engine.state.value.busy && listOf("good", "hurt", "short", "alac").all { catalogue.has(it) && catalogue.entries().firstOrNull { e -> e.song.id == it }?.checked == Media3AudioCheck.VERSION }
         }
         until("said") { notes.any { it.startsWith("downloads: 4 marked whole by an earlier version were read through to the end; 3 were not whole") } }
         assertTrue(engine.state.value.failed.isEmpty())

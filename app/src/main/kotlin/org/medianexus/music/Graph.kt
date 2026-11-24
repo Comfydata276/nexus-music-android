@@ -71,6 +71,10 @@ class Graph(context: Context) {
     /** The phone's network, as Android reports it and as it changes (see [NetworkWatch]). */
     val network = org.medianexus.music.net.NetworkWatch(app)
 
+    /** The unmetered network downloads are bound to while "Download on Wi-Fi only" is on
+     *  (see [org.medianexus.music.net.UnmeteredNetwork]). */
+    val unmetered = org.medianexus.music.net.UnmeteredNetwork(app, http) { diagnostics.note(it) }
+
     /** Media3's database: the kept songs' index and each account's list of downloads. */
     val database: androidx.media3.database.DatabaseProvider by lazy { databaseFor(app) }
 
@@ -207,6 +211,7 @@ class Graph(context: Context) {
         spare = { org.medianexus.music.downloads.DebugSpare.spare(context) ?: org.medianexus.music.downloads.Downloads.SPARE },
         note = { diagnostics.note(it) },
         network = network.state,
+        unmeteredRoutes = unmetered,
     ).also { downloads -> downloads.reachedFailed = { watch.check() } }
 
     /** A list downloaded whole, as the server has it now, with its songs. */

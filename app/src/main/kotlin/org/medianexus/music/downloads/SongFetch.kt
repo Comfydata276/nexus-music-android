@@ -64,6 +64,10 @@ class DownloadFailure(
 /** What is wrong with a file that was to be, or is, a download (see [SongFetch.faultOf]). */
 enum class Fault { NOT_A_SONG, CUT_SHORT, DAMAGED, WRONG_LENGTH, NO_DECODER }
 
+/** The network a fetch was going out on may no longer be used for it (with Wi-Fi only on:
+ *  it has gone, or turned metered). Not a failure of the song's. */
+class RouteGone : IOException("The network this was on may no longer be used")
+
 /** The fetch was called off ([SongFetch.cancel]): not a failure, and only ever this. (A read
  *  that timed out is an `InterruptedIOException` too, and is a failure.) */
 class Cancelled : InterruptedIOException("Cancelled")
@@ -129,7 +133,16 @@ class SongFetch(
      *  Throws an IOException if the server can't be asked. */
     private val refresh: (id: String) -> Song? = { null },
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
+    /** Whether the way this fetch goes out may still be used (asked as bytes arrive): once
+     *  not, it stops with a [RouteGone], keeping what has arrived. */
+    private val mayRun: () -> Boolean = { true },
+    /** Whether the phone still has room for more (asked before it starts and as bytes
+     *  arrive): once not, it stops with the plain reason, and what had arrived of it goes. */
+    private val room: () -> Boolean = { true },
 ) {
+    /** The network this fetch is bound to, if it is bound to one (its caller's note). */
+    @Volatile var bound: Any? = null
+
     @Volatile private var call: Call? = null
     @Volatile private var cancelled = false
 
@@ -164,6 +177,12 @@ class SongFetch(
 
         var from = resumable(part, meta)
         if (from == null) discard(part, meta)
+        // Nothing is begun that the phone has no room for (the check made when it was
+        // asked for was an estimate, made a while ago).
+        if (!room()) {
+            discard(part, meta)
+            throw DownloadFailure(NO_ROOM)
+        }
         // Twice at most: carrying on, and (if what came back doesn't fit) once from nothing.
         while (true) {
             val arrived = try {
@@ -309,6 +328,9 @@ class SongFetch(
                     var told = 0L
                     while (true) {
                         if (cancelled) throw Cancelled()
+                        // The network this is on has gone, or may no longer be used:
+                        // nothing more is taken from it.
+                        if (!mayRun()) throw RouteGone()
                         val got = source.read(buffer)
                         if (got < 0) break
                         out.write(buffer, 0, got)
@@ -316,11 +338,19 @@ class SongFetch(
                         if (arrived - told >= TELL_EVERY) {
                             told = arrived
                             progress(arrived, expected)
+                            // Nobody else watches the room left while bytes arrive: stopped
+                            // here, cleanly, before the phone is full.
+                            if (!room()) throw OutOfRoom()
                         }
                         if (arrived - synced >= SYNC_EVERY) mark()
                     }
                     CrashPoints.reached("last-write")
                     out.fd.sync()
+                } catch (e: OutOfRoom) {
+                    // What had arrived is given back: the phone needs the room more.
+                    runCatching { out.close() }
+                    discard(part, meta)
+                    throw DownloadFailure(NO_ROOM)
                 } catch (e: IOException) {
                     // Stopped, or the connection went: what did arrive is kept to carry on
                     // from, once it is on the disk and the record says how much.
@@ -467,20 +497,27 @@ class SongFetch(
      *  server's address. */
     private fun failure(e: IOException): IOException {
         if (cancelled) return Cancelled()
-        if (e is DownloadFailure || e is Cancelled) return e
+        if (e is DownloadFailure || e is Cancelled || e is RouteGone) return e
         val chain = generateSequence<Throwable>(e) { it.cause }.take(8).toList()
         val full = chain.any { (it.message.orEmpty()).contains("ENOSPC") || it.message.orEmpty().contains("No space left", ignoreCase = true) }
         return when {
             full -> DownloadFailure("The phone is out of space.")
             chain.any { it is java.net.SocketTimeoutException } -> DownloadFailure("The server took too long to answer.", network = true)
             chain.any { it is java.net.UnknownHostException || it is java.net.ConnectException || it is java.net.SocketException || it is java.net.NoRouteToHostException } ->
-                DownloadFailure("Can't reach the server.", network = true)
+                DownloadFailure(CANT_REACH, network = true)
             chain.any { it is javax.net.ssl.SSLException } -> DownloadFailure("The secure connection to the server failed.")
             else -> DownloadFailure("It couldn't be saved (${e.javaClass.simpleName}).", network = true)
         }
     }
 
+    private class OutOfRoom : IOException()
+
     companion object {
+        const val CANT_REACH = "Can't reach the server."
+
+        /** Why a download was stopped, or not begun, for want of room. */
+        const val NO_ROOM = "The phone is nearly out of space."
+
         private const val BUFFER = 64 * 1024
         private const val TELL_EVERY = 128 * 1024L
 

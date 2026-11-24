@@ -148,6 +148,27 @@ class DownloadsTest {
      *  would say it changed). */
     private var network: kotlinx.coroutines.flow.MutableStateFlow<org.medianexus.music.net.NetworkNow> = MutableStateFlow(org.medianexus.music.net.NetworkNow())
 
+    /** The unmetered network the system has given, as a test says it comes and goes (null:
+     *  the engine's own stand-in, the default route while it is unmetered). */
+    private var routes: FakeRoutes? = null
+
+    private class FakeRoutes : org.medianexus.music.net.UnmeteredRoutes {
+        override val now = MutableStateFlow<org.medianexus.music.net.BoundRoute?>(null)
+        val wanted = mutableListOf<Boolean>()
+        override fun want(on: Boolean) {
+            if (wanted.lastOrNull() != on) wanted += on
+        }
+
+        /** A network: every request made on it says so. */
+        fun network(name: String) = org.medianexus.music.net.BoundRoute(
+            name,
+            OkHttpClient.Builder().addInterceptor { chain -> chain.proceed(chain.request().newBuilder().header("X-Via", name).build()) }.build(),
+        )
+    }
+
+    /** By which network each request for a song came (null: the phone's default route). */
+    private fun via(id: String): List<String?> = synchronized(asked) { asked.filter { it.url.queryParameter("id") == id }.map { it.headers["X-Via"] } }
+
     /** What the engines had to say for Diagnostics. */
     private val engineNotes: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
@@ -159,7 +180,7 @@ class DownloadsTest {
         val covers = CoverStore(folder.newFolder(), scope, Dispatchers.IO, fetch = { _, _ -> throw ApiError.Network("none") })
         return Downloads(context, catalogue, api, OkHttpClient(), database, "acct", settings, reach, covers, { busy, wifi -> kept += busy to wifi }, scope, spare = { spare },
             // The songs here are not audio (what is and isn't a song is WholeDownloadTest's).
-            check = check, disk = disk, network = network, note = { engineNotes += it })
+            check = check, disk = disk, network = network, note = { engineNotes += it }, unmeteredRoutes = routes)
             .also { made += it }
             .also { idle() }
     }
@@ -797,5 +818,208 @@ class DownloadsTest {
         run { engine.retryFailed() }
         until("both again") { engine.state.value.downloaded.size == 2 && !engine.state.value.busy }
         assertTrue(engine.state.value.failed.isEmpty())
+    }
+
+    // ---- Wi-Fi only is a promise (offline hardening 2, item 5) -------------------------------
+
+    private val mobileData = org.medianexus.music.net.NetworkNow(connected = true, unmetered = false)
+    private val wifi = org.medianexus.music.net.NetworkNow(connected = true, unmetered = true)
+
+    @Test
+    fun withWifiOnlyEveryTransferGoesByTheUnmeteredNetworkWhateverTheDefaultRouteIs() {
+        settings.value = Settings(downloadWifiOnly = true)
+        // Wi-Fi and mobile data are both up, and the phone's default route is mobile data.
+        network.value = mobileData
+        val both = FakeRoutes().also { routes = it }
+        both.now.value = both.network("wifi")
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1", size = 400_000), song("s2", size = 400_000), song("s3"))) }
+        until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
+        // The default route flips between them as they arrive.
+        repeat(6) {
+            network.value = if (it % 2 == 0) wifi else mobileData
+            repeat(5) { idle() }
+        }
+        slow = false
+        until("all three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
+        // Every request for every song went by the Wi-Fi, and none by the default route.
+        for (id in listOf("s1", "s2", "s3")) assertTrue("$id came by ${via(id)}", via(id).isNotEmpty() && via(id).all { it == "wifi" })
+        // The network was asked for while there was something to fetch, and let go after.
+        assertEquals(listOf(true, false), both.wanted.filterIndexed { i, on -> i == 0 || both.wanted[i - 1] != on }.takeLast(2))
+    }
+
+    @Test
+    fun withWifiOnlyAndNoUnmeteredNetworkNothingIsTransferredWhateverTheDefaultRouteLooksLike() {
+        settings.value = Settings(downloadWifiOnly = true)
+        // The default route is reported as unmetered (as in the moment a switch is under
+        // way), and the system has no unmetered network to give.
+        network.value = wifi
+        routes = FakeRoutes()
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1"))) }
+        until("held") { engine.state.value.held == Held.WIFI }
+        repeat(50) { idle() }
+        Thread.sleep(200)
+        idle()
+        assertTrue(asked.isEmpty())
+        assertEquals(SongState.Waiting, engine.state.value.stateOf("s1"))
+        // One arrives: the download goes by it.
+        routes!!.now.value = routes!!.network("wifi")
+        until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
+        assertEquals(listOf<String?>("wifi"), via("s1"))
+    }
+
+    @Test
+    fun aTransferInFlightStopsWhenItsNetworkGoesOrTurnsMeteredAndCarriesOnByTheNext() {
+        settings.value = Settings(downloadWifiOnly = true)
+        network.value = mobileData
+        val both = FakeRoutes().also { routes = it }
+        both.now.value = both.network("wifi")
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1", size = 2_400_000))) }
+        val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
+        until("arriving") { part.length() > 100_000 }
+        // The Wi-Fi goes (or the system says it has turned metered: the same word from it).
+        // Mobile data is still there, and is the default route.
+        both.now.value = null
+        until("stopped") { engine.state.value.held == Held.WIFI && engine.state.value.active.none { it.state is SongState.Fetching } }
+        until("its thread has let go") { InFlight.count(catalogue.dir) == 0 }
+        val arrived = part.length()
+        val requests = via("s1").size
+        Thread.sleep(300)
+        repeat(20) { idle() }
+        // Nothing more arrives, by any route, and nothing has failed: it waits.
+        assertEquals(arrived, part.length())
+        assertEquals(requests, via("s1").size)
+        assertTrue(engine.state.value.failed.isEmpty())
+        assertTrue(arrived < 2_400_000)
+        // Another unmetered network: carried on with, by that one alone.
+        slow = false
+        both.now.value = both.network("home")
+        until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
+        assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
+        assertTrue("it came by ${via("s1")}", via("s1").take(requests).all { it == "wifi" } && via("s1").drop(requests).let { it.isNotEmpty() && it.all { v -> v == "home" } })
+    }
+
+    @Test
+    fun wifiOnlySwitchedOnStopsATransferThatWasGoingByTheDefaultRoute() {
+        // Wi-Fi only off, on mobile data: a download is under way by the default route.
+        network.value = mobileData
+        val both = FakeRoutes().also { routes = it }
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1", size = 2_400_000))) }
+        val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
+        until("arriving") { part.length() > 100_000 }
+        assertEquals(listOf<String?>(null), via("s1"))
+        // Wi-Fi only is switched on, and there is no Wi-Fi.
+        settings.value = Settings(downloadWifiOnly = true)
+        until("stopped") { engine.state.value.held == Held.WIFI && engine.state.value.active.none { it.state is SongState.Fetching } }
+        until("its thread has let go") { InFlight.count(catalogue.dir) == 0 }
+        val arrived = part.length()
+        Thread.sleep(300)
+        repeat(20) { idle() }
+        assertEquals(arrived, part.length())
+        // Wi-Fi comes: the rest arrives by it.
+        slow = false
+        both.now.value = both.network("wifi")
+        until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
+        assertTrue("it came by ${via("s1")}", via("s1").drop(1).let { it.isNotEmpty() && it.all { v -> v == "wifi" } })
+    }
+
+    @Test
+    fun anUnmeteredNetworkThatDoesNotReachTheServerIsLeftAloneNotHammered() {
+        settings.value = Settings(downloadWifiOnly = true)
+        network.value = mobileData
+        val both = FakeRoutes().also { routes = it }
+        // A Wi-Fi that is up and on which the server can't be reached (a sign-in page, a
+        // network the server isn't on). Mobile data would reach it; Wi-Fi only says not to.
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        both.now.value = org.medianexus.music.net.BoundRoute(
+            "cafe",
+            OkHttpClient.Builder().addInterceptor { attempts.incrementAndGet(); throw java.net.ConnectException("refused") }.build(),
+        )
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download((1..8).map { song("s$it") }) }
+        until("left alone") { engine.state.value.held == Held.WIFI && engineNotes.any { "the unmetered network didn't reach the server" in it } }
+        until("its threads have let go") { InFlight.count(catalogue.dir) == 0 }
+        val tried = attempts.get()
+        repeat(100) { idle() }
+        Thread.sleep(300)
+        idle()
+        // A try or two, and then none: not every song thrown at it until all have failed.
+        assertTrue("it was tried $tried times", tried in 1..4)
+        assertEquals(tried, attempts.get())
+        assertTrue(engine.state.value.failed.isEmpty())
+        assertEquals(8, engine.state.value.active.size)
+        // Nothing went by the default route.
+        assertTrue(asked.isEmpty())
+        engine.cancelAll()
+    }
+
+    // ---- Room, as bytes arrive; and all of it given back (offline hardening 2, item 5) -------
+
+    @Test
+    fun aDownloadIsStoppedCleanlyBeforeThePhoneIsFull() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1", size = 2_400_000), song("s2"), song("s3"))) }
+        val part = File(catalogue.dir, SongFetch.partName("s1.flac"))
+        until("arriving") { part.length() > 100_000 }
+        // Something else fills the phone meanwhile: less than half the spare room is left.
+        spare = Long.MAX_VALUE / 2
+        until("all stopped") { engine.state.value.failed.size == 3 && !engine.state.value.busy }
+        assertEquals(setOf("The phone is nearly out of space."), engine.state.value.failed.map { it.reason }.toSet())
+        assertTrue(engine.state.value.downloaded.size <= 1)
+        // What had arrived of it was given back.
+        until("its part gone") { catalogue.dir.listFiles()!!.none { it.name.contains("s1") } }
+        assertTrue("$engineNotes", engineNotes.any { "the phone is nearly out of space" in it })
+        // Nothing was begun that there was no room for.
+        assertEquals(0, via("s3").size)
+        // Room again: Retry failed fetches them.
+        spare = 0
+        slow = false
+        run { engine.retryFailed() }
+        until("all three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
+    }
+
+    @Test
+    fun removeAllGivesBackEverythingTheDownloadsOccupy() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val songs = listOf(song("s1"), song("s2"))
+        run { engine.toggle(list("playlist:p1", songs), songs) }
+        run { engine.download(listOf(song("s3")), own = true) }
+        until("three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
+        // One more on its way, part-way; a cover kept with the downloads; a part some
+        // earlier download left; something left lying; a failure on the list.
+        slow = true
+        run { engine.download(listOf(song("s4", size = 2_400_000))) }
+        until("arriving") { File(catalogue.dir, SongFetch.partName("s4.flac")).length() > 100_000 }
+        File(catalogue.dir, "covers").mkdirs()
+        File(catalogue.dir, "covers/al-1.640").writeBytes(ByteArray(23_000))
+        File(catalogue.dir, SongFetch.partName("old.flac")).writeBytes(ByteArray(50_000))
+        File(catalogue.dir, SongFetch.metaName("old.flac")).writeText("{}")
+        File(catalogue.dir, "stray.bin").writeBytes(ByteArray(9_000))
+        catalogue.failed(Failed(song("s5"), "The server refused it (HTTP 404)."))
+        assertTrue(run { engine.removeAll() })
+        // Nothing is left but the downloads' own record, which says there are none.
+        val left = catalogue.dir.walkTopDown().filter { it.isFile }.toList()
+        assertTrue("left: ${left.map { it.name to it.length() }}", left.all { it.name == Catalogue.SONGS_FILE || it.name == Catalogue.LOG_FILE })
+        assertTrue(left.sumOf { it.length() } < 100)
+        until("measured") { engine.state.value.occupied in 0..99 }
+        val state = engine.state.value
+        assertTrue(state.downloaded.isEmpty() && state.collections.isEmpty() && state.failed.isEmpty() && !state.busy)
+        // And after the app is started again: nothing comes back, nothing is fetched.
+        val again = Catalogue(catalogue.dir)
+        assertTrue(again.state.value.ids.isEmpty() && again.state.value.collections.isEmpty() && again.wanting.isEmpty())
     }
 }

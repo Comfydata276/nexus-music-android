@@ -175,7 +175,14 @@ class Downloads(
      *  the folder runs: one thing at a time, in the order asked, never on the main thread.
      *  (A test's own, to hold it.) */
     private val disk: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
+    /** The unmetered network transfers are bound to while Wi-Fi only is on (see
+     *  [org.medianexus.music.net.UnmeteredNetwork]). Given none (a test of something else),
+     *  the default route while the system reports it unmetered. */
+    unmeteredRoutes: org.medianexus.music.net.UnmeteredRoutes? = null,
 ) {
+    private val unmetered: org.medianexus.music.net.UnmeteredRoutes =
+        unmeteredRoutes ?: org.medianexus.music.net.DefaultRouteWhileUnmetered(network, http, scope)
+
     private val main = Handler(Looper.getMainLooper())
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private val now = MutableStateFlow(DownloadsState())
@@ -204,6 +211,9 @@ class Downloads(
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
 
+    /** Told when Media3's manager next has nothing under way (see [removeAll]). */
+    private val whenIdle = ArrayList<kotlinx.coroutines.CompletableDeferred<Unit>>()
+
     /** Android has stopped the job the downloads were running under (see [stoppedByAndroid]). */
     private var stopped = false
 
@@ -227,6 +237,15 @@ class Downloads(
         }
         scope.launch(Dispatchers.Main.immediate) { settings.map { it.downloadWifiOnly }.distinctUntilChanged().collect { gate() } }
         scope.launch(Dispatchers.Main.immediate) { network.collect { gate() } }
+        // The unmetered network coming, going, or turning metered: at once.
+        scope.launch(Dispatchers.Main.immediate) {
+            unmetered.now.collect {
+                // (A network set aside for not reaching the server was that network: another
+                // one has a fresh chance.)
+                if (it?.network != shunned) shunned = null
+                gate()
+            }
+        }
         scope.launch(Dispatchers.Main.immediate) { reach.map { it.offline }.distinctUntilChanged().collect { gate() } }
     }
 
@@ -234,10 +253,15 @@ class Downloads(
      * Whether downloads may run now, decided here and nowhere else, at every change of
      * anything it rests on: not offline (by hand, or our own server out of reach: what is
      * under way stops and is picked up again later, rather than failing for want of a
-     * server); a network there, and an unmetered one if Wi-Fi only is on, **as the system
-     * reports the network** (never whether Android has validated it as reaching the
-     * internet: whether our server answers is asked of our server); and not stopped by
-     * Android. What is under way is stopped at once when it turns to no.
+     * server); a network to use; and not stopped by Android. What is under way is stopped at
+     * once when it turns to no.
+     *
+     * **The network to use.** With Wi-Fi only off: any, as the system reports the phone's
+     * network (never whether Android has validated it as reaching the internet: whether our
+     * server answers is asked of our server). **With Wi-Fi only on: an unmetered network
+     * the system has given the app for the purpose** ([unmetered]), which every transfer is
+     * then bound to (see `SongDownloader`). Not "the default route is unmetered": the default
+     * can be mobile data while the Wi-Fi is up, and can change between one look and the next.
      */
     private fun gate() {
         if (!::manager.isInitialized || released) return
@@ -249,14 +273,36 @@ class Downloads(
     private fun holdsFor(): Held {
         val net = network.value
         val wifiOnly = settings.value.downloadWifiOnly
+        val route = if (wifiOnly) unmetered.now.value else null
         return when {
             reach.value.manual -> Held.OFFLINE
             reach.value.unreachable -> Held.SERVER
-            !net.connected -> if (wifiOnly) Held.WIFI else Held.NETWORK
-            wifiOnly && !net.unmetered -> Held.WIFI
+            wifiOnly && (route == null || route.network == shunned) -> Held.WIFI
+            !wifiOnly && !net.connected -> Held.NETWORK
             stopped -> Held.ANDROID
             else -> Held.NOTHING
         }
+    }
+
+    /**
+     * An unmetered network that is there and did not reach the server (a Wi-Fi with a
+     * sign-in page, one the server isn't on): passed over for a minute, so that everything
+     * waiting isn't thrown at it, try after try, until it has all failed. Wi-Fi only means
+     * nothing else is tried meanwhile.
+     */
+    @Volatile private var shunned: Any? = null
+    private val unshun = Runnable {
+        shunned = null
+        gate()
+    }
+
+    private fun shun(network: Any) = onMain {
+        if (released || unmetered.now.value?.network != network) return@onMain
+        shunned = network
+        note("downloads: the unmetered network didn't reach the server; it is tried again in a minute (Wi-Fi only: nothing else is used)")
+        main.removeCallbacks(unshun)
+        main.postDelayed(unshun, SHUN_MILLIS)
+        gate()
     }
 
     /**
@@ -507,14 +553,36 @@ class Downloads(
         publish()
     }
 
-    /** Everything downloaded goes, and every list downloaded whole is forgotten. */
-    fun removeAll() = onMain {
-        val ids = catalogue.state.value.songs.keys + asks.keys + now.value.active.map { it.song.id }
-        later {
-            catalogue.state.value.collections.forEach { forgetList(it.key) }
-            catalogue.unsingle(catalogue.state.value.singles)
+    /**
+     * Everything downloaded goes, everything on its way is stopped, every list downloaded
+     * whole is forgotten, **and everything else in the downloads' folder goes with them**:
+     * parts of downloads cut short, their records, the covers kept with the downloads,
+     * anything left lying (`Catalogue.clear`). What the person is told the downloads take
+     * is what this gives back. Returns whether it could be done.
+     *
+     * No download is accepted while it is under way, and it waits for Media3 to finish
+     * letting go of what it was fetching first (a fetch being stopped can still be writing).
+     */
+    suspend fun removeAll(): Boolean = asking.withLock {
+        ready.await()
+        onDisk {}
+        if (!::manager.isInitialized || released) return@withLock false
+        for (download in manager.currentDownloads) manager.removeDownload(download.request.id)
+        for (id in asks.keys.toList()) manager.removeDownload(id)
+        asks.clear()
+        batch.clear()
+        publish()
+        if (!manager.isIdle) {
+            val idle = kotlinx.coroutines.CompletableDeferred<Unit>()
+            whenIdle += idle
+            kotlinx.coroutines.withTimeoutOrNull(LET_GO_MILLIS) { idle.await() }
+            whenIdle -= idle
         }
-        drop(ids.toList())
+        val done = onDisk { catalogue.clear() }
+        demoted.clear()
+        publish()
+        measure()
+        done
     }
 
     /** The lists downloaded whole: fetches whatever they have gained (Windows'
@@ -655,6 +723,7 @@ class Downloads(
         }
 
         override fun onIdle(downloadManager: DownloadManager) {
+            whenIdle.toList().forEach { it.complete(Unit) }
             publish()
             measure()
         }
@@ -701,6 +770,8 @@ class Downloads(
         now.value = next
         // Offline by hand, nothing is to be done until it is switched off.
         keeper(active.isNotEmpty() && !reach.value.manual, settings.value.downloadWifiOnly)
+        // An unmetered network is asked of the system only while something waits for one.
+        unmetered.want(active.isNotEmpty() && settings.value.downloadWifiOnly && !reach.value.manual && !released)
         if (active.any { it.state is SongState.Fetching }) tick() else {
             ticking?.cancel()
             ticking = null
@@ -758,6 +829,8 @@ class Downloads(
     /** The account has gone: its downloads stop here (they carry on when it is back). */
     fun release() = onMain {
         released = true
+        main.removeCallbacks(unshun)
+        unmetered.want(false)
         ticking?.cancel()
         if (::manager.isInitialized) manager.release()
         route = http
@@ -774,7 +847,10 @@ class Downloads(
     }
 
     private inner class SongDownloader(private val id: String, private val ask: Ask?) : Downloader {
-        private val fetch = SongFetch(route, catalogue, check, ::asTheServerHasIt)
+        /** The attempt under way, and whether Media3 has called this download off. */
+        @Volatile private var fetch: SongFetch? = null
+        private val called = java.util.concurrent.CountDownLatch(1)
+        private val cancelled get() = called.count == 0L
 
         override fun download(progressListener: Downloader.ProgressListener?) {
             val ask = ask ?: throw IllegalStateException("A download with nothing to say what it is")
@@ -788,14 +864,46 @@ class Downloads(
             main.post { publish() }
         }
 
+        /**
+         * The way one attempt goes out, decided **for each attempt, as it begins** (a
+         * downloader that had been running kept the client it was made with, whatever had
+         * changed since).
+         *
+         * With Wi-Fi only on: the unmetered network the system has given, and nothing else.
+         * The attempt is bound to it, and stops when it is no longer that network (gone, or
+         * turned metered), or Wi-Fi only was switched on after an unbound attempt began.
+         * With Wi-Fi only off: the phone's own route, or the network Android gave the job.
+         */
+        private fun attempt(): SongFetch {
+            val wifiOnly = settings.value.downloadWifiOnly
+            val bound = if (wifiOnly) unmetered.now.value ?: throw RouteGone() else null
+            val still: () -> Boolean = if (bound != null) {
+                { unmetered.now.value?.network == bound.network }
+            } else {
+                { !settings.value.downloadWifiOnly }
+            }
+            return SongFetch(
+                bound?.client ?: route, catalogue, check, ::asTheServerHasIt,
+                mayRun = still,
+                // Half of what is always kept spare: the estimate made when this was asked
+                // for may be out, and other things fill a phone too.
+                room = { catalogue.dir.usableSpace >= spare() / 2 },
+            ).also { it.bound = bound?.network }
+        }
+
         private fun fetchUntilSettled(ask: Ask, asked: SavedForm, progressListener: Downloader.ProgressListener?) {
             var tries = 0
             // A file this phone was found to have no decoder for is not fetched as it is
             // again: the server's conversion, as streaming asks for one it can't play.
             var form = if (!asked.converted && ask.song.id in undecodable) convertedForm() else asked
             while (true) {
+                var now: SongFetch? = null
                 try {
-                    fetch.fetch(ask.song, form, api.streamUrl(ask.song.id, form.bitrate)) { got, total ->
+                    if (cancelled) throw Cancelled()
+                    now = attempt()
+                    fetch = now
+                    if (cancelled) throw Cancelled()
+                    now.fetch(ask.song, form, api.streamUrl(ask.song.id, form.bitrate)) { got, total ->
                         progressListener?.onProgress(total, got, if (total > 0) 100f * got / total else C.PERCENTAGE_UNSET.toFloat())
                     }
                     break
@@ -803,16 +911,29 @@ class Downloads(
                     // Stopped by Media3 (cancelled, the network went, offline): not a failure.
                     // (Only then: Media3 takes an interruption it didn't ask for as success.)
                     throw InterruptedException("Stopped")
+                } catch (e: RouteGone) {
+                    // The network this was bound to may no longer be used, or there is none
+                    // to bind to. [gate] has seen the same and is stopping everything, by
+                    // Media3: waited for, so this ends as "stopped", which it is. If that
+                    // doesn't come (the network was back at once), it is one more try.
+                    main.post { gate() }
+                    if (called.await(STOP_WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) throw InterruptedException("Stopped")
+                    throw DownloadFailure("Waiting for Wi-Fi.", network = true)
                 } catch (e: DownloadFailure) {
                     // The server can't be reached: Media3 tries again a few times, and meanwhile
                     // the server is asked whether it is there at all (which pauses everything if
                     // it isn't).
                     if (e.network) {
-                        // On the network the job was given, and it didn't get there: the next
-                        // try (Media3's, in a moment) goes by the phone's own route instead.
-                        // Which network that is, and whether it may be used (unmetered, for
-                        // Wi-Fi only), is still [gate]'s to say.
-                        if (route !== http) {
+                        val bound = now?.bound
+                        if (bound != null) {
+                            // Bound to the unmetered network, and it didn't get there. Wi-Fi
+                            // only: no other network is tried. That one is left alone for a
+                            // while (see [shun]).
+                            if (e.reason == SongFetch.CANT_REACH) shun(bound)
+                        } else if (route !== http) {
+                            // On the network the job was given, and it didn't get there: the
+                            // next try goes by the phone's own route instead (each attempt
+                            // takes the route as it then is).
                             route = http
                             note("downloads: the network Android gave the job didn't reach the server; the phone's own route is used")
                         }
@@ -835,6 +956,7 @@ class Downloads(
                         note("downloads: one didn't pass its checks, and is fetched again")
                         continue
                     }
+                    if (e.reason == SongFetch.NO_ROOM) note("downloads: one was stopped: the phone is nearly out of space")
                     throw Final(e)
                 } catch (e: InterruptedException) {
                     throw e
@@ -848,7 +970,10 @@ class Downloads(
             }
         }
 
-        override fun cancel() = fetch.cancel()
+        override fun cancel() {
+            called.countDown()
+            fetch?.cancel()
+        }
 
         override fun remove() {
             // Removed or cancelled: whatever arrived of it goes, and the download with it.
@@ -1032,6 +1157,16 @@ class Downloads(
         const val SPARE = 500L * 1024 * 1024
 
         private const val TICK_MILLIS = 500L
+
+        /** How long Remove all waits for Media3 to let go of what it was fetching. */
+        private const val LET_GO_MILLIS = 10_000L
+
+        /** How long an unmetered network that didn't reach the server is left alone. */
+        private const val SHUN_MILLIS = 60_000L
+
+        /** How long a transfer whose network has gone waits to be stopped by Media3 (which
+         *  [gate] is seeing to) before it gives the try up as failed. */
+        private const val STOP_WAIT_MILLIS = 5_000L
 
         /** Between one old download read through again and the next. */
         private const val RECHECK_PAUSE_MILLIS = 50L

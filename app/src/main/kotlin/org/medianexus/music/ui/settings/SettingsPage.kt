@@ -47,6 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.medianexus.music.BuildConfig
 import org.medianexus.music.Graph
+import kotlinx.coroutines.launch
 import org.medianexus.music.R
 import org.medianexus.music.SessionState
 import org.medianexus.music.downloads.Downloads
@@ -177,8 +178,14 @@ private fun Storage(graph: Graph) {
                 res.getString(R.string.remove_all_detail, summary),
                 res.getString(R.string.remove_all),
             ) {
-                ui.account?.downloads?.removeAll()
-                graph.toasts.show(res.getString(R.string.downloads_removed))
+                // (Everything in the downloads' folder goes, off the main thread; said when
+                // it has.)
+                val account = ui.account
+                account?.downloads?.let { downloads ->
+                    account.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                        if (downloads.removeAll()) graph.toasts.show(res.getString(R.string.downloads_removed))
+                    }
+                }
             }
         })
     }

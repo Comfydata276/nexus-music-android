@@ -363,6 +363,44 @@ class Catalogue(
      *  last published may be a moment behind for a change nobody is shown: see [passed]). */
     fun entries(): List<Downloaded> = synchronized(lock) { songs.values.toList() }
 
+    /**
+     * **Everything goes** (Settings, "Remove all"): every download, every list downloaded
+     * whole, every failure, and every file in the folder that is not this record itself
+     * (parts of downloads cut short, their records, the covers kept with the downloads,
+     * anything left lying), so that the room given back is all the room that was taken.
+     *
+     * Unmarked first, as ever: the empty list is written whole and the log emptied before a
+     * file is deleted. If that can't be written, nothing is deleted, and false is returned.
+     */
+    fun clear(): Boolean = synchronized(lock) {
+        val was = songs.values.toList()
+        songs.clear()
+        try {
+            compact()
+        } catch (_: IOException) {
+            was.forEach { songs[it.song.id] = it }
+            note("downloads: they couldn't all be removed (the list couldn't be written)")
+            return@synchronized false
+        }
+        // The list before this one names every download just removed: it must not be there
+        // to be read back if this one ever can't be.
+        File(dir, BACKUP_FILE).delete()
+        lists.clear()
+        failures.clear()
+        File(dir, LISTS_FILE).delete()
+        File(dir, FAILED_FILE).delete()
+        runCatching { syncDirOrFail(dir) }
+        dir.listFiles()?.forEach { file ->
+            if (file.isDirectory) {
+                file.deleteRecursively()
+            } else if (file.name !in OWN_FILES && !(file.name.startsWith(".") && file.name.endsWith(".tmp"))) {
+                file.delete()
+            }
+        }
+        publish()
+        true
+    }
+
     /** Remembers a list as downloaded (or with its songs as they are now), or forgets it. */
     fun keep(collection: DownloadedList) = synchronized(lock) {
         lists[collection.key] = collection

@@ -264,6 +264,18 @@ class DownloadsJob : JobService() {
         return true
     }
 
+    /**
+     * Android has given the job another network (the one it had has gone, a better one has
+     * come). With Wi-Fi only off, transfers started from now go out on it; with Wi-Fi only
+     * on they are bound to the unmetered network the app asks for itself, whatever the job
+     * has. (It used to be ignored: the job went on with a network it no longer had.)
+     */
+    override fun onNetworkChanged(params: JobParameters) {
+        val graph = applicationContext.graph
+        graph.accounts.state.value?.downloads?.useNetwork(params.network)
+        graph.diagnostics.note("downloads: Android gave the job another network")
+    }
+
     private fun finish(params: JobParameters) {
         DownloadKeeper.running = false
         work?.cancel()
