@@ -48,8 +48,11 @@ fun expectedBytes(song: Song, quality: Int): Long {
  * or a notification). `network`: the server couldn't be reached, which is worth trying
  * again by itself when it is back. `again`: what arrived was not the song, whole (it failed
  * a check): worth fetching afresh a few times, as the server's next answer may be right.
+ *
+ * It never carries the exception it was made from: Media3 writes a download's final failure
+ * to the system log, and that exception's own words can name the server.
  */
-class DownloadFailure(val reason: String, val network: Boolean = false, val again: Boolean = false, cause: Throwable? = null) : IOException(reason, cause)
+class DownloadFailure(val reason: String, val network: Boolean = false, val again: Boolean = false) : IOException(reason)
 
 /** The fetch was called off ([SongFetch.cancel]): not a failure, and only ever this. (A read
  *  that timed out is an `InterruptedIOException` too, and is a failure.) */

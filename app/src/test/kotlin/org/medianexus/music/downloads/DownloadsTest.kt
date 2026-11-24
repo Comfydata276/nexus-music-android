@@ -148,12 +148,15 @@ class DownloadsTest {
      *  would say it changed). */
     private var network: kotlinx.coroutines.flow.MutableStateFlow<org.medianexus.music.net.NetworkNow> = MutableStateFlow(org.medianexus.music.net.NetworkNow())
 
+    /** What says a file is the song (see above): a test may make it slow to answer. */
+    private var check = AudioCheck { _, _ -> Inspected("flac", true, -1) }
+
     private fun downloads(): Downloads {
         val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient())
         val covers = CoverStore(folder.newFolder(), scope, Dispatchers.IO, fetch = { _, _ -> throw ApiError.Network("none") })
         return Downloads(context, catalogue, api, OkHttpClient(), database, "acct", settings, reach, covers, { busy, wifi -> kept += busy to wifi }, scope, spare = { spare },
             // The songs here are not audio (what is and isn't a song is WholeDownloadTest's).
-            check = { _, _ -> Inspected("flac", true, -1) }, disk = disk, network = network)
+            check = check, disk = disk, network = network)
             .also { made += it }
             .also { idle() }
     }
@@ -527,5 +530,83 @@ class DownloadsTest {
         engine.stoppedByAndroid(false)
         until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
         assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
+    }
+
+    // ---- Smaller things (offline review 9) ----------------------------------------------------
+
+    @Test
+    fun aNewEngineWaitsForTheLastOnesFetchesToLetGoOfTheFolder() {
+        // The first engine's fetch has everything and is checking it; it will be slow to
+        // notice it has been stopped (as a thread in the middle of a write to disk is).
+        val checking = java.util.concurrent.CountDownLatch(1)
+        val letGo = java.util.concurrent.CountDownLatch(1)
+        check = AudioCheck { _, _ ->
+            checking.countDown()
+            while (true) {
+                try {
+                    letGo.await()
+                    break
+                } catch (_: InterruptedException) {
+                    // Not yet.
+                }
+            }
+            Inspected("flac", true, -1)
+        }
+        val first = downloads()
+        until("ready") { first.state.value.settled }
+        run { first.download(listOf(song("s1"))) }
+        assertTrue(checking.await(30, TimeUnit.SECONDS))
+        // Signed out and straight back in to the same account: the old engine is released
+        // (Media3 interrupts its tasks and doesn't wait for them), and a new one made on the
+        // same folder and the same list of downloads.
+        first.release()
+        made.remove(first)
+        idle()
+        check = AudioCheck { _, _ -> Inspected("flac", true, -1) }
+        val second = downloads()
+        until("read") { second.state.value.settled }
+        // It has the song to fetch, and doesn't begin: the old fetch still has the part file.
+        repeat(200) { idle() }
+        assertEquals(1, asked.count { it.url.queryParameter("id") == "s1" })
+        assertTrue(second.state.value.active.none { it.state is SongState.Fetching })
+        // The old one lets go.
+        letGo.countDown()
+        until("downloaded by the new one") { catalogue.has("s1") && !second.state.value.busy }
+        assertArrayEquals(files["s1"], catalogue.wholeFileOf("s1")!!.readBytes())
+    }
+
+    @Test
+    fun theRoomDownloadsTakeCountsEverythingInTheirFolder() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        // What isn't a marked song and takes room all the same: a part of something on its
+        // way, a cover kept with the downloads, something left lying.
+        File(catalogue.dir, SongFetch.partName("zz.flac")).writeBytes(ByteArray(5_000))
+        File(File(catalogue.dir, "covers").also { it.mkdirs() }, "al-1.640").writeBytes(ByteArray(7_000))
+        File(catalogue.dir, "stray.bin").writeBytes(ByteArray(11_000))
+        run { engine.download(listOf(song("s1"))) }
+        until("downloaded") { catalogue.has("s1") && !engine.state.value.busy }
+        val all = catalogue.dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        until("measured") { engine.state.value.occupied == all }
+        // More than the song alone: that is what the person is told.
+        assertTrue(all >= 200_000L + 23_000L)
+        assertEquals(all, engine.state.value.bytes)
+        assertEquals(200_000L, engine.state.value.downloaded.values.sumOf { it.bytes })
+    }
+
+    @Test
+    fun whatMedia3WritesToTheSystemLogOfAFailureHasNoCauseInIt() {
+        // A release build: the failure's own words and no more.
+        org.medianexus.music.quietMedia3(debug = false)
+        try {
+            val failure = RuntimeException("The server refused it (HTTP 404).", java.io.IOException("unexpected end of stream on http://music.example.org/rest/stream?u=ada&t=0123"))
+            val logged = androidx.media3.common.util.Log.getThrowableString(failure)!!
+            assertEquals("The server refused it (HTTP 404).", logged)
+            assertFalse(logged.contains("music.example.org"))
+        } finally {
+            org.medianexus.music.quietMedia3(debug = true)
+        }
+        // And a failure of our own making never carries the exception it came from.
+        assertEquals(null, DownloadFailure("Can't reach the server.", network = true).cause)
     }
 }

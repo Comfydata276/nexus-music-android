@@ -84,6 +84,10 @@ data class DownloadsState(
     /** Media3's manager has read what was waiting from its list: until then "nothing on its
      *  way" only means "not read yet". */
     val settled: Boolean = false,
+    /** Everything the downloads take up on the phone, in bytes, as last measured: the songs,
+     *  and also what is part-way, the covers kept with them, and anything left lying. -1
+     *  until it has been measured. */
+    val occupied: Long = -1,
 ) {
     private val activeById: Map<String, Active> by lazy { active.associateBy { it.song.id } }
     private val failedById: Map<String, Failed> by lazy { failed.associateBy { it.song.id } }
@@ -106,7 +110,9 @@ data class DownloadsState(
     /** "Downloading 3 of 12" (Windows' sidebar line): the number of the song now arriving. */
     val at: Int get() = (batchDone + batchFailed + 1).coerceAtMost(batchTotal.coerceAtLeast(1))
 
-    val bytes: Long get() = downloaded.values.sumOf { it.bytes }
+    /** The room the downloads take on the phone, as the person is told it: everything in
+     *  their folder (see [occupied]); until that has been measured, the downloaded songs. */
+    val bytes: Long get() = if (occupied >= 0) occupied else downloaded.values.sumOf { it.bytes }
 }
 
 /** What became of asking for songs to be downloaded, for the screens to say. */
@@ -219,6 +225,10 @@ class Downloads(
     /** Android has stopped the job the downloads were running under (see [stoppedByAndroid]). */
     private var stopped = false
 
+    /** Until the start-up work is done (see `onInitialized`): an earlier engine's fetches
+     *  into the same folder have unwound, and the folder has been swept. Nothing runs before. */
+    private var opening = true
+
     /** The client transfers go out on: the app's own, or one bound to the network Android's
      *  job was given (see [useNetwork]). */
     @Volatile private var route: OkHttpClient = http
@@ -227,7 +237,12 @@ class Downloads(
     private fun follow() {
         // A song entered in the catalogue (on a download's own thread), removed, or failed:
         // published at once, not when Media3 next says something.
-        scope.launch(Dispatchers.Main.immediate) { catalogue.state.collect { publish() } }
+        scope.launch(Dispatchers.Main.immediate) {
+            catalogue.state.collect {
+                publish()
+                if (initialized) measure()
+            }
+        }
         scope.launch(Dispatchers.Main.immediate) { settings.map { it.downloadWifiOnly }.distinctUntilChanged().collect { gate() } }
         scope.launch(Dispatchers.Main.immediate) { network.collect { gate() } }
         scope.launch(Dispatchers.Main.immediate) { reach.map { it.offline }.distinctUntilChanged().collect { gate() } }
@@ -244,7 +259,7 @@ class Downloads(
      */
     private fun gate() {
         if (!::manager.isInitialized || released) return
-        if (holdsFor() != Held.NOTHING) manager.pauseDownloads() else manager.resumeDownloads()
+        if (opening || holdsFor() != Held.NOTHING) manager.pauseDownloads() else manager.resumeDownloads()
         publish()
     }
 
@@ -533,9 +548,19 @@ class Downloads(
             // file of its own in the folder while the sweep looks.
             scope.launch(disk) {
                 try {
+                    // A quick sign-out and sign-in to the same account makes this engine while
+                    // the last one's fetches are still unwinding (Media3 interrupts its tasks
+                    // on release and doesn't wait for them), and the two would write the same
+                    // part files. The old one's are waited for.
+                    InFlight.awaitNone(catalogue.dir)
                     catalogue.sweep(busy)
                 } finally {
                     ready.complete(Unit)
+                    main.post {
+                        opening = false
+                        gate()
+                        measure()
+                    }
                 }
             }
             // Downloads whose files were found, at sign-in, to be missing or not the length
@@ -617,6 +642,7 @@ class Downloads(
             batchDone = batch.count { it in snapshot.songs },
             batchFailed = batch.count { it in snapshot.failed },
             settled = initialized,
+            occupied = occupied,
         )
         now.value = next
         // Offline by hand, nothing is to be done until it is switched off.
@@ -631,9 +657,43 @@ class Downloads(
     private fun tick() {
         if (ticking?.isActive == true) return
         ticking = scope.launch(Dispatchers.Main.immediate) {
+            var ticks = 0
             while (true) {
                 delay(TICK_MILLIS)
                 publish()
+                // (What is part-way takes room too.)
+                if (++ticks % MEASURE_EVERY_TICKS == 0) measure()
+            }
+        }
+    }
+
+    /** Everything in the downloads folder, as last added up (see [DownloadsState.occupied]). */
+    private var occupied = -1L
+    private var measuring: Job? = null
+    private var measureAgain = false
+
+    /**
+     * Adds up what the downloads folder holds, off the main thread, one count at a time (a
+     * change while one is out is counted after it): every file under it, whoever's it is.
+     * What the person is told the downloads take must be what removing them would give back.
+     */
+    private fun measure() {
+        if (measuring?.isActive == true) {
+            measureAgain = true
+            return
+        }
+        measuring = scope.launch(Dispatchers.IO) {
+            val total = runCatching { catalogue.dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }.getOrDefault(-1L)
+            withContext(Dispatchers.Main.immediate) {
+                measuring = null
+                if (total >= 0 && total != occupied) {
+                    occupied = total
+                    publish()
+                }
+                if (measureAgain) {
+                    measureAgain = false
+                    measure()
+                }
             }
         }
     }
@@ -665,6 +725,16 @@ class Downloads(
         override fun download(progressListener: Downloader.ProgressListener?) {
             val ask = ask ?: throw IllegalStateException("A download with nothing to say what it is")
             val form = SavedForm(ask.bitrate, ask.suffix)
+            InFlight.enter(catalogue.dir)
+            try {
+                fetchUntilSettled(ask, form, progressListener)
+            } finally {
+                InFlight.leave(catalogue.dir)
+            }
+            main.post { publish() }
+        }
+
+        private fun fetchUntilSettled(ask: Ask, form: SavedForm, progressListener: Downloader.ProgressListener?) {
             var tries = 0
             while (true) {
                 try {
@@ -692,9 +762,16 @@ class Downloads(
                         continue
                     }
                     throw Final(e)
+                } catch (e: InterruptedException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Anything else (it shouldn't happen): final, in words of the app's own.
+                    // Media3 writes a download's final failure to the system log with its
+                    // message and causes, and an exception from the network's own code can
+                    // name the server.
+                    throw Final(DownloadFailure("It couldn't be downloaded (${e.javaClass.simpleName})."))
                 }
             }
-            main.post { publish() }
         }
 
         override fun cancel() = fetch.cancel()
@@ -737,6 +814,9 @@ class Downloads(
 
         private const val TICK_MILLIS = 500L
 
+        /** While songs arrive, the folder is added up again every this many ticks. */
+        private const val MEASURE_EVERY_TICKS = 10
+
         /** How many times a download that fails its checks is fetched, in all, before it is
          *  listed as failed. */
         const val VERIFY_TRIES = 3
@@ -747,4 +827,39 @@ class Downloads(
             return if (megabytes >= 1024.0) "%.1f GB".format(megabytes / 1024.0) else "%.0f MB".format(megabytes)
         }
     }
+}
+
+/**
+ * The fetches under way into each downloads folder, across every engine there has been for
+ * it in this run of the app: so that a new engine for a folder can wait for an old one's
+ * fetches to finish unwinding before it touches the same files (see `Downloads`).
+ */
+internal object InFlight {
+    private val counts = HashMap<String, Int>()
+    private val lock = Object()
+
+    fun enter(dir: File) = synchronized(lock) {
+        counts[dir.path] = (counts[dir.path] ?: 0) + 1
+    }
+
+    fun leave(dir: File) = synchronized(lock) {
+        val left = (counts[dir.path] ?: 1) - 1
+        if (left <= 0) counts.remove(dir.path) else counts[dir.path] = left
+        lock.notifyAll()
+    }
+
+    /** Waits until nothing is being fetched into `dir`. Not for ever: a fetch that never
+     *  lets go (it is interrupted, and should within moments) is not waited for past
+     *  [MOST_MILLIS]. Returns whether the folder came free. */
+    fun awaitNone(dir: File): Boolean = synchronized(lock) {
+        val until = System.nanoTime() + MOST_MILLIS * 1_000_000
+        while ((counts[dir.path] ?: 0) > 0) {
+            val left = (until - System.nanoTime()) / 1_000_000
+            if (left <= 0) return@synchronized false
+            lock.wait(left)
+        }
+        true
+    }
+
+    private const val MOST_MILLIS = 30_000L
 }

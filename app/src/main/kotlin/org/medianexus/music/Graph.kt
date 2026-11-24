@@ -253,6 +253,7 @@ class Graph(context: Context) {
     }
 
     init {
+        quietMedia3(BuildConfig.DEBUG)
         DebugHosts.load(context)
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }
         // Said once when writing starts to fail, and taken back once a write succeeds.
@@ -322,4 +323,16 @@ class Graph(context: Context) {
             }
         }
     }
+}
+
+/**
+ * What Media3 may write to the system log. It logs a failure with its stack trace and every
+ * cause down the chain (a download's final failure, a load that failed), and an exception
+ * from the network's own code can name the server it was talking to. A release build has it
+ * log the failure's own message and no more; a debug build, everything, for whoever is at
+ * the other end of adb.
+ */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+fun quietMedia3(debug: Boolean) {
+    androidx.media3.common.util.Log.setLogStackTraces(debug)
 }
