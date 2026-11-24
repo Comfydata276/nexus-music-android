@@ -354,4 +354,100 @@ class LikesTest {
         assertTrue("a" in likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
         answers.send(Unit)
     }
+
+    // ---- A change still waiting to be sent (offline hardening 3, item 1) -------------------------
+
+    /** The account's held changes, as the sender shows them: a like or unlike made through
+     *  [holding] joins them and its maker is told it is held, as when offline. */
+    private val held = kotlinx.coroutines.flow.MutableStateFlow<List<org.medianexus.music.store.Pending>>(emptyList())
+
+    private fun holding(): Pair<Likes, PageCache> {
+        val pages = PageCache(folder.root, scope, Dispatchers.IO, clock = { now })
+        val likes = Likes(
+            pages, likedSpec,
+            send = { target, id, liked -> held.value += org.medianexus.music.store.Pending.Star(target.name.lowercase(), id, liked) },
+            scope, clock = { now }, held = held,
+        )
+        return likes to pages
+    }
+
+    /** Makes the change and returns once it has been acknowledged as held: which is when the
+     *  phone's own copy of Liked songs has it. */
+    private suspend fun Likes.setAndBeHeld(pages: PageCache, song: Song, liked: Boolean) = kotlinx.coroutines.coroutineScope {
+        val kept = async(start = CoroutineStart.UNDISPATCHED) {
+            pages.changes.first { (key, value) -> key == "liked" && (value as Found).songs.any { it.id == song.id } == liked }
+        }
+        set(song, liked)
+        kept.await()
+    }
+
+    @Test
+    fun aLikeStillWaitingToBeSentWinsOverWhatTheServerSays() = runBlocking {
+        server = Found(songs = listOf(a))
+        val (likes, pages) = holding()
+        pages.fresh(likedSpec)
+        likes.heard(Found(songs = listOf(a)))
+        // Offline: b is liked, and the like is held on the phone.
+        likes.setAndBeHeld(pages, b, true)
+        assertTrue(likes.isLiked("b"))
+        // The server is back, and its Liked songs, asked for now, arrives before the like has
+        // been delivered: it doesn't list b. The heart stays, and so does b's place in Liked
+        // songs. (The like used to be taken as settled when it was held, so this answer, newer
+        // than that, turned the heart off until the next refresh.)
+        now += 10
+        likes.heard(Found(songs = listOf(a)), askedAt = now)
+        assertTrue("held, it is still liked", likes.isLiked("b"))
+        assertEquals(listOf("b", "a"), likes.songsOf(Found(songs = listOf(a)))!!.map { it.id })
+        // An album page that still says "not liked" is no different.
+        likes.heard(Found(songs = listOf(a)), askedAt = now + 5)
+        assertTrue(likes.isLiked("b"))
+        // Delivered: the server took it. It is liked on the server's word from then on, also
+        // against an answer asked for before the delivery.
+        now += 10
+        likes.answered(held.value.single(), taken = true)
+        held.value = emptyList()
+        likes.heldChanged()
+        assertTrue(likes.isLiked("b"))
+        likes.heard(Found(songs = listOf(a)), askedAt = now - 1)
+        assertTrue(likes.isLiked("b"))
+        assertEquals(setOf("a", "b"), likes.liked.value)
+    }
+
+    @Test
+    fun anUnlikeStillWaitingToBeSentWinsToo() = runBlocking {
+        server = Found(songs = listOf(a, b))
+        val (likes, pages) = holding()
+        likes.load()
+        likes.waitFor(setOf("a", "b"))
+        likes.setAndBeHeld(pages, a, false)
+        now += 10
+        likes.heard(Found(songs = listOf(a, b)), askedAt = now)
+        assertFalse("held, it is still unliked", likes.isLiked("a"))
+        assertEquals(listOf("b"), likes.songsOf(Found(songs = listOf(a, b)))!!.map { it.id })
+        // The server will never have it (it turned it down for good): what is shown falls
+        // back to what the server says.
+        now += 10
+        likes.answered(held.value.single(), taken = false)
+        held.value = emptyList()
+        likes.heldChanged()
+        assertEquals(setOf("a", "b"), likes.liked.value)
+    }
+
+    @Test
+    fun whatAnEarlierRunLeftHeldIsShownFromTheStart() = runBlocking {
+        // A like of b and an unlike of a were held when the app was last closed; the phone's
+        // kept Liked songs is the server's from before either.
+        server = Found(songs = listOf(a))
+        held.value = listOf(
+            org.medianexus.music.store.Pending.Star("song", "b", true),
+            org.medianexus.music.store.Pending.Star("song", "a", false),
+            org.medianexus.music.store.Pending.Played("a", 1),
+        )
+        val (likes, pages) = holding()
+        pages.fresh(likedSpec)
+        likes.heard(Found(songs = listOf(a)), askedAt = 0)
+        likes.heldChanged()
+        assertTrue(likes.isLiked("b"))
+        assertFalse(likes.isLiked("a"))
+    }
 }

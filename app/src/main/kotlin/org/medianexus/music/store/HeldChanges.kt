@@ -20,7 +20,8 @@ import org.medianexus.music.net.ApiError
 
 /**
  * Something to tell the server once it can be reached, as Windows holds it (`Pending` in
- * src/offline.rs): a like or unlike, a rating, a play and when it happened.
+ * src/offline.rs): a like or unlike, a rating, a play and when it happened. `at` is when it
+ * was made (milliseconds since 1970; 0 in a file from before it was recorded).
  */
 @Serializable
 sealed interface Pending {
@@ -28,12 +29,12 @@ sealed interface Pending {
     val id: String
 
     @Serializable @SerialName("star")
-    data class Star(val kind: String, override val id: String, val starred: Boolean) : Pending
+    data class Star(val kind: String, override val id: String, val starred: Boolean, val at: Long = 0) : Pending
 
     @Serializable @SerialName("rating")
-    data class Rating(override val id: String, val rating: Int) : Pending
+    data class Rating(override val id: String, val rating: Int, val at: Long = 0) : Pending
 
-    /** A song that was played, and when (milliseconds since 1970). */
+    /** A song that was played, and when. */
     @Serializable @SerialName("played")
     data class Played(override val id: String, val at: Long) : Pending
 }
@@ -45,53 +46,54 @@ sealed interface Pending {
  *
  * Nothing goes to the server any other way, and so nothing can overtake a change that is
  * still waiting: a like made in offline mode and an unlike made the moment it is switched
- * off reach the server as a like and then an unlike. (They used to be two paths: held
- * changes sent in rounds, and a new change sent straight away if the server seemed to be
- * there. The unlike went straight away, the round delivered the like after it, and the like
- * won.)
+ * off reach the server as a like and then an unlike.
  *
- * - **On the disk before it is acknowledged.** [submit] returns only once the change is
- *   written, synced, and its name in the folder synced. If it can't be written it is still
- *   sent if the server is there now; if it can be neither kept nor sent, the caller is told
- *   it didn't save (an error), never that it did.
- * - **Off the disk as soon as its own answer arrives**, not at the end of a round: the
- *   moment the server answers for a change, the list without it is written. The app killed
- *   later in the same pass sends nothing twice.
- * - **Windows' rules** for what an answer means (`send_all` in src/offline.rs, whose tests
- *   are ported with it): taken, or refused for good (the server is there and said no), it is
- *   dealt with; a proxy's error page in the server's place means try again later, and later
- *   changes to the same thing wait behind it while the rest go on (three such pages running:
- *   everything waits); no answer, or a sign-in the server won't take, and everything waits.
+ * **Two rules, and everything else follows from them.**
+ *
+ * - **A change is in the queue only once it is on the disk.** [submit] writes the queue with
+ *   the change added (written, synced, its name in the folder synced) and only then puts it
+ *   in the queue, where a pass can see it, count it and send it. If the phone won't take the
+ *   write, the change never joins the queue and its maker is told it didn't save. Nothing is
+ *   ever queued, seen or sent that an app killed in that instant would not find again.
+ * - **Nothing takes a change out of the queue but its own answer**: the server took it, or
+ *   refused it for good. A pass that ends, for whatever reason, tells the makers of what is
+ *   left that it is held, and removes nothing.
+ *
+ * (It used to be in the queue from the moment it was made, with its write following, and a
+ * pass that ended dropped whatever it took to be unwritable. Two rounds of fixes taught the
+ * pass to tell "not written yet" from "couldn't be written"; this takes the question away.)
+ *
+ * - **Off the disk as soon as its own answer arrives**, and **durably gone before the next
+ *   is sent**: the moment the server answers for a change, the list without it is written,
+ *   and only then is the next sent. If that write fails, sending stops there (said once in
+ *   Diagnostics) and is tried again later: otherwise an older like could still be on the disk
+ *   after a newer unlike had reached the server, and be sent again, after it, at the next
+ *   start.
+ * - **What an answer means.** Taken: gone. Refused for good, which is only an error that
+ *   says something definite about that change (the thing isn't there: 70; the account may
+ *   not do it: 50): gone, and its maker told. **Any other error from the server says nothing
+ *   about the change**: it waits, later changes to the same thing wait behind it, the rest go
+ *   on, and it is tried again later; a like or a rating is given up a day after it was made
+ *   if the server is still answering so, and **a play never is**. A proxy's error page in the
+ *   server's place: the same wait (three such pages running: everything waits). No answer, or
+ *   a sign-in the server won't take: everything waits. (Windows' `send_all` takes every error
+ *   of the server's as final; its tests are ported with that one difference.)
  * - **A file that can't be read is set aside** (`held.damaged.json`) and said, as the
- *   settings file is; it is never read as "nothing held" and written over.
- *
- * - **Durably gone before the next is sent.** When the server has answered for a change, the
- *   list without it is written and synced, and only then is the next change sent. If that
- *   write fails, sending stops there (said once in Diagnostics) and is tried again later:
- *   otherwise an older like could still be on the disk after a newer unlike had reached the
- *   server, and be sent again, after it, when the app next started.
+ *   settings file is; it is never read as "nothing held" and written over. One that can't be
+ *   set aside either stays as it is, and until it can be moved nothing can be written, so
+ *   nothing is taken on.
  * - **One sender per account for the whole process.** Everything here but the way to the
  *   server belongs to the *file* ([Shared]), not to this object: signing out and straight
  *   back in to the same account makes a second `HeldChanges` while the first may still be
  *   part-way through a pass, and the two are one queue, one writer and one pass at a time.
- * - **A file that can't be read and can't be set aside stays as it is.** Nothing is written
- *   over it: until it can be moved out of the way no change is acknowledged as held (it is
- *   sent if the server is there; if not, its maker is told it didn't save).
- * - **Only a write that failed loses a change.** A change is in the queue from the moment it
- *   is made, and its write to the phone takes a moment more. A pass that ends in that moment
- *   (another change's, or the one the app coming back online starts) leaves it alone: it is
- *   not yet held, and it is not lost either. Whoever made it runs a pass once its write has
- *   ended, and is told then. (Such a pass used to take "not written yet" for "couldn't be
- *   written": offline, the second of two changes made together was dropped from the queue
- *   and its maker told it didn't save, on a phone that had refused nothing.)
  *
  * **Plays, and what can't be promised.** The Subsonic interface has no way to make a
  * submission safe to repeat, so if the app is killed in the instant between the server
  * accepting a play and the phone recording that it did, the play is sent again and counted
  * twice. That instant is one small write, begun the moment the answer arrives and not
  * interruptible by the account going; it is not nothing. Likes and ratings sent twice come
- * to the same thing. **A play that can be neither sent nor kept is lost**, and that is
- * written in Diagnostics (nobody is watching a play to be told).
+ * to the same thing. **A play the phone won't write is lost**, and that is written in
+ * Diagnostics (nobody is watching a play to be told).
  */
 class HeldChanges(
     private val file: File,
@@ -103,9 +105,17 @@ class HeldChanges(
     /** The server stopped answering part-way, or something answered in its place. */
     private val lostTouch: () -> Unit = {},
     private val note: (String) -> Unit = {},
-    /** Sending stopped because the phone wouldn't take a write: worth trying again in a
-     *  while (see the class). */
+    /** Something is waiting that only another try can move (the phone wouldn't take a write
+     *  the sender depends on; the server answered with an error that says nothing): worth a
+     *  pass in a while. */
     private val tryLater: () -> Unit = {},
+    /** A change that had been held has had its answer: the server took it, or (not `taken`)
+     *  will never have it. Told before the change leaves [queued]. */
+    private val answered: (change: Pending, taken: Boolean) -> Unit = { _, _ -> },
+    /** [queued] is not what it was, without its maker's doing: what an earlier run left has
+     *  been read, or a change that had been held has gone. */
+    private val moved: () -> Unit = {},
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     /** How a change stood when [submit] returned. */
     enum class Outcome {
@@ -122,14 +132,14 @@ class HeldChanges(
         data class Failed(val error: ApiError) : Settled
     }
 
-    /** A change in the queue. `saved`: it is on the disk. `refused`: the phone wouldn't take
-     *  a write that would have put it there (with neither, its write hasn't ended yet).
-     *  `parked`: it has had to wait (whoever made it was told it was held). `settled` tells
-     *  whoever is waiting on it. */
+    /** A change in the queue, which is to say on the disk. `parked`: it has had to wait
+     *  (whoever made it was told it was held). `settled` tells whoever is waiting on it. */
     private class Entry(val change: Pending, val settled: CompletableDeferred<Settled>?) {
-        @Volatile var saved = false
-        @Volatile var refused = false
         @Volatile var parked = false
+
+        /** When the server first answered for it with an error that says nothing, for a
+         *  change that doesn't say when it was made. */
+        var unsureSince = 0L
     }
 
     /**
@@ -142,8 +152,10 @@ class HeldChanges(
         val writes = Mutex()
         val passes = Mutex()
         val count = MutableStateFlow(0)
+        val queued = MutableStateFlow<List<Pending>>(emptyList())
         val broken = MutableStateFlow(false)
         var unsavedSaid = false
+        var unsureSaid = false
 
         /** The file on the disk may still hold changes the server has answered for (the
          *  write that takes them off has not succeeded): nothing more is sent until it has. */
@@ -167,6 +179,10 @@ class HeldChanges(
     /** How many changes are waiting (or being sent), for the screens and Diagnostics. */
     val waiting: StateFlow<Int> = shared.count.asStateFlow()
 
+    /** What is waiting (or being sent), oldest first, once the file has been read: what is
+     *  liked is shown with these on top of what the server last said (see `Likes`). */
+    val queued: StateFlow<List<Pending>> = shared.queued.asStateFlow()
+
     /**
      * How many changes that had been held the server has since **accepted**, in all, for as
      * long as the process has run: only ever goes up. What is said about held changes having
@@ -181,10 +197,17 @@ class HeldChanges(
 
     /** Reads what was held, the first time it's needed. */
     private fun loaded(): MutableList<Entry> = synchronized(lock) {
-        shared.queue ?: read().mapTo(ArrayList()) { Entry(it, null).apply { saved = true; parked = true } }.also {
+        shared.queue ?: read().mapTo(ArrayList()) { Entry(it, null).apply { parked = true } }.also {
             shared.queue = it
-            shared.count.value = it.size
+            changed()
         }
+    }
+
+    /** The queue has gained or lost a change (under the lock). */
+    private fun changed() {
+        val queue = shared.queue ?: return
+        shared.count.value = queue.size
+        shared.queued.value = queue.map { it.change }
     }
 
     private fun read(): List<Pending> {
@@ -213,23 +236,29 @@ class HeldChanges(
     /** What is waiting, oldest first. */
     fun all(): List<Pending> = synchronized(lock) { loaded().map { it.change } }
 
+    /** Reads what an earlier run left held, so that it is counted and shown before anything
+     *  asks for a pass. */
+    suspend fun open() {
+        withContext(io) { loaded() }
+        moved()
+    }
+
     /**
      * Makes a change: on the disk first, then to the server in its turn. Returns once it is
      * settled for now: the server has it ([Outcome.TAKEN]), or it is safely held for later
      * ([Outcome.HELD]: offline, the server out of reach, or something earlier in its way).
      *
-     * Throws the server's refusal ([ApiError.Server]) if it is there and said no; and an
-     * [ApiError.Network] if the change could be neither written to the phone nor sent now,
-     * which is the one case in which it is lost, and the caller must say so.
+     * Throws the server's refusal ([ApiError.Server]) if it is there and said no for good;
+     * and an [ApiError.Network] if the phone would not take the change, which is the one
+     * case in which it is lost, and the caller must say so.
      */
     suspend fun submit(change: Pending): Outcome {
         val entry = Entry(change, CompletableDeferred())
-        withContext(io) { loaded() }
-        synchronized(lock) {
-            loaded() += entry
-            shared.count.value = loaded().size
+        if (!write(entry)) {
+            // Nobody is watching a play to be told it didn't save: it is written down instead.
+            if (change is Pending.Played) note("held changes: a play could not be kept on the phone, and is lost")
+            throw ApiError.Network("The change couldn't be kept on the phone to send later.")
         }
-        save()
         pass()
         return when (val settled = entry.settled!!.await()) {
             Settled.Taken -> Outcome.TAKEN
@@ -244,15 +273,14 @@ class HeldChanges(
      * good), whichever pass sent them.
      */
     suspend fun flush(): Int {
-        withContext(io) { loaded() }
+        open()
         pass()
         return shared.caughtUp.getAndSet(0)
     }
 
     /**
      * One pass over the queue, one at a time and in order (see the class). Every change left
-     * in the queue at its end has had its maker told it is held, but for one whose write to
-     * the phone is still under way (its maker's own pass follows that write).
+     * in the queue at its end has had its maker told it is held.
      */
     private suspend fun pass() = shared.passes.withLock {
         var strange = 0
@@ -260,13 +288,15 @@ class HeldChanges(
         var lost = false
         /** The phone wouldn't take the write that takes a sent change off the disk. */
         var stuck = false
+        /** The server answered for something with an error that says nothing about it. */
+        var unsure = false
         val behind = HashSet<String>()
         val tried = HashSet<Entry>()
         try {
             while (!offline()) {
                 // Something the server has answered for may still be on the disk: off it
                 // first. Nothing is sent after it until it is durably gone (see the class).
-                if (shared.dirty && !save()) {
+                if (shared.dirty && !write()) {
                     stuck = true
                     break
                 }
@@ -278,23 +308,33 @@ class HeldChanges(
                     e
                 }
                 when {
-                    error == null || (error is ApiError.Server && !error.signInRefused) -> {
+                    error == null || (error is ApiError.Server && (error.code in FINAL || givenUp(entry))) -> {
                         // Dealt with: it leaves the queue and the disk now, before anything
                         // else is done, so that a play the server has counted is not there
                         // to be sent again. (Whether it has left the disk is asked at the
                         // top of the loop, before the next is sent.)
+                        if (entry.parked) answered(entry.change, error == null)
                         synchronized(lock) {
                             loaded().remove(entry)
-                            shared.count.value = loaded().size
+                            changed()
                             shared.dirty = true
                         }
-                        save()
+                        write()
                         strange = 0
                         if (entry.parked) {
+                            moved()
                             shared.caughtUp.incrementAndGet()
                             if (error == null) shared.accepted.value++
                         }
                         entry.settled?.complete(if (error == null) Settled.Taken else Settled.Failed(error))
+                    }
+                    error is ApiError.Server && !error.signInRefused -> {
+                        // The server is there, and its error says nothing about this change
+                        // (a fault of its own, a kind of error this app doesn't know): it
+                        // waits, and so does every later change to the same thing.
+                        unsure = true
+                        behind += entry.change.id
+                        tried += entry
                     }
                     error is ApiError.NotSubsonic && strange < 2 -> {
                         // Something answered in the server's place: this one waits, and so
@@ -318,45 +358,50 @@ class HeldChanges(
         if (stuck) {
             if (!shared.dirtySaid) note("held changes: one the server has taken could not be taken off the phone; nothing more is sent until it can be")
             shared.dirtySaid = true
-            tryLater()
         }
+        if (unsure) {
+            if (!shared.unsureSaid) note("held changes: the server answered one with an error that says nothing about it; it is kept, and tried again later")
+            shared.unsureSaid = true
+        }
+        if (stuck || unsure) tryLater()
         if (lost) lostTouch()
     }
 
-    /** Tells the makers of everything still queued that it is held; a change that could not
-     *  be written to the phone is not held but lost, and its maker is told that instead. One
-     *  whose write hasn't ended is neither yet, and is left for the pass its maker runs when
-     *  it has (see the class). */
-    private fun park() {
-        val lostNow = ArrayList<Entry>()
-        synchronized(lock) {
-            val each = loaded().iterator()
-            while (each.hasNext()) {
-                val entry = each.next()
-                if (entry.saved) {
-                    entry.parked = true
-                    entry.settled?.complete(Settled.Held)
-                } else if (entry.refused && entry.settled?.isCompleted == false) {
-                    each.remove()
-                    lostNow += entry
-                }
-            }
-            shared.count.value = loaded().size
+    /**
+     * Whether a change the server has again answered with an error that says nothing has
+     * waited long enough to be given up: a day from when it was made (from the first such
+     * answer, for one that doesn't say when it was made). **Never a play.**
+     */
+    private fun givenUp(entry: Entry): Boolean {
+        val made = when (val change = entry.change) {
+            is Pending.Played -> return false
+            is Pending.Star -> change.at
+            is Pending.Rating -> change.at
         }
-        // Nobody is watching a play to be told it didn't save: it is written down instead.
-        val plays = lostNow.count { it.change is Pending.Played }
-        if (plays > 0) note("held changes: $plays ${if (plays == 1) "play" else "plays"} could be neither sent to the server nor kept on the phone, and ${if (plays == 1) "is" else "are"} lost")
-        lostNow.forEach { it.settled?.complete(Settled.Failed(ApiError.Network("The change couldn't be kept on the phone to send later."))) }
+        val now = clock()
+        if (made <= 0 && entry.unsureSince == 0L) entry.unsureSince = now
+        val since = if (made > 0) made else entry.unsureSince
+        if (now - since < GIVE_UP_MILLIS) return false
+        note("held changes: one the server answered with an error for a day was given up")
+        return true
+    }
+
+    /** Tells the makers of everything still queued that it is held. Nothing is removed. */
+    private fun park() = synchronized(lock) {
+        for (entry in loaded()) {
+            entry.parked = true
+            entry.settled?.complete(Settled.Held)
+        }
     }
 
     /**
-     * Writes the queue as it stands, durably, one write at a time; true if it is on the disk.
-     * Not interrupted by the account going: a change the server has just answered for must
-     * leave the file.
+     * Writes the queue as it stands, with `adding` at its end, durably, one write at a time;
+     * true if it is on the disk, and only then is `adding` in the queue. Not interrupted by
+     * the account going: a change the server has just answered for must leave the file.
      */
-    private suspend fun save(): Boolean = withContext(NonCancellable + io) {
+    private suspend fun write(adding: Entry? = null): Boolean = withContext(NonCancellable + io) {
         shared.writes.withLock {
-            val now = synchronized(lock) { loaded().toList() }
+            val now = synchronized(lock) { loaded().toList() } + listOfNotNull(adding)
             try {
                 // A file that couldn't be read is still where this one goes: moved out of
                 // the way first, and if it can't be, nothing is written over it.
@@ -365,25 +410,24 @@ class HeldChanges(
                     shared.inTheWay = false
                 }
                 if (now.isNotEmpty() || file.exists()) writeAtomically(file, json.encodeToString(LIST, now.map { it.change }).toByteArray(), durable = true)
-                now.forEach {
-                    it.saved = true
-                    it.refused = false
+                synchronized(lock) {
+                    // On the disk: now, and not before, it is in the queue. (Only this
+                    // writer adds, so nothing has come between.)
+                    if (adding != null) {
+                        loaded() += adding
+                        changed()
+                    }
+                    // What was written is the queue as it stood when this began: anything
+                    // dealt with since is still to come off.
+                    if (loaded().toList() == now) shared.dirty = false
                 }
-                // (What was written is the queue as it stood when this began: anything
-                // dealt with since is still to come off.)
-                synchronized(lock) { if (loaded().toList() == now) shared.dirty = false }
                 if (!shared.dirty) shared.dirtySaid = false
                 shared.unsavedSaid = false
                 true
             } catch (_: IOException) {
-                // Said once. What couldn't be written is sent if the server is there now;
-                // if not, its maker is told it didn't save (see park).
+                // Said once.
                 if (!shared.unsavedSaid) note("held changes: they couldn't be written to the phone")
                 shared.unsavedSaid = true
-                // Each of these has now been refused by the phone, which is what park goes
-                // by: not merely "isn't written", which is also true of a change whose write
-                // has yet to begin.
-                now.forEach { if (!it.saved) it.refused = true }
                 false
             }
         }
@@ -392,6 +436,14 @@ class HeldChanges(
     companion object {
         private val json = Json { ignoreUnknownKeys = true; classDiscriminator = "type" }
         private val LIST = ListSerializer(Pending.serializer())
+
+        /** The server's errors that say something definite about one change: the account may
+         *  not do it (50), the thing isn't there (70). */
+        private val FINAL = setOf(50L, 70L)
+
+        /** How long a like or a rating the server keeps answering with an error that says
+         *  nothing is kept and tried. */
+        const val GIVE_UP_MILLIS = 24 * 60 * 60 * 1000L
 
         /** Each file's one sender, for as long as the process lives. */
         private val all = HashMap<String, Shared>()

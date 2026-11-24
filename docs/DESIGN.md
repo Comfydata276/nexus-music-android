@@ -938,40 +938,59 @@ How it is built (M1a):
   ratings and plays are written to the phone (`held.json`) and then sent in their turn.
   There is no other way to the server, so nothing overtakes a change that is waiting: a like
   made in offline mode and an unlike made the moment it is switched off arrive as a like and
-  then an unlike. A change is acknowledged only once it is on the disk (if it can be neither
-  kept nor sent, its maker is told it didn't save; a play, which nobody is watching, is
-  written in Diagnostics); it leaves the file as soon as its own answer arrives, **and the
-  next is not sent until it has**: if the phone won't take that write, sending stops there,
-  says so once, and is tried again in half a minute (an older like could otherwise stay on
-  the disk after a newer unlike had reached the server, and be sent again, after it, at the
-  next start). **One sender per account for the whole process**: the queue, its writer and
-  its pass belong to the file, not to the object made for one sign-in, so signing out and
-  straight back in to the same account cannot run two, or let an old write land over a new
-  one. A file that can't be read is set aside (`held.damaged.json`) and said, never read as
-  empty and written over; one that can't be set aside either is left as it is, and nothing
-  is acknowledged as held until it can be moved out of the way. **Only a write that failed
-  loses a change**: one that is in the queue and not yet written (its write takes a moment)
-  is left alone by a pass that ends meanwhile, and is told held, or lost, by the pass its
-  own maker runs once the write has ended. (Such a pass used to take "not written yet" for
-  "couldn't be written": out of reach of the server, the second of two changes made within
-  one write of each other, a play counted as a heart was tapped, say, was dropped from the
-  queue and its maker told "That didn't save", on a phone that had refused nothing. It was
-  found by `HeldOrderTest` failing about one run in three, which is why that test and the
-  sender's own now force the order of events with gates and wait on nothing.) What is said to have been
-  sent ("the 2 changes you made offline…") counts what the server accepted, once. Windows' rules for what an answer means are kept
-  (`send_all`, its tests ported): what the server dealt with (took, or refused for good)
-  goes; a proxy's error page in the server's place counts as "try again", and later changes
-  to the same song wait behind it while the rest go on; no answer, or a sign-in it won't
-  take, keeps the lot. The app no longer being offline starts the sender, however that came
-  about. **And what is kept that way is tried again in half a minute**, as well as the
-  server being asked whether it is there: if the server is there after all (one request
-  lost as the phone went from Wi-Fi to mobile data), the app was never offline and nothing
-  "comes back" to start the sender. Windows goes out of reach on the first such failure and
-  catches up at its next check, fifteen seconds on; the phone, which asks first, used to
-  leave the change held until another was made, or the app was next started. **Plays are not exactly-once**: the Subsonic interface has no way to make a
-  submission safe to repeat, so an app killed in the instant between the server accepting a
-  play and the phone recording that (one small write, begun as the answer arrives) sends it
-  again and it is counted twice. "Now playing" reports aren't held: they are of the moment.
+  then an unlike. **Two rules carry it** (the third round of hardening put them in place of
+  what the first two had grown):
+  - **A change is in the queue only once it is on the disk.** Making a change writes the
+    queue with the change added (written, synced, the folder synced) and only then puts it
+    in the queue, where it can be counted, seen or sent; its maker waits for that. If the
+    phone won't take the write the change never joins the queue: its maker is told it
+    didn't save (a play, which nobody is watching, is written in Diagnostics), **whether or
+    not the server is there**. (It used to join the queue as it was made, its write
+    following: a pass could send a change the phone had no record of, and a pass that ended
+    had to tell "not written yet" from "couldn't be written", which it twice got wrong.)
+  - **Nothing takes a change out of the queue but its own answer.** A pass that ends, for
+    any reason, tells the makers of what is left that it is held, and removes nothing.
+
+  It leaves the file as soon as its own answer arrives, **and the next is not sent until it
+  has**: if the phone won't take that write, sending stops there, says so once, and is
+  tried again later (an older like could otherwise stay on the disk after a newer unlike
+  had reached the server, and be sent again, after it, at the next start). **One sender per
+  account for the whole process**: the queue, its writer and its pass belong to the file,
+  not to the object made for one sign-in, so signing out and straight back in to the same
+  account cannot run two, or let an old write land over a new one. A file that can't be
+  read is set aside (`held.damaged.json`) and said, never read as empty and written over;
+  one that can't be set aside either is left as it is, and no change is taken on until it
+  can be moved out of the way. What is said to have been sent ("the 2 changes you made
+  offline…") counts what the server accepted, once.
+  **What an answer means** (Windows' `send_all`, its tests ported, with one difference):
+  taken, it goes; **refused for good only when the server says something definite about
+  that change** (the thing isn't there, code 70; the account may not do it, code 50), it
+  goes and its maker is told. **Any other error of the server's says nothing about the
+  change** (a fault of its own, a code the app doesn't know; Windows takes these as final):
+  it waits, later changes to the same thing wait behind it, the rest go on, and it is tried
+  again later; a like or a rating is given up a day after it was made if the server still
+  answers so (said in Diagnostics, and what is liked is asked for again), **a play never**.
+  A proxy's error page in the server's place is the same wait, and the server is asked
+  whether it is there; no answer, or a sign-in it won't take, keeps the lot. The app no
+  longer being offline starts the sender, however that came about. **And what is kept that
+  way is tried again** in half a minute, then at twice the wait each time nothing comes of
+  it, up to half an hour: if the server is there after all (one request lost as the phone
+  went from Wi-Fi to mobile data), the app was never offline and nothing "comes back" to
+  start the sender. **Plays are not exactly-once**: the Subsonic interface has no way to
+  make a submission safe to repeat, so an app killed in the instant between the server
+  accepting a play and the phone recording that (one small write, begun as the answer
+  arrives) sends it again and it is counted twice. "Now playing" reports aren't held: they
+  are of the moment.
+- **A like still waiting to be sent wins over what the server says** (`Likes`). What is
+  shown as liked is the server's last word, then every held like and unlike in the order
+  made, then what is being sent this moment; what an earlier run left held is read as the
+  account is taken on. (A held like used to be taken as if the server had it, so the
+  server's Liked songs, asked for as it came back and before the like was delivered, turned
+  the heart off until the next refresh.) One gap is left: a like held, the server's own
+  list fetched while it is still held, and the app then started again before it is
+  delivered, shows the heart everywhere but does not list the song in Liked songs until
+  the like has gone (the phone's copy of the list is then the server's, and the song's
+  details are not in the held change).
 - **What plays offline** is known in memory (`Availability`): downloaded (and not set aside
   this run), or kept whole in the form it would be streamed in now (`KeptIndex`). Rows ask it
   and the car asks it; it never looks at the disk.

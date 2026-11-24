@@ -72,10 +72,18 @@ class HeldChangesTest {
             lostTouch = { lostTouch++ },
             note = { notes += it },
             tryLater = { later++ },
+            answered = { change, taken -> answers += said(change) + if (taken) " taken" else " refused" },
+            clock = { now },
         )
     }
 
     private var later = 0
+
+    /** The sender's clock. */
+    @Volatile private var now = 1_700_000_000_000L
+
+    /** What was said of changes that had been held, as their answers came. */
+    private val answers: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
     /**
      * The phone's disk, as a test may hold it up. While `holding`, whatever is asked of it
@@ -259,24 +267,32 @@ class HeldChangesTest {
     }
 
     @Test
-    fun aChangeThatCanBeNeitherKeptNorSentIsNotCalledSaved() = runBlocking {
+    fun aChangeThePhoneWillNotKeepIsNotTakenOn() = runBlocking {
         // The file can't be written (a folder is where it should go).
         File(file(), "in-the-way").apply { parentFile.mkdirs(); writeText("x") }
         offline = true
         val held = held()
         try {
             held.submit(star("a", true))
-            fail("it was neither kept nor sent")
+            fail("it was not kept")
         } catch (e: ApiError.Network) {
             assertTrue(e.message!!.contains("couldn't be kept"))
         }
         // Not left to be sent behind its maker's back, who has been told it didn't save.
         assertTrue(held.all().isEmpty())
+        assertEquals(0, held.waiting.value)
         assertEquals(1, notes.count { "couldn't be written" in it })
-        // With the server there it is sent all the same.
+        // The server there makes no difference: nothing is in the queue, or sent, that is not
+        // on the phone first. (It used to be queued unwritten and sent if the server was
+        // there, which is what a pass ending had to tell apart from a change not yet written.)
         offline = false
-        assertEquals(HeldChanges.Outcome.TAKEN, held.submit(star("b", true)))
-        assertEquals(listOf("b+"), sent.toList())
+        try {
+            held.submit(star("b", true))
+            fail("it was not kept")
+        } catch (_: ApiError.Network) {
+        }
+        assertTrue(sent.isEmpty())
+        assertTrue(held.all().isEmpty())
     }
 
     @Test
@@ -407,9 +423,14 @@ class HeldChangesTest {
         assertEquals("""[{"type":"star","kind":"song","id":"x","starr""", file().readText())
         assertTrue(held.damaged.value)
         assertTrue(notes.any { "nor set aside" in it })
-        // The server there, a change is sent, and still nothing is written over the file.
+        // The server there, a change still can't be kept, and nothing is written over the file.
         offline = false
-        assertEquals(HeldChanges.Outcome.TAKEN, held.submit(star("b", true)))
+        try {
+            held.submit(star("b", true))
+            fail("there is nowhere to keep it")
+        } catch (_: ApiError.Network) {
+        }
+        assertTrue(sent.isEmpty())
         assertEquals("""[{"type":"star","kind":"song","id":"x","starr""", file().readText())
         // Once it can be set aside it is, and changes are held again.
         aside.deleteRecursively()
@@ -421,27 +442,29 @@ class HeldChangesTest {
     }
 
     @Test
-    fun aPlayThatCanBeNeitherSentNorKeptIsWrittenDown() = runBlocking {
+    fun aPlayThePhoneWillNotKeepIsWrittenDown() = runBlocking {
         offline = true
         val held = held()
         folder.root.setWritable(false)
         try {
             try {
                 held.submit(Pending.Played("a", at = 1_700_000_000_000))
-                fail("it could be neither sent nor kept")
+                fail("it could not be kept")
             } catch (_: ApiError.Network) {
             }
         } finally {
             folder.root.setWritable(true)
             offline = false
         }
-        assertEquals(1, notes.count { "1 play could be neither sent to the server nor kept on the phone, and is lost" in it })
+        assertEquals(1, notes.count { "a play could not be kept on the phone, and is lost" in it })
     }
 
-    // ---- A change whose write hasn't ended (found by a test that failed one run in three) ------
+    // ---- In the queue only once it is on the disk; out of it only by its own answer --------------
+    // (offline hardening 3, item 1; the first of these was found by a test that failed one run
+    // in three)
 
     @Test
-    fun aChangeStillBeingWrittenIsNotGivenUpWhenAnotherPassEnds() = runBlocking {
+    fun twoChangesCloseTogetherAreBothHeld() = runBlocking {
         // Offline. A change has been written, and its pass has got as far as asking whether
         // the server may be asked...
         val disk = Disk()
@@ -460,38 +483,154 @@ class HeldChangesTest {
         val first = async(Dispatchers.Default) { held.submit(star("a", true)) }
         asking.await()
         // ...when a second is made (a play counted as a heart is tapped, two hearts tapped
-        // together): it is in the queue, and its write to the phone has yet to happen.
+        // together), and its write to the phone has yet to happen.
         disk.hold()
         val second = async(Dispatchers.Default) { runCatching { held.submit(Pending.Played("b", at = 1_700_000_000_000)) } }
         try {
             disk.arrival()
-            disk.letOne()
-            disk.arrival()
-            assertEquals(2, held.waiting.value)
+            // Not on the disk, so not in the queue: nothing can count it, send it or drop it.
+            assertEquals(1, held.waiting.value)
+            assertEquals(listOf("a"), ids(held.all()))
             // The first one's pass ends there: the server may not be asked.
             answer.countDown()
             assertEquals(HeldChanges.Outcome.HELD, first.await())
-            // The second is still in the queue. (It used to be taken for a change the phone
-            // had refused to keep, which it had not: it was dropped, and its maker told it
-            // was lost.)
-            assertEquals(listOf("a", "b"), ids(held.all()))
-            assertEquals(2, held.waiting.value)
+            assertFalse(second.isCompleted)
         } finally {
             // (Whatever went wrong above, nothing is left standing at a gate.)
             answer.countDown()
             disk.open()
         }
         // Its write done, it is held like the first, and both are what a fresh start finds.
+        // (A pass that ended before a change's write had, once took the change for one the
+        // phone had refused to keep: it was dropped, and its maker told it was lost.)
         assertEquals(Result.success(HeldChanges.Outcome.HELD), second.await())
+        assertEquals(listOf("a", "b"), ids(held.all()))
         assertEquals(listOf("a", "b"), ids(held().all()))
         assertTrue(notes.toString(), notes.isEmpty())
         assertTrue(sent.isEmpty())
     }
 
     @Test
-    fun aChangeThePhoneRefusedToKeepIsStillGivenUpByWhicheverPassEnds() = runBlocking {
-        // The other side of the same rule: offline, and the phone won't take the write. That
-        // change is lost, and its maker is told so, as before.
+    fun aPassThatOverlapsAFirstSaveNeitherSeesNorSendsTheChange() = runBlocking {
+        // Online. A change is made, and its first write to the phone is under way...
+        val disk = Disk()
+        HeldChanges.restarted(file())
+        val held = HeldChanges(file(), disk, send = { sent += said(it) }, note = { notes += it })
+        held.flush()
+        disk.hold()
+        val made = async(Dispatchers.Default) { held.submit(Pending.Played("a", at = 1_700_000_000_000)) }
+        try {
+            disk.arrival()
+            // ...when another pass runs (the app has come back online, another change's pass)
+            // from start to finish. The pass itself asks nothing of the disk with nothing held.
+            val other = HeldChanges(file(), Dispatchers.IO, send = { sent += said(it) }, note = { notes += it })
+            assertEquals(0, other.flush())
+            // It saw nothing and sent nothing: the play is not on the phone yet. (It used to
+            // be in the queue from the moment it was made, and this pass sent it: a play the
+            // server had counted before the phone had any record of it.)
+            assertEquals(0, held.waiting.value)
+            assertTrue(sent.toString(), sent.isEmpty())
+            assertFalse(made.isCompleted)
+        } finally {
+            disk.open()
+        }
+        // Written, it goes in its own pass, once.
+        assertEquals(HeldChanges.Outcome.TAKEN, made.await())
+        assertEquals(listOf("a!"), sent.toList())
+        assertTrue(held().all().isEmpty())
+        assertTrue(notes.toString(), notes.isEmpty())
+    }
+
+    @Test
+    fun nothingLeavesTheQueueButByItsOwnAnswer() = runBlocking {
+        // Three held; passes that end every way a pass can end (offline, the server gone,
+        // a page in its place, the phone refusing writes) leave all three where they are.
+        left(star("a", true), Pending.Played("b", 1), star("c", true))
+        offline = true
+        assertEquals(0, held().flush())
+        offline = false
+        assertEquals(0, held { throw ApiError.Network("gone") }.flush())
+        assertEquals(0, held { throw ApiError.NotSubsonic("502") }.flush())
+        val stuck = held { throw ApiError.Network("gone") }
+        folder.root.setWritable(false)
+        try {
+            assertEquals(0, stuck.flush())
+            try {
+                stuck.submit(star("d", true))
+                fail("the phone would not keep it")
+            } catch (_: ApiError.Network) {
+            }
+        } finally {
+            folder.root.setWritable(true)
+        }
+        assertEquals(listOf("a", "b", "c"), ids(stuck.all()))
+        assertEquals(listOf("a", "b", "c"), ids(held().all()))
+    }
+
+    // ---- What an error from the server means (offline hardening 3, item 1) ------------------------
+
+    @Test
+    fun anErrorThatSaysNothingAboutTheChangeIsTriedAgainAndNeverLosesAPlay() = runBlocking {
+        // The server is there and answers with a fault of its own (code 0), for a play and
+        // for a like; a like of something else goes through.
+        var faulty = true
+        val held = held { if (faulty && it.id != "c") throw ApiError.Server(0, "database is locked") }
+        assertEquals(HeldChanges.Outcome.HELD, held.submit(Pending.Played("a", at = now)))
+        assertEquals(HeldChanges.Outcome.HELD, held.submit(Pending.Star("song", "b", true, at = now)))
+        assertEquals(HeldChanges.Outcome.TAKEN, held.submit(star("c", true)))
+        // Kept, on the phone, and to be tried again; the server is not taken to have gone.
+        assertEquals(listOf("a", "b"), ids(held().all()))
+        assertTrue(later >= 1)
+        assertEquals(0, lostTouch)
+        assertEquals(1, notes.count { "an error that says nothing about it" in it })
+        // A later change to the same song waits behind the one that is waiting.
+        assertEquals(HeldChanges.Outcome.HELD, held.submit(Pending.Star("song", "b", false, at = now)))
+        assertEquals(listOf("c+"), sent.toList())
+        // A day of that: the like and the unlike are given up, in Diagnostics' hearing and
+        // their maker's. The play is not: a play is never discarded for such an answer.
+        now += HeldChanges.GIVE_UP_MILLIS
+        held.flush()
+        assertEquals(listOf("a"), ids(held.all()))
+        assertEquals(listOf("b+ refused", "b- refused"), answers.toList())
+        assertEquals(2, notes.count { "given up" in it })
+        now += 30 * HeldChanges.GIVE_UP_MILLIS
+        held.flush()
+        assertEquals(listOf("a"), ids(held().all()))
+        // The server mended, the play is counted.
+        faulty = false
+        assertEquals(1, held.flush())
+        assertEquals(listOf("c+", "a!"), sent.toList())
+        assertTrue(held().all().isEmpty())
+    }
+
+    @Test
+    fun onlyAnErrorAboutTheChangeItselfIsFinal() = runBlocking {
+        // Not there (70), not allowed (50): the server has said something definite, and the
+        // change goes, its maker told.
+        for (code in listOf(50L, 70L)) {
+            val held = held { throw ApiError.Server(code, "no") }
+            try {
+                held.submit(star("a", true))
+                fail("the server refused it for good")
+            } catch (e: ApiError.Server) {
+                assertEquals(code, e.code)
+            }
+            assertTrue(held.all().isEmpty())
+        }
+        // Anything else it says is about itself, and the change is kept: a parameter it
+        // wanted (10), versions that don't match (20, 30), a licence (60), a code nobody
+        // has heard of.
+        for (code in listOf(0L, 10L, 20L, 30L, 60L, 99L)) {
+            val held = held { throw ApiError.Server(code, "no") }
+            assertEquals("code $code", HeldChanges.Outcome.HELD, held.submit(Pending.Played("p$code", at = 1)))
+        }
+        assertEquals(6, held().all().size)
+    }
+
+    @Test
+    fun aChangeThePhoneRefusedToKeepIsLostAndNothingElseIs() = runBlocking {
+        // Offline, and the phone won't take the write. That change is lost, and its maker is
+        // told so; what was written before it is untouched.
         offline = true
         val held = held()
         assertEquals(HeldChanges.Outcome.HELD, held.submit(star("a", true)))
@@ -547,9 +686,7 @@ class HeldChangesTest {
         slowDisk.hold()
         val late = async(Dispatchers.Default) { first.submit(star("b", true)) }
         try {
-            // It has read what is held and is in the queue; its write is what waits.
-            slowDisk.arrival()
-            slowDisk.letOne()
+            // Its write is what waits.
             slowDisk.arrival()
             // Signed straight back in: the second sender, for the same file, takes a change
             // and writes it, and is done.

@@ -19,6 +19,7 @@ import org.medianexus.music.net.Song
 import org.medianexus.music.net.StarTarget
 import org.medianexus.music.store.PageCache
 import org.medianexus.music.store.PageSpec
+import org.medianexus.music.store.Pending
 
 /** A like or unlike the server didn't take, already put back on the phone. `name` is the
  *  song's title or the album's name. */
@@ -35,6 +36,14 @@ data class Liked(val songs: Set<String> = emptySet(), val albums: Set<String> = 
  * its way to the server; what is shown is the one with the other on top. So a like shows at
  * once everywhere, Liked songs included, and a refusal puts it back everywhere.
  *
+ * **A change still waiting to be sent wins over what the server says.** "On its way" lasts
+ * as long as the change is in the account's queue of held changes (`held`: made offline, or
+ * kept back behind another): what is shown is the server's last word, then every held like
+ * and unlike in the order they were made, then what is being sent this moment. (A held like
+ * used to be taken as if the server had it: an answer for Liked songs asked for after the
+ * like was held and before it was delivered, as the server comes back, turned the heart off
+ * until the next refresh.)
+ *
  * What the server says comes from every page it sends that says whether something is liked:
  * Liked songs in full, and the `starred` on an album or a playlist's songs. A like made on
  * another device therefore shows in every view as soon as any page that names it has been
@@ -50,8 +59,27 @@ class Likes(
     private val send: suspend (target: StarTarget, id: String, liked: Boolean) -> Unit,
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** The account's changes still waiting to be sent to the server, oldest first. */
+    private val held: StateFlow<List<Pending>> = MutableStateFlow(emptyList()),
 ) {
     private data class Item(val target: StarTarget, val id: String)
+
+    /** What each item with a like or unlike still waiting to be sent was last set to. */
+    private fun waiting(): Map<Item, Boolean> {
+        val changes = held.value
+        if (changes.isEmpty()) return emptyMap()
+        val last = HashMap<Item, Boolean>()
+        for (change in changes) {
+            if (change !is Pending.Star) continue
+            val target = when {
+                change.kind.equals(StarTarget.SONG.name, ignoreCase = true) -> StarTarget.SONG
+                change.kind.equals(StarTarget.ALBUM.name, ignoreCase = true) -> StarTarget.ALBUM
+                else -> continue
+            }
+            last[Item(target, change.id)] = change.starred
+        }
+        return last
+    }
 
     private val lock = Any()
 
@@ -104,6 +132,32 @@ class Likes(
         scope.launch {
             pages.kept(spec)?.let { heard(it, askedAt = 0) }
             refresh()
+        }
+    }
+
+    /** The held changes are not what they were (what an earlier run left has been read; one
+     *  that had waited has gone): what is shown is worked out again. */
+    fun heldChanged() = synchronized(lock) { publish() }
+
+    /**
+     * A like or unlike that had been held has had its answer: the server took it, or (not
+     * `taken`) never will. Told just before it leaves the held changes, so that what is shown
+     * never falls back to what the server said before it.
+     */
+    fun answered(change: Pending, taken: Boolean) {
+        if (change !is Pending.Star) return
+        val target = StarTarget.entries.firstOrNull { it.name.equals(change.kind, ignoreCase = true) } ?: return
+        val item = Item(target, change.id)
+        synchronized(lock) {
+            if (taken) {
+                when (target) {
+                    StarTarget.ALBUM -> server = server.copy(albums = if (change.starred) server.albums + item.id else server.albums - item.id)
+                    StarTarget.SONG -> server = server.copy(songs = if (change.starred) server.songs + item.id else server.songs - item.id)
+                    else -> return
+                }
+            }
+            // An answer asked for before this one doesn't speak for it.
+            settledAt[item] = clock()
         }
     }
 
@@ -230,7 +284,9 @@ class Likes(
                     e
                 }
                 val last = synchronized(lock) {
-                    if (error == null) {
+                    // Held, not taken (a like or unlike of it is still waiting to be sent):
+                    // the server has not got it, and what is shown comes from what is held.
+                    if (error == null && item !in waiting()) {
                         server = when (item.target) {
                             StarTarget.ALBUM -> server.copy(albums = if (liked) server.albums + item.id else server.albums - item.id)
                             else -> server.copy(songs = if (liked) server.songs + item.id else server.songs - item.id)
@@ -247,7 +303,7 @@ class Likes(
                     }
                     // What heads Liked songs belongs to the last tap: an earlier one's answer
                     // leaves it to the taps still to be sent.
-                    if (left <= 0 && item.target == StarTarget.SONG && item.id !in server.songs) justLiked.remove(item.id)
+                    if (left <= 0 && item.target == StarTarget.SONG && !shown(item)) justLiked.remove(item.id)
                     publish()
                     left <= 0
                 }
@@ -256,8 +312,8 @@ class Likes(
                     // what the person was left looking at.
                     if (last) refusals.emit(LikeRefused(item.target, item.id, name, liked, error))
                 } else if (item.target == StarTarget.SONG) {
-                    // Every change the server took, in the order taken: the kept Liked songs
-                    // is what the server has.
+                    // Every change the server took (or the phone holds for it), in the order
+                    // made: the kept Liked songs is what the server has, or will have.
                     keep(item.id, liked, song)
                 }
             }
@@ -274,13 +330,16 @@ class Likes(
                 else -> found.copy(songs = listOf(song) + found.songs)
             }
         }
-        // Once kept, it no longer needs to head the list, unless a later tap is still to go.
+        // Once kept, it no longer needs to head the list, unless a later tap is still to go,
+        // or the like is only held: the server's own list, which doesn't have it yet, may
+        // replace the kept one before the like is delivered.
         synchronized(lock) {
-            if (liked && Item(StarTarget.SONG, id) !in unsent) justLiked.remove(id)
+            val item = Item(StarTarget.SONG, id)
+            if (liked && item !in unsent && item !in waiting()) justLiked.remove(id)
         }
     }
 
-    private fun shown(item: Item): Boolean = wanted[item] ?: when (item.target) {
+    private fun shown(item: Item): Boolean = wanted[item] ?: waiting()[item] ?: when (item.target) {
         StarTarget.ALBUM -> item.id in server.albums
         else -> item.id in server.songs
     }
@@ -299,9 +358,12 @@ class Likes(
     private fun publish() {
         val songs = server.songs.toMutableSet()
         val albums = server.albums.toMutableSet()
-        for ((item, like) in wanted) {
-            val set = if (item.target == StarTarget.ALBUM) albums else songs
-            if (like) set += item.id else set -= item.id
+        // The server's word, then what is held for it, then what is being sent now.
+        for (changes in arrayOf(waiting(), wanted)) {
+            for ((item, like) in changes) {
+                val set = if (item.target == StarTarget.ALBUM) albums else songs
+                if (like) set += item.id else set -= item.id
+            }
         }
         current.value = Liked(songs, albums)
         songsNow.value = songs

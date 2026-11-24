@@ -124,25 +124,38 @@ class AccountGraph(
             heldAgainLater()
         },
         note = wiring?.note ?: {},
-        // The phone wouldn't take a write the sender depends on: tried again in a while.
+        // The phone wouldn't take a write the sender depends on, or the server answered a
+        // change with an error that says nothing about it: tried again in a while.
         tryLater = { heldAgainLater() },
+        answered = { change, taken -> likes.answered(change, taken) },
+        moved = { likes.heldChanged() },
     )
 
     private var heldRetry: kotlinx.coroutines.Job? = null
 
-    /** Sends what is held again in half a minute (once, however many ask meanwhile). */
+    /** How long the next wait before what is held is tried again: half a minute, and twice
+     *  as long each time nothing comes of it, up to half an hour. */
+    private var heldPause = HELD_RETRY_MILLIS
+
+    /** Sends what is held again in a while (once, however many ask meanwhile). */
     private fun heldAgainLater() {
         synchronized(this) {
             if (heldRetry?.isActive == true) return
+            val wait = heldPause
+            heldPause = minOf(heldPause * 2, HELD_RETRY_MOST_MILLIS)
             heldRetry = scope.launch {
-                pause(HELD_RETRY_MILLIS)
+                pause(wait)
                 synchronized(this@AccountGraph) { heldRetry = null }
                 flush()
             }
         }
     }
 
-    val likes: Likes = Likes(pages, library.liked(), send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked)) }, scope)
+    val likes: Likes = Likes(
+        pages, library.liked(),
+        send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked, at = System.currentTimeMillis())) },
+        scope, held = held.queued,
+    )
 
     /** When songs were added to playlists, as far as this phone has seen (Windows'
      *  `added.json`): "Date added" sorts by it. */
@@ -206,10 +219,13 @@ class AccountGraph(
         }
         // Covers past their limit go, oldest first, once a start: it reads the whole folder.
         scope.launch { covers.trim() }
-        // Changes held from an earlier run go as soon as the server can be asked: now, and
+        // Changes held from an earlier run are read at once (they are part of what is liked,
+        // and of what wants to know whether the server is there), and go as soon as the
+        // server can be asked: now, and
         // whenever the app stops being offline (the server back, or offline mode switched off
         // by hand, which starts the sender just as the server returning does).
         scope.launch {
+            held.open()
             reach.map { it.offline }.distinctUntilChanged().collect { offline -> if (!offline) flush() }
         }
         // The copy of the library: read from the phone at once, then checked with the server
@@ -259,9 +275,11 @@ class AccountGraph(
     /** Sends what is waiting (Windows' `flush_pending`), if the server may be asked. */
     suspend fun flush() {
         val before = held.accepted.value
-        held.flush()
-        // What the server now has (likes made offline) is asked for again.
-        if (held.accepted.value != before) likes.refresh()
+        val dealtWith = held.flush()
+        // Nothing left waiting: the next thing held starts from half a minute again.
+        if (held.waiting.value == 0) synchronized(this) { heldPause = HELD_RETRY_MILLIS }
+        // What the server now has (likes made offline), or has turned down, is asked for again.
+        if (dealtWith > 0 || held.accepted.value != before) likes.refresh()
     }
 
     /** How many held changes the server has accepted that nobody has yet been told of. */
@@ -313,5 +331,6 @@ class AccountGraph(
          *  couldn't be asked for one of them while it was taken to be there, they are tried
          *  again. */
         const val HELD_RETRY_MILLIS = 30_000L
+        const val HELD_RETRY_MOST_MILLIS = 30 * 60_000L
     }
 }

@@ -170,6 +170,9 @@ class HeldOrderTest {
 
     private val heldFile get() = File(account.account.dirs.data, "held.json")
 
+    /** What is held, without when each was made. */
+    private fun heldNow(): List<Pending> = account.held.all().map { if (it is Pending.Star) it.copy(at = 0) else it }
+
     /**
      * Likes or unlikes the song, and returns once that has been acknowledged to whoever made
      * it (the server has it, or it is held on the phone): which is when the phone's own copy
@@ -190,7 +193,7 @@ class HeldOrderTest {
         account.pages.put(account.library.liked(), Found())
         setAndBeAcknowledged(true)
         assertTrue(account.likes.isLiked(song.id))
-        assertEquals(listOf<Pending>(Pending.Star("song", song.id, true)), account.held.all())
+        assertEquals(listOf<Pending>(Pending.Star("song", song.id, true)), heldNow())
         assertTrue("held, it is on the disk", "\"starred\":true" in heldFile.readText())
         assertEquals("nothing is asked of the server in offline mode", 0, web.requestCount)
     }
@@ -274,7 +277,7 @@ class HeldOrderTest {
         server.pagesInItsPlace.set(1)
         setAndBeAcknowledged(true, another)
         assertEquals("star s2", server.changes.receive())
-        assertEquals(listOf<Pending>(Pending.Star("song", "s2", true)), account.held.all())
+        assertEquals(listOf<Pending>(Pending.Star("song", "s2", true)), heldNow())
         // Having lost touch, the app asks the server whether it is there. It is: the app was
         // never offline, and so there is no coming back online to send what is held.
         checks.receive().complete(Unit)
