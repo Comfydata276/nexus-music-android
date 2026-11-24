@@ -55,6 +55,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
@@ -110,6 +111,7 @@ class PlaybackService : MediaLibraryService() {
                         ?: account.catalogue.state.value.let { org.medianexus.music.downloads.DownloadsState(downloaded = it.songs, collections = it.collections) }
                 },
                 unsure = { !graph.watch.state.value.sure },
+                settle = { graph.watch.state.first { it.sure } },
             ),
         )
         val kept = KeptSongs(
@@ -290,6 +292,10 @@ class PlaybackService : MediaLibraryService() {
         scope.launch { graph.settings.state.map { it.cacheAhead to it.cacheLimitMb }.distinctUntilChanged().collect { aheadNow() } }
         // Offline, or back: the car's tabs show something else now (only what plays).
         scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().drop(1).collect { if (era != null) reload() } }
+        // And when it becomes known whether the server is there, after the moment of not
+        // knowing at a cold start: what the car was shown meanwhile came from the phone alone
+        // (and without covers that aren't on it), so it is told to look again.
+        scope.launch { graph.watch.state.map { it.sure }.distinctUntilChanged().drop(1).collect { sure -> if (sure && era != null) reload() } }
         listenForCalls()
     }
 
@@ -2097,7 +2103,12 @@ class PlaybackService : MediaLibraryService() {
      * with an address that names no picture.
      */
     private fun carItem(entry: CarEntry, era: Era): MediaItem {
-        val shown = if (entry.cover.isNotEmpty() && graph.watch.offline && era.account.covers.kept(entry.cover) == null) entry.copy(cover = "") else entry
+        // Offline, or not yet known whether the server is there (the first seconds of a cold
+        // start): a cover that isn't on the phone can't be fetched, or may not be, so the
+        // entry goes without one rather than with an address that names no picture. (When it
+        // turns out the server is there, the car is told to look again: see below.)
+        val unsure = graph.watch.state.value.let { it.offline || !it.sure }
+        val shown = if (entry.cover.isNotEmpty() && unsure && era.account.covers.kept(entry.cover) == null) entry.copy(cover = "") else entry
         return CarMedia.item(shown, era.key)
     }
 

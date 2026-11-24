@@ -8,6 +8,7 @@ import java.util.Collections
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -147,6 +148,24 @@ class CarColdTest {
     }
 
     @Test
+    fun aKeptPageWithNothingThatPlaysGivesWayToTheDownloadsOwnRecord() {
+        // The phone has copies of these pages from before the server read its library again
+        // and gave the songs other ids: every song in them is one the phone doesn't have.
+        fun old(n: Int) = song(n).copy(id = "old-$n")
+        kotlinx.coroutines.runBlocking {
+            library.pages.put(library.album("al-1"), org.medianexus.music.net.Album(id = "al-1", name = "First Light", artist = "Paper Lanterns", songs = (1..4).map(::old)))
+            library.pages.put(library.playlist("p1"), org.medianexus.music.net.Playlist(id = "p1", name = "Mix", songs = listOf(old(4), old(1))))
+            library.pages.put(library.liked(), org.medianexus.music.net.Found(songs = listOf(old(2))))
+        }
+        val tree = tree()
+        // Listed, and not empty when opened: what is downloaded of each, from the downloads.
+        assertEquals(listOf("Shuffle", "Song 2", "Song 4"), fromThePhone { titles(tree.children(CarNode.Album("al-1"))) })
+        assertEquals(listOf("Shuffle", "Song 4"), fromThePhone { titles(tree.children(CarNode.Playlist("p1"))) })
+        assertEquals(listOf("Shuffle", "Song 2"), fromThePhone { titles(tree.children(CarNode.Liked)) })
+        assertTrue("Liked songs" in fromThePhone { titles(tree.children(CarNode.Home)) })
+    }
+
+    @Test
     fun beforeItIsKnownWhetherTheServerIsThereWhatIsOnThePhoneIsNotWaitedFor() {
         // The app has just started, the phone has a network of some kind, and the server
         // hasn't answered yet (it never will). Not offline: unsure.
@@ -160,5 +179,22 @@ class CarColdTest {
         assertEquals(listOf("Songs", "Liked songs", "Mix", "First Light"), fromThePhone { titles(tree.children(CarNode.Downloads)) })
         assertTrue(fromThePhone { tree.search("song 4") }.any { it.title == "Song 4" })
         assertEquals("album:al-1", fromThePhone { tree.forVoice(VoiceRequest(query = "First Light")) }!!.source)
+        // Something that isn't on the phone waits only to know whether the server is there
+        // (here: it turns out not to be, when the test says so), and is then answered from
+        // the phone, at once and with nothing: the server itself is never waited on.
+        val known = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val tree2 = CarTree(library, CarWords(), CarOffline(
+            now = { offline }, availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true }),
+            downloads = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) },
+            unsure = { unsure }, settle = { known.await() },
+        ))
+        val search = scope.async { tree2.search("nothing of the kind") }
+        val folder = scope.async { tree2.children(CarNode.Playlist("not-downloaded")) }
+        // The first check fails: out of reach.
+        offline = true
+        unsure = false
+        known.complete(Unit)
+        assertEquals(emptyList<CarEntry>(), fromThePhone { search.await() })
+        assertEquals(emptyList<CarEntry>(), fromThePhone { folder.await() })
     }
 }

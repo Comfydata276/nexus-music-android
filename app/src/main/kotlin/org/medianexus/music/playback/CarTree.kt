@@ -87,6 +87,8 @@ class CarOffline(
     /** Just after start-up, before the server has answered or failed to: not known yet
      *  whether it is there. Then nothing waits on it that has an answer on the phone. */
     val unsure: () -> Boolean = { false },
+    /** Waits until it is known (the server has answered, or failed to): a few seconds at most. */
+    val settle: suspend () -> Unit = {},
 )
 
 /**
@@ -143,9 +145,37 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
      * downloaded.
      */
     private suspend fun <T> first(spec: org.medianexus.music.store.PageSpec<T>, part: Boolean, again: (Any?) -> Unit, here: () -> T?): T? {
-        if (isOffline) return kept(spec) ?: here()
-        if (isUnsure && kept(spec) == null) here()?.let { return it }
+        if (isOffline) {
+            // The kept copy, if it has anything that plays: it has the whole list, so each
+            // song keeps its place in it. If it has nothing that plays (it is not there; or
+            // it is an old copy, from before the server gave these songs other ids), the
+            // downloads' own record, which is always of what is on the phone.
+            val page = kept(spec)
+            return if (page != null && anyPlays(page)) page else here() ?: page
+        }
+        if (isUnsure && kept(spec) == null) {
+            here()?.let { return it }
+            // Nothing of it on the phone: the server it is, once it is known to be there
+            // (a few seconds at most); if it turns out not to be, nothing, at once.
+            if (settled()) return null
+        }
         return page(spec, part, again)
+    }
+
+    /** Whether a kept page of songs has any that play with no server (a page of anything
+     *  else counts as having). */
+    private fun anyPlays(page: Any?): Boolean = when (page) {
+        is org.medianexus.music.net.Found -> page.songs.any(::plays)
+        is Playlist -> page.songs.any(::plays)
+        is Album -> page.songs.any(::plays)
+        else -> true
+    }
+
+    /** Waits out the moment of not knowing whether the server is there; says whether it
+     *  turned out to be out of reach. */
+    private suspend fun settled(): Boolean {
+        offline?.settle?.invoke()
+        return isOffline
     }
 
     /** Liked songs: see [first]. Offline with no kept copy, the downloaded ones in their order. */
@@ -201,9 +231,11 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     /** An album's songs offline: the kept page's, else what plays of it, in disc order. */
     private suspend fun albumSongsOffline(id: String): Pair<List<Song>, String> {
         val kept = kept(library.album(id))
-        if (kept != null) return kept.songs to kept.name
-        // No kept page (Android cleared it, or it was never opened): the downloads' own
-        // record of the album, in its own order, then anything else of it that plays.
+        if (kept != null && kept.songs.any(::plays)) return kept.songs to kept.name
+        // No kept page (Android cleared it, or it was never opened), or one with nothing that
+        // plays (an old copy, from before the server gave these songs other ids): the
+        // downloads' own record of the album, in its own order, then anything else of it
+        // that plays.
         DownloadedViews.album(downloadsNow(), id)?.let { album ->
             val also = playable().songs.filter { it.albumId == id && album.songs.none { s -> s.id == it.id } }
             return (album.songs + also) to album.name
@@ -665,7 +697,14 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         // Offline, what is on the phone. Not yet known whether the server is there (just
         // after start-up): what is on the phone if anything of it matches, rather than a wait.
         val here = if (isOffline || isUnsure) LocalSearch.find(query, playable().songs, limits) else null
-        val found = if (here != null && (isOffline || here.songs.isNotEmpty() || here.albums.isNotEmpty() || here.artists.isNotEmpty())) here else library.search.find(query, limits)
+        val found = when {
+            here == null -> library.search.find(query, limits)
+            isOffline || here.songs.isNotEmpty() || here.albums.isNotEmpty() || here.artists.isNotEmpty() -> here
+            // Nothing here matches, and it isn't known yet whether the server is there: once
+            // it is (a few seconds at most), the server's answer, or the phone's nothing.
+            settled() -> here
+            else -> library.search.find(query, limits)
+        }
         // (Offline: only the ones with something that plays, the downloaded ones among them.)
         val playlists = runCatching { playlistsKnown { library.quick(library.playlists()) } }.getOrDefault(emptyList())
             .filter { Voice.score(query, it.name) >= 0.6 }.take(MOST_PLAYLISTS_FOUND)
@@ -685,9 +724,9 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         // Offline, only what is on the phone is looked in. And so it is when it isn't yet
         // known whether the server is there (just after start-up) and something on the phone
         // answers to the words: that plays now, rather than after a wait to find out.
-        val offlineNow = isOffline || (isUnsure && playable().let { p ->
+        val offlineNow = isOffline || (isUnsure && (playable().let { p ->
             LocalSearch.find(request.searchWords(), p.songs, SearchLimits(artists = 3, albums = 3, songs = 3)).let { it.songs.isNotEmpty() || it.albums.isNotEmpty() || it.artists.isNotEmpty() }
-        })
+        } || settled()))
         val here = if (offlineNow) playable() else null
         // Offline, only what is on the phone is looked in.
         suspend fun find(words: String, limits: SearchLimits) = if (here != null) LocalSearch.find(words, here.songs, limits) else library.search.find(words, limits)
