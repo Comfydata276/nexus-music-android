@@ -91,19 +91,7 @@ fun SongsContent() {
     var descending by rememberSaveable { mutableStateOf(false) }
     val box = rememberTextFieldState()
     val view = ListView(if (sorted < 0) opening.sort else sorted, if (sorted < 0) opening.descending else descending, box.text.toString())
-    // Worked out off the main thread (the newest-first order of the copy is a sort of every
-    // song, made once a copy; a find or another order on top of it, at each change). What was
-    // shown stays until the new arrangement is ready, if it is of the same copy.
-    // What is shown for one order and one find: places in the copy's song table, for that very
-    // copy.
-    val shown by produceState<org.medianexus.music.library.Shown<LibrarySnapshot>?>(null, copy, view) {
-        val snap = copy ?: return@produceState
-        if (value?.list !== snap) value = null
-        value = withContext(Dispatchers.Default) {
-            val job = coroutineContext[kotlinx.coroutines.Job]
-            songsShown(snap, view) { job?.isActive == false }
-        }
-    }
+    val shown by rememberSongsShown(copy, view)
     val marks = rememberDownloadMarks()
     val likedSet = likedSongs()
     val player = ui.player
@@ -233,6 +221,32 @@ fun SongsContent() {
         }
     }
 }
+
+/**
+ * What the Songs page shows for one order and one find: places in the copy's song table, for
+ * that very copy. Worked out off the main thread (the newest-first order of the copy is a sort
+ * of every song, made once a copy; a find or another order on top of it, at each change).
+ *
+ * **What was shown stays until the next arrangement is ready, of the same copy or a newer
+ * one.** While the first copy arrives a newer one is published every second; the rows used to
+ * be taken away for each (the arrangement shown belonged to the copy before), so the page
+ * cleared and redrew about once a second and lost its place. Kept, the list's rows keep their
+ * keys, and the list keeps its place by the key of the first row in sight: rows already shown
+ * stay where they are while more arrive around them. Each arrangement holds the copy it was
+ * made from, so a row is still drawn, and a tap still plays, from what was drawn.
+ */
+@Composable
+internal fun rememberSongsShown(copy: LibrarySnapshot?, view: ListView): androidx.compose.runtime.State<org.medianexus.music.library.Shown<LibrarySnapshot>?> =
+    produceState<org.medianexus.music.library.Shown<LibrarySnapshot>?>(null, copy, view) {
+        val snap = copy ?: run {
+            value = null
+            return@produceState
+        }
+        value = withContext(Dispatchers.Default) {
+            val job = coroutineContext[kotlinx.coroutines.Job]
+            songsShown(snap, view) { job?.isActive == false }
+        }
+    }
 
 /**
  * What the Songs page shows of a copy of the library for one order and one find: places in
