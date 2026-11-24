@@ -236,6 +236,10 @@ class SongDataSource(
         asked = dataSpec.uri
         val id = songIdOf(dataSpec.uri)
         if (id == null) {
+            // An internet radio station: in offline mode nothing is asked of the internet,
+            // from the moment the switch is turned, as with any stream (see `read`).
+            this.lease = leases.lease(generation)
+            if (this.lease?.offline == true) throw StreamFailure.of(NotKeptOffline())
             val source = upstream.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }
             plain = source
             return guarded { source.open(dataSpec) }.also {
@@ -331,7 +335,10 @@ class SongDataSource(
             } catch (_: IOException) {
                 throw StreamFailure.local()
             }
-            else -> guarded { (plain ?: throw IOException("Not open")).read(buffer, offset, length) }
+            else -> guarded {
+                if (lease?.offline == true) throw NotKeptOffline()
+                (plain ?: throw IOException("Not open")).read(buffer, offset, length)
+            }
         }
     }
 

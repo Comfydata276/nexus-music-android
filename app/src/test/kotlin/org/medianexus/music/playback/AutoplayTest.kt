@@ -75,8 +75,10 @@ class AutoplayTest {
         val calls = mutableListOf<Triple<Long, List<String>, Boolean>>()
     }
 
+    private var intent = 0L
+
     private fun runner(source: AutoplaySource, scope: TestScope, enabled: Boolean = true, offline: Boolean = false, found: Found) =
-        AutoplayRunner({ enabled }, source, scope, { offline }, { seed, list, resume -> found.calls += Triple(seed, list.map { it.id }, resume) }, StandardTestDispatcher(scope.testScheduler))
+        AutoplayRunner({ enabled }, source, scope, { offline }, { seed, list, resume -> found.calls += Triple(seed, list.map { it.id }, resume) }, { intent }, StandardTestDispatcher(scope.testScheduler))
 
     @Test
     fun theLastSongStartingLooksAheadAndAnEndedQueueCarriesOnIntoWhatIsFound() {
@@ -108,15 +110,15 @@ class AutoplayTest {
     }
 
     @Test
-    fun aDeliberateStopMeansNothingStartsByItself() {
+    fun anythingThePersonDoesWhileTheSongsAreFoundMeansNothingStartsByItself() {
         val scope = TestScope()
         val found = Found()
         val gate = CompletableDeferred<Unit>()
         val auto = runner(Source(similar = songs("s", 5), gate = gate), scope, found = found)
         assertTrue(auto.ended(queueOf(songs("q", 2))))
         scope.runCurrent()
-        // Stopped (or paused) while the songs were being found.
-        auto.stopped()
+        // A pause, a stop, the sleep timer, the sound taken away: the player's intent moves on.
+        intent++
         gate.complete(Unit)
         scope.runCurrent()
         // They join the queue, but nothing plays.
@@ -166,6 +168,75 @@ class AutoplayTest {
         } finally {
             player.release()
             exo.release()
+        }
+    }
+
+    // ---- Nothing starts after the person stopped it, on the real player (M3b fixes, C1) ----
+
+    private class Player(val exo: ExoPlayer, val player: QueuePlayer) {
+        fun release() {
+            player.release()
+            exo.release()
+        }
+    }
+
+    private fun realPlayer(): Player {
+        val exo = ExoPlayer.Builder(RuntimeEnvironment.getApplication()).build()
+        return Player(exo, QueuePlayer(exo, Queue(), { MediaMetadata.EMPTY }, changed = {}, byPlace = { false }))
+    }
+
+    private fun idle(millis: Long = 0) = shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(millis))
+
+    @Test
+    fun stopDuringAStationsRejoinWaitMeansItIsNotJoinedAgain() {
+        val (exo, player) = realPlayer().let { it.exo to it.player }
+        try {
+            player.play(listOf(Song(id = "radio:1", title = "Test FM", radioUrl = "http://127.0.0.1:1/stream")), 0, "Radio")
+            idle()
+            // The stream drops; it is to be joined again in a second. Meanwhile, Stop (Media3's
+            // stop leaves "play when ready" set).
+            assertTrue(player.rejoinStation())
+            player.stop()
+            idle()
+            assertTrue(exo.playWhenReady)
+            idle(2_000)
+            assertEquals("joined again after a stop", androidx.media3.common.Player.STATE_IDLE, exo.playbackState)
+        } finally {
+            player.release()
+            exo.release()
+        }
+    }
+
+    @Test
+    fun theSleepTimersPauseOrTheSettingSwitchedOffWhileAutoplayLooksMeansNothingCarriesOn() {
+        for (case in listOf("the player paused itself", "autoplay switched off")) {
+            val (exo, player) = realPlayer().let { it.exo to it.player }
+            try {
+                var enabled = true
+                val gate = CompletableDeferred<Unit>()
+                val auto = AutoplayRunner(
+                    { enabled }, Source(similar = songs("s", 5), gate = gate),
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main), { false },
+                    { seed, list, resume -> player.carriedOn(seed, list, resume) }, { player.intent },
+                    kotlinx.coroutines.Dispatchers.Main,
+                )
+                player.end = auto
+                player.play(songs("q", 3), 2, "Slow Rivers")
+                idle()
+                // The queue has ended, and autoplay's songs are being looked for.
+                assertTrue(auto.ended(player.queue))
+                idle()
+                if (case == "the player paused itself") exo.pause() else enabled = false
+                idle()
+                gate.complete(Unit)
+                idle()
+                assertEquals(case, 2, player.queue.cursor)
+                assertFalse(case, exo.playWhenReady && player.queue.cursor > 2)
+                if (case == "autoplay switched off") assertEquals(case, 3, player.queue.order.size)
+            } finally {
+                player.release()
+                exo.release()
+            }
         }
     }
 

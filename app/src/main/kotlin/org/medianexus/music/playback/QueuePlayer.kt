@@ -105,7 +105,26 @@ class QueuePlayer(
 
     /** Something has been asked to start playing: its number. Every start before it has
      *  been overtaken. */
-    fun beginStart(): Long = ++starts
+    fun beginStart(): Long {
+        moved()
+        return ++starts
+    }
+
+    // ---- What the person last did -------------------------------------------------------------
+    //
+    // Two things act later than they were asked for: a radio station joined again after a
+    // drop, and autoplay's songs arriving after the queue ended. Each notes [intent] when it is
+    // asked for and acts only if it hasn't moved by the time it would, on this thread.
+
+    /** Moves on with everything that says what was going on is no longer wanted: a pause or a
+     *  stop (the person's, or the player's own at the end of a song for the sleep timer), the
+     *  sound taken away (audio focus), another start. */
+    var intent = 0L
+        private set
+
+    private fun moved() {
+        intent++
+    }
 
     /** Whether the start with this number is still the newest. */
     fun stands(ticket: Long): Boolean = ticket == starts
@@ -140,6 +159,14 @@ class QueuePlayer(
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = followPlayer()
 
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady) moved()
+            }
+
+            override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+                if (playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) moved()
+            }
+
             override fun onMetadata(metadata: androidx.media3.common.Metadata) {
                 // What a station announces it is playing (its ICY title).
                 for (i in 0 until metadata.length()) {
@@ -154,6 +181,8 @@ class QueuePlayer(
                 if (playbackState != Player.STATE_ENDED || queue.isEmpty) return
                 // A station's stream that ends has dropped: joined again (see rejoinStation).
                 if (queue.current()?.radioUrl?.isNotEmpty() == true && exo.playWhenReady && rejoinStation()) return
+                // (Paused at the end of the song, for the sleep timer: nothing carries on.)
+                val carryOn = exo.playWhenReady
                 // The end of the queue (the window moves along with the song playing, so the
                 // player only runs out when the queue has).
                 if (queue.repeat == Repeat.ALL) {
@@ -162,7 +191,7 @@ class QueuePlayer(
                     queue.moveTo(0)
                     sync(0)
                     startPlaying()
-                } else if (queue.repeat == Repeat.OFF && end?.ended(queue) != true) {
+                } else if (queue.repeat == Repeat.OFF && !(carryOn && end?.ended(queue) == true)) {
                     // Park on the first song, ready to go again, as Windows does (unless
                     // autoplay is to carry on: then it waits, at the end, for what follows).
                     exo.pause()
@@ -211,8 +240,6 @@ class QueuePlayer(
     val ahead: Int get() = (queue.order.size - queue.cursor - 1).coerceAtLeast(0)
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        // Paused on purpose: nothing is to start by itself.
-        if (!playWhenReady) end?.stopped()
         if (playWhenReady) {
             if (!mayPlay()) return Futures.immediateVoidFuture()
             // A start that was refused left the player stopped (see refuseStart): a Play that
@@ -252,7 +279,8 @@ class QueuePlayer(
     }
 
     override fun handleStop(): ListenableFuture<*> {
-        end?.stopped()
+        // (Media3's stop leaves "play when ready" as it was: the stop itself is what counts.)
+        moved()
         return super.handleStop()
     }
 
@@ -690,8 +718,10 @@ class QueuePlayer(
     fun rejoinStation(): Boolean {
         val uid = queue.currentUid() ?: return false
         val wait = rejoins.next(uid, android.os.SystemClock.elapsedRealtime()) ?: return false
+        val asked = intent
         later(wait) {
-            if (queue.currentUid() != uid || !exo.playWhenReady) return@later
+            // Nothing done since: no pause, no stop, no other choice.
+            if (queue.currentUid() != uid || intent != asked) return@later
             exo.seekToDefaultPosition()
             startPlaying()
         }

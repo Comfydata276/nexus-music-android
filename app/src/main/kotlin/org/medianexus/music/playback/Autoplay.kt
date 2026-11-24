@@ -50,10 +50,6 @@ interface QueueEnd {
     /** The player has played to the end of the queue: true if something will carry on (the
      *  player then waits, not parked on the first song). */
     fun ended(queue: Queue): Boolean
-
-    /** Someone stopped or paused on purpose, or chose something else: nothing is to start by
-     *  itself. */
-    fun stopped()
 }
 
 /**
@@ -72,13 +68,15 @@ class AutoplayRunner(
     private val offline: () -> Boolean,
     /** Hands the songs found to the player: for the queue whose last entry was `seed`. */
     private val found: (seed: Long, songs: List<Song>, resume: Boolean) -> Unit,
+    /** The player's [QueuePlayer.intent]: what the person last did. */
+    private val intent: () -> Long,
     private val io: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
 ) : QueueEnd {
     /** The queue entry the songs on their way were found for. */
     private var seed: Long? = null
     private var job: kotlinx.coroutines.Job? = null
-    /** The player has ended and waits for them. */
-    private var resume = false
+    /** The player has ended and waits for them: what the person had last done then. */
+    private var waitingSince: Long? = null
 
     private fun wanted(queue: Queue): Boolean {
         if (queue.isEmpty || queue.repeat != Repeat.OFF || offline() || scope.coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return false
@@ -94,13 +92,9 @@ class AutoplayRunner(
 
     override fun ended(queue: Queue): Boolean {
         if (!wanted(queue)) return false
-        resume = true
+        waitingSince = intent()
         look(queue)
         return true
-    }
-
-    override fun stopped() {
-        resume = false
     }
 
     /** Looks for what follows the queue's last song, unless that is already on its way. */
@@ -121,9 +115,14 @@ class AutoplayRunner(
             } catch (_: ApiError) {
                 emptyList()
             }
-            val carry = resume
-            resume = false
-            if (seed == uid) found(uid, songs, carry)
+            // As it lands, on the player's thread: still wanted (the setting, offline, the
+            // queue's end not changed by then), and carried on into only if the person has done
+            // nothing since the queue ended (no pause or stop, the sleep timer, the sound taken
+            // away, another choice).
+            val since = waitingSince
+            waitingSince = null
+            if (seed != uid || !wanted(queue)) return@launch
+            found(uid, songs, since != null && since == intent())
         }
     }
 }
