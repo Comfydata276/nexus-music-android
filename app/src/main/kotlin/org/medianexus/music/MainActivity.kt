@@ -65,8 +65,9 @@ class MainActivity : ComponentActivity() {
         // downloads Android paused with a job it stopped may run again (an app on screen may
         // download, and is asked for a job of the kind only it may have).
         graph.checkIfDown()
-        // And what the person's other devices have changed meanwhile is picked up.
-        graph.cameToFront()
+        // And what the person's other devices have changed meanwhile is picked up, now and
+        // each minute while the screens stay in front (see Graph.front).
+        graph.front.value = true
         graph.accounts.state.value?.downloads?.let { downloads ->
             downloads.stoppedByAndroid(false)
             downloads.refresh()
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         org.medianexus.music.downloads.DownloadKeeper.visible = false
+        graph.front.value = false
         graph.player.release()
         super.onStop()
     }

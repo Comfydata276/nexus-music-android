@@ -119,6 +119,11 @@ class Graph(context: Context) {
         return account.held.waiting.value > 0 || account.downloads?.state?.value?.busy == true
     }
 
+    /** Whether the app's screens are in front: the activity says, as it starts and stops.
+     *  What only matters to someone looking (each minute's look at what the person's other
+     *  devices have changed) runs while this is true and not otherwise. */
+    val front = kotlinx.coroutines.flow.MutableStateFlow(false)
+
     /** What belongs to whoever is signed in: their library, covers, likes, downloads and
      *  queue. */
     val accounts = Accounts(session, scope) { signedIn ->
@@ -137,7 +142,7 @@ class Graph(context: Context) {
                 network = network.state,
                 inUse = { org.medianexus.music.downloads.DownloadKeeper.visible || playing },
                 settingsStore = settings,
-                inFront = { org.medianexus.music.downloads.DownloadKeeper.visible },
+                front = front,
             ),
         )
     }
@@ -174,12 +179,6 @@ class Graph(context: Context) {
      * The watch does so every 15 seconds by itself; this is the screens coming to the front.
      */
     fun checkIfDown() = watch.nudge()
-
-    /** The screens have come to the front: what the person's other devices have changed
-     *  meanwhile is picked up (Windows looks when its window is brought back). */
-    fun cameToFront() {
-        accounts.state.value?.cameToFront()
-    }
 
     /**
      * The server answers again after being out of reach (`back`), or offline mode has been

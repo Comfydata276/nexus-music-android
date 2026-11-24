@@ -8,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
@@ -54,7 +55,7 @@ class AccountWiring(
     val settingsStore: org.medianexus.music.store.SettingsStore? = null,
     /** Whether the app's screens are in front: only then is the server looked at each
      *  minute for what other devices have changed. */
-    val inFront: () -> Boolean = { false },
+    val front: StateFlow<Boolean> = MutableStateFlow(false),
 )
 
 /**
@@ -223,7 +224,7 @@ class AccountGraph(
     /** The account has gone ([close]): nothing more is exchanged for it. */
     @Volatile private var closed = false
 
-    private val inFront: () -> Boolean = wiring?.inFront ?: { false }
+    private val front: StateFlow<Boolean> = wiring?.front ?: MutableStateFlow(false)
 
     /** Songs the server has said it doesn't have, so they aren't asked for at every exchange
      *  (a song in another device's history that has since been deleted). */
@@ -316,12 +317,6 @@ class AccountGraph(
         queueStep?.check()
     }
 
-    /** The app has come to the front: a look, unless one was made a moment ago. */
-    fun cameToFront() {
-        if (step == null || System.currentTimeMillis() - synchronized(this) { lookedAt } < LOOK_FLOOR_MILLIS) return
-        scope.launch { if (historyRead.isCompleted) look() }
-    }
-
     /** The account's mixes of its own, made to rules (Windows' `rule_mixes`). */
     val ruleMixes = org.medianexus.music.store.RuleMixes(File(account.dirs.data, "rule-mixes.json"), io)
 
@@ -386,16 +381,22 @@ class AccountGraph(
             // With no log yet, it starts from what Recently played remembers (Windows' `load`).
             playLog.open { recentlyPlayed.state.value.map { it.song.id to it.at } }
             historyRead.complete(Unit)
-            // In step with the person's other devices: now (Windows' `start_sync`), and
-            // every minute from here on while the app's screens are in front. Not in the
-            // background: what changes here still goes out a few seconds after it does
-            // (each song that starts is one such change), and nobody is looking at what
-            // changed elsewhere.
+            // In step with the person's other devices: now (Windows' `start_sync`); when
+            // the app's screens come to the front (unless a look was made a moment ago); and
+            // every minute from then on while they stay there. **The timer itself runs only
+            // while the screens are in front**: with them gone, nothing here wakes each
+            // minute to find it has nothing to do. In the background what changes here
+            // still goes out a few seconds after it does (each song that starts, each play
+            // that counts), and nobody is looking at what changed elsewhere.
             if (step != null) {
                 look()
-                while (true) {
-                    pause(org.medianexus.music.sync.InStep.LOOK_MILLIS)
-                    if (inFront()) look()
+                front.collectLatest { inFront ->
+                    if (!inFront) return@collectLatest
+                    if (System.currentTimeMillis() - synchronized(this@AccountGraph) { lookedAt } >= LOOK_FLOOR_MILLIS) look()
+                    while (true) {
+                        pause(org.medianexus.music.sync.InStep.LOOK_MILLIS)
+                        look()
+                    }
                 }
             }
         }
@@ -579,6 +580,9 @@ class AccountGraph(
     fun played(songId: String, atMillis: Long, from: String, report: Boolean) = synchronized(going) {
         if (gone || songId.isEmpty()) return@synchronized
         playLog.add(songId, atMillis / 1000, from)
+        // (One of the latest plays the person's other devices are told of: passed on soon,
+        // not left for whatever next sets an exchange off.)
+        step?.shareSoon()
         if (report) scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { runCatching { submit(Pending.Played(songId, atMillis)) } }
     }
 

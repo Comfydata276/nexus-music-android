@@ -274,7 +274,7 @@ class InStepLiveTest {
         }
         fun queueOf(player: Player) = QueueStep(
             save = { device, upload -> api.savePlayQueue(device, upload.ids, upload.current, upload.positionMs) }, saved = { api.playQueue() },
-            device = { "NexusMusic-feedf00d" }, may = { true }, scope = scope, pause = {}, main = Dispatchers.Unconfined,
+            device = { "NexusMusic-feedf00d" }, may = { true }, scope = scope, pause = {}, onMain = Dispatchers.Unconfined,
         ).also { it.here = player }
         // Not playing: taken up, paused, where the PC had got to.
         val idle = Player(playing = false, current = null)

@@ -273,9 +273,8 @@ class PhoneSharedTest {
 
     @Test
     fun onlyTheLatestFiveHundredPlaysAreShared() {
-        val log = (0 until 620).map { "s${it % 7}" to 1_000L + it }
-        val from = listOf(Triple("s0", 1_000L, "playlist:old"), Triple("s3", 1_619L, "playlist:new"))
-        val (plays, sources) = Sharing.plays(log, from)
+        val log = org.medianexus.music.store.Plays.of((0 until 620).map { Triple("s${it % 7}", 1_000L + it, if (it == 0) "playlist:old" else if (it == 619) "playlist:new" else "") })
+        val (plays, sources) = Sharing.plays(log)
         assertEquals(PLAYS_SHARED, plays.size)
         assertEquals(Play("s3", 1_619), plays.first())
         assertEquals(1_120L, plays.last().at)

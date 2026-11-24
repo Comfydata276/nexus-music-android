@@ -5,6 +5,7 @@ import org.medianexus.music.store.Added
 import org.medianexus.music.store.AddedNote
 import org.medianexus.music.store.ListPrefs
 import org.medianexus.music.store.PlayLog
+import org.medianexus.music.store.Plays
 import org.medianexus.music.store.RecentlyPlayed
 import org.medianexus.music.store.Settings
 import org.medianexus.music.store.Waiting
@@ -60,17 +61,24 @@ object Sharing {
     }
 
     /**
-     * The latest plays of the log (`log`: every play, oldest first, and `sources`: where
-     * those made from a playlist were made from, both from one reading of the log), as they
-     * are shared: newest first, each once, with the sources of those that are kept. As
-     * Windows: the last [PLAYS_SHARED] lines of the log, sorted.
+     * The latest plays of the log as they are shared: newest first, each once, with where
+     * those made from a playlist were made from. From one reading of the log (`log` is the
+     * log as it stood at one moment), and **only its end is read**: the log may hold 200,000
+     * plays, and an exchange that changes nothing must not copy them all to find the last
+     * [PLAYS_SHARED]. As Windows: the last [PLAYS_SHARED] lines, sorted; one source for a
+     * song and a second, the one noted last.
      */
-    fun plays(log: List<Pair<String, Long>>, sources: List<Triple<String, Long, String>>): Pair<List<Play>, List<PlayFrom>> {
+    fun plays(log: Plays): Pair<List<Play>, List<PlayFrom>> {
         val latest = ArrayList<Play>(minOf(log.size, PLAYS_SHARED))
-        for (i in log.size - 1 downTo maxOf(0, log.size - PLAYS_SHARED)) latest += Play(log[i].first, log[i].second)
+        val from = LinkedHashMap<Play, String>()
+        for (i in log.size - 1 downTo maxOf(0, log.size - PLAYS_SHARED)) {
+            val play = Play(log.song(i), log.at(i))
+            latest += play
+            log.from(i).let { if (it.isNotEmpty()) from.putIfAbsent(play, it) }
+        }
         val plays = Merge.mergePlays(latest, emptyList())
         val kept = plays.toHashSet()
-        return plays to sources.filter { Play(it.first, it.second) in kept }.map { PlayFrom(it.first, it.second, it.third) }
+        return plays to from.filterKeys { it in kept }.map { (play, source) -> PlayFrom(play.song, play.at, source) }
     }
 
     /**
@@ -162,7 +170,7 @@ class PhoneShared(
         // Before the playlists have loaded there's no telling which still exist.
         val known = playlists()?.takeIf { it.isNotEmpty() }
         // (The plays and their sources from one and the same moment of the log.)
-        val (plays, sources) = log.sharedWithSources().let { (all, from) -> Sharing.plays(all, from) }
+        val (plays, sources) = Sharing.plays(log.state.value)
         return Sharing.choices(now).copy(
             added = Sharing.notes(added.shared(known)),
             history = history.state.value.map { Play(it.song.id, it.at) },

@@ -130,8 +130,12 @@ class QueueStep(
     private val scope: CoroutineScope,
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
     private val pause: suspend (Long) -> Unit = { delay(it) },
-    private val main: CoroutineDispatcher = Dispatchers.Main.immediate,
+    /** Where the player is spoken to: the main thread, unless a test says otherwise. (Asked
+     *  for when first needed: there is no main thread to name where there is no Android.) */
+    onMain: CoroutineDispatcher? = null,
 ) {
+    private val main: CoroutineDispatcher by lazy { onMain ?: Dispatchers.Main.immediate }
+
     /** The player, while the playback service has this account. */
     @Volatile var here: QueueHere? = null
 
@@ -191,6 +195,9 @@ class QueueStep(
             return
         }
         val name = device()
+        // With no player (the playback service isn't up) there is nothing to take it up, and
+        // nothing playing here: it is only noted, for when there is.
+        if (here == null) return note(theirs, name, null)
         withContext(main) {
             val player = here
             note(theirs, name, player?.currentId())
