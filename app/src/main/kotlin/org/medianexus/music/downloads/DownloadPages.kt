@@ -56,7 +56,7 @@ object DownloadPages {
         return when (withContext(Dispatchers.Main.immediate) { downloads.removeGroup(key, shown, cancelOnly) }) {
             Downloads.Toggled.Cancelled -> context.getString(R.string.download_cancelled)
             Downloads.Toggled.HeldElsewhere -> context.getString(R.string.still_downloaded_elsewhere)
-            Downloads.Toggled.Failed -> context.getString(R.string.couldnt_change_downloads)
+            Downloads.Toggled.Failed -> context.getString(if (cancelOnly) R.string.couldnt_cancel_downloads else R.string.couldnt_change_downloads)
             else -> context.getString(R.string.removed_from_downloads)
         }
     }

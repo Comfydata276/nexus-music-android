@@ -765,6 +765,59 @@ class DownloadsTest {
     }
 
     @Test
+    fun aListsOwnCancelStopsASongATopUpQueuedThatThePageHasNotCaughtUpWith() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val page = listOf(song("s1", size = 20_000), song("s2", size = 2_400_000))
+        run { engine.toggle(list("album:al-1", page), page) }
+        until("one arrived") { catalogue.has("s1") && engine.state.value.active.size == 1 }
+        // A top-up finds the album has gained a song, and queues it; the album's own page
+        // still shows the two songs it had.
+        val gained = song("s3", size = 2_400_000)
+        run { engine.follow(list("album:al-1", page + gained), page + gained) }
+        until("the gained song queued") { engine.state.value.active.any { it.song.id == "s3" } }
+        // The page's button is Cancel (a song it shows is on its way). Pressed, it stops
+        // every song of the list on its way, not only the ones the page names. (The gained
+        // song used to go on downloading.)
+        assertEquals(Downloads.Toggled.Cancelled, run { engine.toggle(list("album:al-1", page), page) })
+        assertGoneForGood(engine, listOf("s2", "s3"))
+        assertTrue(catalogue.has("s1"))
+        assertTrue(engine.state.value.collections.isEmpty())
+    }
+
+    @Test
+    fun aCancelOrARemovalThePhoneWillNotRecordSaysSoAndChangesNothing() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        run { engine.download(listOf(song("s1", size = 20_000)), own = true) }
+        until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
+        run { engine.download(listOf(song("s2", size = 2_400_000)), own = true) }
+        until("on its way") { engine.state.value.active.any { it.song.id == "s2" } }
+        val told = mutableListOf<Boolean>()
+        catalogue.dir.setWritable(false)
+        try {
+            // A song's own Cancel, Cancel all, and a song's own Remove: none can be written
+            // down, and each says so (each used to say it was done).
+            engine.cancel(listOf("s2")) { told += it }
+            engine.cancelAll { told += it }
+            engine.remove(listOf("s1")) { told += it }
+            until("answered") { told.size == 3 }
+            assertEquals(listOf(false, false, false), told)
+            assertTrue(engine.state.value.active.any { it.song.id == "s2" })
+            assertTrue(catalogue.has("s1"))
+        } finally {
+            catalogue.dir.setWritable(true)
+        }
+        // Written down, they are done, and say so.
+        engine.cancelAll { told += it }
+        until("cancelled") { told.size == 4 }
+        assertEquals(true, told.last())
+        assertGoneForGood(engine, listOf("s2"))
+    }
+
+    @Test
     fun ifThePhoneWillNotRecordThatAListIsNoLongerWantedNothingIsRemovedAndItSaysSo() {
         val engine = downloads()
         until("ready") { engine.state.value.settled }

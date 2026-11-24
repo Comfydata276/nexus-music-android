@@ -259,6 +259,7 @@
     <string name="downloads_removed">Downloads removed</string>
     <string name="couldnt_remove_all_downloads">Some downloads couldn\'t be removed. Try again.</string>
     <string name="couldnt_change_downloads">Nothing was removed: the phone wouldn\'t save the change. Try again.</string>
+    <string name="couldnt_cancel_downloads">Nothing was cancelled: the phone wouldn\'t save the change. Try again.</string>
     <string name="no_room">Not enough room: that needs about %1$s, and this phone has %2$s free. (Half a gigabyte is always left spare.)</string>
     <string name="downloads_wait_offline">Offline mode is on: the download starts when you\'re back online</string>
     <string name="couldnt_be_downloaded">%1$s couldn\'t be downloaded. %2$s</string>

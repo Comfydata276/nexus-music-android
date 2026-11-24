@@ -530,12 +530,16 @@ class Downloads(
      * removes it.
      *
      * **Only this list's standing changes, and only songs nothing else wants are touched**
-     * (see [withdraw], which every removal or cancelling of a group goes through).
+     * (see [withdraw], which every removal or cancelling of a group goes through). **What is
+     * cancelled or removed is every member of the list** ([membersOf]), as from the Downloads
+     * page, not only the songs the page was showing: a song a top-up has queued, which the
+     * page has not caught up with, used to go on downloading after Cancel.
      */
     suspend fun toggle(list: DownloadedList, songs: List<Song>): Toggled = asking.withLock {
         ready.await()
         onDisk {}
         val ids = songs.map { it.id }
+        // (What the button is, from what the page shows; what it acts on, from the list.)
         val waiting = ids.filter { it in asks }
         // Whether it is this list that is on its way: a song of it arriving for another list,
         // or by itself, doesn't make its button a Cancel (there would be nothing of this
@@ -543,8 +547,8 @@ class Downloads(
         // arriving.
         val kept = catalogue.collection(list.key) != null
         when {
-            waiting.isNotEmpty() && kept -> withdraw(list.key, waiting, files = false)
-            waiting.isEmpty() && songs.isNotEmpty() && songs.all { catalogue.has(it.id) } -> withdraw(list.key, ids, files = true)
+            waiting.isNotEmpty() && kept -> withdrawGroup(list.key, ids, cancelOnly = true)
+            waiting.isEmpty() && songs.isNotEmpty() && songs.all { catalogue.has(it.id) } -> withdrawGroup(list.key, ids, cancelOnly = false)
             else -> Toggled.Asked(ask(songs, list.copy(songs = ids), own = false))
         }
     }
@@ -566,8 +570,13 @@ class Downloads(
     suspend fun removeGroup(key: String, shown: List<String>, cancelOnly: Boolean = false): Toggled = asking.withLock {
         ready.await()
         onDisk {}
+        withdrawGroup(key, shown, cancelOnly)
+    }
+
+    /** [removeGroup], and a list's own button ([toggle]): under [asking]. */
+    private suspend fun withdrawGroup(key: String, shown: List<String>, cancelOnly: Boolean): Toggled {
         val members = membersOf(key, shown)
-        if (cancelOnly) withdraw(key, members.filter { it in asks }, files = false) else withdraw(key, members, files = true)
+        return if (cancelOnly) withdraw(key, members.filter { it in asks }, files = false) else withdraw(key, members, files = true)
     }
 
     /**
@@ -643,16 +652,21 @@ class Downloads(
      * otherwise the next look at the list, or the server coming back, would fetch them all
      * again, and the Cancel would have been for nothing). What had already arrived of such a
      * list stays downloaded.
+     *
+     * `told` hears, on the main thread, whether it was done: not if the phone would not
+     * record that they are no longer wanted (then nothing is stopped, and the person is to
+     * be told so, not that it was cancelled).
      */
-    fun cancel(ids: Collection<String>) = onMain {
+    fun cancel(ids: Collection<String>, told: (Boolean) -> Unit = {}) = onMain {
         val asked = ids.toSet()
         // (The wish first, on the disk: only then are they stopped. See [withdraw]. In its
         // turn with every other asking, so that what is asked next finds it done.)
         scope.launch(Dispatchers.Main.immediate) {
-            asking.withLock {
+            val done = asking.withLock {
                 ready.await()
-                if (onDisk { unwanted(asked) }) stop(asked)
+                onDisk { unwanted(asked) }.also { if (it) stop(asked) }
             }
+            told(done)
         }
     }
 
@@ -677,7 +691,7 @@ class Downloads(
 
     /** Stops everything on its way, waiting or part-way, as [cancel] does: the lists those
      *  songs were for are no longer kept whole, so nothing fetches them again. */
-    fun cancelAll() = onMain { cancel(asks.keys + now.value.active.map { it.song.id }) }
+    fun cancelAll(told: (Boolean) -> Unit = {}) = onMain { cancel(asks.keys + now.value.active.map { it.song.id }, told) }
 
     /** Has another go at the songs that couldn't be downloaded. */
     suspend fun retryFailed(onlyNetwork: Boolean = false): Asked? {
@@ -693,15 +707,17 @@ class Downloads(
      * Deletes these songs' downloaded copies, by hand, and stops any still on their way. A
      * list downloaded whole that one of them belongs to is no longer kept whole (its other
      * songs stay downloaded): otherwise the next look at it would fetch the song straight
-     * back. (Removing a *list* is [toggle]'s, and changes no other list.)
+     * back. (Removing a *list* is [toggle]'s, and changes no other list.) `told`: whether
+     * it was done, as for [cancel].
      */
-    fun remove(ids: Collection<String>) = onMain {
+    fun remove(ids: Collection<String>, told: (Boolean) -> Unit = {}) = onMain {
         val asked = ids.toSet()
         scope.launch(Dispatchers.Main.immediate) {
-            asking.withLock {
+            val done = asking.withLock {
                 ready.await()
-                if (onDisk { unwanted(asked) }) drop(asked)
+                onDisk { unwanted(asked) }.also { if (it) drop(asked) }
             }
+            told(done)
         }
     }
 

@@ -139,8 +139,7 @@ fun DownloadsContent(titled: Boolean) {
                 // While anything is on its way, the batch, and the button cancels it all (as
                 // Windows' button does on its Downloads page).
                 download = if (!state.busy) null else DownloadButton(1, state.batchDone + state.batchFailed, state.batchTotal, state.progress) {
-                    account?.downloads?.cancelAll()
-                    ui.toast(res.getString(R.string.downloads_cancelled))
+                    account?.downloads?.cancelAll { done -> ui.toast(res.getString(if (done) R.string.downloads_cancelled else R.string.couldnt_cancel_downloads)) }
                 },
             )
         }
@@ -170,8 +169,7 @@ fun DownloadsContent(titled: Boolean) {
             item(key = "busy", contentType = "heading") {
                 Column(Modifier.fillMaxWidth()) {
                     ListHeading(stringResource(R.string.downloading_now), action = stringResource(R.string.cancel_all), onAction = {
-                        account?.downloads?.cancelAll()
-                        ui.toast(res.getString(R.string.downloads_cancelled))
+                        account?.downloads?.cancelAll { done -> ui.toast(res.getString(if (done) R.string.downloads_cancelled else R.string.couldnt_cancel_downloads)) }
                     })
                     BasicText(
                         held ?: res.getString(R.string.downloading_n_of, state.at, state.batchTotal),
@@ -195,8 +193,7 @@ fun DownloadsContent(titled: Boolean) {
                     mark = RowMark(active.state),
                     trailing = {
                         IconButton(R.drawable.ic_x, stringResource(R.string.cancel_download) + ": " + song.title, {
-                            account?.downloads?.cancel(listOf(song.id))
-                            ui.toast(res.getString(R.string.download_cancelled))
+                            account?.downloads?.cancel(listOf(song.id)) { done -> ui.toast(res.getString(if (done) R.string.download_cancelled else R.string.couldnt_cancel_downloads)) }
                         }, iconSize = 20.dp)
                     },
                 )

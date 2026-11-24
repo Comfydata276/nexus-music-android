@@ -108,10 +108,10 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
                 Rule()
                 when (downloadState) {
                     org.medianexus.music.downloads.SongState.Done -> Entry(R.drawable.ic_circle_arrow_down, stringResource(R.string.remove_download)) {
-                        choose { ui.account?.downloads?.remove(listOf(song.id)); ui.toast(res.getString(R.string.download_removed)) }
+                        choose { ui.account?.downloads?.remove(listOf(song.id)) { done -> ui.toast(res.getString(if (done) R.string.download_removed else R.string.couldnt_change_downloads)) } }
                     }
                     org.medianexus.music.downloads.SongState.Waiting, is org.medianexus.music.downloads.SongState.Fetching -> Entry(R.drawable.ic_x, stringResource(R.string.cancel_download)) {
-                        choose { ui.account?.downloads?.cancel(listOf(song.id)); ui.toast(res.getString(R.string.download_cancelled)) }
+                        choose { ui.account?.downloads?.cancel(listOf(song.id)) { done -> ui.toast(res.getString(if (done) R.string.download_cancelled else R.string.couldnt_cancel_downloads)) } }
                     }
                     else -> Entry(R.drawable.ic_download, stringResource(R.string.download)) {
                         val account = ui.account
