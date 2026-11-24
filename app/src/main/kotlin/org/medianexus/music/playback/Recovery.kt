@@ -16,6 +16,28 @@ object Recovery {
         playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING || waitingForServer)
 
     /**
+     * Whether a playback error, met while a song's **downloaded file** was playing, can be
+     * laid at that file: it couldn't be read (`local`: the read of the file itself failed),
+     * it couldn't be parsed, or what is in it is something this phone has no way to play.
+     * Then the file is set aside and the song streamed. Anything else (a decoder that fell
+     * over or couldn't be had, the sound output failing) says nothing about the file, and
+     * blames nothing: a codec taken away by another app must not cost a good download.
+     */
+    fun laidAtTheFile(errorCode: Int, local: Boolean): Boolean = local || errorCode in FILE_FAULTS
+
+    private val FILE_FAULTS = setOf(
+        androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+        androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+        androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
+        androidx.media3.common.PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,
+        // What the file holds, not how it was played: the same file fails the same way
+        // every time on this phone.
+        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+    )
+
+    /**
      * Streaming quality was changed in Settings: whether the song at the cursor is to be
      * opened again, from where it is, so that it plays at the new quality straight away (as
      * Windows' `reload_current` does). Not if nothing is open (the next song opened is at the

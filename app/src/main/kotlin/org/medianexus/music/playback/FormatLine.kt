@@ -38,3 +38,15 @@ fun formatLine(song: Song, cap: Int, converted: Boolean, liveStream: String): Fo
     }
     return FormatLine(parts.joinToString(" · "), lossless)
 }
+
+/**
+ * The format line for a song from the copy of it that is actually being played (the player
+ * says which: see `SongCopy`): the MP3 it was converted to, at `kbps`, or the file as it is
+ * (0). Not worked out from what the settings and the downloads say now, which can change
+ * while the song plays on from the copy it started on.
+ */
+fun formatLineOf(song: Song, kbps: Int, liveStream: String): FormatLine = when {
+    song.radioUrl.isNotEmpty() -> FormatLine(liveStream, false)
+    kbps > 0 -> FormatLine("MP3 · $kbps kbps", false)
+    else -> formatLine(song, 0, false, liveStream)
+}

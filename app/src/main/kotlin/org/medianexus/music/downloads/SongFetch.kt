@@ -331,7 +331,7 @@ class SongFetch(
         } catch (e: IOException) {
             throw failure(e)
         }
-        val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate)
+        val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate, target.lastModified())
         try {
             // The mark: only now is it a download.
             catalogue.add(entry)

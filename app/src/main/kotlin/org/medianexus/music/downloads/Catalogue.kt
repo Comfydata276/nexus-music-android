@@ -33,6 +33,9 @@ data class Downloaded(
      *  asked to convert it to (0 for the file as it is on the server). */
     val suffix: String,
     val bitrate: Int = 0,
+    /** The file's modification time when it was marked whole (milliseconds since 1970; 0 for
+     *  one marked before this was kept): with its name, which file this entry is of. */
+    val modified: Long = 0,
 ) {
     /** Its bit rate in kbps, as near as its size and the song's length say (Windows'
      *  `saved_as`). */

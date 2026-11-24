@@ -76,8 +76,28 @@ class SongWhere(
     /** The song's downloaded copy, which is read first if there is one: whole, as only a
      *  whole download is ever entered (see `downloads.Catalogue`). */
     val downloaded: java.io.File? = null,
+    /** The bit rate the downloaded copy was converted to when it was saved (0: the file as
+     *  it is on the server). */
+    val downloadedKbps: Int = 0,
     val stream: (offsetSecs: Int) -> String,
 )
+
+/**
+ * The copy of a song one read of it is of: its downloaded file, or the server's stream (or
+ * the kept copy of that stream, which is the same bytes) in one form. `kbps`: what it was
+ * converted to, 0 for the file as it is: what the format line says is playing.
+ */
+sealed interface SongCopy {
+    val kbps: Int
+
+    /** A downloaded file, as it was when it was opened: a file at the same name that is not
+     *  that long, or was not put there then, is another copy. */
+    data class Download(val file: java.io.File, val modified: Long, val length: Long, override val kbps: Int) : SongCopy
+
+    data class Stream(val form: StreamForm) : SongCopy {
+        override val kbps: Int get() = form.bitrate
+    }
+}
 
 /**
  * The fewest bytes a whole converted song can come to, as Windows works it out
@@ -114,6 +134,10 @@ interface SongLease {
      * guide to the other's.
      */
     val conversions: Conversions
+
+    /** A read of the song has opened, on this copy of it: what is playing, for the format
+     *  line, and what a failure is to be laid at. Called on a loading thread. */
+    fun opened(songId: String, copy: SongCopy) {}
 
     /** The read of the song kept under `key` has closed: whether it is kept whole now is
      *  worth noting (see `store.KeptIndex`). */
@@ -179,10 +203,35 @@ class SongDataSource(
     /** Something that isn't one of our songs, read as it is; or a downloaded copy. */
     private var plain: DataSource? = null
 
+    /**
+     * The copy this data source first opened, and where it was resolved to then. One data
+     * source serves one queue entry's turn in the player (Media3 makes one for each media
+     * period, and opens it again at every seek and every retry), so this is "the copy the
+     * entry started on": every later open is of the same copy. See [open].
+     */
+    private var first: SongWhere? = null
+    private var copy: SongCopy? = null
+    private var songId: String? = null
+    private var unopenable = false
+
     override fun addTransferListener(transferListener: TransferListener) {
         listeners += transferListener
     }
 
+    /**
+     * Opens the song at a byte. **A byte position means something only in the copy it was
+     * worked out from**: Media3 turns a seek into "byte N" using what it read of the file it
+     * has been playing, and asks for that byte here. So whatever this data source opened
+     * first is what it opens every time after: the same downloaded file, or the stream in
+     * the same form. (It used to resolve the song afresh at each open. A streamed conversion
+     * whose download finished mid-song was then handed the downloaded file at a byte that
+     * belonged to the conversion, and a download removed while playing the reverse.)
+     *
+     * If that copy has gone (the file removed or replaced; the stream out of reach while a
+     * download has arrived since), nothing is opened at that byte: the read fails as
+     * [StreamFailure.moved], and the service makes the entry ready again from its *time*,
+     * which resolves afresh, from byte 0, on whatever is best now.
+     */
     override fun open(dataSpec: DataSpec): Long {
         asked = dataSpec.uri
         val id = songIdOf(dataSpec.uri)
@@ -193,32 +242,91 @@ class SongDataSource(
         }
         // Refused here if the account this was made for has gone.
         val lease = leases.lease(generation).also { this.lease = it }
-        val where = lease.resolve(id)
-        where.downloaded?.let { file ->
-            // Downloaded: read from the phone, whatever the streaming quality, and with the
-            // server gone. (A file that has gone since is streamed instead.)
-            val local = androidx.media3.datasource.FileDataSource().also { made -> listeners.forEach(made::addTransferListener) }
-            try {
-                val length = local.open(dataSpec.buildUpon().setUri(Uri.fromFile(file)).build())
-                if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened from its download, at byte ${dataSpec.position}")
-                plain = local
-                headers = emptyMap()
-                return length
-            } catch (_: IOException) {
-                runCatching { local.close() }
+        songId = id
+        val began = first
+        if (began == null) {
+            val where = lease.resolve(id)
+            where.downloaded?.let { file ->
+                // Downloaded: read from the phone, whatever the streaming quality, and with
+                // the server gone. (A file that has gone since is streamed instead.)
+                val pinned = SongCopy.Download(file, file.lastModified(), file.length(), where.downloadedKbps)
+                val length = openFile(pinned, dataSpec)
+                if (length != null) {
+                    first = where
+                    copy = pinned
+                    lease.opened(id, pinned)
+                    return length
+                }
+                // It is there and can't be opened: this read streams, and doesn't go back
+                // to look for it.
+                unopenable = true
             }
+            first = where
+            copy = SongCopy.Stream(where.form).also { lease.opened(id, it) }
+            return openStream(lease, id, where, dataSpec)
         }
+        return when (val pinned = copy) {
+            is SongCopy.Download -> {
+                // The same file, or nothing: not whatever is at that name now.
+                val same = pinned.file.isFile && pinned.file.lastModified() == pinned.modified && pinned.file.length() == pinned.length
+                if (!same) throw StreamFailure.moved()
+                openFile(pinned, dataSpec) ?: throw StreamFailure.local()
+            }
+            else -> openStream(lease, id, began, dataSpec)
+        }
+    }
+
+    /** Opens the downloaded file; null if it can't be opened. */
+    private fun openFile(pinned: SongCopy.Download, dataSpec: DataSpec): Long? {
+        val local = androidx.media3.datasource.FileDataSource().also { made -> listeners.forEach(made::addTransferListener) }
+        return try {
+            val length = local.open(dataSpec.buildUpon().setUri(Uri.fromFile(pinned.file)).build())
+            if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened from its download, at byte ${dataSpec.position}")
+            plain = local
+            headers = emptyMap()
+            length
+        } catch (_: IOException) {
+            runCatching { local.close() }
+            null
+        }
+    }
+
+    /** Opens the stream (through the kept songs) in the form this data source began in. */
+    private fun openStream(lease: SongLease, id: String, where: SongWhere, dataSpec: DataSpec): Long {
         this.where = where
         if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened ${if (lease.cache == null) "without" else "through"} the kept songs, at byte ${dataSpec.position}")
         val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
-        return guarded { reader.open(where, dataSpec.position) { lease.offline } }
+        return streamed(lease, id) { reader.open(where, dataSpec.position) { lease.offline } }
     }
 
-    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = guarded {
+    /**
+     * A step of reading the stream. If it fails and the song has a downloaded copy now (it
+     * arrived while this was playing), the stream is not waited for or tried again: the
+     * entry is made ready again on the download ([StreamFailure.moved]).
+     */
+    private inline fun <T> streamed(lease: SongLease, id: String, step: () -> T): T = try {
+        step()
+    } catch (e: IOException) {
+        // (Called off, not failed: the player has moved on, and wants nothing made ready.)
+        val calledOff = Thread.currentThread().isInterrupted ||
+            generateSequence<Throwable>(e) { it.cause }.take(8).any { it is java.io.InterruptedIOException && it !is java.net.SocketTimeoutException }
+        if (!calledOff && !unopenable && runCatching { lease.resolve(id).downloaded != null }.getOrDefault(false)) throw StreamFailure.moved()
+        throw StreamFailure.of(e)
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         val reader = reader
-        when {
-            reader != null -> reader.read(buffer, offset, length).let { if (it < 0) C.RESULT_END_OF_INPUT else it }
-            else -> (plain ?: throw IOException("Not open")).read(buffer, offset, length)
+        val lease = lease
+        val id = songId
+        return when {
+            reader != null && lease != null && id != null -> streamed(lease, id) { reader.read(buffer, offset, length).let { if (it < 0) C.RESULT_END_OF_INPUT else it } }
+            // The downloaded file: a read of it that fails is that file's failure.
+            copy is SongCopy.Download -> try {
+                (plain ?: throw IOException("Not open")).read(buffer, offset, length)
+            } catch (_: IOException) {
+                throw StreamFailure.local()
+            }
+            else -> guarded { (plain ?: throw IOException("Not open")).read(buffer, offset, length) }
         }
     }
 
@@ -238,6 +346,8 @@ class SongDataSource(
             // writes the last of a song as its writer closes.
             val key = where?.takeIf { reader != null }?.key
             if (key != null) runCatching { lease?.closed(key) }
+            // (What it first opened is kept: the next open of this data source is of the
+            // same copy.)
             where = null
             reader = null
             plain = null
@@ -402,9 +512,23 @@ class StreamFailure private constructor(message: String, reason: Int, val status
     /** Offline mode is on and the song isn't kept: asking again won't help either. */
     val offline: Boolean get() = status == OFFLINE
 
+    /** The copy this read began on has gone, or a better one has come: the entry is to be
+     *  made ready again from its time (see [SongDataSource.open]). Not a failure of the song. */
+    val moved: Boolean get() = status == MOVED
+
+    /** The downloaded file itself couldn't be read: that file's failure, and nothing to do
+     *  with the server. */
+    val local: Boolean get() = status == LOCAL
+
     companion object {
         /** Stands in the status for "offline mode, and not kept": no server sends it. */
         private const val OFFLINE = -1
+        private const val MOVED = -2
+        private const val LOCAL = -3
+
+        fun moved() = StreamFailure("The copy of the song being played has changed", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, MOVED)
+
+        fun local() = StreamFailure("The downloaded copy couldn't be read", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, LOCAL)
 
         fun of(error: IOException): StreamFailure {
             if (error is StreamFailure) return error
@@ -437,7 +561,7 @@ class StreamFailure private constructor(message: String, reason: Int, val status
 class RideOut : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy() {
     override fun getRetryDelayMsFor(loadErrorInfo: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val error = loadErrorInfo.exception
-        if (error is StreamFailure && (error.refused || error.offline || error.spent)) return C.TIME_UNSET
+        if (error is StreamFailure && (error.refused || error.offline || error.spent || error.moved || error.local)) return C.TIME_UNSET
         // A file that can't be read as audio (a damaged download, say) reads the same the
         // next time: not a connection to ride out. (Media3's own policy doesn't retry these;
         // as an IOException it was being asked for four more times, 15 seconds of silence.)

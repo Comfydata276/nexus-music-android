@@ -104,6 +104,12 @@ class PlayerConnection(
     private val fromNow = MutableStateFlow(PlayingFrom())
     private val convertedNow = MutableStateFlow(false)
 
+    /** The copy the player is playing a song from: the bit rate it was converted to (0: the
+     *  file as it is; -1: not opened yet). */
+    private data class Copy(val songId: String = "", val kbps: Int = -1)
+
+    private val copyNow = MutableStateFlow(Copy())
+
     private val reportedNow = MutableStateFlow(false)
     private val entryNow = MutableStateFlow(AppCommands.NONE)
 
@@ -153,8 +159,13 @@ class PlayerConnection(
         // A song played from its download plays as it was saved, whatever the streaming
         // quality is (unless this session set the download aside: then it streams).
         accounts.state.flatMapLatest { account -> account?.catalogue?.state ?: flowOf(null) },
-    ) { song, converted, cap, downloads ->
+        copyNow,
+    ) { song, converted, cap, downloads, playing ->
         if (song == null) return@combine FormatLine("", false)
+        // What the player says it is playing this song from, once it has opened it: a song
+        // goes on from the copy it started on, whatever has been downloaded or changed since.
+        if (playing.songId == song.id && playing.kbps >= 0) return@combine formatLineOf(song, playing.kbps, liveStream)
+        // Until then (it is still being made ready), what it would be opened from now.
         val saved = downloads?.songs?.get(song.id)?.takeIf { accounts.state.value?.availability?.isSetAside(song.id) != true }
         when {
             saved == null -> formatLine(song, cap, converted, liveStream)
@@ -243,6 +254,7 @@ class PlayerConnection(
         errorNow.value = null
         fromNow.value = PlayingFrom()
         convertedNow.value = false
+        copyNow.value = Copy()
         reportedNow.value = false
     }
 
@@ -278,6 +290,7 @@ class PlayerConnection(
             paused = !playing,
         )
         convertedNow.value = extras.getBoolean(PlaybackService.EXTRA_CONVERTED)
+        copyNow.value = Copy(extras.getString(PlaybackService.EXTRA_SONG).orEmpty(), extras.getInt(PlaybackService.EXTRA_PLAYING_KBPS, -1))
         // Only once the service has put back the saved queue: before that, after Android has
         // stopped the app and it is starting again, it says "nothing" for a moment.
         // And only when the player's word on the song and the extras' agree: the two travel
