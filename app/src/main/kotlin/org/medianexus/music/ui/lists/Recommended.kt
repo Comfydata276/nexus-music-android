@@ -89,9 +89,10 @@ private fun Recommended(playlist: Playlist, busy: Boolean) {
                         if (done) R.drawable.ic_check else R.drawable.ic_plus,
                         if (done) stringResource(R.string.added_to_playlist_short) else stringResource(R.string.add_named_to_playlist, song.title),
                         {
-                            // Ticked once the server has it: not as the button is pressed, nor
-                            // when the warning was answered "Don't add".
-                            if (!done) ui.addToPlaylist(playlist, listOf(song)) { added = added + song.id }
+                            // Ticked once the playlist, read after the server took it, holds it:
+                            // not as the button is pressed, nor when the warning was answered
+                            // "Don't add", nor if the server left it out.
+                            if (!done) ui.addToPlaylist(playlist, listOf(song)) { holds -> if (holds != null && song.id in holds) added = added + song.id }
                         },
                         tint = if (done) Theme.colors.accentBright else Theme.colors.muted,
                         // A change to the playlist on its way: dimmed, and nothing to do.

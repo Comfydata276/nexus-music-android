@@ -50,6 +50,26 @@ data class PlaylistRefused(val playlist: String, val name: String, val outcome: 
     }
 }
 
+/** What is done about songs already in a playlist, when adding: the person's answer to the
+ *  question, or that they haven't been asked (none were there when they chose). */
+enum class Repeats { UNASKED, ADD_ALL, NEW_ONLY }
+
+/** How an add ended. */
+sealed interface Adding {
+    /** The server took the songs; `holds` is what the playlist held when read just after (the
+     *  page), or null if that read failed (the page stays as it was until it can be read). */
+    data class Added(val holds: Set<String>?) : Adding
+
+    /** Not asked, and some are in the playlist now (`there`): nothing was added; ask. */
+    data class Ask(val there: Set<String>) : Adding
+
+    /** "Add new ones", and none are new now: nothing was added. */
+    data object NoneNew : Adding
+
+    /** Not added: refused, never sent, or not known (said as for any change). */
+    data object Not : Adding
+}
+
 /** What "Undo" takes back: the last removal or move the server said yes to. The playlist is
  *  `leftAs` that change left it; `before` is how it was. */
 data class PlaylistUndo(val playlist: String, val leftAs: Playlist, val before: List<Song>, val at: Long)
@@ -72,7 +92,9 @@ data class PlaylistUndo(val playlist: String, val leftAs: Playlist, val before: 
  *   `Subsonic.once`): done, refused, never sent, or nobody knows (then the playlist is read
  *   again and the person asked to check it).
  * - **After the server says yes, the page is what was sent**: the drawn copy with the change
- *   carried out, kept at once; a read afterwards catches up with other devices if it can.
+ *   carried out, kept at once. An add is shown only once it is made, by reading the playlist
+ *   again (the server can say yes and leave out a song it doesn't have): nothing in advance.
+ * - **Which songs are already there is worked out on the read the add is made on** ([Repeats]).
  * - **Undo** is the reverse of what the server said yes to, made on the playlist as that left
  *   it, under the same rule; out of reach, it says so and is kept.
  * - **Only the account's own** ([canEdit]): checked as a change is made and on the fresh copy.
@@ -121,7 +143,10 @@ class Playlists(
         data class Order(val songs: List<Song>) : Change
         data class Rename(val name: String) : Change
         data object Delete : Change
-        data class Append(val songs: List<Song>) : Change
+        class Append(val songs: List<Song>, val repeats: Repeats) : Change {
+            /** How it ended, for the one who asked (set before they are told). */
+            @Volatile var result: Adding = Adding.Not
+        }
         data class Create(val name: String, val songs: List<Song>) : Change
     }
 
@@ -158,15 +183,11 @@ class Playlists(
         // (Never the playlist the app keeps what it shares between devices in.)
         playlist.name != org.medianexus.music.sync.PLAYLIST_NAME
 
-    /** A playlist as the page shows it: as kept, or with the change on its way carried out (if
-     *  it was made on this very copy, or adds songs at the end). */
+    /** A playlist as the page shows it: as kept, or with the change on its way carried out if
+     *  it was made on this very copy. (Not an add: that is shown once the server has it.) */
     fun shown(playlist: Playlist): Playlist {
         val flight = synchronized(lock) { flights[playlist.id] } ?: return playlist
-        return when {
-            flight.change is Change.Append -> applied(playlist, flight.change)
-            flight.drawn != null && same(playlist, flight.drawn) -> applied(playlist, flight.change)
-            else -> playlist
-        }
+        return if (flight.change !is Change.Append && flight.drawn != null && same(playlist, flight.drawn)) applied(playlist, flight.change) else playlist
     }
 
     /** Fetches a playlist's page (`fetch`, the server's), taking turns with the changes to it.
@@ -199,11 +220,18 @@ class Playlists(
         begin(id, undo.leftAs, Change.Order(undo.before), done, undo = true)
     }
 
-    /** Adds songs at the end of a playlist. */
-    fun add(record: Playlist, songs: List<Song>, done: (Boolean) -> Unit = {}): Unavailable? {
+    /**
+     * Adds songs at the end of a playlist, whatever else it holds. Which of them are in it
+     * already is worked out on the read the add is made on: with [Repeats.NEW_ONLY] only the
+     * others go; with [Repeats.UNASKED], if any are there now, nothing goes and `done` is told
+     * to ask ([Adding.Ask]). Once the server has them, the playlist is read again and that is
+     * its page.
+     */
+    fun add(record: Playlist, songs: List<Song>, repeats: Repeats = Repeats.UNASKED, done: (Adding) -> Unit = {}): Unavailable? {
         val wanted = songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }
         if (wanted.isEmpty()) return null
-        return begin(record.id, record, Change.Append(wanted), done)
+        val change = Change.Append(wanted, repeats)
+        return begin(record.id, record, change, { taken -> done(if (taken) change.result else Adding.Not) })
     }
 
     /** A new playlist with these songs. */
@@ -217,21 +245,6 @@ class Playlists(
 
     /** Why no change can be made now, if none can: the server isn't known to be there. */
     fun reachableNow(): Unavailable? = if (reachable()) null else Unavailable.OFFLINE
-
-    /**
-     * Which of `songs` are already in the playlist, to warn before adding them, as the server
-     * has the playlist now (Windows asks it too). Null if it can't be read: then nothing is
-     * added, and the person is told.
-     */
-    suspend fun alreadyIn(playlist: String, songs: List<Song>): Set<String>? {
-        val now = try {
-            pages.fresh(playlistSpec(playlist))
-        } catch (_: ApiError) {
-            return null
-        }
-        val present = now.songs.mapTo(HashSet()) { it.id }
-        return songs.mapNotNullTo(HashSet()) { song -> song.id.takeIf { it in present } }
-    }
 
     // ---- Sending ----------------------------------------------------------------------------
 
@@ -294,6 +307,7 @@ class Playlists(
                 throw failed(if (flight.undo) PlaylistRefused.Outcome.UNDO_CHANGED else PlaylistRefused.Outcome.CHANGED)
             }
             writing = true
+            var appended = emptyList<Song>()
             when (change) {
                 is Change.Create -> {
                     val songIds = change.songs.map { it.id }
@@ -303,16 +317,38 @@ class Playlists(
                 is Change.Rename -> server.renamePlaylist(id, change.name)
                 Change.Delete -> server.deletePlaylist(id)
                 is Change.Append -> {
-                    val songIds = change.songs.map { it.id }
-                    server.addToPlaylist(id, songIds)
+                    val there = now!!.songs.mapTo(HashSet()) { it.id }
+                    val these = when (change.repeats) {
+                        Repeats.ADD_ALL -> change.songs
+                        Repeats.NEW_ONLY -> change.songs.filter { it.id !in there }
+                        Repeats.UNASKED -> change.songs.takeIf { songs -> songs.none { it.id in there } }
+                    }
+                    when {
+                        these == null -> change.result = Adding.Ask(change.songs.mapNotNullTo(HashSet()) { song -> song.id.takeIf { it in there } })
+                        these.isEmpty() -> change.result = Adding.NoneNew
+                        else -> {
+                            server.addToPlaylist(id, these.map { it.id })
+                            appended = these
+                        }
+                    }
                 }
                 is Change.Remove -> server.removeManyFromPlaylist(id, change.rows)
                 is Change.Order -> server.replacePlaylist(id, change.songs.map { it.id })
             }
             writing = false
-            // Yes: the page is what was sent, at once.
+            // Yes: the page is what was sent, at once (an add's, as read again).
             when (change) {
                 is Change.Create -> {}
+                is Change.Append -> if (appended.isNotEmpty()) {
+                    val after = try {
+                        reading(id) { server.playlist(id) }
+                    } catch (_: ApiError) {
+                        null
+                    }
+                    added?.changed(id, now!!.songs.map { it.id }, (after?.songs ?: (now.songs + appended)).map { it.id }, clock() / 1000)
+                    if (after != null) keep(after)
+                    change.result = Adding.Added(after?.songs?.mapTo(HashSet()) { it.id })
+                }
                 Change.Delete -> {
                     pages.forget(playlistSpec(id).key)
                     runCatching { pages.update(listSpec()) { list -> list.filter { it.id != id } } }
@@ -384,19 +420,15 @@ class Playlists(
     private fun applied(p: Playlist, change: Change): Playlist = when (change) {
         is Change.Remove -> p.songs.filterIndexed { i, _ -> i !in change.rows }.let { withSongs(p, it) }
         is Change.Order -> withSongs(p, change.songs)
-        is Change.Append -> withSongs(p, p.songs + change.songs)
         is Change.Rename -> p.copy(name = change.name)
-        Change.Delete, is Change.Create -> p
+        Change.Delete, is Change.Create, is Change.Append -> p
     }
 
     /** A change made by the playlist's positions, or by replacing its songs. */
     private fun byPosition(change: Change) = change is Change.Remove || change is Change.Order
 
-    // (The count the server holds moves with the songs; on one that hides some, those stay.)
-    private fun withSongs(p: Playlist, songs: List<Song>) = p.copy(
-        songs = songs, songCount = songs.size, duration = songs.sumOf { it.duration },
-        held = p.held?.let { if (p.hidesSongs) it + songs.size - p.songs.size else songs.size },
-    )
+    // (Only on a copy that hides nothing: what the server holds is then what it lists.)
+    private fun withSongs(p: Playlist, songs: List<Song>) = p.copy(songs = songs, songCount = songs.size, duration = songs.sumOf { it.duration }, held = p.held?.let { songs.size })
 
     companion object {
         /** How long after a removal or move it can be taken back (Windows' minute). */

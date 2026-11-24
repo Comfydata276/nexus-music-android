@@ -250,44 +250,46 @@ fun Ui.said(unavailable: org.medianexus.music.library.Playlists.Unavailable?): B
 }
 
 /**
- * Adds songs to a playlist, first asking what to do about any already in it, as the server has
- * the playlist now (Windows' `add_to_playlist`, its words and choices: the cautious answer is
- * the highlighted one). `done` is told whether the server took the songs (never if none were
- * added: the question answered "Don't add", or nothing could be sent).
+ * Adds songs to a playlist (Windows' `add_to_playlist`, its words and choices: the cautious
+ * answer is the highlighted one). Which are in it already is worked out on the read the add
+ * itself is made on: if some are and the person hasn't been asked, nothing is added and they
+ * are asked, and their answer is a new add, worked out afresh in the same way. `done` is told
+ * what the playlist holds once the server has taken the songs (null if it couldn't be read
+ * after); never if none were added.
  */
-fun Ui.addToPlaylist(playlist: Playlist, songs: List<Song>, done: () -> Unit = {}) {
+fun Ui.addToPlaylist(playlist: Playlist, songs: List<Song>, repeats: org.medianexus.music.library.Repeats = org.medianexus.music.library.Repeats.UNASKED, done: (holds: Set<String>?) -> Unit = {}) {
     val account = account ?: return
     val res = graph.resources
     if (account.playlists.canEdit(playlist).not()) return run { said(org.medianexus.music.library.Playlists.Unavailable.NOT_YOURS) }
-    graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-        if (!said(account.playlists.reachableNow())) return@launch
-        // Asked of the server's copy now; if it can't be read, nothing is added.
-        val there = account.playlists.alreadyIn(playlist.id, songs) ?: return@launch toast(res.getString(R.string.playlist_unsent))
-        val fresh = songs.filter { it.id !in there }
-        val repeats = songs.size - fresh.size
-        fun add(these: List<Song>) {
-            said(account.playlists.add(playlist, these) { taken ->
-                if (taken) {
-                    toast(res.getString(R.string.added_to_named, playlist.name))
-                    done()
+    val name = playlist.name
+    said(account.playlists.add(playlist, songs, repeats) { result ->
+        graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            when (result) {
+                is org.medianexus.music.library.Adding.Added -> {
+                    toast(res.getString(R.string.added_to_named, name))
+                    done(result.holds)
                 }
-            })
-        }
-        if (repeats == 0) return@launch add(songs)
-        val name = playlist.name
-        val (title, message, addAll, skip) = when {
-            songs.size == 1 -> listOf(res.getString(R.string.already_added), res.getString(R.string.already_in_one, name), res.getString(R.string.add_anyway), res.getString(R.string.dont_add))
-            fresh.isEmpty() -> listOf(res.getString(R.string.already_added), res.getString(R.string.already_in_all, name), res.getString(R.string.add_anyway), res.getString(R.string.dont_add))
-            else -> listOf(res.getString(R.string.some_already_added), res.getString(R.string.already_in_some, repeats, songs.size, name), res.getString(R.string.add_all), res.getString(R.string.add_new_ones))
-        }
-        sheet = Sheet.Drawn { choose ->
-            Words(title, message)
-            Buttons {
-                TextButton(addAll, onClick = { choose { add(songs) } })
-                TextButton(skip, primary = true, onClick = { choose { if (fresh.isNotEmpty()) add(fresh) } })
+                org.medianexus.music.library.Adding.NoneNew -> toast(res.getString(if (songs.size == 1) R.string.already_in_one else R.string.already_in_all, name))
+                is org.medianexus.music.library.Adding.Ask -> {
+                    val repeated = songs.count { it.id in result.there }
+                    val fresh = songs.size - repeated
+                    val (title, message, addAll, skip) = when {
+                        songs.size == 1 -> listOf(res.getString(R.string.already_added), res.getString(R.string.already_in_one, name), res.getString(R.string.add_anyway), res.getString(R.string.dont_add))
+                        fresh == 0 -> listOf(res.getString(R.string.already_added), res.getString(R.string.already_in_all, name), res.getString(R.string.add_anyway), res.getString(R.string.dont_add))
+                        else -> listOf(res.getString(R.string.some_already_added), res.getString(R.string.already_in_some, repeated, songs.size, name), res.getString(R.string.add_all), res.getString(R.string.add_new_ones))
+                    }
+                    sheet = Sheet.Drawn { choose ->
+                        Words(title, message)
+                        Buttons {
+                            TextButton(addAll, onClick = { choose { addToPlaylist(playlist, songs, org.medianexus.music.library.Repeats.ADD_ALL, done) } })
+                            TextButton(skip, primary = true, onClick = { choose { if (fresh > 0) addToPlaylist(playlist, songs, org.medianexus.music.library.Repeats.NEW_ONLY, done) } })
+                        }
+                    }
+                }
+                org.medianexus.music.library.Adding.Not -> {}
             }
         }
-    }
+    })
 }
 
 /** "New playlist": a name, then made with these songs (none, from Library's own button). */

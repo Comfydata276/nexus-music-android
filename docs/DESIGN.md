@@ -1639,6 +1639,19 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
   list's row takes the new name and count too, so a card is never behind the phone's own
   changes. The count compared is the server's own (the list's, which counts songs missing
   from the library).
+- **Which songs are already there is worked out on the read the add is made on.** The picker
+  and a recommendation's button go straight to the add; the add reads the playlist fresh, as
+  every change does, and works it out there. Not asked yet (none were there when they chose)
+  and some are there now: nothing is added and the person is asked, with Windows' words. Their
+  answer is a new add, worked out afresh: "Add new ones" adds those not in the playlist at that
+  read (and none new means nothing sent, and "These are already in …" said); "Add all" adds
+  all. The separate read before the question is gone.
+- **After an add, the page is what the server says it holds.** An add shows nothing in advance
+  (a song shown before the server had it could show twice while the change settled, and
+  Navidrome says yes to a song it doesn't have and leaves it out). Once the server has said
+  yes, the playlist is read again and that is the page; if that read fails, "Added to …" is
+  still said and the page stays as it was until it can be read. A recommendation's tick means
+  the song is in that read.
 
 ## Working with the Windows app
 

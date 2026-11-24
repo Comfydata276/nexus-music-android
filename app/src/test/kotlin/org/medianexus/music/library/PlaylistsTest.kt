@@ -60,6 +60,9 @@ class PlaylistsTest {
          *  leaves them out of what it lists. */
         val missing: MutableSet<String> = Collections.synchronizedSet(HashSet())
 
+        /** Songs the server doesn't have: Navidrome says yes to adding them, and leaves them out. */
+        val unknown: MutableSet<String> = Collections.synchronizedSet(HashSet())
+
         fun hold(request: String): Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>> =
             (CompletableDeferred<Unit>() to CompletableDeferred<Unit>()).also { gates[request] = it }
 
@@ -115,7 +118,7 @@ class PlaylistsTest {
         }
 
         override suspend fun addToPlaylist(id: String, songIds: List<String>) = at("add $id ${songIds.joinToString(",")}") {
-            synchronized(lists) { of(id).addAll(songIds.map(::song)) }
+            synchronized(lists) { of(id).addAll(songIds.filter { it !in unknown }.map(::song)) }
             Unit
         }
 
@@ -169,6 +172,13 @@ class PlaylistsTest {
     private suspend fun made(change: ((Boolean) -> Unit) -> Unavailable?): Boolean {
         val done = CompletableDeferred<Boolean>()
         assertNull(change { done.complete(it) })
+        return withTimeout(10_000) { done.await() }
+    }
+
+    /** Adds, and waits until the server has settled it: how it ended. */
+    private suspend fun adding(add: ((Adding) -> Unit) -> Unavailable?): Adding {
+        val done = CompletableDeferred<Adding>()
+        assertNull(add { done.complete(it) })
         return withTimeout(10_000) { done.await() }
     }
 
@@ -239,7 +249,7 @@ class PlaylistsTest {
     fun songsAddedAtTheEndGoWhateverThePlaylistHolds() = runBlocking<Unit> {
         val page = opened()
         server.elsewhere("p1", "e d c b a")
-        assertTrue(made { playlists.add(page, songs("z"), it) })
+        assertTrue(adding { playlists.add(page, songs("z"), done = it) } is Adding.Added)
         assertEquals("e d c b a z", server.now("p1"))
         assertEquals("e d c b a z", kept())
     }
@@ -314,7 +324,7 @@ class PlaylistsTest {
         assertEquals(Unavailable.MISSING_SONGS, playlists.move(page, 2, 0))
         assertEquals(0, writes())
         // Adding at the end leaves the hidden entry be, so it goes.
-        assertTrue(made { playlists.add(page, songs("z"), it) })
+        assertTrue(adding { playlists.add(page, songs("z"), done = it) } is Adding.Added)
         assertEquals("x a b c z", server.now("p1"))
     }
 
@@ -346,6 +356,78 @@ class PlaylistsTest {
             // The page is the fresh copy, which says why its handles are dimmed.
             assertTrue(case, pages.kept(spec("p1"))!!.hidesSongs)
         }
+    }
+
+    // ---- Adding (M3b fixes 3, items 3 and 4) -----------------------------------------------
+
+    @Test
+    fun notAskedAndOneIsThereNowNothingIsAddedAndThePersonIsAsked() = runBlocking<Unit> {
+        // The person tapped with none of these in the playlist; another device then added "z".
+        val page = opened()
+        server.elsewhere("p1", "a b c d e z")
+        assertEquals(Adding.Ask(setOf("z")), adding { playlists.add(page, songs("y z"), Repeats.UNASKED, it) })
+        assertEquals(0, server.count("add"))
+        assertEquals("a b c d e z", server.now("p1"))
+    }
+
+    @Test
+    fun theAnswerIsCarriedOutOnTheReadTheAddIsMadeOn() = runBlocking<Unit> {
+        // Asked with "c" there, the person chose "Add new ones" for "x c z"; another device has
+        // since added "z": only "x" is new now.
+        val page = opened()
+        server.elsewhere("p1", "a b c z")
+        assertTrue(adding { playlists.add(page, songs("x c z"), Repeats.NEW_ONLY, it) } is Adding.Added)
+        assertEquals("a b c z x", server.now("p1"))
+        // "Add all" adds all, repeats and all.
+        assertTrue(adding { playlists.add(page, songs("c"), Repeats.ADD_ALL, it) } is Adding.Added)
+        assertEquals("a b c z x c", server.now("p1"))
+        // "Add new ones" with none new any more: nothing sent.
+        val before = writes()
+        assertEquals(Adding.NoneNew, adding { playlists.add(page, songs("x z"), Repeats.NEW_ONLY, it) })
+        assertEquals(before, writes())
+    }
+
+    @Test
+    fun anAddShowsNothingInAdvanceAndThenWhatTheServerHolds() = runBlocking<Unit> {
+        val page = opened()
+        val (reached, open) = server.hold("add")
+        val done = CompletableDeferred<Adding>()
+        assertNull(playlists.add(page, songs("z")) { done.complete(it) })
+        reached.await()
+        assertEquals("a b c d e", ids(playlists.shown(pages.kept(spec("p1"))!!)))
+        // Another device adds "y" meanwhile: the page after is the server's, read again.
+        server.elsewhere("p1", "a b c d e y")
+        open.complete(Unit)
+        val result = withTimeout(10_000) { done.await() } as Adding.Added
+        assertEquals(setOf("a", "b", "c", "d", "e", "y", "z"), result.holds)
+        assertEquals("a b c d e y z", kept())
+        assertEquals("a b c d e y z", ids(playlists.shown(pages.kept(spec("p1"))!!)))
+    }
+
+    @Test
+    fun aSongTheServerSaidYesToButLeftOutIsNotShown() = runBlocking<Unit> {
+        server.unknown += "q"
+        val page = opened()
+        val result = adding { playlists.add(page, songs("q z"), done = it) } as Adding.Added
+        // (A recommendation is ticked only if what was read holds it.)
+        assertFalse("q" in result.holds!!)
+        assertTrue("z" in result.holds!!)
+        assertEquals("a b c d e z", kept())
+    }
+
+    @Test
+    fun ifTheReadAfterAnAddFailsItWasStillMadeAndThePageStaysAsItWas() = runBlocking<Unit> {
+        val page = opened()
+        val (reached, open) = server.hold("add")
+        val done = CompletableDeferred<Adding>()
+        assertNull(playlists.add(page, songs("z")) { done.complete(it) })
+        reached.await()
+        server.trouble["get"] = Trouble.LOSE_ANSWER
+        open.complete(Unit)
+        assertEquals(Adding.Added(null), withTimeout(10_000) { done.await() })
+        assertEquals("a b c d e z", server.now("p1"))
+        assertEquals("a b c d e", kept())
+        assertEquals(1, server.count("add"))
     }
 
     // ---- A2: one change at a time ------------------------------------------------------------
