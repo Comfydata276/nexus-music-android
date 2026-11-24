@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.semantics.heading
@@ -146,7 +148,12 @@ fun SongDetailsContent(song: Song) {
             else -> OnPhone.Nowhere
         }
     }
-    val lines = remember(song, onPhone, res) { SongDetails.lines(res, song, song.userRating, onPhone) }
+    // Played and rated as the app last saw it: a page from the server, or what it has just
+    // reported itself, being newer than the row the song was shown in (Freshest).
+    val freshest = account?.freshest
+    val seen by (freshest?.version ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsStateWithLifecycle()
+    val newest = remember(song, seen, freshest) { freshest?.of(song) ?: song }
+    val lines = remember(newest, onPhone, res) { SongDetails.lines(res, newest, newest.userRating, onPhone) }
     val colors = Theme.colors
     Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         BasicText(song.title, Modifier.semantics { heading() }, style = Theme.type.heading.copy(color = colors.text))

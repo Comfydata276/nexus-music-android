@@ -32,6 +32,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import org.medianexus.music.R
 import org.medianexus.music.library.SearchLimits
 import org.medianexus.music.net.Found
@@ -85,8 +87,15 @@ fun SearchPage() {
     }
     val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
     val offline by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.offline } }
-    // Offline, or back: the words in the box are looked for again, in the other place.
-    LaunchedEffect(model, offline) { model.retry() }
+    // Offline, or back: the words in the box are looked for again, in the other place. And
+    // when the phone's whole copy of the library arrives (or a newer one), or what is liked
+    // changes: a search answered "nothing" by the server, or ranked before a like, is asked
+    // again of what can now answer it.
+    val whole by remember(account) {
+        account?.copy?.state?.map { it?.takeIf { copy -> copy.complete } }?.distinctUntilChanged() ?: kotlinx.coroutines.flow.flowOf(null)
+    }.collectAsStateWithLifecycle(null)
+    val likedNow = likedSongs()
+    LaunchedEffect(model, offline, whole, likedNow) { model.retry() }
     // It searches only while the app is in front, as the pages' feeds fetch.
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { model.run() } }

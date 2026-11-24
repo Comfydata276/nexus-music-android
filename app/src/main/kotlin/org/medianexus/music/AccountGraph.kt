@@ -162,6 +162,9 @@ class AccountGraph(
      *  added" sorts by it. */
     val added = org.medianexus.music.store.Added(File(account.dirs.data, "playlist-added.json"), scope, io, formerly = File(account.dirs.data, "added.json"))
 
+    /** The newest the app has seen of each song's plays and rating (a song's details). */
+    val freshest = org.medianexus.music.library.Freshest()
+
     /** The last hundred songs played (Windows' `history.json`). */
     val recentlyPlayed = org.medianexus.music.store.RecentlyPlayed(File(account.dirs.data, "history.json"), scope, io)
 
@@ -221,6 +224,9 @@ class AccountGraph(
                 }
             }
         }
+        // Every page from the server says how often its songs have been played, and how
+        // they are rated, now: newer than the copy of the library a song may be shown from.
+        scope.launch { pages.changes.collect { (_, value) -> freshest.sawPage(value) } }
         // Covers past their limit go, oldest first, once a start: it reads the whole folder.
         scope.launch { covers.trim() }
         // Changes held from an earlier run are read at once (they are part of what is liked,
@@ -267,6 +273,7 @@ class AccountGraph(
      * is a change that could be neither kept nor sent.
      */
     suspend fun submit(change: Pending) {
+        freshest.reported(change)
         held.submit(change)
     }
 
@@ -309,7 +316,9 @@ class AccountGraph(
     private suspend fun checkCopy() {
         if (reach.value.offline) return
         try {
-            copy.check()
+            // A fresh copy: which songs are liked is asked again too, as Windows does (search
+            // ranks liked songs first).
+            if (copy.check()) likes.refresh()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: org.medianexus.music.net.ApiError) {

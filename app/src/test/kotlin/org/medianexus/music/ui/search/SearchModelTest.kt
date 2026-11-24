@@ -235,4 +235,22 @@ class SearchModelTest {
         runCurrent()
         assertEquals(2, asked.size)
     }
+
+    @Test
+    fun aSearchThatFoundNothingIsAskedAgainOfWhatCanNowAnswerIt() = runTest {
+        // The server's search found nothing for a slip; then the phone's copy of the library
+        // arrives, which forgives it. Asked again (as the Search tab does when the copy
+        // arrives, or the likes change), the words in the box find it.
+        var copy = false
+        val model = SearchModel(backgroundScope, search = { if (copy) found("lantern season") else Found() }, instant = { copy })
+        runCurrent()
+        model.type("lantren")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertTrue(model.state.value.found!!.songs.isEmpty())
+        copy = true
+        model.retry()
+        runCurrent()
+        assertEquals(listOf("lantern season"), model.state.value.found!!.songs.map { it.id })
+    }
 }
