@@ -45,6 +45,7 @@ class HeldChangesTest {
         is Pending.Star -> if (change.starred) "+" else "-"
         is Pending.Rating -> "=${change.rating}"
         is Pending.Played -> "!"
+        is Pending.PlaylistChange -> "~"
     }
 
     private fun file(): File = File(folder.root, "held.json")
@@ -72,7 +73,7 @@ class HeldChangesTest {
             lostTouch = { lostTouch++ },
             note = { notes += it },
             tryLater = { later++ },
-            answered = { change, taken -> answers += said(change) + if (taken) " taken" else " refused" },
+            answered = { change, refusal -> answers += said(change) + if (refusal == null) " taken" else " refused" },
         )
     }
 

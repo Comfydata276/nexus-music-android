@@ -24,7 +24,12 @@ import org.medianexus.music.store.Pending
  *
  * Kept in memory for the account's time; safe from any thread.
  */
-class Freshest(private val clock: () -> Long = System::currentTimeMillis) {
+class Freshest(
+    private val clock: () -> Long = System::currentTimeMillis,
+    /** The account's changes still waiting to be sent, oldest first: a rating held from an
+     *  earlier run is shown too (nothing else here remembers it after a restart). */
+    private val held: StateFlow<List<Pending>> = MutableStateFlow(emptyList()),
+) {
     /** What the server said of a song, asked at `at` (milliseconds); null: not said. */
     private class Seen(val count: Int?, val played: Long?, val rating: Int?, val at: Long)
 
@@ -96,6 +101,17 @@ class Freshest(private val clock: () -> Long = System::currentTimeMillis) {
         changed.value++
     }
 
+    /** What is held has changed (read from an earlier run, or one sent). */
+    fun heldChanged() {
+        changed.value++
+    }
+
+    /** The last rating of `id` still waiting to be sent, if any. */
+    private fun heldRating(id: String): Int? = held.value.lastOrNull { it is Pending.Rating && it.id == id }?.let { (it as Pending.Rating).rating }
+
+    /** The rating shown for `song`: the newest made here, held, or said by the server. */
+    fun ratingOf(song: Song): Int = of(song).userRating
+
     /** `song` with the newest play count, last play and rating the app has seen of it. */
     fun of(song: Song): Song = synchronized(this) {
         val sighting = seen[song.id]
@@ -104,7 +120,7 @@ class Freshest(private val clock: () -> Long = System::currentTimeMillis) {
         // Plays reported here that the server, as last seen, hasn't counted yet.
         val mine = plays[song.id].orEmpty().filter { it > played }
         val last = maxOf(played, mine.maxOrNull() ?: 0)
-        val rating = ratings[song.id] ?: sighting?.rating ?: song.userRating
+        val rating = ratings[song.id] ?: heldRating(song.id) ?: sighting?.rating ?: song.userRating
         if (count + mine.size == song.playCount && last == millis(song.played) && rating == song.userRating) return song
         song.copy(
             playCount = count + mine.size,

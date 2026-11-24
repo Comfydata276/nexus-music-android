@@ -45,6 +45,12 @@ sealed interface Pending {
     /** A song that was played, and when. */
     @Serializable @SerialName("played")
     data class Played(override val id: String, val at: Long) : Pending
+
+    /** A change to a playlist (`id` is the playlist's), described by the songs themselves so
+     *  that it is carried out on the playlist as the server has it when it is sent (see
+     *  `PlaylistEdit`). Changes to one playlist reach the server in the order made. */
+    @Serializable @SerialName("playlist")
+    data class PlaylistChange(override val id: String, val edit: org.medianexus.music.library.PlaylistEdit, val at: Long = 0) : Pending
 }
 
 /**
@@ -117,9 +123,9 @@ class HeldChanges(
      *  the sender depends on; the server answered with an error that says nothing): worth a
      *  pass in a while. */
     private val tryLater: () -> Unit = {},
-    /** A change that had been held has had its answer: the server took it, or (not `taken`)
-     *  will never have it. Told before the change leaves [queued]. */
-    private val answered: (change: Pending, taken: Boolean) -> Unit = { _, _ -> },
+    /** A change that had been held has had its answer: the server took it (`refusal` null), or
+     *  will never have it, and said why. Told before the change leaves [queued]. */
+    private val answered: (change: Pending, refusal: ApiError?) -> Unit = { _, _ -> },
     /** [queued] is not what it was, without its maker's doing: what an earlier run left has
      *  been read, or a change that had been held has gone. */
     private val moved: () -> Unit = {},
@@ -247,7 +253,8 @@ class HeldChanges(
     }
 
     /**
-     * Makes a change: on the disk first, then to the server in its turn. Returns once it is
+     * Makes a change: on the disk first, then to the server in its turn (`written` is told the
+     * moment it is on the disk and in the queue, before it is sent). Returns once it is
      * settled for now: the server has it ([Outcome.TAKEN]), or it is safely held for later
      * ([Outcome.HELD]: offline, the server out of reach, or something earlier in its way).
      *
@@ -255,13 +262,16 @@ class HeldChanges(
      * and an [ApiError.Network] if the phone would not take the change, which is the one
      * case in which it is lost, and the caller must say so.
      */
-    suspend fun submit(change: Pending): Outcome {
+    suspend fun submit(change: Pending, written: () -> Unit = {}): Outcome {
         val entry = Entry(change, CompletableDeferred())
         if (!write(entry)) {
             // Nobody is watching a play to be told it didn't save: it is written down instead.
             if (change is Pending.Played) note("held changes: a play could not be kept on the phone, and is lost")
             throw ApiError.Network("The change couldn't be kept on the phone to send later.")
         }
+        // In the queue, in its place: whoever makes changes that must keep their order can
+        // let the next one go.
+        written()
         pass()
         return when (val settled = entry.settled!!.await()) {
             Settled.Taken -> Outcome.TAKEN
@@ -316,7 +326,7 @@ class HeldChanges(
                         // else is done, so that a play the server has counted is not there
                         // to be sent again. (Whether it has left the disk is asked at the
                         // top of the loop, before the next is sent.)
-                        if (entry.parked) answered(entry.change, error == null)
+                        if (entry.parked) answered(entry.change, error)
                         synchronized(lock) {
                             loaded().remove(entry)
                             changed()

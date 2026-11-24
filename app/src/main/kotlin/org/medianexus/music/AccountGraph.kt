@@ -109,7 +109,7 @@ class AccountGraph(
 
     /** Likes, ratings and plays on their way to the server, and the one sender they all go
      *  through, in order (see [HeldChanges] and [submit]). */
-    val held = HeldChanges(
+    val held: HeldChanges = HeldChanges(
         File(account.dirs.data, "held.json"), io,
         send = { send(it) },
         offline = { reach.value.offline },
@@ -129,11 +129,17 @@ class AccountGraph(
         tryLater = { heldAgainLater() },
         // A change that had been held has had its answer, however long after it was made:
         // whoever made it is told, as a change sent straight away tells its maker on return.
-        answered = { change, taken ->
-            likes.answered(change, taken)
-            freshest.settled(change, taken)
+        answered = { change, refusal ->
+            likes.answered(change, refusal == null)
+            freshest.settled(change, refusal == null)
+            playlists.answered(change, refusal)
+            ratings.answered(change, refusal)
         },
-        moved = { likes.heldChanged() },
+        moved = {
+            likes.heldChanged()
+            playlists.heldChanged()
+            freshest.heldChanged()
+        },
     )
 
     private var heldRetry: kotlinx.coroutines.Job? = null
@@ -167,8 +173,29 @@ class AccountGraph(
      *  added" sorts by it. */
     val added = org.medianexus.music.store.Added(File(account.dirs.data, "playlist-added.json"), scope, io, formerly = File(account.dirs.data, "added.json"))
 
+    /** Changes to the account's playlists, and how a playlist is shown while they are on
+     *  their way (see [org.medianexus.music.library.Playlists]). */
+    val playlists: org.medianexus.music.library.Playlists = org.medianexus.music.library.Playlists(
+        object : org.medianexus.music.library.PlaylistServer {
+            override suspend fun playlist(id: String) = api.playlist(id)
+            override suspend fun createPlaylist(name: String, songIds: List<String>) = api.createPlaylist(name, songIds)
+            override suspend fun renamePlaylist(id: String, name: String) = api.renamePlaylist(id, name)
+            override suspend fun addToPlaylist(id: String, songIds: List<String>) = api.addToPlaylist(id, songIds)
+            override suspend fun replacePlaylist(id: String, songIds: List<String>) = api.replacePlaylist(id, songIds)
+            override suspend fun removeManyFromPlaylist(id: String, positions: List<Int>) = api.removeManyFromPlaylist(id, positions)
+            override suspend fun deletePlaylist(id: String) = api.deletePlaylist(id)
+        },
+        pages, listSpec = { library.playlists() }, playlistSpec = { library.playlist(it) },
+        submit = { change, written -> submit(change, written) },
+        held = held.queued, offline = { reach.value.offline }, username = account.username, scope = scope,
+        added = added,
+    )
+
     /** The newest the app has seen of each song's plays and rating (a song's details). */
-    val freshest = org.medianexus.music.library.Freshest()
+    val freshest: org.medianexus.music.library.Freshest = org.medianexus.music.library.Freshest(held = held.queued)
+
+    /** Star ratings: shown at once, sent in turn, held offline (see [org.medianexus.music.library.Ratings]). */
+    val ratings: org.medianexus.music.library.Ratings = org.medianexus.music.library.Ratings(freshest, submit = { change, written -> submit(change, written) }, scope)
 
     /** The last hundred songs played (Windows' `history.json`). */
     val recentlyPlayed = org.medianexus.music.store.RecentlyPlayed(File(account.dirs.data, "history.json"), scope, io)
@@ -218,6 +245,8 @@ class AccountGraph(
 
     init {
         library.likedShown = likes::songsOf
+        library.playlistShown = playlists::fetched
+        library.playlistsShown = playlists::onTopOfList
         likes.load()
         scope.launch { recentlyPlayed.open() }
         // Every copy of a playlist read from the server (or the phone) is looked at, so a song
@@ -280,12 +309,12 @@ class AccountGraph(
      * (it is there, and said no) is thrown, for whoever asked to say so and put it back; so
      * is a change that could be neither kept nor sent.
      */
-    suspend fun submit(change: Pending) {
+    suspend fun submit(change: Pending, written: () -> Unit = {}) {
         freshest.reported(change)
         // Settled when the server has it, or has refused it: what is shown follows the server
         // again. (Held for later, it settles in a later pass, which tells `answered` above.)
         val outcome = try {
-            held.submit(change)
+            held.submit(change, written)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -299,6 +328,7 @@ class AccountGraph(
         is Pending.Star -> api.setStarred(StarTarget.entries.firstOrNull { it.name.equals(change.kind, ignoreCase = true) } ?: StarTarget.SONG, change.id, change.starred)
         is Pending.Rating -> api.setRating(change.id, change.rating)
         is Pending.Played -> api.scrobbleAt(change.id, change.at)
+        is Pending.PlaylistChange -> playlists.send(change)
     }
 
     /** Sends what is waiting (Windows' `flush_pending`), if the server may be asked. */
