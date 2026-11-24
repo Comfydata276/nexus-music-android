@@ -1823,7 +1823,9 @@ How it is built (M3a, finding music):
   again, as before: the arrangement worked out again, from that song wherever it now is, and
   if it isn't there, nothing plays and the person is told ("That song isn't in the list as
   it was shown any more"), never a neighbour. A queue from a narrowed list follows its list
-  narrowed the same way (Windows' follows it unnarrowed); the saved queue keeps the find text
+  narrowed the same way (Windows' follows it unnarrowed), except the song playing, which stays
+  where it is and goes on playing even if it no longer matches; offline, as on Windows, a song
+  joining the list joins the queue only if it plays; the saved queue keeps the find text
   in a field of its own (`list_filter`) Windows reads past.
 - **A queue holds places, not songs**: a list from the copy is places in its table
   (`PlacedSongs`), a saved queue is read back into a table of its own, and the queue's play

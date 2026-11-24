@@ -678,13 +678,14 @@ class QueuePlayer(
 
     /**
      * The list the queue came from (`source`, a route key) has changed, here or on the
-     * server: the queue follows it (see [Queue.follow]). The song playing carries on.
+     * server: the queue follows it (see [Queue.follow]). The song playing carries on. `view`
+     * is the list in the order its page shows it, as places in `songs` (see [followList]);
+     * a song that joined the list joins the queue only if it `joins` (offline, as on Windows:
+     * only what plays with no server).
      */
-    /** `view` is the list in the order its page shows it, as places in `songs` (see
-     *  [followList]). */
-    fun follow(source: String, songs: List<Song>, view: List<Int> = songs.indices.toList()) {
+    fun follow(source: String, songs: List<Song>, view: List<Int> = songs.indices.toList(), joins: (Song) -> Boolean = { true }) {
         if (source.isEmpty() || source != queue.source) return
-        if (queue.follow(songs.map { it.id }, songs::getOrNull, random, view)) sync()
+        if (queue.follow(songs.map { it.id }, { place -> songs.getOrNull(place)?.takeIf(joins) }, random, view)) sync()
     }
 
     /** Plays the entry `offset` places after the current song now. */

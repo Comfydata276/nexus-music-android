@@ -548,7 +548,9 @@ data class Lineup(
  * are added: in their place if the queue plays in the list's order, somewhere among what's
  * still to come if it's shuffled. Songs the list was reordered around take up the new order.
  * Songs that were never part of the list (added to the queue by hand) keep their place after
- * whatever they followed.
+ * whatever they followed. The song playing stays where it is and goes on playing, even if
+ * it no longer passes the list's find filter (`view` leaves it out): what changes is around
+ * it, as for a song added by hand.
  *
  * `moved` and `arrivals` are from [compareLists]; `view` is the new list in the order its
  * page shows it; `songAt` gives the song at a position in the new list; `pick(n)` chooses a
@@ -574,9 +576,11 @@ fun followList(
     val followers = HashMap<Int?, MutableList<Int>>()
     val holder = HashMap<Int, Int>()
     var last: Int? = null
+    // (The song playing, out of the view now, keeps its place after what it followed.)
+    val currentShown = now[current]?.let { at -> view.contains(at) } ?: false
     for (entry in base) {
         if (gone(entry)) continue
-        val place = now[entry]
+        val place = now[entry]?.takeIf { entry != current || currentShown }
         if (place != null) {
             holder[place] = entry
             last = entry

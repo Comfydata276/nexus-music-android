@@ -783,7 +783,8 @@ class PlaybackService : MediaLibraryService() {
                     following?.cancel()
                     following = next.scope.launch {
                         val order = withContext(Dispatchers.Default) { orderOf(key, songs, filter) }
-                        if (player.queue.source == key) player.follow(key, songs, order)
+                        // (Offline, what doesn't play doesn't join, as on Windows.)
+                        if (player.queue.source == key) player.follow(key, songs, order, playsOffline() ?: { true })
                     }
                 }
                 for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
