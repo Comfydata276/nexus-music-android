@@ -90,8 +90,9 @@ fun SongListPage(
     /** The playlist these songs are, where the account may change it: its songs can be
      *  dragged into another order (in its own order) and taken out. */
     editable: org.medianexus.music.net.Playlist? = null,
-    /** The header's "…" (the page's own menu), if it has one. */
-    onMore: (() -> Unit)? = null,
+    /** The header's "…" (the page's own menu), if it has one: given what the page drew and
+     *  its play button, for the menu to act on. */
+    onMore: ((org.medianexus.music.ui.menu.FromPage) -> Unit)? = null,
     /** Said under the header (a playlist that is someone else's). */
     note: String? = null,
     /** A heading over the songs (an artist's "Popular"). */
@@ -192,7 +193,13 @@ fun SongListPage(
                     liked = liked,
                     onLike = onLike,
                     inline = inline,
-                    onMore = onMore,
+                    onMore = onMore?.let { open ->
+                        {
+                            // What is drawn now, in the order drawn, and the play button's own start.
+                            val drawn = arranged?.let { a -> a.order.map { a.list[it] } }.orEmpty()
+                            open(org.medianexus.music.ui.menu.FromPage(drawn) { shown?.firstOrNull()?.let { play(it, anyStart = true) } })
+                        }
+                    },
                     download = if (!downloadable || songs.isNullOrEmpty()) null else {
                         val now = listDownload
                         org.medianexus.music.ui.parts.DownloadButton(

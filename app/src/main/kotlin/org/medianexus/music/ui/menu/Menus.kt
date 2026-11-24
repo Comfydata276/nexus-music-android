@@ -50,14 +50,22 @@ import org.medianexus.music.ui.theme.Theme
 // the warning before adding a song that is already there (src/actions.rs), in its order and
 // words, with what exists on the phone.
 
+/** What a collection's page drew (its songs in the order shown) and its play button, for
+ *  the collection's menu opened from that page. */
+class FromPage(val songs: List<Song>, val play: () -> Unit)
+
 /** What a collection menu is about (Windows' `Target`). */
 sealed interface Collection {
     val id: String
     val title: String
 
-    data class Album(override val id: String, override val title: String, val artist: String = "", val cover: String = "") : Collection
+    data class Album(override val id: String, override val title: String, val artist: String = "", val cover: String = "", override val page: FromPage? = null) : Collection
     data class Artist(override val id: String, override val title: String) : Collection
-    data class Playlist(override val id: String, override val title: String, val playlist: org.medianexus.music.net.Playlist? = null) : Collection
+    data class Playlist(override val id: String, override val title: String, val playlist: org.medianexus.music.net.Playlist? = null, override val page: FromPage? = null) : Collection
+
+    /** Opened from the collection's own page: what the page drew, in the order drawn, and its
+     *  play button. The menu plays and queues that, not a fresh read of the collection. */
+    val page: FromPage? get() = null
 
     /** Its page's route key, where it has one. */
     val key: String? get() = when (this) {
@@ -108,28 +116,28 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
     val settings = ui.graph.settings.state.collectAsStateWithLifecycle().value
     Title(target.title)
     Rule()
+    // Opened from its own page: what the page drew. Otherwise looked up, and acted on, on the
+    // main thread, only if nothing has been chosen since (see PlayerConnection.afterLookup).
+    val page = target.page
+    val songs: suspend () -> List<Song>? = { page?.songs ?: ui.songsOf(target) }
     Entry(R.drawable.ic_play_fill, stringResource(R.string.play)) {
         choose {
-            ui.graph.scope.launch {
-                val songs = ui.songsOf(target) ?: return@launch
-                ui.play(songs, 0, target.title, target.key.orEmpty(), anyStart = true)
-            }
+            if (page != null) page.play()
+            else ui.player.afterLookup(ui.graph.scope, songs) { ui.play(it, 0, target.title, target.key.orEmpty(), anyStart = true) }
         }
     }
     Entry(R.drawable.ic_list_start, stringResource(R.string.play_next)) {
         choose {
-            ui.graph.scope.launch {
-                val songs = ui.songsOf(target) ?: return@launch
-                ui.player.playNext(songs)
+            ui.player.afterLookup(ui.graph.scope, songs) {
+                ui.player.playNext(it)
                 ui.toast(res.getString(R.string.playing_next))
             }
         }
     }
     Entry(R.drawable.ic_list_end, stringResource(R.string.add_to_queue)) {
         choose {
-            ui.graph.scope.launch {
-                val songs = ui.songsOf(target) ?: return@launch
-                ui.player.addToQueue(songs)
+            ui.player.afterLookup(ui.graph.scope, songs) {
+                ui.player.addToQueue(it)
                 ui.toast(res.getString(R.string.added_to_queue))
             }
         }
@@ -139,7 +147,7 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
             val account = ui.account ?: return@choose
             val key = target.key ?: return@choose
             ui.askToDownload {
-                ui.graph.scope.launch {
+                ui.graph.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
                     val (list, songs) = org.medianexus.music.downloads.DownloadPages.listFor(account, key, res.getString(R.string.liked_songs)) ?: return@launch ui.toast(res.getString(R.string.cant_reach_server))
                     val asked = account.downloads?.download(songs, list) ?: return@launch
                     ui.toast(org.medianexus.music.downloads.DownloadPages.said(android, asked))
@@ -151,7 +159,7 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
         is Collection.Album -> {
             Rule()
             Entry(R.drawable.ic_list_plus, stringResource(R.string.add_to_playlist)) {
-                choose { ui.graph.scope.launch { ui.songsOf(target)?.let { ui.pickPlaylist(it) } } }
+                choose { ui.graph.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) { songs()?.let { ui.pickPlaylist(it) } } }
             }
             if (ui.account?.downloads != null) Entry(R.drawable.ic_download, stringResource(R.string.download), onClick = download)
         }

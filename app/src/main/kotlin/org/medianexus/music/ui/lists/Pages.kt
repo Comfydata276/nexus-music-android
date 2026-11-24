@@ -100,7 +100,7 @@ fun AlbumPage(route: Route.Album) {
         downloadable = true,
         onSubtitle = album?.takeIf { it.artistId.isNotEmpty() }?.let { { ui.open(Route.Artist(it.artistId, it.artistLabel)) } },
         liked = if (album == null) null else liked,
-        onMore = { ui.openMenu(org.medianexus.music.ui.menu.Collection.Album(route.id, album?.name ?: route.title)) },
+        onMore = { page -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Album(route.id, album?.name ?: route.title, page = page)) },
         onLike = {
             val shown = album ?: return@SongListPage
             // On the likes as they stand, not as last drawn: two quick taps are two changes.
@@ -164,7 +164,7 @@ fun PlaylistPage(route: Route.Playlist) {
         empty = stringResource(if (mine) R.string.playlist_empty_editable else R.string.playlist_empty),
         downloadable = true,
         editable = playlist.takeIf { mine && online },
-        onMore = { ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, kept)) },
+        onMore = { page -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, kept, page = page)) },
         note = if (kept != null && !mine) stringResource(R.string.not_your_playlist, kept.owner) else null,
         below = { if (mine && online && playlist != null) recommendations(playlist) },
     )
@@ -332,7 +332,7 @@ private fun ArtistLayout(
         context = hero.title,
         feed = feed,
         empty = if (artist != null && artist.albums.isEmpty()) stringResource(R.string.artist_empty) else "",
-        onMore = if (artist == null) null else ({ ui.openMenu(org.medianexus.music.ui.menu.Collection.Artist(artist.id.ifEmpty { key.removePrefix("artist:") }, artist.name)) }),
+        onMore = if (artist == null) null else ({ _ -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Artist(artist.id.ifEmpty { key.removePrefix("artist:") }, artist.name)) }),
         playOverride = if (artist?.albums.isNullOrEmpty()) null else ({ onPlay(null) }),
         below = { columns ->
             for ((title, cards) in groups) gridSection(title, cards, { ui.open(it) }, columns)

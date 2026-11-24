@@ -17,6 +17,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -336,7 +337,30 @@ class PlayerConnection(
     fun playRadio(song: Song, context: String) = play(listOf(song), 0, context, Autoplay.RADIO_SOURCE, shuffle = false)
 
     /** Sends a PLAY made by [playArgs] or [pageArgs]. */
-    fun play(args: Bundle) = send(AppCommands.PLAY, args)
+    fun play(args: Bundle) {
+        chosen++
+        send(AppCommands.PLAY, args)
+    }
+
+    /** Moves on with every choice of music sent (a list played, songs queued). */
+    @Volatile var chosen = 0L
+        private set
+
+    /**
+     * Does `act` with what `lookup` finds (a collection's songs, which may take a while), on the
+     * main thread, where the controller must be called: and only if, by then, nothing else has
+     * been chosen and the same account is signed in. A slow lookup can't take over from
+     * something chosen since it was asked for.
+     */
+    fun afterLookup(scope: kotlinx.coroutines.CoroutineScope, lookup: suspend () -> List<Song>?, act: (List<Song>) -> Unit) {
+        val asked = chosen
+        val who = accounts.state.value
+        scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            val songs = lookup() ?: return@launch
+            if (chosen != asked || accounts.state.value !== who) return@launch
+            act(songs)
+        }
+    }
 
     /** Plays these straight after the song playing, ahead of anything else queued. */
     fun playNext(songs: List<Song>) = enqueue(songs, playNext = true)
@@ -344,8 +368,10 @@ class PlayerConnection(
     /** Adds these to the end of "Next in queue". */
     fun addToQueue(songs: List<Song>) = enqueue(songs, playNext = false)
 
-    private fun enqueue(songs: List<Song>, playNext: Boolean) =
+    private fun enqueue(songs: List<Song>, playNext: Boolean) {
+        chosen++
         send(AppCommands.ENQUEUE, Bundle().apply { putString("songs", AppCommands.songsArg(songs)); putBoolean("playNext", playNext) })
+    }
 
     // Each of these names the queue entry it means by the entry's own number (`UpNext.uids`),
     // as the screen that calls them had it when the person tapped: if a song ends while the
