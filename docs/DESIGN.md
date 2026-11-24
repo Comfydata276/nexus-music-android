@@ -30,7 +30,7 @@ When two of these pull against each other, the higher one wins.
 | Network | One OkHttp client for the API, artwork and audio |
 | JSON | kotlinx.serialization |
 | Images | Coil 3, fed by our own cover store |
-| Background work | Coroutines; Media3's `DownloadService` for downloads |
+| Background work | Coroutines; for downloads, Media3's `DownloadManager` with a downloader of our own, kept up by a job of our own (see "Downloads: what Android allows") |
 | Build | Gradle with the version catalogue in `gradle/libs.versions.toml`, inside Docker (`scripts/dx`) |
 | Tests | JUnit on the JVM; where a test is about what Media3 does (its cache, its media source, its player and session service), Media3's own classes on Robolectric with Media3's test kit. Test only: none of it is in the app |
 
@@ -51,7 +51,7 @@ One Gradle module, `app`, package `org.medianexus.music`:
 | `store` | What's kept on the phone: the account, settings, cached pages, the library copy, covers, the downloads list, changes waiting for the server. |
 | `library` | Turns server answers into what screens show; search; likes; playlists. |
 | `playback` | The playback service, the queue, play reporting, Android Auto's browse tree and voice search. |
-| `downloads` | Offline downloads. |
+| `downloads` | Offline downloads: the catalogue of what is downloaded (the mark that a download is whole), the whole-file fetcher, the engine on Media3's download manager, the job and service that keep it going, and the downloads laid out for browsing with no signal. |
 | `ui` | Compose: `theme`, `parts` (shared components), one package per screen. |
 
 Rules that hold everywhere:
@@ -294,7 +294,33 @@ How it is built (M1a):
   while signed out; if the folder is still held by the account's turn before, it is tried
   again until it comes free. In offline mode the player
   asks the server for nothing, from the moment the switch is turned, streams already open
-  included: a song kept whole plays, any other is passed over. Fetching ahead is M2.
+  included: a song kept whole plays, any other is passed over.
+- **Where a song's bytes come from** (`PlaybackService.resolve`): its downloaded copy if
+  there is one, whatever the streaming quality, then a copy kept whole among the kept
+  songs, then the server at the streaming quality. A download is read as a plain file
+  (Media3's `FileDataSource`); one that has gone since is streamed. **A download that won't
+  play** (the player can't parse or decode it) is not deleted: it is set aside for this run
+  of the app (`Availability.setAside`, Windows' `bad_downloads`), the person is told, and the
+  song is streamed. Such a failure is final at once: the player's retry rule used to take a
+  file it couldn't parse (Media3's `ParserException` is an `IOException`) for a dropped
+  connection and ask for it four more times, fifteen seconds of silence. The format line of a
+  song played from its download is the download's own ("FLAC · 48 kHz · 24-bit", or "MP3 ·
+  160 kbps" for one saved smaller).
+- **Fetching ahead** (`FetchAhead`, Windows' `keep_ahead`): the songs of the next places in
+  the queue that aren't downloaded or kept whole are read whole, one at a time, through the
+  player's own data source and thrown away as they go, so they are kept by exactly the rules
+  the player's own reads are (a conversion only whole). How many: Settings' "Fetch ahead" on
+  Wi-Fi (or any network Android doesn't count as metered); **on mobile data the next one
+  only**, so a dead spot at a join costs nothing while skipping through a queue on a data
+  plan doesn't fetch three songs a skip; **none with Android's Data Saver on**; none offline,
+  none with nothing kept, none while paused. (Windows has no such distinction: a computer has
+  no data plan.) What is kept whole is known in memory (`KeptIndex`, beside the kept songs),
+  so whether a song plays offline is never a look at the disk.
+- **Offline** (by hand, or the server out of reach: see "Offline mode" below), a list started
+  is only those of its songs that are downloaded or kept, each at its place in the whole list
+  (Windows' `play_from`); it starts at the song asked for, or the next one that plays (Windows
+  starts at the first that plays); none: "That isn't downloaded, so it can't play while you're
+  offline". A stream that fails for want of the server asks whether it is there at all.
 - **Nothing private leaves the data source**: it reports the song's own address
   (`nexus://…`), the cache is never told where a redirect led, and a failure is thrown as
   its kind alone, with no cause. A playback error reaches every app with a controller.
@@ -346,6 +372,11 @@ How it is built (M1a):
   moment after playback has begun, which is after the player has asked Android for audio
   focus. Whether the service is in the foreground is asked of Android (Media3's
   `isPlaybackOngoing` says whether it has ever been, not whether it is now).
+- **A call in progress is not Android saying no.** Refused the sound within two seconds of
+  Play while the system says a call is ringing or under way (its audio mode), the car is told
+  nothing (opening the app would be the wrong advice), and Play happens by itself when the
+  call ends, unless someone has paused or chosen something else meanwhile. Not seen on an
+  emulator, whose calls neither change the audio mode nor refuse the sound.
 - **When Android says no, Play is not called.** If Android refuses the foreground, or
   refuses the sound straight after Play, the player is not asked to play (or has turned
   Play down itself). The queue stays as it was chosen, stopped at its place, and the
@@ -496,11 +527,24 @@ whether a headset button reaches a session that is live there was not checked.
 
 Google draws the car's screen. We supply lists, artwork, what's playing and a few buttons.
 
-- **Tabs** (four at most): Home, Playlists, Library, Downloads. Until there are downloads
-  (M2) there are three.
+- **Tabs**: Home, Playlists, Library, Downloads, always four (a tab that comes and goes
+  would move the others under the driver's thumb; Downloads is empty until something is
+  downloaded).
   - Home: Liked songs, then what was played and added lately.
   - Library: Albums, Artists, Genres.
-  - Downloads: what is on the phone; this tab must work with no signal.
+  - Downloads: what is on the phone; this tab must work with no signal. "Songs" (every
+    download, newest first), then the playlists and Liked songs downloaded whole, then the
+    albums with anything downloaded, each with its cover; all read from the downloads' own
+    record (`DownloadedViews`), never the kept pages or the server, so it opens with no
+    signal from a cold start. A song chosen there plays that list under a name of its own
+    ("downloads:album:<id>"), so the queue doesn't follow a page of the server's.
+  - Offline (by hand, or the server out of reach), the other tabs show only what plays:
+    songs downloaded or kept whole, with each song's place in its list unchanged; albums,
+    artists and genres from those songs; playlists with something that plays. Search and
+    spoken requests look in the same songs (`LocalSearch`, ranked as search is). Offline
+    turned on or off, the car is told to look again at everything it has open. An entry whose cover
+    isn't on the phone goes without one offline (the car draws its icon), rather than with an
+    address that names no picture.
 - Albums and playlists show as grids with artwork; songs as lists. Choosing a song plays
   its whole album or playlist from that song.
 - **Artwork** reaches the car through a small read-only content provider backed by the
@@ -624,12 +668,123 @@ How it is built (M1a):
 - **Saved queue**: `queue.json` and `queue-place.json` in the account's data folder, in
   the Windows app's form (`SavedQueue`, `QueuePlace` and its `queue_shape`), ready for
   "Continue here" in M5. It stays saved through signing out.
-- **Downloads**: Media3's download manager, in a cache of their own that is never evicted,
-  at a quality chosen in Settings, with Wi-Fi-only as an option. Alongside, a list of what
-  was downloaded with everything needed to browse it offline (names, covers, order).
-- **Offline**: noticed automatically, and switchable by hand. Downloads keep playing;
-  likes, ratings and plays are held until the server has accepted them (port
-  `src/offline.rs`).
+- **Downloads** (`downloads/`; how they are kept going is "Downloads: what Android allows"
+  below), in the account's own data folder (`files/accounts/<key>/downloads`), which needs
+  no permission and which the system never clears; no choice of folder.
+  - **A download is a whole file or nothing** (`SongFetch`). It arrives in a part file of its
+    own; once it has come to a clean end it is checked: the file as it is must be every byte
+    the server said it has, a conversion at least four fifths of its length at the rate
+    asked (`leastBytes`, the kept songs' rule). Then it reaches the disk, is moved to its own
+    name, and only then is it entered in the account's catalogue (`Catalogue`,
+    `downloads.json`), **which is the mark**: a file without an entry is never played and is
+    cleared away. The file as it is picks up where it stopped by a byte range, if the server
+    answers the range exactly; a conversion starts again. A server's error page in place of
+    the song is never saved.
+  - **The frame is Media3's `DownloadManager`**: the queue in a table of the account's own in
+    Media3's database, two at a time, the network requirement (Wi-Fi only, on by default, or
+    any), what is under way stopped when that network goes and carried on when it is back,
+    five tries at a download that can't reach the server, and what was waiting read back when
+    the app starts. Our own downloader (`Downloads.SongDownloader`) stands in for Media3's,
+    which writes into a cache a piece at a time and so cannot tell a whole song from part of
+    one. Media3 takes a downloader that ends interrupted, without having been stopped by
+    Media3 itself, as having **finished** (`DownloadManager.Task.run`): ours ends that way
+    only when Media3 stopped it, and a test on Media3's own manager holds it to that.
+  - **Offline** (by hand, or the server out of reach), what is under way stops and waits,
+    rather than failing for want of a server; back online, downloads that failed for want of
+    it are tried again, and lists downloaded whole are topped up.
+  - **What can be downloaded**: songs, albums, playlists and Liked songs, at the quality in
+    Settings (`download_quality`; Windows' rule for what is kept as it is). An album, playlist
+    or Liked songs downloaded whole stays so: its name, owner, cover and order are kept, and
+    whenever its page arrives from the server (or the server is back) the songs it gained are
+    fetched quietly. Nothing is taken out because the server's list lost it (as Windows). A
+    song removed from it by hand makes it no longer downloaded whole (Windows fetches the song
+    back the next time the list is looked at).
+  - **Nothing is started that won't fit**: what the server says each file is (or its length at
+    the rate asked), with half a gigabyte to spare, against the space free (Windows' check and
+    words). Failures are kept with their reason in plain words (`failed.json`), and "Retry
+    failed" asks again; the words name no server.
+  - **Progress**: per song (Waiting, arriving with how much, Done, Failed and why) and for the
+    batch ("Downloading 3 of 12"), in the app's state (`DownloadsState`) and in a notification
+    that names no song (song names go to the player's notification and the car as what is
+    playing, and nowhere else). That notification needs the notifications permission from
+    Android 13 (unlike the player's): it is asked for once, at the first download; refused,
+    downloads run all the same and show their progress in the app.
+  - **Covers of downloaded music** are copied into the downloads folder (`CoverStore.pin`),
+    where the cache's trimming and the system's clearing don't reach, and let go when nothing
+    downloaded uses them.
+- **Offline mode** (`ServerWatch`, `HeldChanges`: a port of `src/offline.rs`). Offline is
+  either switched on by hand (Settings, "Offline mode": nothing is asked of the server at
+  all) or the server is out of reach. A request that couldn't reach the server is a reason to
+  ask it at once whether it is there (a ping), not proof that it isn't: one cover timing out
+  is not the server gone. If the ping fails too it is out of reach, and is asked again every
+  15 seconds, quietly, until it answers; any answer meanwhile settles it, and so does the
+  phone having a network again. Back: "Back online", held changes are sent, downloads carry
+  on. A server that answers with an error is there; only a sign-in it refuses signs anyone
+  out, as on Windows ("Your saved sign-in no longer works. Sign in again."). Android 17 with
+  a server on the home network and no permission to reach it isn't asked (it can't answer).
+- **Held changes**: likes, ratings and plays made while offline, or that couldn't be sent, are
+  held for the account on disk (`held.json`), in order, plays with the time they counted,
+  and sent when the server is back (Windows' `send_all`, its tests ported): what the server
+  dealt with (took, or refused for good) goes; a proxy's error page in the server's place
+  counts as "try again", and later changes to the same song wait behind it; no answer, or a
+  sign-in it won't take, keeps the lot. What a round is sending stays on file until the
+  server has answered, so the app killed part-way loses nothing (a play may then be counted
+  twice). "Now playing" reports aren't held: they are of the moment. Before this, a play the
+  server didn't take was lost.
+- **What plays offline** is known in memory (`Availability`): downloaded (and not set aside
+  this run), or kept whole in the form it would be streamed in now (`KeptIndex`). Rows ask it
+  and the car asks it; it never looks at the disk.
+
+### Downloads: what Android allows
+
+A download outlives the screen that asked for it: the app is closed, killed, the phone
+restarted, the network changed. What Android lets an app do to carry on, by Google's
+documentation (read 24 November 2026) and Media3 1.11.1's source:
+
+| Android | What an app may do | What the app does (`DownloadKeeper`) |
+|---|---|---|
+| 9 to 11 (API 28–30) | A foreground service may be started from anywhere, and runs as long as it likes. A job runs for up to ten minutes at a time | A data-sync foreground service (`DownloadsService`) holds the app up while downloads arrive, with the progress notification. A persisted job, on the network allowed, stands behind it for after a restart, and starts the service again |
+| 12, 13 (31–33) | No foreground service may be started from the background (with exceptions none of which is "a job"). Jobs as before | The service, started from the app on screen. After a restart, or if it was stopped, the job does the downloading itself, a few minutes at a time, and is run again until it is done |
+| 14 (34) | **User-initiated data transfer jobs**: asked for while the app is on screen, with a network required and a notification of their own, they run until done, unheld by the app's standby bucket and quotas, and Android stops and runs them again as the network comes and goes. Foreground services must say their kind | A user-initiated job when the person asks from the app; an ordinary one when the app isn't on screen (a downloaded playlist topping itself up), upgraded the next time the app is opened. No foreground service |
+| 15, 16 (35–36) | A data-sync foreground service gets six hours a day, and none may be started from `BOOT_COMPLETED`. 16: an ordinary job that started while the app was in front, or beside a foreground service, now counts against its quota | As 14: user-initiated jobs aren't in either limit |
+| 17 (37) | No change found to jobs or data-sync services (its list names new job debugging APIs only) | As 14 |
+
+**Why not Media3's `DownloadService`**, which the brief expected: in 1.11.1 it asks for a
+restart through a scheduler only below Android 12 (`DownloadService.onCreate`:
+`canStartForegroundServiceFromBackground = SDK_INT < 31`), so from 12 on, downloads it stopped
+(the app killed, the phone restarted, Wi-Fi gone while it was not running) stayed stopped
+until the app was next opened; it runs a data-sync service, which 15 limits to six hours a
+day; and it keeps one download manager for the whole app, where each account has its own. Its
+manager is used, as is; the keeping-going is ours. **Why not jobs alone**: before 14 a job
+runs ten minutes at a time and is then put off by Android's quotas, so a long download from
+the app on screen is held up by a foreground service there.
+
+What was seen on the emulators (docs/TESTING.md, "Downloads"): on 16 and 17 the app killed
+mid-download by `am kill` is not killed at all (a user-initiated job ranks it as perceptible,
+as the playback service does); killed outright, Android ran the job again within ten seconds
+on 16, and on 17 at its next look at the device (the screen turned on), on a quiet emulator
+only then; restarted, the downloads carried on with nobody opening the app; Wi-Fi off with
+Wi-Fi only on, they waited, and carried on when it was back.
+
+### What the design left open, and what was decided (M2a)
+
+- **Four tabs always**, Downloads empty until there are downloads (not a tab that appears).
+- **Fetching ahead on mobile data**: the next song only; none with Data Saver (above).
+- **A list started offline** starts at the song asked for or the next that plays (Windows: the
+  first that plays).
+- **A song removed by hand from a list downloaded whole** makes the list no longer downloaded
+  whole (Windows fetches it back).
+- **"Now playing" reports** are not held offline (Windows doesn't hold them either).
+- **The download notification** names no song, and the downloads go on without it.
+- **The downloads folder** is the account's own data folder, no choice (the brief).
+- **A server error page** in place of a song, or a file shorter than the server said, is a
+  failure with its reason, never a download.
+- **Download failures that can't come right by asking again** (refused, not audio, cut short,
+  out of space) are final at once; only a server out of reach is tried again, five times, and
+  again when it is back.
+- **A playback stream that fails for want of the server** asks whether it is there (Windows'
+  player does the same); out of reach, the app is offline until it answers.
+- **The covers of downloaded music** are copies of the 640-pixel cover, kept with the downloads.
 
 ## Working with the Windows app
 
@@ -787,8 +942,13 @@ How it is built (M1b):
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
   a like the server refused).
-- **Notifications** are not asked for: Android exempts media-session notifications from
-  that permission, so the player's controls appear with it refused (checked on Android 17).
+- **Notifications** are asked for once, at the first download, for the downloads' progress
+  notification (Android 13 and later). The player's never needed it: Android exempts
+  media-session notifications, so its controls appear with it refused (checked on Android
+  17), and downloads run with it refused too.
+- **What the server said** when it refused something the car asked for (`Graph.refusals`) is
+  shown where the phone shows a playback error, on Now Playing and the mini player, until
+  something next plays.
 - **Android 17 and home servers**: the app targets Android 17, where reaching an address on
   the local network needs `ACCESS_LOCAL_NETWORK` (a runtime permission in the Nearby devices
   group; the system's question is about "nearby devices"). Google defines a local *network*

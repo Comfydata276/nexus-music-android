@@ -37,6 +37,7 @@ In the app, the server's address is **`http://127.0.0.1:4533`** (see "Two addres
 | `scripts/cartour` | Pictures of the app in a car's own media screens (Android Automotive) |
 | `scripts/dhu` | Google's Desktop Head Unit with the real Android Auto: not usable yet, see below |
 | `scripts/measure` | Size, start-up time, memory, scrolling |
+| `scripts/slowlink` | Slows the emulator's tunnel to the test server, or cuts it (downloads part-way, the server gone) |
 
 Each prints its own help when run with no arguments or `--help`.
 
@@ -220,7 +221,7 @@ failed. The full report is saved as JSON under `reports/` in the cache.
 | `discover.*` | Android Auto can find the app: an exported service answering `android.media.browse.MediaBrowserService`, and the manifest entry and `automotive_app_desc` file that declare a media app |
 | `connect.cold` | With the app removed from memory, the service starts with no screen and answers (the time is reported) |
 | `root.search` | The car is told the app can search, so it shows the search button |
-| `browse.tabs`, `tab_icons`, `tab_names` | One to four tabs, all folders, each with an icon; with `--nexus`, exactly Home, Playlists, Library (Downloads joins them when there are downloads) |
+| `browse.tabs`, `tab_icons`, `tab_names` | One to four tabs, all folders, each with an icon; with `--nexus`, exactly Home, Playlists, Library, Downloads |
 | `browse.loads`, `titles`, `ids`, `playable`, `empty` | Every folder (four levels, up to 80 folders) opens within ten seconds; every item has a title and its own id; something can be played; empty folders are listed |
 | `browse.complete` | No folder lost its tail. A car asks for a folder in one go and Media3 silently cuts the answer to what fits in 256 KiB, so the probe asks each long folder twice, in one go and page by page, and the two must agree; the longest folder is reported |
 | `browse.shuffle`, `play.shuffle` | With `--nexus`: every list of songs is headed by "Shuffle", and choosing it plays that list, shuffled |
@@ -240,6 +241,7 @@ failed. The full report is saved as JSON under `reports/` in the cache.
 | `--known-host` | The probe with **no** notification access, so Android does not trust it, let in only because the app knows it by package name and signing certificate, as it knows Android Auto from Google's list. On a debug build the rig tells the app the probe's certificate first (`DebugControl --es host`, kept in a file of the app's; nothing is added to the list in the repository) and the whole check must then pass: `known_host.admitted`, and every browse, cover and playback item after it. On a release build there is no way to tell it, so the probe must be refused (the `outsider.*` items): that the release list is Google's and nothing else is part of what passing proves |
 | `--mode queue_slide` | A tap on the car's queue made just as the player's part of a long queue moves along. The probe starts a long playlist (`scripts/server longlist 600`; open the app's Library once afterwards so the phone has it), keeps the queue as it was first shown, goes down it until what it is shown starts somewhere else, and at once taps an entry of the queue it kept. Nothing in the tap says which queue it was made on, so `queue.slide` passes if no song plays that the driver did not tap (above all not the one now at that place), and `queue.resent` if the queue is then sent again for the car to redraw. `queue.settled`: a moment later an entry of the queue as it now is plays that entry |
 | `--mode long_pause` | What a car does after a long stop: play, pause, stay connected for eleven minutes (`--pause-s N` for another wait), and press Play. Past ten minutes paused the app's service has left the foreground (it is alive only because the probe is bound to it), and `long_pause.resume` and `long_pause.foreground` pass if Play brings the music, and the foreground, back |
+| `--mode offline` | With the server out of reach (`scripts/server stop`, or `scripts/slowlink cut`) and something downloaded: every folder still opens within the limit (`browse.*`, `art.*`), `offline.downloads` that the Downloads tab lists what is on the phone, `offline.play_download` that a song chosen there plays, `offline.play_elsewhere.N` that songs listed in the other tabs play (offline they list only what can), `offline.search` and `offline.voice` that search and a spoken request find what is on the phone |
 | `--mode play` | Only press play and say what plays; with `--media-id "<id>"`, choose that item instead. For scripted checks of one thing. `--warm` (any mode) leaves the app in memory rather than starting it cold |
 
 **Trusted, known and untrusted.** The app lets in three kinds of caller (`docs/DESIGN.md`,
@@ -264,9 +266,12 @@ the stand-in healthy (every item must pass), then switches on one fault at a tim
 of which a specific item must catch: artwork given as web addresses, artwork other apps
 may not read, no search, a folder that takes twelve seconds, five things at the root,
 spoken requests refused, nothing to resume; and nobody signed in, where the error message
-must be found. It takes two minutes. Run it on a phone emulator: on the car emulator the
-healthy stand-in fails `art.readable` (seen in the third round, and not looked into; the
-stand-in is a fixture, and the app's own check passes there).
+must be found. It takes two minutes, on a phone emulator or the car's. (The car emulator's
+healthy stand-in used to fail `art.readable`, "not a picture": the stand-in drew each picture
+the first time it was asked for, with no lock, and on the car the car's own media screens ask
+for the same pictures as the probe does, at the same moment, so two drawings were written over
+each other and the damaged one stayed. It draws them one at a time now, and draws again one it
+finds damaged. A fault in the fixture, not the check, and never the app's.)
 
 **What `carcheck` does not cover.**
 
@@ -759,6 +764,84 @@ as a conversion at all, and a seek in it lands (before, it began again from its 
 the new time on the clock). What this rig cannot do is drop a conversion part-way: stopping
 the server does not break a stream the emulator's own tunnel has already taken whole. That
 case is `ConvertedPlaybackTest`'s, and a real network's.
+
+## Downloads and offline mode
+
+The emulator reaches the test server through adb's tunnel (`127.0.0.1:4533`), which nothing
+on the emulator's side can slow: its network speed settings don't touch it, and nor do they
+touch `10.0.2.2`. A whole album arrives in under a second. To see a download part-way:
+
+```sh
+scripts/slowlink start 150     # the server's answers at 150 KB/s per connection
+scripts/slowlink cut           # the server gone: connections dropped, new ones refused
+scripts/slowlink stop          # back to the server directly
+```
+
+A phone signed in at `http://127.0.0.1:4533` goes through it at once (connections already
+open: force-stop the app first). One signed in at `10.0.2.2` must sign in at
+`http://10.0.2.2:4534` to go through it (the relay listens on the server's port plus one).
+**Removing adb's reverse rule does not cut the server**: connections already open carry on
+through it, and OkHttp keeps them for minutes; `cut` closes them.
+
+Debug builds answer to `DebugControl` for downloads (`docs` in `DebugControl.kt`):
+`--es download "album:<id>"` (or `playlist:<id>`, `liked`) downloads a list as its page's
+button does, `--es downloads say` says how they stand (and where the app stands with the
+server, and how many changes are held), `--es downloads retry|cancel|remove` and
+`--es downloads "'remove <id>,<id>'"` (the inner quotes survive adb's shell), `--es spare
+999999` makes the free-space check refuse (`--es spare usual` to undo), `--es offline on|off`,
+and `--es measure availability`. Debug builds log where each song was opened from (tag
+`NexusPlayback`: "from its download", "through the kept songs").
+
+Ending the app mid-download: `am kill` does nothing while a user-initiated job is running
+(Android ranks the app as perceptible, oom adj 201). To kill it as the low-memory killer
+would, from a debug build: `scripts/emu shell run-as org.medianexus.music kill -9 <pid>`.
+Restarting the phone: `scripts/emu adb reboot`, then `scripts/emu adb reverse tcp:4533
+tcp:4533` (or `scripts/slowlink start`) once it is up, as a reboot drops it. A user-initiated
+job, its notification, and why it last stopped: `scripts/emu shell dumpsys jobscheduler
+org.medianexus.music` ("started as UIJ: true"; Diagnostics says "downloads: carried on by
+Android's job scheduler (a user-initiated transfer)").
+
+**What was checked for M2a**, on the debug build (evidence under
+`~/.cache/nexus-music-android/shots/m2a-*` and `reports/m2a-*`):
+
+| Check | Android 16 | Android 17 | Android 9 |
+|---|---|---|---|
+| A playlist of 100 downloaded at 150 KB/s; an album; covers kept with them | yes | yes | an album (smoke) |
+| `am kill` mid-download | not killed (oom adj 201): carries on | the same | not run |
+| Killed outright (SIGKILL) mid-download | Android ran the job again within 10 s, as an ordinary job; 40 → 55 songs 20 s later | the job sat "ready" until Android's next look at the device (screen off and on: within 5 s); on a quiet emulator, not within 9 minutes before that | not run |
+| Restarted mid-download, the app not opened | carried on (61 → 68 in 30 s) | carried on (46 → 59) | not run |
+| Wi-Fi off mid-download, Wi-Fi only on (mobile data left on) | waited ("Waiting for Wi-Fi", the job's network unsatisfied), carried on when it was back | the same | not run |
+| The progress notification | "Downloading 14 of 39" with a bar, under a user-initiated job; none under an ordinary job (none is allowed) | asked for at the first download; refused, downloads ran all the same | the data-sync service's, while an album arrived |
+| Not enough room (spare raised) | refused in Windows' words; with the usual spare, downloaded | | |
+| Flight mode and the server cut: browse Downloads, play three songs through, like one; then back | the three plays and the like held (`held.json`, plays with their times), sent within 5 s of being back; the server's `played` times are the times they counted (22:45:03.766, :13.770, :29.773) | | |
+| The server stopped while streaming; started again | out of reach noticed (a play held meanwhile); back within 5 s, the held play sent, nothing done in the app | | the same, playing from Downloads |
+| A downloaded file damaged by hand | set aside (not deleted), the song streamed, Diagnostics: "a downloaded copy wouldn't play … streamed instead" | | |
+| Gapless across downloaded and streamed songs (the sweep album with 3, 5 and 7 streamed) | `sweepcheck`: no break at any of the seven joins (the one at 160.000 s is the album's end, where the capture runs on) | | |
+| Play pressed during a phone call | not reproducible: the emulator's call neither changes the audio mode nor refuses the sound (Play was granted mid-call) | | |
+
+**The car, M2a, on the release build** (reports in `~/.cache/nexus-music-android/reports/`,
+`carcheck-org.medianexus.music-20261124-10*`): on the car emulator with 20 songs downloaded,
+the whole check 48 passed and none failed online; with the server stopped, the whole check 49
+and none (playing, the queue, voice and resuming all from what is on the phone) and
+`--mode offline` 25 and none. On Android 17, 48 and none online and 25 and none offline (the
+relay cut). The first offline run failed `art.readable` once: a listed song whose cover had
+never been fetched was given a cover address; offline, an entry whose cover isn't on the
+phone now goes without one (the car draws its icon). `scripts/carcheck --selftest` passes on
+the car emulator too now (53 and none for the healthy stand-in; see "Is a green report worth
+anything?"). The Downloads tab from a cold start after a restart of the car emulator, online
+and with the server stopped: `~/.cache/nexus-music-android/shots/m2a-cartour-online/` and
+`m2a-cartour-offline/` (`05-tab-Downloads.png`, and every other tab and the player).
+
+**Measured for M2a** (release build, Android 17, signed in, kept, the 100-song playlist;
+`reports/measure-org.medianexus.music-20261124-1016*` to `-1020*`): APK 5,972,406 bytes (screens
+round 2: 5,782,726); cold start 528 to 561 ms (566 to 629); idle 65.4 to 73.9 MB (73.5 to
+80.1); playing 86.7 MB, 86.8 in the background (81.2 to 89.9); 100-song playlist 9.2 to 9.6%
+slow frames (8.4 to 9.4). **Knowing what plays offline with 5,000 songs downloaded**
+(`DebugControl --es measure availability`, debug build, which runs several times slower than
+a release one): reading the catalogue when the account is taken on (off the main thread) 315
+ms, most of it looking for 5,000 files; whether a song plays 1.6 µs (10,000 asked in 16 ms);
+everything that plays (the car's offline tabs and search) 2.2 ms; the Downloads tab's albums
+11 ms and its songs 2.3 ms; the list on disk 751 KB.
 
 ## What is not covered
 

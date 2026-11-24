@@ -1435,7 +1435,7 @@ class PlaybackService : MediaLibraryService() {
                         era.searches.put(again.query, found)
                         // Told: every browser that made this search lately (not only the last).
                         for (who in era.searchedBy.of(again.query)) session.notifySearchResultChanged(who, again.query, found.size, null)
-                        LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map { CarMedia.item(it, era.key) }), params)
+                        LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map { carItem(it, era) }), params)
                     } catch (e: ApiError) {
                         if (CarTree.unreachable(e)) {
                             LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(again.query, retriesMade.incrementAndGet())), "")), params)
@@ -1457,7 +1457,7 @@ class PlaybackService : MediaLibraryService() {
                     // Made into what the car is sent off the main thread too: two hundred
                     // entries are two hundred bundles.
                     val items = fromTree(era) { tree ->
-                        tree.children(node) { toldToLookAgain(era, parentId, params) }?.let { ImmutableList.copyOf(slice(it, page, pageSize).map { CarMedia.item(it, era.key) }) }
+                        tree.children(node) { toldToLookAgain(era, parentId, params) }?.let { ImmutableList.copyOf(slice(it, page, pageSize).map { carItem(it, era) }) }
                     } ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                     LibraryResult.ofItemList(items, params)
                 } catch (e: ApiError) {
@@ -1477,7 +1477,7 @@ class PlaybackService : MediaLibraryService() {
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 val node = CarIds.parse(mediaId) ?: return@answer LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 try {
-                    fromTree(era) { it.item(node) }?.let { LibraryResult.ofItem(CarMedia.item(it, era.key), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+                    fromTree(era) { it.item(node) }?.let { LibraryResult.ofItem(carItem(it, era), null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 } catch (e: ApiError) {
                     LibraryResult.ofError(trouble(browser, e))
                 }
@@ -1518,7 +1518,7 @@ class PlaybackService : MediaLibraryService() {
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 try {
                     val found = era.searches.get(query) ?: fromTree(era) { it.search(query) }.also { era.searches.put(query, it) }
-                    LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map { CarMedia.item(it, era.key) }), params)
+                    LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map { carItem(it, era) }), params)
                 } catch (e: ApiError) {
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
                         LibraryResult.ofItemList(ImmutableList.of(CarMedia.item(tryAgain(CarIds.retrySearch(query, retriesMade.incrementAndGet())), "")), params)
@@ -1981,6 +1981,16 @@ class PlaybackService : MediaLibraryService() {
             ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find, request.searchWords())))
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "voice: $request -> ${list.context} (${list.songs.size} songs)")
         return staged(mine, era, list)
+    }
+
+    /**
+     * An entry of the car's tree as the car is given it. Offline, a cover that isn't on the
+     * phone can't be fetched: the entry goes without one (the car draws its icon) rather than
+     * with an address that names no picture.
+     */
+    private fun carItem(entry: CarEntry, era: Era): MediaItem {
+        val shown = if (entry.cover.isNotEmpty() && graph.watch.offline && era.account.covers.kept(entry.cover) == null) entry.copy(cover = "") else entry
+        return CarMedia.item(shown, era.key)
     }
 
     /** Offline (by hand, or the server out of reach), which songs a list started now may
