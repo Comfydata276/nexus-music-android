@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Builds and runs the tool that is the Windows app's own in-step code (see README.md here).
+#
+#   tools/instep/run cases            writes app/src/test/resources/instep-cases.json
+#   tools/instep/run reads <file>     checks texts the phone's Kotlin wrote (a path in this repository)
+#   tools/instep/run pc --server http://127.0.0.1:4535 --user tester --password ... --state <file>
+#   tools/instep/run peek|plant|queue-save|queue-get ...
+#
+# It compiles the Windows app's source where it lies (../nexus-music/src, or NEXUS_WINDOWS_SRC),
+# read-only, and builds outside both repositories (the cache folder). Nothing is written to
+# the Windows repository. Needs the Windows app's build image, `nexus-music-dev`
+# (docker build -f ../nexus-music/docker/dev.Dockerfile -t nexus-music-dev ../nexus-music/docker).
+set -euo pipefail
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+windows="${NEXUS_WINDOWS_SRC:-$root/../nexus-music/src}"
+[ -f "$windows/sync.rs" ] || { echo "error: the Windows app's source isn't at $windows (set NEXUS_WINDOWS_SRC)" >&2; exit 1; }
+windows="$(cd "$windows" && pwd)"
+cache="${NEXUS_ANDROID_CACHE:-$HOME/.cache/nexus-music-android}"
+mkdir -p "$cache/cargo/registry" "$cache/cargo/git" "$cache/instep-target" "$cache/home"
+# The same releases of serde and the rest as the Windows app is built with: its lock file is
+# the starting point (Cargo keeps the versions of what this tool uses and drops the rest).
+[ -f "$root/tools/instep/Cargo.lock" ] || cp "$windows/../Cargo.lock" "$root/tools/instep/Cargo.lock"
+
+args=("$@")
+if [ "${1:-}" = "cases" ] && [ $# -eq 1 ]; then
+  args=(cases /work/app/src/test/resources/instep-cases.json)
+fi
+# shellcheck disable=SC2086
+exec docker run --rm ${DX_DOCKER_ARGS:-} \
+  -u "$(id -u):$(id -g)" --network host \
+  -e HOME=/home/dev -e CARGO_TARGET_DIR=/target -e NEXUS_WINDOWS_SRC=/win/src \
+  -v "$root":/work -v "$windows":/win/src:ro \
+  -v "$cache/home":/home/dev -v "$cache/instep-target":/target \
+  -v "$cache/cargo/registry":/opt/cargo/registry -v "$cache/cargo/git":/opt/cargo/git \
+  -w /work/tools/instep nexus-music-dev \
+  cargo run --quiet --release -- "${args[@]}"
