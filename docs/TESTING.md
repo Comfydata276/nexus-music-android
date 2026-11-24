@@ -1243,6 +1243,63 @@ the two passes show how far apart the same build lands.
 
 (The end of the round is both engineers' work: the search and list changes are in it too.)
 
+### The offline loose ends: what was checked
+
+Seven small faults the review of the third round left (`docs/DESIGN.md`, "What the offline
+loose ends decided"). Reports under `~/.cache/nexus-music-android/reports/oh4/`.
+
+**Each item has a test that fails on the code before it** (forced by gates or the order of
+calls, not by waiting), run in a scratch copy of the commit before where it compiles there:
+
+| Item | Test | On the code before |
+|---|---|---|
+| 1, a replacement | `SongFetchTest.aReplacementThatCantBeMarkedCostsNothingOfTheCopyItWasToReplace` (the mark refused at `append-half`, the length check run at `placed`, then a restart with the server closed) | no whole file for the song (`wholeFileOf` null) |
+| 2, passing over | `PassOverTest.twoDownloadsThatWontOpenAreEachTriedOnceAndThenItStops` | needs `Recovery.PassingOver`; the test shows the old rule alone going from one to the other |
+| 3, a held like | `HeldChangesTest.anErrorThatSaysNothingAboutTheChangeIsTriedAgainAndNeverLosesAPlayOrALike` | the like given up (`ApiError.Server`) |
+| 4, a list's own button | `DownloadsTest.aListsOwnCancelStopsASongATopUpQueuedThatThePageHasNotCaughtUpWith`; `aCancelOrARemovalThePhoneWillNotRecordSaysSoAndChangesNothing` | the song the top-up queued went on arriving; the second needs the new `told` |
+| 5, decoders | `WhatDoneRequiresTest.whenThePhoneCannotBeAskedTheFileIsConvertedNotMarkedOnAGuess`; `CatalogueTest.whatThePhoneCantDecodeIsAskedAgainAfterASystemUpdate` | the failed question remembered as a no; the second needs the new constructor |
+| 6, Wi-Fi only | `WifiOnlyTest.nothingGoesByANetworkThatHasJustComeBeforeTheServerHasAnsweredOnIt`, `askingTheServerForTheSongAgainIsCancelledWithTheNetworkThereAndThen`, `theUnmeteredNetworkIsKeptUntilTheLastSongsCoverHasCome` | all three: a cover sent by the new network before the server answered there; the question cancelled only later, from Media3's thread; the network let go with the cover on its way |
+| 7, the car | `CarColdTest.offlineAKeptListOfAlbumsWithNothingThatPlaysGivesWayToTheAlbumsOnThePhone`, `withTheServerThereAndNoPageKeptASongOrAnAlbumTheDownloadsHaveIsPlayedFromThem` | an empty folder; a wait on the black hole until the time-out |
+
+Two of these are worth knowing about. The first of item 6's tests has the one bounded look
+in this round for something that must not happen (two seconds of the main thread running:
+the old code's cover request came within milliseconds). The second tells "cancelled by the
+engine" from "cancelled by Media3 stopping the download" by the thread the cancellation came
+on, because Media3's stop, which follows every change of network, interrupts the worker and
+so cancels the request too, only later; a check of "was it cancelled" alone passed on the
+old code.
+
+**The whole suite, three times** (`--no-build-cache --rerun-tasks`, in a scratch copy of
+`07d3fb9`, `run1.log` to `run3.log`): 757 run each time; 0 failed once and 1 failed twice,
+the same test both times, `CoverAddressTest.anAddressNamesTheAccountByAnIdentifierOfItsOwnNotItsStorageKey`
+(a cover read after signing out and in again, which waits a fixed time for the sign-in to
+settle: "No such cover"). It passes on its own (three runs), and the whole suite passed
+twice each on this round's commits alone and on the other engineer's four alone; the
+failures came with the machine loaded (load average 12, an emulator starting). It is not
+this round's and was left alone. `scripts/check --release` on the same commit: the debug
+build, lint and the release build (6,208,426 bytes) passed; of the tests one failed,
+`DownloadsTest.aProgressTickHandsOnTheVeryListsOfWhatIsDownloaded`, which takes a progress
+tick to come before the second song has arrived and on that loaded run did not (6.1 s); it
+passed in every other run.
+
+**Item 4 on the Android 16 emulator** (`item4-cancel-half-arrived-album-android16.txt`):
+the relay at 25 KB/s, Collected Works (14 FLACs) downloaded from its own page; with 2 arrived
+and 12 on their way the page's button is "Cancel downloading". Pressed: two seconds later
+"downloaded 2, on the way 0", no list kept, the button "Download" and the two rows still
+"Downloaded"; the same 32 seconds later, and 20 seconds after the link was made fast again.
+(A song a top-up queues that the page has not caught up with can't be made to happen on the
+test server: that is `DownloadsTest`.)
+
+**Item 7 in the car, cold, on a black-holed link** (`carcheck-offline-hole-android16.txt`):
+42 songs downloaded (two albums, two playlists, Liked songs), `NEXUS_DEVICE=phone36
+scripts/slowlink hole`, `scripts/carcheck org.medianexus.music --nexus --mode offline`:
+**24 passed, 0 failed**, the standing warning (the playlist that is empty on purpose); the
+slowest answer 634 ms. Again with the app's whole cache folder removed first (kept pages,
+the library copy, covers, kept songs: Android's worst day, the downloads kept;
+`carcheck-offline-hole-no-cache-android16.txt`): **25 passed, 0 failed**, no warning, the
+slowest 438 ms. The kept "Recently played" list with nothing on it that plays can't be made
+on the test server (its played albums include the downloaded ones): that is `CarColdTest`.
+
 ## The library on the phone, search and the Songs page (M3a)
 
 Debug builds answer to `DebugControl --es library say|memory|search|forget` (see
