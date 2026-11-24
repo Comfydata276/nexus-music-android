@@ -1,6 +1,7 @@
 package org.medianexus.music.playback
 
 import java.text.Normalizer
+import org.medianexus.music.library.SearchRank
 import org.medianexus.music.net.Album
 import org.medianexus.music.net.Artist
 import org.medianexus.music.net.Found
@@ -63,7 +64,11 @@ sealed interface VoiceChoice {
 /**
  * Finding the best match for a spoken request among what search found and the playlists, in
  * the way search ranks: a name said exactly beats one it begins with, which beats one it is
- * part of. Plain Kotlin, so it can be tested on its own.
+ * part of. What search found is a match on search's own terms (every word said is in it, a
+ * slip or two forgiven, as Windows' search judges it): the scoring here chooses between the
+ * kinds of thing found (an artist, an album, a song, a playlist), and never turns a match
+ * down because the words weren't said exactly ("Lantern Sesaon" is "Lantern Season"). Plain
+ * Kotlin, so it can be tested on its own.
  */
 object Voice {
     /** The words, and the kind of thing, a request with no focus seems to mean: "songs by
@@ -123,6 +128,17 @@ object Voice {
     private const val ENOUGH = 0.34
 
     /**
+     * How a name matches what was said on search's terms ([SearchRank.rate]: every word said
+     * in the name, or in the other names it answers to, slips forgiven), as a score of this
+     * scorer's: from [ENOUGH] for a match at all to a little under a name merely containing
+     * the words; 0 for no match. A name said exactly scores higher by [score] anyway.
+     */
+    private fun matched(said: List<String>, name: String, others: List<Pair<String, Float>> = emptyList()): Double {
+        val rated = SearchRank.rate(said, SearchRank.words(name), others.map { (text, weight) -> SearchRank.words(text) to weight }) ?: return 0.0
+        return ENOUGH + 0.25 * (rated.score / 2.0).coerceIn(0.0, 1.0)
+    }
+
+    /**
      * The best match for the request among `found` (what the server's search gave for
      * [VoiceRequest.searchWords]) and the account's playlists and genres.
      */
@@ -134,6 +150,8 @@ object Voice {
 
         // Each candidate's score, and a little extra when the artist named is theirs.
         fun artistBonus(name: String) = if (by != null && score(by, name) >= 0.7) 0.25 else 0.0
+        // The words said, as search folds them: what search's own terms are judged on.
+        val said = SearchRank.words(words)
         val candidates = mutableListOf<Pair<Double, VoiceChoice>>()
         fun consider(kind: VoiceRequest.Focus, rank: Double, choice: VoiceChoice) {
             if (focus != VoiceRequest.Focus.ANY && focus != kind) return
@@ -141,18 +159,25 @@ object Voice {
         }
         // A tie goes to the first kind considered: an artist, then an album, a playlist, a
         // song, a genre. ("Play Paper Lanterns" means the band more often than their album.)
+        // Each is as good as its name said exactly, or as its match on search's terms, the
+        // better of the two: search's match is never turned down here.
         for (artist in found.artists) {
-            consider(VoiceRequest.Focus.ARTIST, score(if (focus == VoiceRequest.Focus.ARTIST) request.artist.ifBlank { words } else words, artist.name), VoiceChoice.OfArtist(artist))
+            val asked = if (focus == VoiceRequest.Focus.ARTIST) request.artist.ifBlank { words } else words
+            consider(VoiceRequest.Focus.ARTIST, maxOf(score(asked, artist.name), matched(SearchRank.words(asked), artist.name)), VoiceChoice.OfArtist(artist))
         }
         for (album in found.albums) {
-            consider(VoiceRequest.Focus.ALBUM, score(words, album.name) + artistBonus(album.artistLabel), VoiceChoice.OfAlbum(album))
+            // (Search's terms for an album: its name, or its artist's at 0.85.)
+            consider(VoiceRequest.Focus.ALBUM, maxOf(score(words, album.name), matched(said, album.name, listOf(album.artistLabel to 0.85f))) + artistBonus(album.artistLabel), VoiceChoice.OfAlbum(album))
         }
         for (playlist in playlists) {
-            consider(VoiceRequest.Focus.PLAYLIST, score(words, playlist.name), VoiceChoice.OfPlaylist(playlist))
+            // Not found by search, but judged as search judges a playlist's name.
+            consider(VoiceRequest.Focus.PLAYLIST, maxOf(score(words, playlist.name), matched(said, playlist.name)), VoiceChoice.OfPlaylist(playlist))
         }
         for (song in found.songs) {
             val album = if (request.album.isNotBlank() && score(request.album, song.album) >= 0.7) 0.1 else 0.0
-            consider(VoiceRequest.Focus.SONG, score(words, song.title) + artistBonus(song.artistLabel) + album, VoiceChoice.OfSong(song))
+            // (A song's: its title, its artist's name at 0.9, its album's at 0.8.)
+            val rank = maxOf(score(words, song.title), matched(said, song.title, listOf(song.artistLabel to 0.9f, song.album to 0.8f)))
+            consider(VoiceRequest.Focus.SONG, rank + artistBonus(song.artistLabel) + album, VoiceChoice.OfSong(song))
         }
         for (genre in genres) {
             consider(VoiceRequest.Focus.GENRE, score(words, genre.name), VoiceChoice.OfGenre(genre.name))

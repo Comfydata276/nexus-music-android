@@ -89,6 +89,9 @@ class CarOffline(
     val unsure: () -> Boolean = { false },
     /** Waits until it is known (the server has answered, or failed to): a few seconds at most. */
     val settle: suspend () -> Unit = {},
+    /** Whether a song is liked now: a liked song comes ahead of others that match a search on
+     *  the phone as well, as it does in the phone's copy of the library. */
+    val liked: (String) -> Boolean = { false },
 )
 
 /**
@@ -755,13 +758,16 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         return PlayList(songs, start, context, source)
     }
 
+    /** Whether a song is liked now, for searches of what is on the phone (see [CarOffline.liked]). */
+    private val likedNow: (String) -> Boolean get() = offline?.liked ?: { false }
+
     /** What the car's search shows: artists, albums, playlists and songs, each under a
      *  heading. Songs play their album from them. */
     suspend fun search(query: String): List<CarEntry> {
         val limits = SearchLimits(artists = 10, albums = 15, songs = 30)
         // Offline, what is on the phone. Not yet known whether the server is there (just
         // after start-up): what is on the phone if anything of it matches, rather than a wait.
-        val here = if (isOffline || isUnsure) LocalSearch.find(query, playable().songs, limits) else null
+        val here = if (isOffline || isUnsure) LocalSearch.find(query, playable().songs, limits, likedNow) else null
         // (Offline: only the playlists with something that plays, the downloaded ones among
         // them. Not yet known whether the server is there: the ones the phone knows of, and
         // never a wait for the server's list: a song found on the phone is not held up for it.)
@@ -799,14 +805,14 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
         // The playlists the phone knows of count as something on the phone too: a playlist
         // asked for by name, and downloaded, used to wait out the not-knowing first.
         val offlineNow = isOffline || (isUnsure && (playable().let { p ->
-            val local = LocalSearch.find(request.searchWords(), p.songs, SearchLimits(artists = 3, albums = 3, songs = 3))
+            val local = LocalSearch.find(request.searchWords(), p.songs, SearchLimits(artists = 3, albums = 3, songs = 3), likedNow)
             val lists = playlistsKnown(wait = false) { emptyList() }
             val genres = p.songs.filter { it.genre.isNotEmpty() }.map { it.genre }.distinct().map { Genre(name = it) }
             Voice.choose(request, local, lists, genres) != VoiceChoice.Nothing || Voice.choose(request.copy(focus = VoiceRequest.Focus.ANY, query = request.searchWords()), local, lists, genres) != VoiceChoice.Nothing
         } || settled()))
         val here = if (offlineNow) playable() else null
         // Offline, only what is on the phone is looked in.
-        suspend fun find(words: String, limits: SearchLimits) = if (here != null) LocalSearch.find(words, here.songs, limits) else library.search.find(words, limits)
+        suspend fun find(words: String, limits: SearchLimits) = if (here != null) LocalSearch.find(words, here.songs, limits, likedNow) else library.search.find(words, limits)
         val found = find(request.searchWords(), SearchLimits(artists = 10, albums = 10, songs = 25))
         val playlists = runCatching { playlistsKnown(wait = false) { library.quick(library.playlists()) } }.getOrDefault(emptyList())
         val genres = if (request.focus == VoiceRequest.Focus.GENRE || request.focus == VoiceRequest.Focus.ANY) {

@@ -113,6 +113,7 @@ class PlaybackService : MediaLibraryService() {
                 },
                 unsure = { !graph.watch.state.value.sure },
                 settle = { graph.watch.state.first { it.sure } },
+                liked = { account.likes.isLiked(it) },
             ),
         )
         val kept = KeptSongs(
