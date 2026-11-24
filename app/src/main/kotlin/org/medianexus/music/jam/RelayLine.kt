@@ -34,6 +34,7 @@ class RelayLine(base: String, http: OkHttpClient, private val io: CoroutineDispa
     val base: String = base.trimEnd('/')
 
     private val reads: OkHttpClient = http.newBuilder()
+        .connectionPool(POOL)
         .followRedirects(false).followSslRedirects(false)
         .readTimeout(HOLD_SECONDS, TimeUnit.SECONDS)
         .callTimeout(HOLD_SECONDS + 5, TimeUnit.SECONDS)
@@ -41,6 +42,7 @@ class RelayLine(base: String, http: OkHttpClient, private val io: CoroutineDispa
         .build()
 
     private val once: OkHttpClient = http.newBuilder()
+        .connectionPool(POOL)
         .retryOnConnectionFailure(false)
         .followRedirects(false).followSslRedirects(false)
         .readTimeout(SEND_SECONDS, TimeUnit.SECONDS)
@@ -107,6 +109,17 @@ class RelayLine(base: String, http: OkHttpClient, private val io: CoroutineDispa
     }
 
     companion object {
+        /**
+         * The relay's own connections (rule 1): not the app's pool, which keeps a connection
+         * for minutes. One left open with nothing on it holds nothing awake, but nothing of the
+         * relay should be open when the phone has no reason to be there: an idle one goes after
+         * ten seconds, and all of them as soon as the phone lets the relay go ([letGo]).
+         */
+        private val POOL = okhttp3.ConnectionPool(4, 10, TimeUnit.SECONDS)
+
+        /** Closes every connection to a relay not in use this moment. */
+        fun letGo() = POOL.evictAll()
+
         /** How long a read may wait: the relay holds one for 20 seconds before saying
          *  "nothing new"; twice that is given (Windows gives 40). */
         const val HOLD_SECONDS = 40L

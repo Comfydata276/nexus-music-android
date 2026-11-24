@@ -1844,6 +1844,35 @@ with gates, nothing waiting on time):
   round: six changes across the player, the service and the app's connection to it, each
   wanting a test of its own in the service; left for the lead to plan.
 
+**On the Android 16 emulator** (`phone36`, debug build, against the instance `edit` on port 4537
+with X still missing; the other device being the Subsonic API from this machine; pictures
+`shots/m3b/fix3-*`):
+
+- The playlist holding a missing song: the page says "Some songs in this playlist are missing
+  from your library, so it can't be changed from here."; a row's Remove says the same and
+  nothing is removed on the server.
+- Delete from the header with a removal on its way. A slowed link (1 KB/s, then 3 KB/s) was
+  not enough: the removal's small answers were done before the menu could be opened. With
+  the app's connections through the relay and the relay made a black hole just before
+  Remove: the row shown as removed; the header's Delete did nothing, but its "Still saving…"
+  was drawn under the open menu and not seen. **Put right**: the menu now closes first, then
+  says "Still saving the last change to this playlist." (seen). The removal, never answered,
+  sent nothing: the song was still on the server afterwards.
+- A card's Delete after the other device added a song (the card saying 3, then 4): "This
+  playlist was changed somewhere else. Nothing was changed here.", nothing deleted, the card
+  then showing the new count.
+- "Add new ones" after the other device added one of them: three chosen, "1 of these 3 songs
+  are already in…"; the other device then added a second; "Add new ones" added only the third.
+- The name sheet: "Create playlist" tapped twice and the keyboard's tick, in one go: one
+  playlist.
+- Two removals and the first one's Undo: **not reachable by hand here**. One toast shows at a
+  time, the second removal's replaces the first's once it is done, and by the time the second
+  removal could be held on its way (the black hole) the first toast had gone. Tapping Undo
+  just after the second was done undid the second (right). The unit test holds the case.
+- Play, Pause, Play: not done (item 7).
+- The car check on the release build (`NEXUS_DEVICE=phone36 scripts/carcheck
+  org.medianexus.music --nexus`): 48 passed, 0 failed, 1 warning.
+
 
 ## Sound and lyrics (M4a)
 

@@ -875,6 +875,11 @@ class Jams(
     }
 
     private fun publish() {
+        // Nothing of the relay open, nor left open, with no reason to be there (rule 1).
+        if (joined == null && hosting == null && presence == null && !opening && !finding) scope.launch(io) {
+            kotlinx.coroutines.delay(2_000)
+            withContext(main) { if (joined == null && hosting == null && presence == null && !opening && !finding) withContext(io) { RelayLine.letGo() } }
+        }
         val session = joined
         uiNow.value = JamUi(
             joined = session?.takeIf { it.friend }?.let(::joinedUi),

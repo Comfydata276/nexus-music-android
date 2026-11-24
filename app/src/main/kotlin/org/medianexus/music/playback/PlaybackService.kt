@@ -1848,6 +1848,18 @@ class PlaybackService : MediaLibraryService() {
     // ---- The session's callback: the car, the notification, the app's screens ----------------
 
     private inner class Callback : MediaLibrarySession.Callback {
+        /**
+         * M6, rule 2: a media key (a headset's, a Bluetooth device's, the notification's own
+         * buttons, which Media3 sends as media keys) while the phone's player shows another
+         * steers that one, as Windows' media keys do; nothing of this phone's own moves.
+         */
+        override fun onMediaButtonEvent(session: MediaSession, controllerInfo: MediaSession.ControllerInfo, intent: Intent): Boolean {
+            val hands = graph.steered.hands ?: return super.onMediaButtonEvent(session, controllerInfo, intent)
+            @Suppress("DEPRECATION")
+            val key = intent.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return super.onMediaButtonEvent(session, controllerInfo, intent)
+            return Steered.key(hands, key) || super.onMediaButtonEvent(session, controllerInfo, intent)
+        }
+
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             // Media3 sorts callers into trusted (this app, the system, and anything allowed to
             // read notifications or control media, which is what a car's own screens are, and

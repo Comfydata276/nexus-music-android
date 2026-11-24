@@ -77,6 +77,29 @@ class Steered {
             return true
         }
 
+        /**
+         * A media key while the phone's player shows another: Play, Pause and the headset's one
+         * button go to that one as Play/Pause, Next and Previous as themselves, on the key going
+         * down; the rest of the key (and any other media key) is taken and does nothing. True
+         * when the key was taken here.
+         */
+        fun key(hands: Hands, event: android.view.KeyEvent): Boolean {
+            val code = event.keyCode
+            val media = code in setOf(
+                android.view.KeyEvent.KEYCODE_MEDIA_PLAY, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                android.view.KeyEvent.KEYCODE_HEADSETHOOK, android.view.KeyEvent.KEYCODE_MEDIA_NEXT, android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                android.view.KeyEvent.KEYCODE_MEDIA_STOP, android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, android.view.KeyEvent.KEYCODE_MEDIA_REWIND,
+            )
+            if (!media) return false
+            if (event.action != android.view.KeyEvent.ACTION_DOWN || event.repeatCount > 0) return true
+            when (code) {
+                android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> hands.next()
+                android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> hands.previous()
+                android.view.KeyEvent.KEYCODE_MEDIA_PLAY, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, android.view.KeyEvent.KEYCODE_HEADSETHOOK -> hands.toggle()
+            }
+            return true
+        }
+
         /** The other player's position, moving while it plays. */
         fun ticking(shown: Shown, tickMillis: Long): kotlinx.coroutines.flow.Flow<Long> = kotlinx.coroutines.flow.flow {
             while (true) {
