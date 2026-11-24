@@ -1664,6 +1664,53 @@ being `scripts/server api`; pictures in `~/.cache/nexus-music-android/shots/m3b/
 - Recommended under Fix round: Idle Engine added; the tick came once the server had it.
 - D1: the drag handle ends at x=979 and the fast-scroll strip starts at 990 (default size), 972
   and 984 at 360dp with 1.3 font.
+- Rename and delete from the phone, online: the server had the new name, then no playlist;
+  Library dropped it. A selection of two removed at once: both gone on the server.
+- Someone else's playlist (Guest's picks): no handles; its menu has no changes and says whose
+  it is.
+- **Screens** at 360dp with 1.3 font and in landscape (`fix-360-*`, `fix-land-*`, each looked
+  at): the playlist page with handles and Recommended, the selection bar and its menu, someone
+  else's playlist and its menu, the card menu, the save-queue name sheet, the out-of-reach
+  page and its sentence. Two things seen: the several-songs menu said "1 songs" (put right);
+  in landscape the name sheet's buttons sit under the keyboard until the sheet is scrolled
+  (the keyboard's tick creates; left as it is).
+
+**Android 12 and 17** (`phone31`, `phone`; the release build installed over the app's data;
+`phone31` signed in again to this server, its own being stopped): a removal and its Undo
+(the server's `changed` moved, its songs as before), an album card's Play next and Play
+(playing, no crash), no crash reported.
+
+**The car** (Android Automotive, the release build): the car check online, **48 passed, 0
+failed** (the one standing warning: the playlist that is empty on purpose); offline
+(`NEXUS_DEVICE=car scripts/slowlink cut`), **24 passed, 0 failed**; `scripts/cartour` and the
+Radio folder by hand (`shots/m3b/fix-car/`). The Radio tour found two things, put right: the
+folder of one station was headed "Shuffle", "1 song"; and playing, the car showed the
+station's name with nothing beneath it (the song it announced was only in the artist; with a
+display title set, a car shows the subtitle). After: the station alone in the folder; "Test
+FM", "Test Artist - Song 1".
+
+**Measured** (`scripts/measure`, release builds, Android 16, signed in, kept, "Everything (long
+list)"; `reports/m3b-fixes/`): the build before this round (df08672) and after it (63e60e6),
+one run each: APK 6,456,446 and 6,582,042 bytes; cold start 729 ms (671 to 1,447) and 781 (730
+to 894); idle 77.3 and 81.2 MB; playing 88.6 and 93.1 MB (87.5 and 88.8 in the background);
+slow frames 18.9% and 14.3%. The second build also carries the M4a fixes and M5b's mixes and
+Your stats, so the size is not this round's alone; nothing here moves beyond what two runs of
+one build have differed by.
+
+**The checks**: `scripts/check --release` passed; the whole suite three times with
+`--no-build-cache --rerun-tasks`, none failed (numbers in the commit that closes the round).
+The first release checks failed once each on a test of mine, and both were real races, put
+right: a like held by an earlier run missing from Liked songs if the server's list arrived
+before the account had said what was held (`9499dee`); and an Undo remembered after its
+change was queued, so a refusal quicker than that left an Undo for a change that never
+happened, and Undo itself could send the reverse alone (`d653292`). A third, "expected 3, got
+4" in the same test, was the playlist's catch-up read landing after the count: the test now
+waits for it and counts only what changes a playlist (`b7e2c9b`).
+
+**Found by the reviewers during the round and put right**: a station paused by the sleep
+timer while buffering, whose load then failed, was joined again and played (`cccc460`; now a
+rejoin is asked for only while playing is wanted and checked again when it acts:
+`AutoplayTest.aStationWhoseLoadFailsAfterThePauseIsNotJoinedAgain`).
 
 ## Sound and lyrics (M4a)
 

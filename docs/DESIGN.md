@@ -1494,7 +1494,10 @@ be a copy the phone had written itself. These are the rules now.
   playlist wasn't changed.").
 - **A change that fails, or can't be confirmed, drops every change to that playlist waiting
   behind it**, unsent, reads the playlist again, and says so once. Undo is the reverse change,
-  waiting behind the one it undoes, under the same rule.
+  waiting behind the one it undoes, under the same rule. Remembering how to undo a change,
+  queuing it, dropping changes on a failure, and taking the undo and queuing the reverse each
+  happen under one lock, so a refusal however quick leaves no Undo, and a reverse never goes
+  out without what it undoes.
 - **What a page shows is the server's copy with the changes still waiting on top**
   (`Playlists.shown`), worked out each time it is drawn and never written into the kept
   page: the kept page holds only what the server sent. A fetch and a change to the same
@@ -1520,13 +1523,18 @@ be a copy the phone had written itself. These are the rules now.
 - **Nothing starts music after the person stops it.** The player keeps one counter
   (`QueuePlayer.intent`) that every pause, stop, sleep-timer pause, loss of audio focus and new
   choice moves on, read on the player's thread; a station's rejoin and autoplay's songs each
-  note it when asked for and act only if it hasn't moved. A station is also stopped when
-  offline mode is switched on. (The rejoin's 1, 2, 4, 8 seconds are unchanged.)
+  note it when asked for and act only if it hasn't moved. A rejoin is also asked for only
+  while playing is wanted, and checked again when it acts: a station paused (by the person or
+  the sleep timer) whose load fails afterwards is left as it is, neither joined again nor
+  passed over. A station is also stopped when offline mode is switched on. (The rejoin's 1, 2,
+  4, 8 seconds are unchanged.)
 - **The collection menus** (an album's, artist's or playlist's Play, Play next, Add to queue)
   look the songs up away from the main thread and act on the main thread, only if nothing
   else was chosen and the account is the same (`PlayerConnection.afterLookup`); opened from a
   page, they use what the page drew. **In the car**, a station is chosen by its own id; one no
-  longer there is "not found", never another lineup.
+  longer there is "not found", never another lineup. The Radio folder is the stations alone
+  (no "Shuffle": they are live), and a station playing shows the song it announces beneath its
+  name (as the subtitle, which is what a car shows under a display title).
 - **Touch**: the drag handles keep clear of the fast-scroll strip (the row ends where the strip
   begins, on any list long enough to have one); after a drop, the rows stay in the new order
   until the playlist has it, so a tap plays what is on screen.
