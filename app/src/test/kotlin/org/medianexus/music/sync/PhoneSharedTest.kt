@@ -295,10 +295,13 @@ class PhoneSharedTest {
 
     @Test
     fun onlyTheLatestFiveHundredPlaysAreShared() {
-        val log = org.medianexus.music.store.Plays.of((0 until 620).map { Triple("s${it % 7}", 1_000L + it, if (it == 0) "playlist:old" else if (it == 619) "playlist:new" else "") })
+        // (The log's first line carries the latest time of all: a play taken in from another
+        // device, say. What is shared is the last five hundred *lines*, as on Windows, and
+        // only those are read: an exchange doesn't go through the whole log, however long.)
+        val log = org.medianexus.music.store.Plays.of((0 until 620).map { Triple("s${it % 7}", if (it == 0) 5_000L else 1_000L + it, if (it == 0) "playlist:old" else if (it == 619) "playlist:new" else "") })
         val (plays, sources) = Sharing.plays(log)
         assertEquals(PLAYS_SHARED, plays.size)
-        assertEquals(Play("s3", 1_619), plays.first())
+        assertEquals("a line before the last five hundred was read", Play("s3", 1_619), plays.first())
         assertEquals(1_120L, plays.last().at)
         // A source is passed on only with its play.
         assertEquals(listOf(PlayFrom("s3", 1_619, "playlist:new")), sources)
