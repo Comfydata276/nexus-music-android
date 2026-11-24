@@ -76,12 +76,12 @@ fun SearchPage() {
         SearchModel(null, search = { query ->
             if (graph.watch.offline && account != null) {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS)
+                    org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS) { account.likes.isLiked(it) }
                 }
             } else {
                 account?.library?.search?.find(query, LIMITS) ?: Found()
             }
-        })
+        }, instant = { graph.watch.offline || account?.library?.search?.instant == true })
     }
     val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
     val offline by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.offline } }
@@ -135,6 +135,14 @@ fun SearchPage() {
         // a tap plays.
         val typed = box.text.toString()
         val results = state.resultsFor(typed)
+        // A debug build says how soon after a keystroke its results were on the screen (the
+        // frame after they were composed); never the words.
+        if (org.medianexus.music.BuildConfig.DEBUG && results != null) {
+            LaunchedEffect(results) {
+                androidx.compose.runtime.withFrameNanos { }
+                android.util.Log.d("NexusSearch", "results for ${results.query.length} characters drawn ${(System.nanoTime() - model.typedAt) / 100_000 / 10.0} ms after the keystroke (${results.found.songs.size} songs, ${if (account?.library?.search?.instant == true) "the phone's copy" else "the server"})")
+            }
+        }
         // Offline, the playlists are those downloaded whole.
         val downloadedLists by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.now.collections.mapTo(HashSet()) { it.key } } }
         val shownPlaylists = remember(playlists, offline, downloadedLists) { if (offline) playlists.filter { "playlist:${it.id}" in downloadedLists } else playlists }

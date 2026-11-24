@@ -95,6 +95,8 @@ fun HomePage() {
     LaunchedEffect(downloaded.isNotEmpty()) { if (downloaded.isNotEmpty() && list.firstVisibleItemIndex <= 1) list.scrollToItem(0) }
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(HomeModel.greeting(LocalTime.now().hour))) {
+            // The last hundred songs played (Windows keeps them beside the queue).
+            IconButton(R.drawable.ic_history, stringResource(R.string.recently_played), { ui.open(Route.RecentlyPlayed) }, tint = Theme.colors.text)
             IconButton(R.drawable.ic_settings, stringResource(R.string.settings), { ui.open(Route.Settings) }, tint = Theme.colors.text)
         }
         Refreshable(feeds.any { it.refreshing }, refresh) {

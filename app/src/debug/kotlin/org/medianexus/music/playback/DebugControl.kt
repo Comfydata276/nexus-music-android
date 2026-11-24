@@ -70,6 +70,16 @@ import androidx.media3.session.SessionToken
  *
  * (`toggle` is a list's download button pressed: it downloads the list, cancels it, or, all
  * of it being downloaded, removes it.)
+ *
+ * The copy of the library on the phone (see `DebugLibrary`): how it stands; what a copy costs
+ * in memory; how fast it is searched, a keystroke at a time (the words given, separated by
+ * `|`, or some of the rig's own); or taken off the phone, for timing a first fetch. Dying
+ * just after a page of a fetch is kept is `killat library-page-<n>`.
+ *
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library say
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library memory
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library search --es queries "masie|lantern"
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library forget
  */
 class DebugControl : BroadcastReceiver() {
     private companion object {
@@ -87,6 +97,28 @@ class DebugControl : BroadcastReceiver() {
             val done = goAsync()
             Thread {
                 done.resultData = runCatching { org.medianexus.music.downloads.DebugMeasure.availability(context.cacheDir) }.getOrElse { "failed: $it" }
+                done.finish()
+            }.start()
+            return
+        }
+        intent.getStringExtra("library")?.let { what ->
+            // The copy of the library on the phone (DebugLibrary): how it stands, what it
+            // costs in memory, how fast it is searched; or taken away for a first fetch.
+            val account = (context.applicationContext as org.medianexus.music.App).graph.accounts.state.value
+            val done = goAsync()
+            Thread {
+                done.resultData = if (account == null) "nobody signed in" else runCatching {
+                    when (what) {
+                        "memory" -> org.medianexus.music.library.DebugLibrary.memory(account)
+                        "search" -> org.medianexus.music.library.DebugLibrary.search(
+                            account,
+                            intent.getStringExtra("queries")?.split('|')?.filter { it.isNotBlank() }
+                                ?: listOf("amber", "lantren", "silver harbour", "zoe brandstrom", "the velvet engines", "midnight station tonight", "mi"),
+                        )
+                        "forget" -> org.medianexus.music.library.DebugLibrary.forget(account)
+                        else -> org.medianexus.music.library.DebugLibrary.say(account)
+                    }
+                }.getOrElse { "failed: $it" }
                 done.finish()
             }.start()
             return

@@ -312,28 +312,65 @@ class PlayerConnection(
      * is remembered and its playing row marked; a list with a source is the page's whole
      * list, in its order. `shuffle` null plays it as it was last played.
      */
-    fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false) =
+    fun play(
+        songs: List<Song>,
+        start: Int,
+        context: String,
+        source: String = "",
+        shuffle: Boolean? = null,
+        anyStart: Boolean = false,
+        view: org.medianexus.music.library.ListView? = null,
+    ) {
+        // A long list that is a page the phone keeps (an album, a playlist, Liked songs)
+        // is named, and the service reads it from where the screen read it: writing
+        // 20,000 songs out here and reading them back there would hold the main thread
+        // for both. A short list, or one put together on the spot, is sent as it is.
+        if (songs.size > AppCommands.MOST_SENT && keptPage(source)) {
+            // The song that was tapped, and the ones around it: if the phone's copy of the
+            // list has changed by the time the service reads it, the song is found again, or
+            // failing that its nearest neighbour.
+            playPage(source, start, songs.getOrNull(start)?.id, StartPlace.neighbours(songs, start), context, shuffle, anyStart, view)
+            return
+        }
         send(AppCommands.PLAY, Bundle().apply {
-            // A long list that is a page the phone keeps (an album, a playlist, Liked songs)
-            // is named, and the service reads it from where the screen read it: writing
-            // 20,000 songs out here and reading them back there would hold the main thread
-            // for both. A short list, or one put together on the spot, is sent as it is.
-            if (songs.size > AppCommands.MOST_SENT && keptPage(source)) {
-                putBoolean("byPage", true)
-                // The song that was tapped, and the ones around it: if the phone's copy of
-                // the list has changed by the time the service reads it, the song is found
-                // again, or failing that its nearest neighbour.
-                songs.getOrNull(start)?.let { putString("startId", it.id) }
-                putStringArrayList("startNear", StartPlace.neighbours(songs, start))
-            } else {
-                putString("songs", AppCommands.songsArg(songs))
-            }
+            putString("songs", AppCommands.songsArg(songs))
             putInt("start", start)
             putString("context", context)
             putString("source", source)
             putInt("shuffle", when (shuffle) { null -> -1; true -> 1; false -> 0 })
             putBoolean("anyStart", anyStart)
+            AppCommands.putView(this, view)
         })
+    }
+
+    /**
+     * Plays a list the phone keeps, by naming it (`source`) rather than sending its songs:
+     * the service reads it where the screen read it. `start` is the place of the song tapped
+     * in the list's own order, `startId` that song and `near` the songs around it (see
+     * [StartPlace]). `view` is how the list is shown, if sorted or narrowed: what plays is
+     * what is shown, in the order shown. For the Songs page, whose 50,000 songs the screen
+     * never holds as songs, this is the only way.
+     */
+    fun playPage(
+        source: String,
+        start: Int,
+        startId: String?,
+        near: ArrayList<String>,
+        context: String,
+        shuffle: Boolean? = null,
+        anyStart: Boolean = false,
+        view: org.medianexus.music.library.ListView? = null,
+    ) = send(AppCommands.PLAY, Bundle().apply {
+        putBoolean("byPage", true)
+        startId?.let { putString("startId", it) }
+        putStringArrayList("startNear", near)
+        putInt("start", start)
+        putString("context", context)
+        putString("source", source)
+        putInt("shuffle", when (shuffle) { null -> -1; true -> 1; false -> 0 })
+        putBoolean("anyStart", anyStart)
+        AppCommands.putView(this, view)
+    })
 
     /** Plays these straight after the song playing, ahead of anything else queued. */
     fun playNext(songs: List<Song>) = enqueue(songs, playNext = true)
@@ -405,7 +442,7 @@ class PlayerConnection(
     /** Whether a list's route key names a page the library keeps whole (see
      *  `Library.keptSongs`). */
     private fun keptPage(source: String): Boolean =
-        source == "liked" || source.startsWith("album:") || source.startsWith("playlist:") ||
+        source == "liked" || source.startsWith("album:") || source.startsWith("playlist:") || source == org.medianexus.music.library.Library.SONGS ||
             source == org.medianexus.music.downloads.DownloadedViews.SOURCE || source.startsWith("${org.medianexus.music.downloads.DownloadedViews.SOURCE}:")
 
     private fun withController(block: (MediaController) -> Unit) {

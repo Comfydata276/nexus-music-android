@@ -63,9 +63,18 @@ class Ui(val graph: Graph, val navigator: Navigator) {
     fun toast(text: String) = graph.toasts.show(text)
 
     /** Plays a list from one of its songs (see `PlayerConnection.play`). */
-    fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false) {
+    fun play(songs: List<Song>, start: Int, context: String, source: String = "", shuffle: Boolean? = null, anyStart: Boolean = false, view: org.medianexus.music.library.ListView? = null) {
         if (songs.isEmpty()) return
-        player.play(songs, start, context, source, shuffle, anyStart)
+        player.play(songs, start, context, source, shuffle, anyStart, view)
+    }
+
+    /** Remembers the order a list is shown in, for the next visit (Windows'
+     *  `remember_track_sort`), with when it was chosen. */
+    fun rememberSort(key: String, view: org.medianexus.music.library.ListView) {
+        if (key.isEmpty()) return
+        graph.settings.update { s ->
+            s.copy(lists = s.lists + (key to org.medianexus.music.library.ListView.remember(s.lists[key], view, System.currentTimeMillis() / 1000)))
+        }
     }
 
     /** The shuffle button on a list's page: sets whether that list plays shuffled, without

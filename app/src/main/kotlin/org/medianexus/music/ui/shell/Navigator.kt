@@ -42,6 +42,10 @@ sealed interface Route {
     @Serializable data class Downloaded(val list: String, val title: String = "") : Route
     /** The licences of what comes with the app (Settings, About). */
     @Serializable data object Licences : Route
+    /** Every song in the library, newest first (Library's Songs, on a page of its own). */
+    @Serializable data object Songs : Route
+    /** The last hundred songs played (from Home and Library). */
+    @Serializable data object RecentlyPlayed : Route
 
     /** The key the Windows app files the page under ("album:<id>"): where its list's
      *  choices are remembered, and what a queue started from it is said to come from. */
@@ -54,6 +58,7 @@ sealed interface Route {
             is Genre -> "genre:$name"
             Downloads -> "downloads"
             is Downloaded -> "downloads:$list"
+            Songs -> org.medianexus.music.library.Library.SONGS
             else -> ""
         }
 }

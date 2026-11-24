@@ -118,6 +118,33 @@ class AccountGraph(
 
     val likes: Likes = Likes(pages, library.liked(), send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked)) }, scope)
 
+    /** When songs were added to playlists, as far as this phone has seen (Windows'
+     *  `added.json`): "Date added" sorts by it. */
+    val added = org.medianexus.music.store.Added(File(account.dirs.data, "added.json"), scope, io)
+
+    /** The last hundred songs played (Windows' `history.json`). */
+    val recentlyPlayed = org.medianexus.music.store.RecentlyPlayed(File(account.dirs.data, "history.json"), scope, io)
+
+    /**
+     * When each of a list's songs was added to it, in seconds (0 where that isn't known), for
+     * "Date added" (Windows' `added_dates`): a playlist's own notes, else the day the song
+     * joined the library, the nearest thing the server knows; Liked songs, when each was
+     * liked; the Songs page, the day each joined the library.
+     */
+    fun addedDates(key: String, songs: List<org.medianexus.music.net.Song>): LongArray {
+        val parse = org.medianexus.music.library.Arrange::parseTime
+        val day = { song: org.medianexus.music.net.Song -> org.medianexus.music.library.Arrange.dayStart(parse(song.created)) }
+        return when {
+            key.startsWith("playlist:") -> {
+                val noted = added.dates(key.removePrefix("playlist:"), songs)
+                LongArray(songs.size) { if (noted[it] > 0) noted[it] else day(songs[it]) }
+            }
+            key == "liked" -> LongArray(songs.size) { parse(songs[it].starred) }
+            key == Library.SONGS -> LongArray(songs.size) { day(songs[it]) }
+            else -> LongArray(songs.size)
+        }
+    }
+
     /** The files the play queue is saved in, with the account's own data. What the player
      *  does with them belongs to the playback service, each time one is made (`KeptQueue`):
      *  nothing here remembers whether a saved queue has been put back. */
@@ -141,6 +168,16 @@ class AccountGraph(
     init {
         library.likedShown = likes::songsOf
         likes.load()
+        scope.launch { recentlyPlayed.open() }
+        // Every copy of a playlist read from the server (or the phone) is looked at, so a song
+        // that turns up in it later can be dated (Windows' `observe_playlist`).
+        scope.launch {
+            pages.changes.collect { (key, value) ->
+                if (key.startsWith("playlist:") && value is org.medianexus.music.net.Playlist) {
+                    added.observe(key.removePrefix("playlist:"), value.songs, System.currentTimeMillis() / 1000)
+                }
+            }
+        }
         // Covers past their limit go, oldest first, once a start: it reads the whole folder.
         scope.launch { covers.trim() }
         // Changes held from an earlier run go as soon as the server can be asked: now, and

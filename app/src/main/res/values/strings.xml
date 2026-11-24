@@ -357,4 +357,57 @@
     <string name="licences_detail">The licences of the fonts, the icons and the list of known car and assistant apps that come with Nexus Music.</string>
     <string name="show_licences">Show licences</string>
     <string name="licence_known_hosts">Known media apps</string>
+
+    <!-- Finding music (M3a): the Songs page, finding and sorting in a list, Recently played, a
+         song's details. Windows' words where the feature is the same. -->
+    <string name="songs_newest_first">%1$s, newest first</string>
+    <string name="songs_empty">Your library is still being fetched. It\'ll be here in a moment.</string>
+    <string name="songs_arriving">Fetching your library: %1$s so far</string>
+    <string name="songs_offline_empty">Your library hasn\'t been fetched to this phone yet. It will be when your server can be reached.</string>
+    <string name="find_in_list">Find in this list</string>
+    <string name="sort_by">Sort by</string>
+    <string name="sort_named">Sort: %1$s</string>
+    <string name="sort_custom">Custom order</string>
+    <string name="sort_default">Default order</string>
+    <string name="sort_title">Title</string>
+    <string name="sort_artist">Artist</string>
+    <string name="sort_album">Album</string>
+    <string name="sort_duration">Duration</string>
+    <string name="sort_added">Date added</string>
+    <string name="sort_ascending">ascending</string>
+    <string name="sort_descending">descending</string>
+    <string name="nothing_matches_here">No songs here match “%1$s”.</string>
+    <string name="recently_played_empty">Songs you play show up here, newest first.</string>
+    <string name="song_details">Song details</string>
+    <string name="detail_artist">Artist</string>
+    <string name="detail_artists">Artists</string>
+    <string name="detail_album">Album</string>
+    <string name="detail_track">Track</string>
+    <string name="detail_track_disc">%1$d, disc %2$d</string>
+    <string name="detail_year">Year</string>
+    <string name="detail_genre">Genre</string>
+    <string name="detail_length">Length</string>
+    <string name="detail_format">Format</string>
+    <string name="detail_size">Size</string>
+    <string name="detail_size_mb">%1$s MB</string>
+    <string name="detail_levelling">Levelling tags</string>
+    <string name="detail_levelling_song">song %1$s</string>
+    <string name="detail_levelling_album">album %1$s</string>
+    <string name="detail_levelling_none">none</string>
+    <string name="detail_played">Played</string>
+    <string name="detail_played_never">never</string>
+    <string name="detail_played_once">once, on %1$s</string>
+    <string name="detail_played_times">%1$d times, last on %2$s</string>
+    <string name="detail_rating">Your rating</string>
+    <string name="detail_rating_one">1 star</string>
+    <string name="detail_rating_stars">%1$d stars</string>
+    <string name="detail_added">Added to the library</string>
+    <string name="detail_downloaded_as">Downloaded as</string>
+    <string name="detail_downloaded_value">%1$s, about %2$d kbps</string>
+    <string name="detail_on_phone">On this phone</string>
+    <string name="detail_on_phone_kept">Kept from playing it, so it plays without your server</string>
+    <string name="detail_on_phone_downloading">Downloading</string>
+    <string name="detail_on_phone_waiting">Waiting to download</string>
+    <string name="detail_on_phone_none">Not on this phone: it streams from your server</string>
+    <string name="close">Close</string>
 </resources>

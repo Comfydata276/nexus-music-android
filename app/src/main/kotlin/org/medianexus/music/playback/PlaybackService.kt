@@ -69,6 +69,7 @@ import org.medianexus.music.SessionState
 import org.medianexus.music.graph
 import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.Http
+import org.medianexus.music.library.columns
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.KeptSongs
 
@@ -771,7 +772,7 @@ class PlaybackService : MediaLibraryService() {
         // CarTree.stale).
         next.scope.launch {
             now.pages.changes.collect { (key, value) ->
-                if (key == player.queue.source) songsIn(value)?.let { player.follow(key, it) }
+                if (key == player.queue.source) songsIn(value)?.let { songs -> player.follow(key, songs, orderOf(key, songs)) }
                 for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
             }
         }
@@ -907,6 +908,20 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** The songs of a kept page that a queue can come from: an album, a playlist, Liked songs. */
+    /** When each of a list's songs was added to it (for "Date added"; see
+     *  AccountGraph.addedDates). */
+    private fun addedDates(source: String, songs: List<Song>): LongArray = account?.addedDates(source, songs) ?: LongArray(songs.size)
+
+    /** The order a list's page shows these songs in, as places in it, with the order the list
+     *  remembers (Windows' `order_for`): what a queue started from it follows. */
+    private fun orderOf(key: String, songs: List<Song>): List<Int> {
+        if (!org.medianexus.music.library.ListView.findable(key)) return songs.indices.toList()
+        val view = org.medianexus.music.library.ListView.opening(key, graph.settings.value.lists[key])
+        if (view.isDefault) return songs.indices.toList()
+        val added = if (view.sort == org.medianexus.music.library.ListView.ADDED) addedDates(key, songs) else null
+        return org.medianexus.music.library.Arrange.arrange(songs.columns(), view) { added?.get(it) ?: 0 }.toList()
+    }
+
     private fun songsIn(page: Any?): List<Song>? = when (page) {
         is org.medianexus.music.net.Album -> page.songs
         is org.medianexus.music.net.Playlist -> page.songs
@@ -1424,6 +1439,8 @@ class PlaybackService : MediaLibraryService() {
 
     private fun reportNowPlaying(song: Song) {
         val graph = account ?: return
+        // Recently played, whether or not plays are reported (as Windows' `record_played`).
+        graph.recentlyPlayed.played(song)
         // ("Now playing" is of the moment: offline, there is nobody to tell, and nothing kept.)
         if (!this.graph.settings.value.scrobble || this.graph.watch.offline) return
         graph.scope.launch { runCatching { graph.api.scrobble(song.id, submission = false) } }
@@ -1766,7 +1783,7 @@ class PlaybackService : MediaLibraryService() {
                     if (AppCommands.byPage(args)) {
                         playPage(player.beginStart(), args)
                     } else {
-                        AppCommands.handle(player, customCommand, args, ::shuffleFor, playsOffline()).also { if (!it) graph.toasts.show(getString(R.string.cant_play_offline)) }
+                        AppCommands.handle(player, customCommand, args, ::shuffleFor, playsOffline(), ::addedDates).also { if (!it) graph.toasts.show(getString(R.string.cant_play_offline)) }
                     }
                 }
                 else -> AppCommands.handle(player, customCommand, args, ::shuffleFor)
@@ -1810,7 +1827,7 @@ class PlaybackService : MediaLibraryService() {
                 // Downloads tab; any other from the library's kept copy.
                 val songs = era.account.downloads?.let { org.medianexus.music.downloads.DownloadedViews.songsFor(it.state.value, source) }
                     ?: era.account.library.keptSongs(source)
-                songs?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle, plays) ?: run { none = true; null } }
+                songs?.takeIf { it.isNotEmpty() }?.let { AppCommands.queueFor(player, args, it, shuffle, plays, ::addedDates) ?: run { none = true; null } }
             }
             // Something else has been chosen while this was being read (or the account has
             // gone, which overtakes every start): that stands.

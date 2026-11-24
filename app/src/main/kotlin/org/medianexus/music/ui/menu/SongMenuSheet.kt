@@ -45,7 +45,8 @@ import org.medianexus.music.ui.theme.Theme
  * A song's menu, as a sheet from the foot of the screen (the Windows right-click menu,
  * `song_menu` in src/actions.rs), with what works so far: play next, add to queue, like or
  * unlike, download it (or cancel or remove its download, as it stands), go to its album or
- * artist, and take it out of the queue when opened from there. The rest of Windows' menu
+ * to each artist credited on it, its details, and take it out of the queue when opened from
+ * there. The rest of Windows' menu
  * (playlists, ratings, radio) arrives with the milestones that build them; nothing is shown
  * that does nothing yet.
  */
@@ -137,6 +138,11 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
             } else if (song.artistId.isNotEmpty()) {
                 Entry(R.drawable.ic_user_round, stringResource(R.string.go_to_artist)) {
                     choose { ui.open(Route.Artist(song.artistId, song.artist)) }
+                }
+            }
+            if (song.radioUrl.isEmpty()) {
+                Entry(R.drawable.ic_info, stringResource(R.string.song_details)) {
+                    choose { ui.sheet = org.medianexus.music.ui.shell.Sheet.SongDetails(song) }
                 }
             }
             menu.upcoming?.let { uid ->

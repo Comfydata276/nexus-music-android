@@ -6,6 +6,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.SessionCommand
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import org.medianexus.music.library.columns
 import org.medianexus.music.net.Song
 
 /**
@@ -59,32 +60,75 @@ object AppCommands {
      * phone keeps them. Touches nothing of the player (see [QueuePlayer.prepare]): for a
      * long list, call it off the main thread.
      */
-    fun queueFor(player: QueuePlayer, args: Bundle, songs: List<Song>, shuffle: Boolean, plays: ((Song) -> Boolean)? = null): Queue? {
+    fun queueFor(
+        player: QueuePlayer,
+        args: Bundle,
+        songs: List<Song>,
+        shuffle: Boolean,
+        plays: ((Song) -> Boolean)? = null,
+        dates: (source: String, songs: List<Song>) -> LongArray = { _, list -> LongArray(list.size) },
+    ): Queue? {
         val source = args.getString("source").orEmpty()
         // Where to start: the place the screen named, unless the kept list has moved on
-        // since the screen drew it (see StartPlace.startIn).
+        // since the screen drew it (see StartPlace.startIn). A place in the list's own order.
         val start = StartPlace.startIn(songs, args.getInt("start"), args.getString("startId"), args.getStringArrayList("startNear").orEmpty()) ?: 0
+        // Sorted, or narrowed to what was typed in its find box: what is shown, in the order
+        // shown (Windows' `visible_songs`), worked out here from the list as the phone keeps it,
+        // as the screen worked it out. Each song still knows its place in the list itself.
+        val view = viewOf(args)?.takeIf { !it.isDefault }
+        val shown: IntArray? = view?.let { v ->
+            val added = if (v.sort == org.medianexus.music.library.ListView.ADDED) dates(source, songs) else null
+            org.medianexus.music.library.Arrange.arrange(songs.columns(), v) { added?.get(it) ?: 0 }
+        }
+        if (shown != null && shown.isEmpty()) return null
+        val list = shown?.map { songs[it] } ?: songs
+        val places = shown?.toList() ?: songs.indices.toList()
+        val first = if (shown == null) start else shown.indexOf(start).takeIf { it >= 0 } ?: 0
         // Offline (`plays` given): only what can play, each still at its place in the list.
-        val cut = if (plays != null) playableOnly(songs, start, plays) ?: return null else null
+        val cut = if (plays != null) playableOnly(list, first, plays) ?: return null else null
         return player.prepare(
-            cut?.songs ?: songs,
-            start = cut?.start ?: start,
+            cut?.songs ?: list,
+            start = cut?.start ?: first,
             context = args.getString("context").orEmpty(),
             source = source,
             // A list from a page is always the page's whole list, in its order: each song's
             // place in it is its place here (what marks the row playing).
-            origins = if (source.isNotEmpty()) cut?.origins ?: songs.indices.toList() else null,
+            origins = if (source.isNotEmpty()) (cut?.origins?.map { places[it] } ?: places) else null,
             sourceList = songs.map { it.id },
             shuffle = shuffle,
             anyStart = args.getBoolean("anyStart"),
         )
     }
 
+    /** Says in a PLAY how the list is shown (sorted, narrowed), when it is anything but as
+     *  it comes. */
+    fun putView(args: Bundle, view: org.medianexus.music.library.ListView?) {
+        if (view == null || view.isDefault) return
+        args.putBoolean("view", true)
+        args.putInt("sort", view.sort)
+        args.putBoolean("descending", view.descending)
+        args.putString("filter", view.filter.take(MOST_FILTER))
+    }
+
+    fun viewOf(args: Bundle): org.medianexus.music.library.ListView? =
+        if (!args.getBoolean("view")) null
+        else org.medianexus.music.library.ListView(args.getInt("sort").coerceIn(0, org.medianexus.music.library.ListView.SORTS - 1), args.getBoolean("descending"), args.getString("filter").orEmpty().take(MOST_FILTER))
+
+    /** What a find box sends, at most. */
+    private const val MOST_FILTER = 200
+
     /** Carries out one, on the main thread. Returns false if it isn't one of these. (A PLAY
      *  that names a page is the service's to carry out: it has to read the page.) */
-    fun handle(player: QueuePlayer, command: SessionCommand, args: Bundle, shuffleFor: (source: String) -> Boolean, plays: ((Song) -> Boolean)? = null): Boolean {
+    fun handle(
+        player: QueuePlayer,
+        command: SessionCommand,
+        args: Bundle,
+        shuffleFor: (source: String) -> Boolean,
+        plays: ((Song) -> Boolean)? = null,
+        dates: (source: String, songs: List<Song>) -> LongArray = { _, list -> LongArray(list.size) },
+    ): Boolean {
         when (command.customAction) {
-            PLAY.customAction -> player.play(queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor), plays) ?: return false)
+            PLAY.customAction -> player.play(queueFor(player, args, songsOf(args), shuffleOf(args, shuffleFor), plays, dates) ?: return false)
             ENQUEUE.customAction -> player.enqueue(songsOf(args), args.getBoolean("playNext"))
             // Each of these names the entry it means by the entry's own number (see
             // Queue.dropUid), not by where it was on the screen when it was tapped.

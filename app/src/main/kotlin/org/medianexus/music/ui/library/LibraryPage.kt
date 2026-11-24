@@ -100,19 +100,25 @@ fun LibraryPage() {
         TitleBar(stringResource(R.string.tab_library)) {
             IconButton(R.drawable.ic_settings, stringResource(R.string.settings), { ui.open(Route.Settings) }, tint = Theme.colors.text)
         }
+        // In the Windows sidebar's order: Albums, Artists, Songs, Genres.
         ChipRow(
-            listOf(stringResource(R.string.playlists), stringResource(R.string.albums), stringResource(R.string.artists), stringResource(R.string.genres), stringResource(R.string.downloads)),
+            listOf(
+                stringResource(R.string.playlists), stringResource(R.string.albums), stringResource(R.string.artists), stringResource(R.string.songs),
+                stringResource(R.string.genres), stringResource(R.string.downloads),
+            ),
             selected = part,
             onChoose = { part = it },
         )
         // Offline, each part is what is on the phone: made from the songs that play, with
-        // no page needed (the car's offline tabs show the same).
+        // no page needed (the car's offline tabs show the same). The Songs part is the copy of
+        // the library on the phone, online or not; its rows that don't play are dimmed.
         val phone = org.medianexus.music.ui.downloads.playableOffline()
         when (part) {
             0 -> Playlists(phone)
             1 -> if (phone != null) OnPhone(phone, PhonePart.ALBUMS) else AlbumsPart(sort to { it: Int -> sort = it }, places)
             2 -> if (phone != null) OnPhone(phone, PhonePart.ARTISTS) else Artists()
-            3 -> if (phone != null) OnPhone(phone, PhonePart.GENRES) else Genres()
+            3 -> org.medianexus.music.ui.lists.SongsContent()
+            4 -> if (phone != null) OnPhone(phone, PhonePart.GENRES) else Genres()
             else -> org.medianexus.music.ui.downloads.DownloadsContent(titled = false)
         }
     }
@@ -166,6 +172,16 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
             item(key = "liked", contentType = "row") {
                 ListRow(stringResource(R.string.liked_songs), songCount(res, liked.size), onClick = { ui.open(Route.Liked) }) {
                     LikedTile(Modifier.size(56.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius))
+                }
+            }
+            // The last hundred songs played, under Liked songs (Windows has it beside the queue).
+            item(key = "recent", contentType = "row") {
+                val played = ui.account?.recentlyPlayed?.state?.collectAsStateWithLifecycle()?.value.orEmpty()
+                ListRow(stringResource(R.string.recently_played), songCount(res, played.size), onClick = { ui.open(Route.RecentlyPlayed) }) {
+                    Box(
+                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(R.drawable.ic_history, size = 24.dp, tint = Theme.colors.muted) }
                 }
             }
             when {

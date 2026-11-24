@@ -1,0 +1,245 @@
+package org.medianexus.music.ui.lists
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
+import org.medianexus.music.R
+import org.medianexus.music.library.Arrange
+import org.medianexus.music.library.Library
+import org.medianexus.music.library.LibrarySnapshot
+import org.medianexus.music.library.ListView
+import org.medianexus.music.library.columns
+import org.medianexus.music.ui.downloads.rememberDownloadMarks
+import org.medianexus.music.ui.downloads.rowMark
+import org.medianexus.music.ui.parts.ActionBar
+import org.medianexus.music.ui.parts.PageState
+import org.medianexus.music.ui.parts.PageStatus
+import org.medianexus.music.ui.parts.SkeletonRows
+import org.medianexus.music.ui.parts.TitleBar
+import org.medianexus.music.ui.parts.TrackRow
+import org.medianexus.music.ui.parts.TrackRowData
+import org.medianexus.music.ui.parts.clock
+import org.medianexus.music.ui.parts.songCount
+import org.medianexus.music.ui.shell.LocalUi
+import org.medianexus.music.ui.shell.SongMenu
+import org.medianexus.music.ui.shell.likedSongs
+import org.medianexus.music.ui.theme.Theme
+
+/** The Songs page on its own (Library's chip shows the same without a title bar). */
+@Composable
+fun SongsPage() {
+    val ui = LocalUi.current
+    Column(Modifier.fillMaxSize()) {
+        TitleBar(stringResource(R.string.songs), onBack = ui.navigator::back)
+        SongsContent()
+    }
+}
+
+/** What the Songs page shows for one order and one find: places in the copy's song table,
+ *  for that very copy. */
+private class Shown(val copy: LibrarySnapshot, val view: ListView, val order: IntArray)
+
+/**
+ * Every song in the library, the newest arrivals first, sortable and findable, as Windows
+ * has it (`all_songs`): made from the copy of the library kept on the phone, so it is there
+ * at once, with or without the server, and fills as the first copy arrives. A song is made
+ * into a row only when its row is shown: 50,000 of them are a list of places, not of songs.
+ * Tapping one plays what is shown, in the order shown, from that song; the service reads
+ * the songs from the copy itself (the screen never holds them all).
+ */
+@Composable
+fun SongsContent() {
+    val ui = LocalUi.current
+    val res = LocalResources.current
+    val account = ui.account
+    val copy by (account?.copy?.state ?: remember { MutableStateFlow(null) }).collectAsStateWithLifecycle()
+    val fetching by (account?.copy?.fetching ?: remember { MutableStateFlow(null) }).collectAsStateWithLifecycle()
+    val read by (account?.copy?.read ?: remember { MutableStateFlow(false) }).collectAsStateWithLifecycle()
+    val settings by ui.graph.settings.state.collectAsStateWithLifecycle()
+    val key = Library.SONGS
+    val opening = remember { ListView.opening(key, settings.lists[key]) }
+    var sorted by rememberSaveable { mutableIntStateOf(-1) }
+    var descending by rememberSaveable { mutableStateOf(false) }
+    val box = rememberTextFieldState()
+    val view = ListView(if (sorted < 0) opening.sort else sorted, if (sorted < 0) opening.descending else descending, box.text.toString())
+    // Worked out off the main thread (the newest-first order of the copy is a sort of every
+    // song, made once a copy; a find or another order on top of it, at each change). What was
+    // shown stays until the new arrangement is ready, if it is of the same copy.
+    val shown by produceState<Shown?>(null, copy, view) {
+        val snap = copy ?: return@produceState
+        if (value?.copy !== snap) value = null
+        value = withContext(Dispatchers.Default) {
+            val newest = snap.newestFirst
+            val order = if (view.isDefault) newest else {
+                val table = snap.songs
+                // Places in the newest-first list, then back to places in the table.
+                Arrange.arrange(table.columns(newest), view) { Arrange.dayStart(table.createdMillis(newest[it]) / 1000) }.let { at -> IntArray(at.size) { newest[at[it]] } }
+            }
+            Shown(snap, view, order)
+        }
+    }
+    val marks = rememberDownloadMarks()
+    val likedSet = likedSongs()
+    val player = ui.player
+    val from by player.from.collectAsStateWithLifecycle()
+    val queueShuffle by player.shuffle.collectAsStateWithLifecycle()
+    val shuffle = if (key == from.source) queueShuffle else settings.lists[key]?.shuffle ?: false
+    val list = rememberLazyListState()
+    val now = shown
+    val table = now?.copy?.songs
+    val context = stringResource(R.string.songs)
+
+    // The place of a song (by its place in the table) in the newest-first list: what the
+    // service is told, and what marks the row playing.
+    val ownPlace = remember(now?.copy) {
+        val newest = now?.copy?.newestFirst
+        if (newest == null) IntArray(0) else IntArray(newest.size).also { places -> for ((i, t) in newest.withIndex()) places[t] = i }
+    }
+    fun play(row: Int, any: Boolean = false) {
+        val n = now ?: return
+        val t = n.order.getOrNull(row) ?: return
+        val near = ArrayList<String>()
+        for (step in 1..org.medianexus.music.playback.StartPlace.NEIGHBOURS) {
+            n.order.getOrNull(row + step)?.let { near += n.copy.songs.id(it) }
+            n.order.getOrNull(row - step)?.let { near += n.copy.songs.id(it) }
+        }
+        player.playPage(key, ownPlace[t], n.copy.songs.id(t), near, context, anyStart = any, view = n.view)
+    }
+
+    when {
+        account == null -> return
+        copy == null && !read -> SkeletonRows()
+        copy == null || (copy?.songs?.size == 0 && fetching == null && copy?.complete == true) -> {
+            val offline = org.medianexus.music.ui.downloads.reachNow().offline
+            PageStatus(PageState.Empty(stringResource(if (offline && fetching == null) R.string.songs_offline_empty else R.string.songs_empty), icon = R.drawable.ic_music))
+        }
+        else -> LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
+            item(key = "head", contentType = "head") {
+                val total = copy?.songs?.size ?: 0
+                // (What it is, "Songs", is said just above: by Library's chip, or the page's title.)
+                Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).padding(top = 8.dp)) {
+                    BasicText(res.getString(R.string.songs_newest_first, songCount(res, total)), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+                    fetching?.takeIf { it.first }?.let {
+                        BasicText(res.getString(R.string.songs_arriving, songCount(res, it.songs)), Modifier.padding(top = 2.dp), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+                    }
+                }
+            }
+            item(key = "actions", contentType = "actions") {
+                ActionBar(
+                    title = context,
+                    canPlay = now?.order?.isNotEmpty() == true,
+                    playing = from.isList(key) && !from.paused,
+                    onPlay = { if (from.isList(key)) player.playPause() else play(0, any = true) },
+                    shuffle = shuffle,
+                    onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
+                )
+            }
+            item(key = "find", contentType = "find") {
+                FindAndSort(box, view, playlist = false, onSort = { choice ->
+                    val next = view.sortedBy(choice)
+                    sorted = next.sort
+                    descending = next.descending
+                    ui.rememberSort(key, next)
+                })
+            }
+            when {
+                now == null || table == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
+                now.order.isEmpty() -> item(key = "nothing", contentType = "empty") {
+                    Box(Modifier.fillMaxWidth().heightIn(min = 160.dp), contentAlignment = Alignment.Center) {
+                        PageStatus(PageState.Empty(stringResource(R.string.nothing_matches_here, view.filter.trim())))
+                    }
+                }
+                else -> items(now.order.size, key = { row -> table.id(now.order[row]) }, contentType = { "song" }) { row ->
+                    val t = now.order[row]
+                    // Made when the row is shown, and kept while it is.
+                    val song = remember(table, t) { table.song(t) }
+                    val base = remember(song, row) {
+                        val detail = if (song.album.isNotEmpty()) "${song.artistLabel} • ${song.album}" else song.artistLabel
+                        TrackRowData(song.id, song.title, detail, song.coverArt, (row + 1).toString(), clock(song.duration))
+                    }
+                    val current = from.isRow(key, ownPlace.getOrElse(t) { -1 }, song.id)
+                    TrackRow(
+                        base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
+                        onClick = { play(row) },
+                        onMore = { ui.menu = SongMenu(song) },
+                        showDuration = true,
+                        mark = marks.rowMark(song),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Recently played: the last hundred songs played, newest first, each playable again by itself
+ * (Windows' side panel tab). The song playing now is left off the top, as Windows leaves it:
+ * the player already shows it.
+ */
+@Composable
+fun RecentlyPlayedPage() {
+    val ui = LocalUi.current
+    val account = ui.account
+    val played by (account?.recentlyPlayed?.state ?: remember { MutableStateFlow(emptyList()) }).collectAsStateWithLifecycle()
+    val playing by ui.player.song.collectAsStateWithLifecycle()
+    val marks = rememberDownloadMarks()
+    val likedSet = likedSongs()
+    val songs = remember(played, playing?.id) {
+        val hidden = if (playing != null && played.firstOrNull()?.song?.id == playing?.id) 1 else 0
+        played.drop(hidden)
+    }
+    Column(Modifier.fillMaxSize()) {
+        TitleBar(stringResource(R.string.recently_played), onBack = ui.navigator::back)
+        if (songs.isEmpty()) {
+            PageStatus(PageState.Empty(stringResource(R.string.recently_played_empty), icon = R.drawable.ic_history))
+            return@Column
+        }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            items(songs.size, key = { "${songs[it].at}/${songs[it].song.id}/$it" }, contentType = { "song" }) { row ->
+                val song = songs[row].song
+                val base = remember(song) {
+                    val detail = if (song.album.isNotEmpty()) "${song.artistLabel} • ${song.album}" else song.artistLabel
+                    TrackRowData(song.id, song.title, detail, song.coverArt, duration = clock(song.duration))
+                }
+                TrackRow(
+                    base.copy(liked = song.id in likedSet),
+                    // By itself, as if it had been picked on its own (Windows' `play_history`).
+                    onClick = { ui.play(listOf(song), 0, "") },
+                    onMore = { ui.menu = SongMenu(song) },
+                    showDuration = true,
+                    mark = marks.rowMark(song),
+                )
+            }
+        }
+    }
+}

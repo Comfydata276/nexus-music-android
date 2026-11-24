@@ -464,13 +464,13 @@ class Queue internal constructor(order: MutableList<Int>) {
      * order, as [followList] has it. Returns false if there was nothing to follow (another
      * list, or no change).
      */
-    fun follow(ids: List<String>, songAt: (Int) -> Song?, random: Random = Random.Default): Boolean {
+    fun follow(ids: List<String>, songAt: (Int) -> Song?, random: Random = Random.Default, view: List<Int> = ids.indices.toList()): Boolean {
         if (isEmpty || sourceList.isEmpty() || sourceList == ids) return false
         revision++
         val (moved, arrivals) = compareLists(sourceList, ids)
         val lineup = followList(
             Lineup(songs.toList(), origins.toList(), order.toList(), cursor, uids.toList()),
-            shuffle, moved, arrivals, ids.indices.toList(), songAt,
+            shuffle, moved, arrivals, view, songAt,
         ) { n -> random.nextInt(n.coerceAtLeast(1)) }
         songs.clear(); songs.addAll(lineup.songs)
         uids.clear(); lineup.entries.mapTo(uids) { if (it < 0) newUid() else it }

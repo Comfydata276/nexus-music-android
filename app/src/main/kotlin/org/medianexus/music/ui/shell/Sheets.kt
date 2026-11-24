@@ -3,6 +3,7 @@ package org.medianexus.music.ui.shell
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +56,13 @@ sealed interface Sheet {
 
     /** Something that can't be taken back, said and asked (Windows' prompt). */
     data class Confirm(val title: String, val detail: String, val confirm: String, val onConfirm: () -> Unit) : Sheet
+
+    /** The orders a list can be shown in (Windows' "Sort by" menu): the one in use marked,
+     *  with which way it runs. `ownOrder` is what the list's own order is called. */
+    data class SortBy(val view: org.medianexus.music.library.ListView, val ownOrder: String, val onChoose: (Int) -> Unit) : Sheet
+
+    /** Everything known about a song (Windows' "Song details"). */
+    data class SongDetails(val song: org.medianexus.music.net.Song) : Sheet
 }
 
 /** The sheet [Ui.sheet] names, over everything, in the colours of the song's menu. */
@@ -113,6 +121,35 @@ fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
                         }
                     }
                 }
+                is Sheet.SortBy -> {
+                    Words(stringResource(R.string.sort_by), "")
+                    for (sort in 0 until org.medianexus.music.library.ListView.SORTS) {
+                        val chosen = sort == sheet.view.sort
+                        val name = if (sort == org.medianexus.music.library.ListView.OWN) sheet.ownOrder else stringResource(org.medianexus.music.ui.lists.sortWord(sort, playlist = false))
+                        val way = when {
+                            !chosen || sort == org.medianexus.music.library.ListView.OWN -> ""
+                            sheet.view.descending -> stringResource(R.string.sort_descending)
+                            else -> stringResource(R.string.sort_ascending)
+                        }
+                        SortEntry(
+                            icon = when {
+                                !chosen -> null
+                                sort == org.medianexus.music.library.ListView.OWN -> R.drawable.ic_check
+                                sheet.view.descending -> R.drawable.ic_arrow_down
+                                else -> R.drawable.ic_arrow_up
+                            },
+                            text = name,
+                            said = if (way.isEmpty()) name else "$name, $way",
+                            selected = chosen,
+                        ) { choose { sheet.onChoose(sort) } }
+                    }
+                }
+                is Sheet.SongDetails -> {
+                    org.medianexus.music.ui.menu.SongDetailsContent(sheet.song)
+                    androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                        TextButton(stringResource(R.string.close), onClick = { choose {} })
+                    }
+                }
                 is Sheet.Confirm -> {
                     Words(sheet.title, sheet.detail)
                     // (A button too wide to sit beside the other, with large type on a narrow
@@ -148,6 +185,27 @@ private fun Entry(@DrawableRes icon: Int, text: String, onClick: () -> Unit) {
     ) {
         Icon(icon, size = 20.dp, tint = Theme.colors.muted)
         BasicText(text, style = Theme.type.body.copy(color = Theme.colors.text, fontSize = Theme.type.rowTitle.fontSize), maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** One of the orders in the "Sort by" sheet: the one in use has its mark (a tick, or the
+ *  way it runs); the others keep the mark's room, so the words line up. */
+@Composable
+private fun SortEntry(@DrawableRes icon: Int?, text: String, said: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = said }
+            .padding(horizontal = Theme.dimens.pagePad),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+            if (icon != null) Icon(icon, size = 20.dp, tint = Theme.colors.accentBright)
+        }
+        BasicText(text, style = Theme.type.body.copy(color = if (selected) Theme.colors.text else Theme.colors.muted, fontSize = Theme.type.rowTitle.fontSize), maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 

@@ -60,6 +60,10 @@ class SearchModel(
     scope: CoroutineScope?,
     private val search: suspend (String) -> Found,
     private val waitMillis: Long = WAIT_MILLIS,
+    /** Whether an answer comes at once, from the phone (its copy of the library, or what is
+     *  on it offline): then typing doesn't pause first, as Windows' preview doesn't, and each
+     *  keystroke replaces the search before it. */
+    private val instant: () -> Boolean = { false },
 ) {
     /** The words, which change of them this is, and whether it is to go at once. */
     private data class Ask(val query: String, val serial: Long, val now: Boolean = false)
@@ -81,14 +85,20 @@ class SearchModel(
         typed
             // Clearing the box, or trying again, is acted on at once; words wait for the
             // typing to pause.
-            .debounce { if (it.query.isBlank() || it.now) 0 else waitMillis }
+            .debounce { if (it.query.isBlank() || it.now || instant()) 0 else waitMillis }
             .collectLatest { ask -> if (ask.serial != done) carryOut(ask) }
     }
+
+    /** When the words in the box last changed (System.nanoTime), for timing how soon what
+     *  they found is shown. */
+    @Volatile var typedAt = 0L
+        private set
 
     /** The words in the box now. */
     fun type(text: String) {
         val query = text.trim()
         if (query == typed.value.query) return
+        typedAt = System.nanoTime()
         typed.value = Ask(query, ++serials)
         // Whatever was found for other words stops being shown at once, not when the next
         // search answers.

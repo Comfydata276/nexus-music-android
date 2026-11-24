@@ -41,18 +41,13 @@ object LocalSearch {
         return indexOf(songs).find(query, limits, liked) ?: Found()
     }
 
-    /** The last index made, and the songs it was made of: the songs that play change only
-     *  when something is downloaded or kept, and every keystroke searches them. */
-    @Volatile private var last: Pair<List<String>, ListIndex>? = null
+    /** The last index made: the songs that play change only when something is downloaded or
+     *  kept, and every keystroke searches them. Known by the songs themselves, every field,
+     *  not their ids: another account's server can use the same ids for other songs. */
+    @Volatile private var last: ListIndex? = null
 
     private fun indexOf(songs: List<Song>): ListIndex {
-        val ids = songs.map { it.id }
-        last?.let { (had, index) -> if (had == ids) return index }
-        return ListIndex(songs, OnThePhone.albums(songs), OnThePhone.artists(songs)).also { last = ids to it }
-    }
-
-    /** Forgets the index kept (an account has gone: its songs are not the next one's). */
-    fun forget() {
-        last = null
+        last?.let { if (it.songs == songs) return it }
+        return ListIndex(songs, OnThePhone.albums(songs), OnThePhone.artists(songs)).also { last = it }
     }
 }
