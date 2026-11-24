@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# The end-to-end check of keeping in step: the phone's code and the Windows app's own code
+# exchanging in turn through a real Navidrome (docs/TESTING.md, "In step with other devices").
+#
+#   scripts/instep-check          starts a test server of its own (instance "step"), builds
+#                                 the Windows code (tools/instep), runs InStepLiveTest
+#                                 against both, and stops the server
+#   scripts/instep-check --keep   leaves the server running afterwards (for the emulator)
+#
+# Needs Docker, the app's build image and the Windows app's (see tools/instep/README.md).
+# The server is wiped first: it is this check's own, and nothing else uses it.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+keep=false
+[ "${1:-}" = "--keep" ] && keep=true
+export NEXUS_TEST_PORT="${NEXUS_STEP_PORT:-4536}"
+
+scripts/server --instance step start >/dev/null
+scripts/server --instance step reset >/dev/null
+$keep || trap 'scripts/server --instance step stop >/dev/null || true' EXIT
+
+program="$(tools/instep/run build | tail -1)"
+mkdir -p build/instep
+cp "$program" build/instep/instep
+
+status=0
+DX_DOCKER_ARGS="-e NEXUS_STEP_SERVER=http://127.0.0.1:$NEXUS_TEST_PORT -e NEXUS_STEP_TOOL=/work/build/instep/instep" \
+  scripts/dx ./gradlew --no-daemon :app:cleanTestDebugUnitTest :app:testDebugUnitTest --tests '*InStepLiveTest*' >build/instep/gradle.txt 2>&1 || status=$?
+if [ -f app/build/instep/live.txt ]; then cat app/build/instep/live.txt; fi
+if [ "$status" -ne 0 ]; then
+  grep -E 'FAILED|AssertionError|expected|at org.medianexus' build/instep/gradle.txt | head -20 >&2 || true
+  echo "scripts/instep-check: FAILED (the whole of Gradle's output is in build/instep/gradle.txt)" >&2
+else
+  echo "scripts/instep-check: the phone and the Windows code kept in step"
+fi
+exit "$status"

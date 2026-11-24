@@ -5,6 +5,7 @@
 #   tools/instep/run reads <file>     checks texts the phone's Kotlin wrote (a path in this repository)
 #   tools/instep/run pc --server http://127.0.0.1:4535 --user tester --password ... --state <file>
 #   tools/instep/run peek|plant|queue-save|queue-get ...
+#   tools/instep/run build            builds it, and says where the program is
 #
 # It compiles the Windows app's source where it lies (../nexus-music/src, or NEXUS_WINDOWS_SRC),
 # read-only, and builds outside both repositories (the cache folder). Nothing is written to
@@ -25,12 +26,19 @@ args=("$@")
 if [ "${1:-}" = "cases" ] && [ $# -eq 1 ]; then
   args=(cases /work/app/src/test/resources/instep-cases.json)
 fi
+# `build`: only that, and where the program then is (for scripts/instep-check).
+run=(cargo run --quiet --release --)
+if [ "${1:-}" = "build" ]; then
+  run=(cargo build --quiet --release)
+  args=()
+  trap 'echo "$cache/instep-target/release/instep"' EXIT
+fi
 # shellcheck disable=SC2086
-exec docker run --rm ${DX_DOCKER_ARGS:-} \
+docker run --rm ${DX_DOCKER_ARGS:-} \
   -u "$(id -u):$(id -g)" --network host \
   -e HOME=/home/dev -e CARGO_TARGET_DIR=/target -e NEXUS_WINDOWS_SRC=/win/src \
   -v "$root":/work -v "$windows":/win/src:ro \
   -v "$cache/home":/home/dev -v "$cache/instep-target":/target \
   -v "$cache/cargo/registry":/opt/cargo/registry -v "$cache/cargo/git":/opt/cargo/git \
   -w /work/tools/instep nexus-music-dev \
-  cargo run --quiet --release -- "${args[@]}"
+  "${run[@]}" "${args[@]}"
