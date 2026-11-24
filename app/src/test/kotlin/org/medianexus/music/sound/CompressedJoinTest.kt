@@ -42,12 +42,12 @@ import org.robolectric.RuntimeEnvironment
  * The gain at a join between compressed songs, and its limit: the real ExoPlayer, the app's
  * audio renderer and Media3's sink, two padded MP3s. A real decoder gives back its output
  * some frames after the input it came from; here a decoder of the test's own holds four
- * frames back (each keeps its own time). Each decoded frame carries which song it is, and
+ * frames back (each keeps its own time) and holds at most eight. Each decoded frame carries which song it is, and
  * every frame that reaches the output is checked against the gain of the song it belongs to.
  *
  * **The limit, accepted.** Media3's renderer tells the sink the period it is *reading* when
  * the decoder's output changes format, and the gain is found from that period. A song
- * shorter than what the decoder holds at once (here four frames, about 100 ms; on a phone
+ * shorter than what the decoder holds at once (here eight frames, about 200 ms; on a phone
  * some tens of milliseconds) has been read to its end before its first sound comes out, so
  * the sink is told the next song and the short one takes its neighbour's level. Telling the
  * sink the period each format was read from fixed that, but it sat in the renderer that keeps
@@ -98,7 +98,8 @@ class CompressedJoinTest {
 
     /**
      * A decoder that gives back each frame four frames after it was given it, with that
-     * frame's own time, as 1,152 stereo samples of the frame's mark times [level].
+     * frame's own time, as 1,152 stereo samples of the frame's mark times [level]; and, as a
+     * real one with its few buffers, takes no more input while it holds [DEPTH] frames.
      */
     private inner class LateDecoder : MediaCodecAdapter {
         private val inputs = Array(8) { ByteBuffer.allocate(4096) }
@@ -111,7 +112,8 @@ class CompressedJoinTest {
         private var ending = false
         private var lastTime = 0L
 
-        override fun dequeueInputBufferIndex(): Int = freeInputs.removeFirstOrNull() ?: MediaCodec.INFO_TRY_AGAIN_LATER
+        override fun dequeueInputBufferIndex(): Int =
+            if (held.size + ready.size >= DEPTH) MediaCodec.INFO_TRY_AGAIN_LATER else freeInputs.removeFirstOrNull() ?: MediaCodec.INFO_TRY_AGAIN_LATER
 
         override fun getInputBuffer(index: Int): ByteBuffer = inputs[index].also { it.clear() }
 
@@ -248,6 +250,7 @@ class CompressedJoinTest {
 
     private companion object {
         const val LATENCY = 4
+        const val DEPTH = 8
         const val FRAMES = 77
     }
 }
