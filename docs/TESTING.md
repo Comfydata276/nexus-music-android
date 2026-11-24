@@ -843,6 +843,60 @@ ms, most of it looking for 5,000 files; whether a song plays 1.6 µs (10,000 ask
 everything that plays (the car's offline tabs and search) 2.2 ms; the Downloads tab's albums
 11 ms and its songs 2.3 ms; the list on disk 751 KB.
 
+**What was checked for M2b** (the screens), on the Android 16 emulator unless said;
+pictures under `~/.cache/nexus-music-android/shots/m2b/` (`default/`, `narrow/` at 360dp and
+1.3 font scale, `side/` on its side, `android9/`, and the walk's own numbered pictures at the
+top), reports under `reports/m2b/`:
+
+- Downloads, through a slowed link (`scripts/slowlink start 150`, then 40): an album and the
+  100-song playlist from their pages' buttons. Rows showed waiting and arriving bars and then
+  the downloaded mark; the header's ring filled with "5 / 100" beside it; the Downloads chip
+  showed each song's bar, "Downloading 1 of 95", the batch's bar and Cancel all. Tapping the
+  downloaded button offered "Remove from downloads", which removed it ("Removed from
+  downloads").
+- The server cut mid-batch (`scripts/slowlink cut`): the pill said "Can't reach server" on
+  every page, the batch line said so, nothing failed; brought back, the batch finished by
+  itself (100 of 100).
+- **Failures**: a server that is there but won't send one song can't be made on this rig
+  (hiding a file makes Navidrome drop the song at once; the link only slows or cuts, and a cut
+  server pauses downloads rather than failing them, by design). So the failed list was seen by
+  writing two failures into a debug build's `failed.json` as the app writes them (reasons "The
+  server didn't send the song." and "The server refused it (HTTP 404)."): the page showed
+  Windows' line ("“Rust Thunder” and 1 other song couldn't be downloaded. …"), each song with
+  its reason, and Retry failed downloaded both.
+- Offline by the switch and by the server out of reach: Home led with "Your downloads",
+  Library's chips showed what plays, an album dimmed its one song not on the phone, Search said
+  "Offline: searching only what's on this phone". From a cold start with the server cut, the
+  Downloads chip was there at once ("99 songs, 95 MB"), with the pill.
+- Back online with a like and two plays held (`held changes 3` by `DebugControl`): sent within
+  seconds of the server answering, `held changes 0`; with one held, the toast was "Back online.
+  The change you made offline has been sent to your server" (first seen as two toasts, the
+  second replacing the first at once; now one sentence).
+- Streaming quality changed mid-song: the log said "streaming quality changed: the song playing
+  is opened again at 160 kbps", then the song opened again at its place; a song playing from
+  its download was left alone.
+- Android 17 (release, the measurements below) and Android 9 (release): Downloads chip, a
+  playlist downloaded, offline mode on (pill, Home's downloads shelf) and off. No crash of the
+  app on either. (Android 9's tombstones are the system's `surfaceflinger`, aborting each time
+  the emulator is stopped.)
+
+**The car, M2b, release build, Android 16** (reports `reports/m2b/carcheck-*-11543*`,
+`-115453`, `-115455`): with two albums downloaded, the whole check 48 passed and none failed
+online (one warning, the empty playlist); with the server stopped, `--mode offline` 25 and none,
+and the whole check 49 and none. "Play" something that isn't there is now answered "Couldn't
+find that in your library", with nothing of the words in it.
+
+**Measured for M2b** (release build, Android 17, signed in, kept;
+`reports/measure-org.medianexus.music-20261124-1156*` to `-1202*`): APK 6,062,082 bytes (M2a:
+5,972,406); cold start 575 ms median, 489 to 586 (528 to 561); idle 71.0 MB (65.4 to 73.9);
+playing 85.1 MB, 84.7 in the background (86.7, 86.8); the 100-song playlist 8.96% slow frames
+(9.2 to 9.6). **The 5,000-song playlist** (`scripts/server longlist`, the library's 100 songs
+over and over, taken away again afterwards): with every row marked downloaded, 7.64% slow
+frames; with nothing downloaded, the same day, 8.71% (M1b fixes: 8.7%). Scrolling it while songs
+of it arrive was not measured reliably: the measuring script force-stops the app between
+runs, and by hand the batch finished in under a minute even through the slow link, before the
+scrolling could be timed.
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account

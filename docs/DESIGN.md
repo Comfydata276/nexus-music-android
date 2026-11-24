@@ -803,6 +803,27 @@ Wi-Fi only on, they waited, and carried on when it was back.
   player does the same); out of reach, the app is offline until it answers.
 - **The covers of downloaded music** are copies of the 640-pixel cover, kept with the downloads.
 
+### What the design left open, and what was decided (M2b)
+
+- **A list's download button offers removal** in a sheet rather than removing at once (Windows
+  removes at once); **Remove all** in Settings asks first ("Remove all downloads?"), which
+  Windows doesn't. Losing everything to a brushed button is costly where the music is for a
+  drive with no signal.
+- **A song that couldn't be downloaded is marked on its row** (Lucide's circle-alert, in the
+  warm colour); Windows lists failures only on its Downloads page.
+- **Downloads is a chip of Library** (the brief), and also a page (from the offline sheet,
+  Home's "Show all" offline). The Playlists chip no longer has a Downloads row.
+- **The Downloads page groups** as the car's tab does (playlists, albums, songs) with sizes;
+  Windows' page is one list of songs.
+- **Settings keeps Windows' sections as chips**, so Streaming quality is under Sound and
+  Offline mode first under Storage, as on Windows, rather than in the order the brief listed.
+  Its "playing now" line is the player's format line, not Windows' longer sentence.
+- **The offline indication is a pill in the title bars**, as Windows' top bar has it, rather
+  than a bar at the foot, where the notices, the home network's bar and the mini player are.
+- **Held changes sent** is said in words of the app's own (Windows says only "Back online").
+- **The account's server version** isn't shown under Account (Windows shows it): nothing keeps
+  it yet.
+
 ## Working with the Windows app
 
 The phone is one more device on the same account. These must match the Windows app byte
@@ -927,13 +948,14 @@ How it is built (M1b):
   and Remove. Below 400dp the songs' lengths are left out so their names have room. The
   sheet comes up to the foot of Now Playing's top bar, no further; in a short window on its
   side what it holds scrolls, its heading in sight, clear of a side navigation bar.
-- **A song's menu** has what works so far: Play next, Add to queue, like, Go to album, Go to
+- **A song's menu** has what works so far: Play next, Add to queue, like, Download (or Cancel
+  download, or Remove download, as it stands), Go to album, Go to
   artist (each credited artist when there are several), and Remove from queue from the
   queue. Nothing that does nothing yet is shown.
 - **Home**: the greeting, four quick tiles (two lines of two, as Windows on a narrow window),
   then Recently added, Recently played, Most played, It's been a while and Something
   different, each sideways. "Made for you" and "Artists you might like" come later.
-- **Library**: chips for Playlists, Albums, Artists and Genres. Liked songs heads the
+- **Library**: chips for Playlists, Albums, Artists, Genres and Downloads. Liked songs heads the
   playlists, then the pinned ones, then the rest by name. Albums have Windows' seven sorts
   as a second row of chips, sixty at a time as the grid scrolls; Home's "Show all" opens them.
   Paging (`AlbumPages`): a page that brings only albums already shown still counts as
@@ -964,7 +986,8 @@ How it is built (M1b):
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
   a like the server refused).
-- **Notifications** are asked for once, at the first download, for the downloads' progress
+- **Notifications** are asked for once, at the first download (by the shell, `Ui.askToDownload`,
+  which is still there when the answer comes: a song's menu has closed by then), for the downloads' progress
   notification (Android 13 and later). The player's never needed it: Android exempts
   media-session notifications, so its controls appear with it refused (checked on Android
   17), and downloads run with it refused too.
@@ -999,6 +1022,65 @@ How it is built (M1b):
   that opens the app.
 - **Passwords**: the password field gives accessibility services dots, as a system password
   field does, not the password (Compose's own secure field gave them the text).
+
+How it is built (M2b):
+
+- **Download marks on rows** (`RowMark`, `DownloadMarks`): a row shows where its song's
+  download stands as Windows' `TrackRow` does (downloaded: the arrow in a circle before the
+  artist; waiting or arriving: a bar in place of the length; couldn't be downloaded: a mark of
+  its own in the warm colour, which Windows doesn't have), and offline a song that doesn't play
+  is dimmed, can't be tapped, and is said to be unavailable. The downloads change twice a
+  second while songs arrive; a page never reads them itself. Each row reads its own mark
+  through `derivedStateOf`, so a tick redraws the rows whose mark changed and nothing else, as
+  Windows marks only the row of the song that moved (`mark_download`). Measured: a 5,000-song
+  list scrolls the same with every row marked as with none (TESTING.md).
+- **A list's download button** is Windows' `ActionBar` button: the arrow; while any of it is
+  on its way, a ring that fills (counting songs part-way) with a square to stop it and "12 /
+  40" beside it; all of it downloaded, the filled arrow in the accent. Worked out
+  (`ListDownload`) from the list's songs as a set, made once for the list. Tapped when all of
+  it is downloaded, it **offers** to remove it (a sheet with "Remove from downloads"): Windows
+  removes at once, but a thumb brushes a button more easily than a pointer.
+- **The Downloads page** (`DownloadsContent`: Library's chip, and a page of its own) is
+  Windows' `show_downloads` grouped for a phone, like the car's Downloads tab: the summary
+  ("12 songs, 340 MB, and 3 more on their way"), play and shuffle, and while a batch runs its
+  ring; "Downloading" with the batch's line ("Downloading 3 of 12", or why it waits: Wi-Fi, a
+  connection, offline mode, the server), a bar, Cancel all and each song with its bar and
+  Cancel; "Couldn't be downloaded" with Windows' line, Retry failed and each song with its
+  reason; then Playlists (downloaded whole), Albums (anything of them downloaded) and Songs,
+  each with the room it takes (`DownloadsView`). All from the downloads' own record: it opens at
+  once with no server from a cold start. A playlist or album opened from it is the downloads'
+  copy (`Route.Downloaded`, `DownloadedListPage`), which needs neither server nor kept page;
+  an album, playlist or Liked songs page opened offline with no kept copy falls back to it.
+  Played from there, a list is named `downloads`, `downloads:album:<id>` or `downloads:<list>`,
+  and the service reads it from the downloads' record (`DownloadedViews.songsFor`), as the car
+  does, rather than 5,000 songs being written across to it.
+- **Offline, visibly** (`OfflinePill`): Windows' pill in the warm colour, in every page's title
+  bar and on Now Playing, "Offline mode" when switched on by hand, "Can't reach server" when the
+  server stopped answering. Tapped, a sheet says what it means and offers the way out (Turn off
+  offline mode; Try again) and Downloads. It sits at the top so it never competes with the
+  notices, the home network's bar or the mini player at the foot; while the home network's bar
+  is up (which says why nothing answers), the pill doesn't repeat it. Pages don't each show a
+  "can't reach the server" strip while offline (the pill says it once); a page with nothing
+  kept says it isn't on this phone. **Home** leads with "Your downloads" (the lists and albums
+  on the phone) and keeps only albums with something that plays; **Library**'s Albums, Artists
+  and Genres are those of the songs that play (`OnThePhone`, which the car's tree uses too),
+  its playlists those downloaded whole or kept with a song that plays; **Search** looks only in
+  the songs that play (`LocalSearch`) and says so; a genre shows its albums on the phone.
+- **Coming back**: "Back online" when the server answers after being out of reach; offline
+  mode switched off by hand and the server found there catches up the same way (Windows'
+  `check_connection`), without saying so; if held changes were sent, it is said once ("Back
+  online. The 2 changes you made offline have been sent to your server"). Pages that failed
+  ask again, as before.
+- **Settings** (`SettingsPage`) is Windows' `SettingsPage`: its sections as a row of chips
+  (Appearance, Playback, Sound, Storage, Account, About; Requests and Jam come with M6 and M7),
+  its `SettingRow` (name, what it does, the control at the end, or under the words when it is
+  wide, a rule under it), `SettingHeading`, and its order and words, with only what works on
+  the phone: the theme; Report plays to Navidrome; Streaming quality with Windows' words for
+  each and what is playing now (changed mid-song, the song switches at once, as Windows'
+  `reload_current`; not one playing from its download); Offline mode; Downloads (Download
+  quality, Download on Wi-Fi only, Downloaded songs with Remove all); Kept songs (the space,
+  with what is kept now, and Fetch ahead); the account and Sign out; the version, Diagnostics
+  and Licences (the fonts' OFL, Lucide's ISC and the known media apps' Apache notice, in full).
 
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed
