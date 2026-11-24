@@ -7,6 +7,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RenderersFactory
@@ -182,6 +183,71 @@ class SoundProcessorTest {
         val realB = 4000 - delay - padding
         assertEquals("the two songs' real frames, then the last one's padding", realA + realB + padding, out.size)
         assertTrue("none of the first song's padding, nor the second's delay", out.copyOfRange(0, realA + realB).all { it > 0 })
+    }
+
+    /** The largest sample of a run, as a fraction of full scale. */
+    private fun ShortArray.peak(from: Int = 0, to: Int = size) = (from until to).maxOf { abs(this[it].toInt()) } / 32768f
+
+    /**
+     * Rule 2: whatever ramp is in progress, every sample that could be pushed past where it was
+     * goes through the limiter, all of it, and none is over full scale. A near-full-scale
+     * passage with levelling switched on at Loud (a gain of 1.41) part-way through.
+     */
+    @Test
+    fun switched_on_at_loud_mid_song_no_sample_goes_over_full_scale_during_the_ramp() {
+        val processor = SoundProcessor()
+        val rig = Rig(processor)
+        // +3 dB of tag at Loud's +7 wants +10 dB; the peak allows 1.41 and no more.
+        val timeline = timelineOf(song("a", gain = ReplayGain(trackGain = 3f, trackPeak = 1f)))
+        val input = sine(44_100, hz = 220.0, level = 0.99)
+        rig.begin(timeline, 0)
+        rig.feed(input.copyOfRange(0, 10_000))
+        processor.sound = Sound.of(Settings(normalize = true, volumeLevel = 2), false)
+        rig.feed(input.copyOfRange(10_000, 44_100))
+        rig.end()
+        val out = rig.left()
+        assertTrue("under full scale through the ramp: ${out.peak(10_000, 13_000)}", out.peak(10_000, 13_000) < 32767 / 32768f)
+        assertTrue("and after it: ${out.peak(13_000)}", out.peak(13_000) < 32767 / 32768f)
+        assertTrue("turned up, not left alone", out.peak(20_000) > 0.99f)
+    }
+
+    /** Runs float stereo frames (left and right the same) through the processor itself, in
+     *  buffers of 1,000, switching to `then` at frame `at`; gives back the left channel. In
+     *  float, "over full scale" is exact (in 16 bits a sample at full scale is clamped by one
+     *  step, which can't be told from a clip). */
+    private fun floatRun(processor: SoundProcessor, timeline: Timeline, input: FloatArray, at: Int, then: Sound): FloatArray {
+        processor.configure(AudioProcessor.AudioFormat(rate, 2, C.ENCODING_PCM_FLOAT))
+        processor.flush(AudioProcessor.StreamMetadata.Builder().setTimeline(timeline).setPeriodUid(timeline.getUidOfPeriod(0)).build())
+        val out = ArrayList<Float>()
+        var i = 0
+        while (i < input.size) {
+            if (i == at) processor.sound = then
+            val n = minOf(1000, input.size - i, if (i < at) at - i else Int.MAX_VALUE)
+            val buffer = ByteBuffer.allocateDirect(n * 8).order(ByteOrder.nativeOrder())
+            for (k in i until i + n) buffer.putFloat(input[k]).putFloat(input[k])
+            buffer.flip()
+            processor.queueInput(buffer)
+            val got = processor.output
+            while (got.hasRemaining()) {
+                out += got.float
+                got.float
+            }
+            i += n
+        }
+        return out.toFloatArray()
+    }
+
+    /** Rule 2: the same with the equaliser switched on mid-song, a band raised 12 dB under a
+     *  near-full-scale tone at its frequency, and with Loud as well; checked in float. */
+    @Test
+    fun a_raised_band_or_loud_switched_on_mid_song_never_takes_a_sample_over_full_scale() {
+        val timeline = timelineOf(song("a", gain = ReplayGain(trackGain = 3f, trackPeak = 1f)))
+        val input = FloatArray(44_100) { (sin(2 * PI * 1000.0 * it / rate) * 0.99).toFloat() }
+        val raised = floatRun(SoundProcessor(), timeline, input, 10_000, Sound.of(Settings(equalizer = true, eqGains = listOf(0f, 0f, 0f, 12f, 0f, 0f)), false))
+        assertTrue("a raised band: ${raised.maxOf { abs(it) }}", raised.all { abs(it) <= 1f })
+        val loud = floatRun(SoundProcessor(), timeline, input, 10_000, Sound.of(Settings(normalize = true, volumeLevel = 2), false))
+        assertTrue("Loud: ${loud.maxOf { abs(it) }}", loud.all { abs(it) <= 1f })
+        assertEquals(44_100, loud.size)
     }
 
     @Test

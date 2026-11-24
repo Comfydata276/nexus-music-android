@@ -87,8 +87,12 @@ fun interface SongTags {
  *   songs the sink has drained the first through the chain before it flushes for the second,
  *   so the new gain begins on exactly the second song's first sample. Inside an album played
  *   in order both have the album's gain, and nothing changes at all.
- * - **No clicks.** A change while music plays is ramped over 50 ms (the gain, mono, the
- *   limiter), and the equaliser's bands move to their new values in small steps.
+ * - **No clicks.** A change while music plays is ramped over 50 ms (the gain, mono), and
+ *   the equaliser's bands move to their new values in small steps.
+ * - **No clipping.** Whenever a sample may have been pushed past where it was (a gain above
+ *   1, or the equaliser running), it goes through Windows' soft limiter, whole, whatever is
+ *   ramping: never faded in or out, never blended. Otherwise nothing can go over full scale,
+ *   and nothing is rounded off (Normal and Quiet never round a peak, as on Windows).
  * - **Nothing made on the audio thread** while it runs: the settings arrive as one value
  *   swapped in ([Sound]), filters and buffers are made when the format changes, and a song is
  *   looked up once, at the flush that begins it.
@@ -121,9 +125,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     private var gain = 1f
     private var gainTarget = 1f
     private var gainStep = 0f
-    private var limit = 0f
-    private var limitTarget = 0f
-    private var limitStep = 0f
     private var mono = 0f
     private var monoTarget = 0f
 
@@ -225,7 +226,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
                 stepEq()
             }
             if (gain != gainTarget) gain = approach(gain, gainTarget, gainStep)
-            if (limit != limitTarget) limit = approach(limit, limitTarget, limitStep)
             if (mono != monoTarget) mono = approach(mono, monoTarget, 1f / rampFrames)
             var sum = 0f
             for (ch in 0 until channels) {
@@ -233,7 +233,9 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
                 at += bytesPerSample
                 x *= gain
                 if (eqRunning) x = filters.run(ch, x * preamp)
-                if (limit > 0f) x += limit * (Eq.softClip(x) - x)
+                // Whatever is ramping, anything that may have been pushed past where it was
+                // goes through the limiter, whole: nothing leaves over full scale.
+                if (gain > 1f || eqRunning) x = Eq.softClip(x)
                 frame[ch] = x
                 sum += x
             }
@@ -289,14 +291,12 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     /** Points every ramp at what `s` asks for; `immediate` puts the gain there at once. */
     private fun retarget(s: Sound, immediate: Boolean) {
         gainTarget = if (hasSong) Levelling.gain(s, songTags, albumRun) else 1f
-        limitTarget = if (gainTarget > 1f || s.eqOn) 1f else 0f
         monoTarget = if (s.mono) 1f else 0f
         for (band in 0 until 6) bandTargets[band] = if (s.eqOn) s.gain(band) else 0f
         preampTarget = if (s.eqOn) s.preampDb else 0f
         if (immediate) {
             // A song beginning: everything is as it should be from its first sample.
             gain = gainTarget
-            limit = limitTarget
             mono = monoTarget
             preampDb = preampTarget
             preamp = 10f.pow(preampDb / 20f)
@@ -312,7 +312,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
             eqRunning = any
         }
         gainStep = abs(gainTarget - gain) / rampFrames
-        limitStep = 1f / rampFrames
     }
 
     /** Moves the equaliser's bands and preamp a step towards where they are going, once a
@@ -346,12 +345,11 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
 
     /** Nothing to do, and nothing still ramping. */
     private fun settled(): Boolean =
-        gain == 1f && gainTarget == 1f && limit == 0f && limitTarget == 0f && mono == 0f && monoTarget == 0f &&
+        gain == 1f && gainTarget == 1f && mono == 0f && monoTarget == 0f &&
             !eqRunning && preampDb == 0f && bands.all { it == 0f } && bandTargets.all { it == 0f } && preampTarget == 0f
 
     private fun identity() {
         gain = 1f; gainTarget = 1f; gainStep = 0f
-        limit = 0f; limitTarget = 0f
         mono = 0f; monoTarget = 0f
         bands.fill(0f); bandTargets.fill(0f)
         preampDb = 0f; preampTarget = 0f; preamp = 1f
