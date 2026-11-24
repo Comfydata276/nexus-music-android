@@ -54,7 +54,7 @@ class WireTest {
         val heard = Heard.read(Json.parseToJsonElement("""
             {"v": -3, "host": "$long", "age": 1e300,
              "state": {"playing": "yes", "position": -50, "repeat": 9, "volume": 7, "more": 99999999999,
-               "now": {"id": "../../rest/stream?id=1", "title": "a‮b\u0000c", "cover": "http://evil/x", "duration": 99999999999},
+               "now": {"id": "../../rest/stream?id=1", "title": "a\u202Eb\u0000c", "cover": "http://evil/x", "duration": 99999999999},
                "queue": [$queue]}}
         """.trimIndent()))
         assertEquals(0L, heard.version)
@@ -94,7 +94,7 @@ class WireTest {
     @Test
     fun textIsMadeFitToShow() {
         assertEquals("one two", shownText("one\ntwo"))
-        assertEquals("ab", shownText("a​b"))
+        assertEquals("ab", shownText("a\u200Bb"))
         // A cut never leaves half a character.
         val face = "😀"
         assertEquals(face, shownText(face + face, most = 3))

@@ -52,7 +52,7 @@ fun shownText(text: String?, most: Int = 200): String {
     var count = 0
     for (c in text) {
         if (count >= most) break
-        if (c.isISOControl() || c in '​'..'‏' || c in '‪'..'‮' || c in '⁠'..'⁩' || c == '﻿') {
+        if (c.isISOControl() || c in '\u200B'..'\u200F' || c in '\u202A'..'\u202E' || c in '\u2060'..'\u2069' || c == '\uFEFF') {
             if (c == '\n' || c == '\t') { out.append(' '); count++ }
             continue
         }

@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -45,7 +44,7 @@ class JamService : Service() {
         val leave = intent?.getStringExtra(BUTTON).orEmpty()
         val shown = notification(this, note.first, note.second, leave)
         try {
-            ServiceCompat.startForeground(this, ID, shown, if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0)
+            ServiceCompat.startForeground(this, ID, shown, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } catch (_: RuntimeException) {
             // Android wouldn't have it (started from the background after all): the jam goes
             // on while the app is in front, and the notification isn't there to say so.
