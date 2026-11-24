@@ -127,12 +127,13 @@ fun SongListPage(
     // A playlist, Liked songs: found in and sorted (Windows' own lists). The order is the one
     // the list was last left in; what is typed is forgotten when the page goes, as on Windows.
     val findable = org.medianexus.music.library.ListView.findable(key)
-    var sorted by androidx.compose.runtime.saveable.rememberSaveable(key) { androidx.compose.runtime.mutableIntStateOf(-1) }
-    var descending by androidx.compose.runtime.saveable.rememberSaveable(key) { androidx.compose.runtime.mutableStateOf(false) }
-    val opening = remember(key) { org.medianexus.music.library.ListView.opening(key, settings.lists[key]) }
+    // The order is the settings' own, as they are now, not one read when the page opened:
+    // a sort chosen on another device shows on a list that is open (and one chosen here is
+    // in the settings before the page is drawn again).
+    val order = org.medianexus.music.library.ListView.opening(key, settings.lists[key])
     val box = androidx.compose.foundation.text.input.rememberTextFieldState()
     val view = if (!findable) org.medianexus.music.library.ListView()
-        else org.medianexus.music.library.ListView(if (sorted < 0) opening.sort else sorted, if (sorted < 0) opening.descending else descending, box.text.toString())
+        else org.medianexus.music.library.ListView(order.sort, order.descending, box.text.toString())
     val account = ui.account
     // Which songs are shown, in what order, as places in the list. Worked out off the main
     // thread for a long list; meanwhile, a list whose order is its own is shown as it is.
@@ -244,10 +245,7 @@ fun SongListPage(
                     }
                     if (findable && !songs.isNullOrEmpty()) item(key = "find", contentType = "find") {
                         FindAndSort(box, view, playlist = key.startsWith("playlist:"), onSort = { choice ->
-                            val next = view.sortedBy(choice)
-                            sorted = next.sort
-                            descending = next.descending
-                            ui.rememberSort(key, next)
+                            ui.rememberSort(key, view.sortedBy(choice))
                         })
                     }
                     if (songsTitle != null && !songs.isNullOrEmpty()) item(key = "songs-title", contentType = "title") { org.medianexus.music.ui.parts.SectionTitle(songsTitle) }

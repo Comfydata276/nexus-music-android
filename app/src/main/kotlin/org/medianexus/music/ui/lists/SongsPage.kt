@@ -16,11 +16,8 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,11 +83,11 @@ fun SongsContent() {
     val read by (account?.copy?.read ?: remember { MutableStateFlow(false) }).collectAsStateWithLifecycle()
     val settings by ui.graph.settings.state.collectAsStateWithLifecycle()
     val key = Library.SONGS
-    val opening = remember { ListView.opening(key, settings.lists[key]) }
-    var sorted by rememberSaveable { mutableIntStateOf(-1) }
-    var descending by rememberSaveable { mutableStateOf(false) }
+    // (The order is the settings' own, as they are now: one chosen on another device shows
+    // on the page while it is open.)
+    val order = ListView.opening(key, settings.lists[key])
     val box = rememberTextFieldState()
-    val view = ListView(if (sorted < 0) opening.sort else sorted, if (sorted < 0) opening.descending else descending, box.text.toString())
+    val view = ListView(order.sort, order.descending, box.text.toString())
     val shown by rememberSongsShown(copy, view)
     val marks = rememberDownloadMarks()
     val likedSet = likedSongs()
@@ -161,10 +158,7 @@ fun SongsContent() {
                 }
                 val find = @Composable { modifier: Modifier ->
                     FindAndSort(box, view, playlist = false, modifier = modifier, onSort = { choice ->
-                        val next = view.sortedBy(choice)
-                        sorted = next.sort
-                        descending = next.descending
-                        ui.rememberSort(key, next)
+                        ui.rememberSort(key, view.sortedBy(choice))
                     })
                 }
                 if (sideways) {

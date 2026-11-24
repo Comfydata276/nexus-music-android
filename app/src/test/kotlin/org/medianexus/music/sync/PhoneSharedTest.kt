@@ -208,6 +208,28 @@ class PhoneSharedTest {
     }
 
     @Test
+    fun aSortArrivingFromAnotherDeviceIsTheOneAnOpenListReads() {
+        val phone = Phone("a")
+        // A list's page takes its order from the settings as they are (ListView.opening of
+        // the list's own entry), each time it is drawn.
+        fun order(key: String) = org.medianexus.music.library.ListView.opening(key, settings.value.lists[key])
+        assertEquals(org.medianexus.music.library.ListView(org.medianexus.music.library.ListView.ADDED, true), order("playlist:p1"))
+        // Chosen here: by title.
+        settings.update { Changes.sort(it, "playlist:p1", org.medianexus.music.library.ListView.TITLE, false, now = 10) }
+        assertEquals(org.medianexus.music.library.ListView(org.medianexus.music.library.ListView.TITLE, false), order("playlist:p1"))
+        // The PC's arrives (album, Z to A), with the phone's own choice already written
+        // and done with: the page reads that.
+        settings.update { it.copy(waiting = emptyList()) }
+        phone.take(pc)
+        assertEquals(org.medianexus.music.library.ListView(org.medianexus.music.library.ListView.ALBUM, true), order("playlist:p1"))
+        // One of the phone's still waiting to be shared stays on top of what arrives.
+        settings.update { Changes.sort(it, "playlist:p1", org.medianexus.music.library.ListView.DURATION, false, now = 20) }
+        phone.take(pc.copy(lists = mapOf("playlist:p1" to SharedPrefs(shuffle = true, sort = 2u, sortChosen = true, at = 1_700_000_300))))
+        assertEquals(org.medianexus.music.library.ListView(org.medianexus.music.library.ListView.DURATION, false), order("playlist:p1"))
+        assertTrue(settings.value.lists.getValue("playlist:p1").shuffle)
+    }
+
+    @Test
     fun anOrderOnlyThePhoneOffersStaysUnlessTheOneArrivingIsNewer() {
         val phone = Phone("a")
         settings.update { Changes.sort(it, "playlist:p2", sort = 6, descending = true, now = 100) }
