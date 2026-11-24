@@ -855,20 +855,23 @@ class PlaybackService : MediaLibraryService() {
         next.scope.launch { now.copy.state.collect { copy -> if (era === next) sound.songsHeld(songsHeld(), copy) } }
         // The "Made for you" mixes were worked out again (a play, a like, a newer copy of the
         // library, the day): Home, and any mix the car has open, are told to look again.
-        // Only what changed: they are worked out again at every song that starts.
+        // Only what changed (they are worked out again at every song that starts), by what
+        // the folders hold, not where it sits in the library: the songs' ids, and offline
+        // whether each plays, so going offline or a download arriving tells them too.
         next.scope.launch {
-            var shown: List<Pair<String, String>>? = null
-            var songs: Map<String, Int> = emptyMap()
-            now.mixes.state.collect { set ->
-                val mixes = set?.mixes.orEmpty()
-                val home = mixes.map { it.id to it.cardCover }
-                val inside = mixes.associate { it.id to it.places.contentHashCode() }
+            var shown: List<CarEntry>? = null
+            val songs = HashMap<String, List<String>>()
+            val downloaded = now.downloads?.state?.map { it.downloaded.keys }?.distinctUntilChanged() ?: kotlinx.coroutines.flow.flowOf(emptySet())
+            kotlinx.coroutines.flow.combine(now.mixes.state, graph.watch.state.map { it.offline }.distinctUntilChanged(), downloaded) { _, _, _ -> }.collect {
+                val home = next.tree.madeForYouShown()
                 val ids = buildList {
                     if (shown != null && home != shown) add(CarIds.format(CarNode.Home))
-                    for (id in asked) (CarIds.parse(id) as? CarNode.Mix)?.let { if (inside[it.id] != songs[it.id]) add(id) }
+                    for (id in asked) (CarIds.parse(id) as? CarNode.Mix)?.let { mix ->
+                        val holds = next.tree.mixShown(mix.id)
+                        if (songs.put(mix.id, holds).let { it != null && it != holds }) add(id)
+                    }
                 }
                 shown = home
-                songs = inside
                 for (id in ids.distinct()) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
             }
         }

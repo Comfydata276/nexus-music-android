@@ -112,4 +112,29 @@ class CarMixesTest {
         rules = listOf(MixRules(id = 7, name = "Never played", played = 1))
         assertEquals(listOf("mix/top"), tree().children(CarNode.Home)!!.filter { it.group == "Made for you" }.map { it.id })
     }
+
+    /** A mix's folder is said to have changed by what it holds (M5b fixes, item 9): other songs
+     *  at the same places in a newer copy of the library are a change (the places alone were
+     *  compared), and so, offline, is a download arriving. */
+    @Test
+    fun aMixsFolderChangesByWhatItHolds() {
+        val before = tree().mixShown("top")
+        assertEquals(20, before.size)
+        // A newer copy: the same number of songs, in the same places, all different.
+        val swapped = SongTable.Builder().apply { songs.forEach { add(it.copy(id = "n" + it.id)) } }.build()
+        val newer = CarTree(library, CarWords(), null, mixes = { Mixes.From(swapped, { false }, emptyList(), rules, now).let { MixSet(Mixes.all(it), it) } })
+        val after = newer.mixShown("top")
+        assertEquals(20, after.size)
+        assertTrue(before != after)
+        // Offline: what plays; a fifth song downloaded is a change.
+        offline = true
+        val four = tree().mixShown("top")
+        assertEquals(listOf("0/s1", "1/s2", "2/s3", "3/s4"), four)
+        val fifth = songs[4]
+        File(catalogue.dir, "${fifth.id}.flac").writeBytes(ByteArray(4))
+        catalogue.add(Downloaded(fifth, "${fifth.id}.flac", 4, at = 1, suffix = "flac"))
+        assertEquals(four + "4/s5", tree().mixShown("top"))
+        // Home's row says what it shows.
+        assertEquals(listOf("mix/rule:7", "mix/top"), tree().madeForYouShown().map { it.id })
+    }
 }

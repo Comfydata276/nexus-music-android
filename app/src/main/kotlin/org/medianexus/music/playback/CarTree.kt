@@ -724,6 +724,23 @@ class CarTree(
             icon = R.drawable.ic_list_music, browsable = true, group = words.madeForYou, inside = CarStyle.LIST)
     }
 
+    /** What Home's "Made for you" shows now (for telling the car when it changes). */
+    fun madeForYouShown(): List<CarEntry> = madeForYou().map { it.copy(song = null) }
+
+    /** What a mix's folder holds now: each song's id at its place, offline only those that
+     *  play (for telling the car when it changes: different songs at the same places are a
+     *  change, and so is a song coming to play offline). */
+    fun mixShown(id: String): List<String> {
+        val mix = mixOf(id) ?: return emptyList()
+        val offline = isOffline
+        val out = ArrayList<String>(mix.size)
+        for (i in 0 until mix.size) {
+            val song = mix.songs[i]
+            if (!offline || plays(song)) out += "$i/${song.id}"
+        }
+        return out
+    }
+
     /** A mix by its id: among those on Home, or worked out by itself (one no longer among
      *  them: a car that kept its folder). Null with no copy of the library yet. */
     private fun mixOf(id: String): org.medianexus.music.library.Mix? {
