@@ -122,7 +122,9 @@ fun TrackRow(
                 selected = track.selected
                 if (status != null) stateDescription = status
             }
-            .padding(start = Theme.dimens.pagePad, end = 4.dp),
+            .padding(start = Theme.dimens.pagePad, end = 4.dp)
+            // A title over two lines is kept clear of the rows above and below.
+            .then(if (titleLines > 1) Modifier.padding(vertical = 6.dp) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
