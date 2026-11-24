@@ -104,7 +104,7 @@ fun SongsContent() {
     val context = stringResource(R.string.songs)
     val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
     // Dropped when the copy is another (its places mean other songs).
-    val selection = rememberSelection(now?.list)
+    val selection = rememberSelection(now)
 
     // The place of a song (by its place in the table) in the newest-first list: what the
     // service is told, and what marks the row playing. Made off the main thread, with the
@@ -313,8 +313,7 @@ fun RecentlyPlayedPage() {
         val hidden = if (playing != null && played.firstOrNull()?.song?.id == playing?.id) 1 else 0
         played.drop(hidden)
     }
-    val selection = rememberSelection(Unit)
-    androidx.compose.runtime.LaunchedEffect(songs) { selection.keepWithin(songs.size) }
+    val selection = rememberSelection(songs)
     Column(Modifier.fillMaxSize()) {
         if (selection.active) SelectionBar(selection, { selection.places.sorted().mapNotNull { songs.getOrNull(it)?.song } })
         else TitleBar(stringResource(R.string.recently_played), onBack = ui.navigator::back)

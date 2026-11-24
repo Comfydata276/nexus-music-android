@@ -140,8 +140,7 @@ fun SongListPage(
     val list = rememberLazyListState()
     val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
     // Several songs chosen together (a long press starts it): by their places in the list.
-    val selection = rememberSelection(key)
-    androidx.compose.runtime.LaunchedEffect(songs) { selection.keepWithin(songs?.size ?: 0) }
+    val selection = rememberSelection(arranged)
     // A playlist's songs in its own order can be dragged by their handles (see PlaylistDrag).
     val drag = remember(key) { PlaylistDrag() }
     androidx.compose.runtime.LaunchedEffect(songs) { drag.reset() }

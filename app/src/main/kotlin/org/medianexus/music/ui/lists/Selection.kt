@@ -42,9 +42,11 @@ import org.medianexus.music.ui.theme.Theme
 
 /**
  * Several songs of a list chosen together (Windows' Ctrl and Shift selection; on a phone a
- * long press starts it). Rows are named by their place in the list itself, never by where they
- * sit on the screen, so a find or a sort, or the list changing under it, can't move the choice
- * onto other songs: a row that is no longer there is simply no longer chosen.
+ * long press starts it). **A selection belongs to the very list it was made on** (see
+ * [rememberSelection]): its rows are places in that list, which never changes, and the moment
+ * the list behind the page is replaced by another (a refresh, another search answer, another
+ * order or find, another account) the selection goes with it. So whatever is done to the
+ * selection is done to exactly the rows that were ticked, which copy of a song included.
  */
 @Stable
 class Selection {
@@ -60,17 +62,19 @@ class Selection {
     fun clear() {
         places = emptySet()
     }
-
-    /** Leaves out places a list no longer has (it changed under the selection). */
-    fun keepWithin(size: Int) {
-        if (places.any { it >= size }) places = places.filterTo(HashSet()) { it < size }
-    }
 }
 
-/** A selection that lasts as long as the page (and is dropped when the list given changes
- *  identity: another playlist). */
+/** A selection of `list` (the very list, as drawn: compared by identity), dropped the moment
+ *  the page draws another. */
 @Composable
-fun rememberSelection(key: Any?): Selection = remember(key) { Selection() }
+fun rememberSelection(list: Any?): Selection = remember(Identity(list)) { Selection() }
+
+/** A list known by its identity, not by what it holds: two lists that read the same are still
+ *  two lists, and a selection of one is not of the other. */
+private class Identity(val of: Any?) {
+    override fun equals(other: Any?) = other is Identity && other.of === of
+    override fun hashCode() = System.identityHashCode(of)
+}
 
 /**
  * What a page puts in place of its title bar while songs are chosen: how to leave (the X, and

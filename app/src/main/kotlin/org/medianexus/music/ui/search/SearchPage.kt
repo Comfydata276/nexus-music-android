@@ -165,7 +165,7 @@ fun SearchPage() {
         val pinned = settings.pinnedPlaylists
         // Several of the songs found chosen together (a long press starts it): for the words
         // that found them, by their place among the songs found.
-        val selection = org.medianexus.music.ui.lists.rememberSelection(results?.query)
+        val selection = org.medianexus.music.ui.lists.rememberSelection(results)
         if (selection.active && results != null) {
             org.medianexus.music.ui.lists.SelectionBar(selection, { selection.places.sorted().mapNotNull { results.found.songs.getOrNull(it) } }, top = false)
         }
