@@ -91,6 +91,36 @@ class ServerWatch(
     private var loop: Job? = null
     private val lock = Any()
 
+    /**
+     * **One ask at a time, and the newest answer wins.** Each ask takes the next number as it
+     * begins; an answer is acted on only if no ask begun after it has already been. The
+     * loop's periodic ask used to go out beside whatever [check] had in flight: a slow one
+     * that failed after a quicker, later one had succeeded put the app back out of reach.
+     */
+    private val turns = java.util.concurrent.atomic.AtomicLong()
+    private var applied = 0L
+
+    /** When the ask now in flight began (by [clock]). */
+    @Volatile private var askedAt = 0L
+
+    /**
+     * Asks, unless an ask is already in flight. `afresh`: something has just happened that
+     * makes an answer worth having now (the app came to the front, Play, a network came
+     * back); an ask that has been out a while may be hanging on a connection that will never
+     * answer, and is then given up for a new one.
+     */
+    private fun ask(first: Boolean = false, afresh: Boolean = false) {
+        synchronized(lock) {
+            val out = asking
+            if (out?.isActive == true) {
+                if (!afresh || clock() - askedAt < STALE_ASK_MILLIS) return
+                out.cancel()
+            }
+            askedAt = clock()
+            asking = scope.launch { askOnce(first) }
+        }
+    }
+
     /** Moves on whenever the account does: a check made for an earlier one changes nothing. */
     private val generation = java.util.concurrent.atomic.AtomicLong()
 
@@ -121,10 +151,7 @@ class ServerWatch(
             return
         }
         now.value = now.value.copy(sure = false)
-        synchronized(lock) {
-            if (asking?.isActive == true) return
-            asking = scope.launch { askOnce(first = true) }
-        }
+        ask(first = true)
     }
 
     /** The phone has lost its network: the server is out of reach until it answers. */
@@ -152,10 +179,7 @@ class ServerWatch(
         switchedOff = true
         goneAt = clock()
         now.value = was.copy(manual = false, unreachable = true, sure = false)
-        synchronized(lock) {
-            if (asking?.isActive == true) return
-            asking = scope.launch { askOnce(first = true) }
-        }
+        ask(first = true, afresh = true)
     }
 
     /**
@@ -172,21 +196,18 @@ class ServerWatch(
     /** Asks the server now whether it is there (once at a time). */
     fun check() {
         if (now.value.manual) return
-        synchronized(lock) {
-            if (asking?.isActive == true) return
-            asking = scope.launch { askOnce() }
-        }
+        ask()
     }
 
     /** Something now wants to know (the app has come to the front, Play was pressed): if the
      *  server is out of reach it is asked now, not at the loop's next turn. */
     fun nudge() {
-        if (now.value.unreachable) check()
+        if (now.value.unreachable && !now.value.manual) ask(afresh = true)
     }
 
     /** The phone has a network again, or may now reach the home network: worth asking. */
     fun networkBack() {
-        if (now.value.unreachable) check()
+        if (now.value.unreachable && !now.value.manual) ask(afresh = true)
     }
 
     /** Whoever was signed in has gone: what was found out about their server goes too. */
@@ -204,6 +225,7 @@ class ServerWatch(
 
     private suspend fun askOnce(first: Boolean = false) {
         val asked = generation.get()
+        val turn = turns.incrementAndGet()
         if (!mayAsk()) {
             gone()
             return
@@ -216,6 +238,12 @@ class ServerWatch(
         }
         // The account this was asked for has gone meanwhile: its answer is nobody's.
         if (generation.get() != asked) return
+        // An ask begun after this one has already been answered: this answer is the older
+        // news, and changes nothing.
+        synchronized(lock) {
+            if (turn < applied) return
+            applied = turn
+        }
         when {
             error == null -> answered()
             error.signInRefused -> {
@@ -264,7 +292,8 @@ class ServerWatch(
                     // And only while something wants to know: with the app out of sight,
                     // nothing playing and nothing waiting, the server is left alone (and
                     // asked at once when that changes: see [nudge]).
-                    if (!now.value.manual && mayAsk() && wanted()) askOnce()
+                    // (Through the one way of asking: never beside an ask already out.)
+                    if (!now.value.manual && mayAsk() && wanted()) ask()
                 }
             }
         }
@@ -293,6 +322,10 @@ class ServerWatch(
         /** How often the server is asked again when it has just gone out of reach, as on
          *  Windows. */
         const val AGAIN_MILLIS = 15_000L
+
+        /** How long an ask may have been out before something wanting an answer now gives
+         *  it up for a new one. */
+        const val STALE_ASK_MILLIS = 4_000L
 
         /**
          * How long to wait before asking again, the server having been out of reach for

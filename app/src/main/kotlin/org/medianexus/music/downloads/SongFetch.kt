@@ -73,15 +73,52 @@ class RouteGone : IOException("The network this was on may no longer be used")
 class Cancelled : InterruptedIOException("Cancelled")
 
 /**
- * What identifies the copy of a song a part file is part of: the server's validator for it
- * (a strong `ETag`, else `Last-Modified`), how long the whole file is, and how much of the
- * part is known to have reached the disk. Kept in a file of its own beside the part
- * (".<name>.part.meta"), written before the part's first byte.
+ * What identifies the copy of a song a part file is part of: the server's validator for it,
+ * how long the whole file is, and how much of the part is known to have reached the disk.
+ * Kept in a file of its own beside the part (".<name>.part.meta"), written before the part's
+ * first byte.
+ *
+ * **The validator must be a strong one**, or two versions of a file could be joined. An
+ * entity tag that isn't marked weak is strong. A modification date is strong only when it is
+ * safely older than the date of the answer it came in (`date`): a file changed twice within
+ * the same second has one `Last-Modified`, and a server answering in that second can't tell
+ * the two apart (HTTP's rule for `If-Range`, RFC 9110 §8.8.2.2 and §13.1.5; the sixty
+ * seconds are RFC 7232's, the more careful of the two). A date that close, or an answer with
+ * no date of its own to hold it against, vouches for nothing: the song is fetched from its
+ * start instead of carried on with.
  */
 @Serializable
-internal data class PartOf(val etag: String = "", val modified: String = "", val total: Long = 0, val synced: Long = 0) {
-    /** What a resume is made conditional on (`If-Range`). */
-    val validator: String get() = etag.ifEmpty { modified }
+internal data class PartOf(
+    val etag: String = "",
+    val modified: String = "",
+    val total: Long = 0,
+    val synced: Long = 0,
+    /** The `Date` of the answer the part began with (what `modified` is held against). */
+    val date: String = "",
+) {
+    /** What a resume is made conditional on (`If-Range`); empty if nothing strong enough. */
+    val validator: String get() = etag.ifEmpty { modified.takeIf { safelyOlder(it, date) }.orEmpty() }
+
+    companion object {
+        /** How much older than the answer's own date a modification date must be to count. */
+        const val SAFELY_OLDER_SECONDS = 60L
+
+        /** Whether the modification date `modified` is at least [SAFELY_OLDER_SECONDS]
+         *  before `date`, both read as HTTP dates. Not if either can't be read. */
+        fun safelyOlder(modified: String, date: String): Boolean {
+            val changed = httpDate(modified) ?: return false
+            val answered = httpDate(date) ?: return false
+            return answered - changed >= SAFELY_OLDER_SECONDS
+        }
+
+        /** An HTTP date ("Mon, 23 Nov 2026 07:57:08 GMT") as seconds since 1970; null if it
+         *  isn't one in the form servers are required to send. */
+        private fun httpDate(text: String): Long? = try {
+            java.time.ZonedDateTime.parse(text.trim(), java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toEpochSecond()
+        } catch (_: java.time.DateTimeException) {
+            null
+        }
+    }
 }
 
 /**
@@ -112,8 +149,9 @@ internal data class PartOf(val etag: String = "", val modified: String = "", val
  * condition that the server's copy is still that one (`If-Range`), and taken only if the
  * answer is exactly the rest of it (the range from where the part stops to the end, of a file
  * of the same length, with the same validator). If the server's copy has changed, or the
- * server can't say (no validator), or answers anything that doesn't fit ("no such range"
- * included), the part is thrown away and the song fetched from nothing. A part is never made
+ * server can't say (no validator, or none strong enough: see [PartOf]), or answers anything
+ * that doesn't fit ("no such range" included), the part is thrown away and the song fetched
+ * from nothing. A part is never made
  * a download on the strength of its size. A conversion is a fresh stream each time, which
  * nothing can join onto: it always starts again.
  *
@@ -283,7 +321,7 @@ class SongFetch(
                     arrived = 0
                     if (from != null) CrashPoints.say { "${song.id}: asked to carry on from byte ${from.have}, and sent the whole file: its part is thrown away" }
                     discard(part, meta)
-                    val of = PartOf(strongTag(response), response.header("Last-Modified").orEmpty().trim(), length, 0)
+                    val of = PartOf(strongTag(response), response.header("Last-Modified").orEmpty().trim(), length, 0, response.header("Date").orEmpty().trim())
                     // Its record first, on the disk, and only then its first byte. (Nothing
                     // to carry on with later if the server gave no validator or no length.)
                     record = of.takeIf { !form.converted && it.validator.isNotEmpty() && length > 0 }
@@ -377,9 +415,10 @@ class SongFetch(
         return if (from.of.etag.isNotEmpty()) strongTag(response) == from.of.etag else response.header("Last-Modified").orEmpty().trim() == from.of.modified
     }
 
-    /** The answer's `ETag` if it is a strong one (a weak one can't vouch for bytes). */
+    /** The answer's `ETag` if it is a strong one (a weak one, `W/"…"`, can't vouch for
+     *  bytes). */
     private fun strongTag(response: okhttp3.Response): String =
-        response.header("ETag").orEmpty().trim().takeIf { it.startsWith("\"") && it.length > 2 }.orEmpty()
+        response.header("ETag").orEmpty().trim().takeIf { it.startsWith("\"") && it.endsWith("\"") && it.length > 2 }.orEmpty()
 
     /** Verifies what arrived, and if it is the song, whole, puts it in place and enters it. */
     private fun finish(song: Song, form: SavedForm, part: File, meta: File, target: File, name: String, arrived: Arrived): Downloaded {

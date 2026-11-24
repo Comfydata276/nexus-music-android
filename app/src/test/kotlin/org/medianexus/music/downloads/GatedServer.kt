@@ -163,11 +163,14 @@ class GatedServer : Closeable {
          * "no such range" past the end. `conditional = false` is a server that takes no
          * notice of `If-Range`.
          */
-        fun file(request: Asked, bytes: ByteArray, modified: String?, type: String = "audio/flac", conditional: Boolean = true, hold: Pair<Int, Gate>? = null): Answer {
+        fun file(request: Asked, bytes: ByteArray, modified: String?, type: String = "audio/flac", conditional: Boolean = true, hold: Pair<Int, Gate>? = null, date: String? = now()): Answer {
             val headers = LinkedHashMap<String, String>()
             headers["Content-Type"] = type
             headers["Accept-Ranges"] = "bytes"
             if (modified != null) headers["Last-Modified"] = modified
+            // The answer's own date, as every server sends one: what a modification date is
+            // held against (see PartOf).
+            if (date != null) headers["Date"] = date
             val from = request.from
             val same = !conditional || request.headers["if-range"].let { it == null || it == modified }
             if (from != null && from > 0 && same) {
@@ -187,6 +190,9 @@ class GatedServer : Closeable {
             200, mapOf("Content-Type" to "application/json"),
             """{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.58.0","song":{"id":"$id","title":"${id.uppercase()}","suffix":"$suffix","size":$size,"duration":$duration}}}""".toByteArray(),
         )
+
+        /** The time now, as an HTTP date. */
+        fun now(): String = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC))
 
         fun fixture(name: String): ByteArray = GatedServer::class.java.getResourceAsStream("/audio/$name")!!.use { it.readBytes() }
     }

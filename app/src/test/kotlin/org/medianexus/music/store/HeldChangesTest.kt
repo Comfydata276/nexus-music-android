@@ -422,4 +422,41 @@ class HeldChangesTest {
         held.submit(star("d", true))
         assertEquals(2L, held.accepted.value - before)
     }
+
+    // ---- Signed out and straight back in (offline hardening 2, item 8) --------------------------
+
+    @Test
+    fun anOldWriteOfTheFileDoesNotLandOverANewerOne() = runBlocking {
+        offline = true
+        // The first sign-in's sender has a change to write, and its write is held up (the
+        // account's own work is being wound up as it is signed out of).
+        val waiting = java.util.concurrent.LinkedBlockingQueue<Runnable>()
+        var holding = false
+        val slowDisk = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                if (holding) waiting += block else Dispatchers.IO.dispatch(context, block)
+            }
+        }
+        HeldChanges.restarted(file())
+        val first = HeldChanges(file(), slowDisk, offline = { offline }, note = { notes += it })
+        first.submit(star("a", true))
+        holding = true
+        val late = async(Dispatchers.Default) { first.submit(star("b", true)) }
+        while (waiting.isEmpty()) kotlinx.coroutines.yield()
+        // Signed straight back in: the second sender, for the same file, takes a change and
+        // writes it.
+        val second = held(restarted = false)
+        val fresh = async(Dispatchers.Default) { second.submit(star("c", true)) }
+        kotlinx.coroutines.delay(200)
+        // The first one's write now goes through.
+        holding = false
+        while (true) Dispatchers.IO.dispatch(kotlin.coroutines.EmptyCoroutineContext, waiting.poll() ?: break)
+        late.await()
+        fresh.await()
+        // Whatever order the writes landed in, the file holds every change: what an app
+        // started again would send. (The old sender's write used to be of its own list, and
+        // took the newer one's change off the disk.)
+        assertEquals(setOf("a", "b", "c"), ids(held().all()).toSet())
+        offline = false
+    }
 }

@@ -85,7 +85,7 @@ class DownloadsTest {
                 val bytes = files[id]
                 if (bytes == null || id in missing) return MockResponse.Builder().code(404).setHeader("Content-Type", "application/json").body("{}").build()
                 val from = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toIntOrNull() ?: 0
-                val builder = MockResponse.Builder().setHeader("Content-Type", "audio/flac").setHeader("Accept-Ranges", "bytes").setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT")
+                val builder = MockResponse.Builder().setHeader("Content-Type", "audio/flac").setHeader("Accept-Ranges", "bytes").setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT").setHeader("Date", GatedServer.now())
                 if (slow) builder.throttleBody(16 * 1024, 40, TimeUnit.MILLISECONDS)
                 return if (from > 0) {
                     builder.code(206).setHeader("Content-Range", "bytes $from-${bytes.size - 1}/${bytes.size}").body(Buffer().write(bytes, from, bytes.size - from)).build()

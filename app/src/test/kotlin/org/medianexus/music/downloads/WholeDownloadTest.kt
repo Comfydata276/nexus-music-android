@@ -127,7 +127,7 @@ class WholeDownloadTest {
         // longer has: it answers "no such range".
         val old = ByteArray(five.size + 1_000) { 7 }
         part().writeBytes(old)
-        File(catalogue.dir, SongFetch.metaName("s1.flac")).writeText("""{"modified":"$MONDAY","total":${old.size + 5_000},"synced":${old.size}}""")
+        File(catalogue.dir, SongFetch.metaName("s1.flac")).writeText("""{"modified":"$MONDAY","total":${old.size + 5_000},"synced":${old.size},"date":"$TUESDAY"}""")
         server.handler = { GatedServer.file(it, five, TUESDAY, conditional = false) }
         library["s1"] = asFive()
         // (As the app had it: the size the library gave before the file was replaced.)
@@ -256,11 +256,68 @@ class WholeDownloadTest {
         // can't be trusted (here it is plainly wrong).
         val sure = 6_000
         part().writeBytes(three.copyOf(sure) + ByteArray(4_000) { 0 })
-        File(catalogue.dir, SongFetch.metaName("s1.flac")).writeText("""{"modified":"$MONDAY","total":${three.size},"synced":$sure}""")
+        File(catalogue.dir, SongFetch.metaName("s1.flac")).writeText("""{"modified":"$MONDAY","total":${three.size},"synced":$sure,"date":"$TUESDAY"}""")
         server.handler = { GatedServer.file(it, three, MONDAY) }
         val entry = fetcher().fetch(asThree(), flac, url())
         assertEquals(sure.toLong(), server.asked.single().from)
         assertArrayEquals(three, File(catalogue.dir, entry.file).readBytes())
+    }
+
+    // ---- A date as a validator (offline hardening 2, item 8) ----------------------------------
+
+    /** Fetches the three-second file, dropped after `bytes`, from a server whose answer is
+     *  dated `date` and whose file was changed at `modified`. */
+    private fun interrupted(bytes: Int, modified: String, date: String?) {
+        val gate = GatedServer.Gate()
+        server.handler = { GatedServer.file(it, three, modified, hold = bytes to gate, date = date) }
+        val fetch = fetcher()
+        val worker = Thread {
+            try {
+                fetch.fetch(asThree(), flac, url())
+            } catch (_: java.io.IOException) {
+            }
+        }
+        worker.start()
+        gate.awaitReached()
+        while (part().length() < bytes) Thread.yield()
+        fetch.cancel()
+        gate.dropHere()
+        worker.join()
+    }
+
+    @Test
+    fun aModificationDateNoOlderThanItsAnswerIsNoGroundsForCarryingOn() {
+        // The file was changed in the same few seconds as the answer was made: changed
+        // again within that second, it would carry the same date, and the server could not
+        // tell the two copies apart. Nothing is carried on from: it is fetched from its start.
+        interrupted(8_192, modified = "Tue, 24 Nov 2026 09:00:00 GMT", date = "Tue, 24 Nov 2026 09:00:05 GMT")
+        server.handler = { GatedServer.file(it, three, "Tue, 24 Nov 2026 09:00:00 GMT") }
+        val entry = fetcher().fetch(asThree(), flac, url())
+        assertNull(server.asked.last().from)
+        assertNull(server.asked.last().headers["if-range"])
+        assertArrayEquals(three, File(catalogue.dir, entry.file).readBytes())
+    }
+
+    @Test
+    fun aModificationDateWithNoDateToHoldItAgainstIsNoGroundsEither() {
+        interrupted(8_192, modified = MONDAY, date = null)
+        server.handler = { GatedServer.file(it, three, MONDAY) }
+        fetcher().fetch(asThree(), flac, url())
+        assertNull(server.asked.last().from)
+    }
+
+    @Test
+    fun aModificationDateSafelyOlderThanItsAnswerStillCarriesOn() {
+        interrupted(8_192, modified = MONDAY, date = TUESDAY)
+        server.handler = { GatedServer.file(it, three, MONDAY) }
+        val entry = fetcher().fetch(asThree(), flac, url())
+        assertEquals(8_192L, server.asked.last().from)
+        assertEquals(MONDAY, server.asked.last().headers["if-range"])
+        assertArrayEquals(three, File(catalogue.dir, entry.file).readBytes())
+        // (Sixty seconds is the line.)
+        assertTrue(PartOf.safelyOlder("Tue, 24 Nov 2026 09:00:00 GMT", "Tue, 24 Nov 2026 09:01:00 GMT"))
+        assertFalse(PartOf.safelyOlder("Tue, 24 Nov 2026 09:00:00 GMT", "Tue, 24 Nov 2026 09:00:59 GMT"))
+        assertFalse(PartOf.safelyOlder("yesterday", "Tue, 24 Nov 2026 09:00:59 GMT"))
     }
 
     private companion object {

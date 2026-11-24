@@ -56,7 +56,7 @@ class SongFetchTest {
                 val range = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toLongOrNull()
                 val builder = MockResponse.Builder().setHeader("Content-Type", type)
                 // What says which copy of the file this is: without it nothing is carried on.
-                if (!converted) builder.setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT")
+                if (!converted) builder.setHeader("Last-Modified", "Mon, 23 Nov 2026 07:57:08 GMT").setHeader("Date", GatedServer.now())
                 if (cutAfterHead) builder.onResponseBody(SocketEffect.ShutdownConnection)
                 return if (!converted && ranges && range != null && range > 0) {
                     if (range >= file.size) return MockResponse.Builder().code(416).build()

@@ -407,4 +407,45 @@ class ServerWatchTest {
         assertEquals(0, caughtUp)
         assertEquals(0, online)
     }
+
+    // ---- One ask at a time, the newest answer wins (offline hardening 2, item 8) ---------------
+
+    @Test
+    fun aSlowAskThatFailsAfterANewerOneSucceededChangesNothing() = runTest {
+        var time = 0L
+        val watch = ServerWatch(
+            backgroundScope, ping = { pings++; answer() }, cameOnline = { online++ }, signInGone = { signedOut++ },
+            mayAsk = { mayAsk }, caughtUp = { caughtUp++ }, clock = { time },
+        )
+        answer = { throw ApiError.Network("gone") }
+        watch.check()
+        runCurrent()
+        assertTrue(watch.state.value.unreachable)
+        // The loop's next ask goes out, and hangs: a connection that will never answer. (It
+        // is not let go when its coroutine is, as a blocked read isn't.)
+        val slow = kotlinx.coroutines.CompletableDeferred<Unit>()
+        answer = { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { slow.await() }; throw ApiError.Network("gone") }
+        advanceTimeBy(ServerWatch.AGAIN_MILLIS + 1)
+        time += ServerWatch.AGAIN_MILLIS + 1
+        val asked = pings
+        // An ask in flight is not doubled by a request that failed meanwhile.
+        watch.reached(false)
+        watch.check()
+        runCurrent()
+        assertEquals(asked, pings)
+        // The app comes to the front a few seconds later: the hanging ask is given up for a
+        // new one, which the server answers.
+        time += ServerWatch.STALE_ASK_MILLIS + 1
+        answer = {}
+        watch.nudge()
+        runCurrent()
+        assertEquals(asked + 1, pings)
+        assertFalse(watch.state.value.unreachable)
+        assertEquals(1, online)
+        // The old ask now fails. It is the older news: the server is still there.
+        slow.complete(Unit)
+        runCurrent()
+        assertFalse(watch.state.value.unreachable)
+        assertEquals(1, online)
+    }
 }
