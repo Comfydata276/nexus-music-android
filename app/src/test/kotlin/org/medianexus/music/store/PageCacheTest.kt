@@ -136,9 +136,14 @@ class PageCacheTest {
         cache.fresh(spec { listOf("a") })
         now += 60_000
         val seen = mutableListOf<Page<List<String>>>()
+        // The server answers only once the kept copy has been shown: under load it could
+        // answer first, and the kept copy was never seen (which is right for a screen, and
+        // made this test fail now and then).
+        val answer = CompletableDeferred<Unit>()
         val watching = async {
-            cache.live(spec { listOf("a") }).first { page ->
+            cache.live(spec { answer.await(); listOf("a") }).first { page ->
                 seen += page
+                if (!page.fresh) answer.complete(Unit)
                 // Once it has the server's copy, a change made here (a like, say) follows.
                 if (page.fresh && page.value == listOf("a")) {
                     launch { cache.update(spec { emptyList() }) { it + "b" } }
