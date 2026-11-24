@@ -32,13 +32,28 @@ data class Reach(
  * there (a ping), not proof that it isn't: one cover timing out is not the server gone. If
  * the ping fails too, the server is out of reach: everything that asks "offline?" says yes
  * (only what is on the phone plays, changes are held, fetching ahead stops), and the server
- * is asked again every 15 seconds, quietly, until it answers. Any answer from it meanwhile
- * settles it too. When it is back, `cameOnline` runs: held changes are sent, downloads carry
- * on, failed pages and covers are asked for again.
+ * is asked again, quietly, until it answers.
  *
- * A server that answers with an error is there: that is not "out of reach", and is no reason
- * to sign anyone out. Only a sign-in the server refuses signs out (`signInGone`), as on
- * Windows, which then asks for the password again.
+ * **It is back only when a check has returned a real, successful answer**, exactly as
+ * Windows has it. Not when something answered a request (a proxy's error page in front of a
+ * server that is down is an answer to the request and not from the server: counting it used
+ * to announce "Back online", start the downloads and the sender, and then drop back to
+ * offline when the check behind it was found not to be a real answer); such an answer is
+ * only a reason to ask now rather than at the next turn. And not when the check itself comes
+ * back as an error, whatever kind: Windows' `check_connection` takes any error but a refused
+ * sign-in as "still out of reach". When it is back, `cameOnline` runs: held changes are
+ * sent, downloads carry on, failed pages and covers are asked for again.
+ *
+ * Only a sign-in the server refuses signs anyone out (`signInGone`), as on Windows, which
+ * then asks for the password again.
+ *
+ * **Asked only while there is a reason to know** (`wanted`: the app in front, something
+ * playing or meant to be, downloads or held changes waiting), **and less often the longer it
+ * has been gone** ([againAfter]): a phone left in a drawer out of reach of its server does
+ * not ping it four times a minute for ever.
+ *
+ * **Each check belongs to the account it was made for**: an answer that arrives after that
+ * account has gone ([reset]) changes nothing.
  *
  * Offline mode switched on by hand asks nothing at all. Switched off, the server is asked
  * whether it is really there before it is assumed to be; if it is, `caughtUp` runs (held
@@ -60,6 +75,10 @@ class ServerWatch(
     /** The first ask after an account is taken on: the same question, given up on sooner
      *  (see [begin]). */
     private val firstPing: suspend () -> Unit = ping,
+    /** Whether there is a reason to know now whether the server is back (see the class). */
+    private val wanted: () -> Boolean = { true },
+    /** The clock the time out of reach is counted on (milliseconds). */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val now = MutableStateFlow(Reach())
     val state: StateFlow<Reach> = now.asStateFlow()
@@ -69,6 +88,12 @@ class ServerWatch(
     private var asking: Job? = null
     private var loop: Job? = null
     private val lock = Any()
+
+    /** Moves on whenever the account does: a check made for an earlier one changes nothing. */
+    private val generation = java.util.concurrent.atomic.AtomicLong()
+
+    /** When the server was found out of reach (by [clock]). */
+    @Volatile private var goneAt = 0L
 
     /** Offline mode has just been switched off, and the server not yet heard from. */
     @Volatile private var switchedOff = false
@@ -114,13 +139,15 @@ class ServerWatch(
         if (!on) check()
     }
 
-    /** A request to the server went through (true) or couldn't reach it at all (false). */
+    /**
+     * A request got an answer of some kind (true), or couldn't reach the server at all
+     * (false). Neither settles anything by itself: an answer while the server is taken to be
+     * out of reach is a reason to ask it now whether it is really back (the answer may be a
+     * proxy's page), and a failure while it is taken to be there, a reason to ask whether it
+     * has gone.
+     */
     fun reached(ok: Boolean) {
-        if (ok) {
-            if (now.value.unreachable) back()
-        } else if (!now.value.unreachable) {
-            check()
-        }
+        if (ok == now.value.unreachable) check()
     }
 
     /** Asks the server now whether it is there (once at a time). */
@@ -132,6 +159,12 @@ class ServerWatch(
         }
     }
 
+    /** Something now wants to know (the app has come to the front, Play was pressed): if the
+     *  server is out of reach it is asked now, not at the loop's next turn. */
+    fun nudge() {
+        if (now.value.unreachable) check()
+    }
+
     /** The phone has a network again, or may now reach the home network: worth asking. */
     fun networkBack() {
         if (now.value.unreachable) check()
@@ -139,6 +172,7 @@ class ServerWatch(
 
     /** Whoever was signed in has gone: what was found out about their server goes too. */
     fun reset() {
+        generation.incrementAndGet()
         synchronized(lock) {
             loop?.cancel()
             loop = null
@@ -150,27 +184,32 @@ class ServerWatch(
     }
 
     private suspend fun askOnce(first: Boolean = false) {
+        val asked = generation.get()
         if (!mayAsk()) {
             gone()
             return
         }
-        try {
+        val error = try {
             if (first) firstPing() else ping()
-            answered()
+            null
         } catch (e: ApiError) {
-            when {
-                e.signInRefused -> {
-                    now.value = now.value.copy(sure = true)
-                    signInGone()
-                }
-                // No answer, an error page from something in front of the server, or the
-                // server unable to answer properly: carry on with what's on the phone and
-                // keep trying. (An error the server itself gives is an answer: it is there.)
-                e is ApiError.Server -> answered()
-                else -> {
-                    switchedOff = false
-                    gone()
-                }
+            e
+        }
+        // The account this was asked for has gone meanwhile: its answer is nobody's.
+        if (generation.get() != asked) return
+        when {
+            error == null -> answered()
+            error.signInRefused -> {
+                now.value = now.value.copy(sure = true)
+                signInGone()
+            }
+            // No answer, an error page from something in front of the server, or an error
+            // from the server itself: none of those is the server back, and none a reason to
+            // sign out (Windows' check_connection). Carry on with what's on the phone and
+            // keep asking.
+            else -> {
+                switchedOff = false
+                gone()
             }
         }
     }
@@ -190,14 +229,19 @@ class ServerWatch(
 
     private fun gone() {
         if (now.value.manual) return
+        if (!now.value.unreachable) goneAt = clock()
         now.value = now.value.copy(unreachable = true, sure = true)
         synchronized(lock) {
             if (loop?.isActive == true) return
             loop = scope.launch {
                 while (true) {
-                    delay(againMillis)
+                    // Less often the longer it has been gone.
+                    delay(againAfter(clock() - goneAt, againMillis))
                     if (!now.value.unreachable) break
-                    if (!now.value.manual && mayAsk()) askOnce()
+                    // And only while something wants to know: with the app out of sight,
+                    // nothing playing and nothing waiting, the server is left alone (and
+                    // asked at once when that changes: see [nudge]).
+                    if (!now.value.manual && mayAsk() && wanted()) askOnce()
                 }
             }
         }
@@ -222,7 +266,21 @@ class ServerWatch(
     }
 
     companion object {
-        /** How often the server is asked again while it is out of reach, as on Windows. */
+        /** How often the server is asked again when it has just gone out of reach, as on
+         *  Windows. */
         const val AGAIN_MILLIS = 15_000L
+
+        /**
+         * How long to wait before asking again, the server having been out of reach for
+         * `goneFor` milliseconds: Windows' fifteen seconds for the first two minutes (a
+         * tunnel, a lift, a router restarting), every half minute up to ten, every minute up
+         * to an hour, and every five minutes after that.
+         */
+        fun againAfter(goneFor: Long, first: Long = AGAIN_MILLIS): Long = when {
+            goneFor < 2 * 60_000L -> first
+            goneFor < 10 * 60_000L -> 2 * first
+            goneFor < 60 * 60_000L -> 4 * first
+            else -> 20 * first
+        }
     }
 }

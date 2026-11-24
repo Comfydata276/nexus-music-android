@@ -676,6 +676,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        if (::graph.isInitialized) graph.playing = false
         main.removeCallbacksAndMessages(null)
         if (::ahead.isInitialized) ahead.release()
         // Handed to the app's writer, which finishes it whatever becomes of this service.
@@ -1122,6 +1123,10 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // Something is playing, or meant to be: a reason to know whether the server is
+            // back, and to ask now if it is out of reach (see ServerWatch).
+            graph.playing = playWhenReady
+            if (playWhenReady) graph.watch.nudge()
             // "Play" with nothing to play is not playing: Media3 presses play all the same
             // when there was nothing to resume, and left like that the next queue to arrive
             // would start by itself.

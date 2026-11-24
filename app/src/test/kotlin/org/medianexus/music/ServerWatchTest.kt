@@ -72,33 +72,134 @@ class ServerWatchTest {
         assertEquals(after, pings)
     }
 
+    // ---- Knowing the server is back (offline review 8) ----------------------------------------
+
     @Test
-    fun anyAnswerFromTheServerSettlesIt() = runTest {
+    fun anAnswerOfSomeKindIsAReasonToAskNotTheServerBack() = runTest {
         val watch = watch()
         answer = { throw ApiError.Network("gone") }
         watch.check()
         runCurrent()
         assertTrue(watch.state.value.unreachable)
-        // A page loaded meanwhile: the server is there.
+        // A request gets an answer: a proxy's error page, with the server behind it still
+        // down. The server is asked, at once, and it is the proxy that answers again.
+        answer = { throw ApiError.NotSubsonic("502") }
+        val asked = pings
         watch.reached(true)
+        runCurrent()
+        assertEquals(asked + 1, pings)
+        // Nothing was announced, nothing started: it never was back.
+        assertTrue(watch.state.value.unreachable)
+        assertEquals(0, online)
+        // The server really answers: now it is back, once.
+        answer = {}
+        watch.reached(true)
+        runCurrent()
         assertFalse(watch.state.value.unreachable)
         assertEquals(1, online)
     }
 
     @Test
-    fun aServerThatAnswersWithAnErrorIsThereAndNobodyIsSignedOut() = runTest {
+    fun anErrorFromTheCheckIsNotTheServerBackAndSignsNobodyOut() = runTest {
         val watch = watch()
+        answer = { throw ApiError.Network("gone") }
+        watch.check()
+        runCurrent()
+        // The check comes back as an error of the server's own: as Windows has it, any
+        // error but a refused sign-in leaves it out of reach.
         answer = { throw ApiError.Server(0, "something broke") }
-        watch.check()
-        runCurrent()
-        assertFalse(watch.state.value.unreachable)
+        advanceTimeBy(ServerWatch.AGAIN_MILLIS + 1)
+        assertTrue(watch.state.value.unreachable)
+        assertEquals(0, online)
         assertEquals(0, signedOut)
-        // A proxy's error page in the server's place: not the server, so out of reach.
+        // A proxy's error page in the server's place: the same.
         answer = { throw ApiError.NotSubsonic("502") }
-        watch.check()
-        runCurrent()
+        advanceTimeBy(ServerWatch.AGAIN_MILLIS + 1)
         assertTrue(watch.state.value.unreachable)
         assertEquals(0, signedOut)
+        // And a server found erroring when it was thought to be there is out of reach too.
+        val other = watch()
+        answer = { throw ApiError.Server(0, "something broke") }
+        other.check()
+        runCurrent()
+        assertTrue(other.state.value.unreachable)
+    }
+
+    @Test
+    fun askedLessOftenTheLongerItHasBeenGone() = runTest {
+        val watch = ServerWatch(
+            backgroundScope, ping = { pings++; answer() }, cameOnline = { online++ }, signInGone = { signedOut++ },
+            clock = { testScheduler.currentTime },
+        )
+        answer = { throw ApiError.Network("gone") }
+        watch.check()
+        runCurrent()
+        fun asksIn(millis: Long): Int {
+            val before = pings
+            advanceTimeBy(millis)
+            return pings - before
+        }
+        // The first two minutes: every fifteen seconds.
+        assertEquals(8, asksIn(2 * 60_000L + 1))
+        // Up to ten minutes: every half minute.
+        assertEquals(16, asksIn(8 * 60_000L))
+        // Up to an hour: every minute.
+        assertEquals(50, asksIn(50 * 60_000L))
+        // After that: every five minutes.
+        assertEquals(12, asksIn(60 * 60_000L))
+        assertEquals(15_000L, ServerWatch.againAfter(0))
+        assertEquals(300_000L, ServerWatch.againAfter(3 * 3_600_000L))
+    }
+
+    @Test
+    fun notAskedAfterWhileNothingWantsToKnow() = runTest {
+        var wanted = true
+        val watch = ServerWatch(
+            backgroundScope, ping = { pings++; answer() }, cameOnline = { online++ }, signInGone = { signedOut++ },
+            wanted = { wanted },
+        )
+        answer = { throw ApiError.Network("gone") }
+        watch.check()
+        runCurrent()
+        // The app goes out of sight with nothing playing and nothing waiting.
+        wanted = false
+        val asked = pings
+        advanceTimeBy(ServerWatch.AGAIN_MILLIS * 20 + 1)
+        assertEquals(asked, pings)
+        // It comes to the front again: asked at once, not at the next turn.
+        wanted = true
+        answer = {}
+        watch.nudge()
+        runCurrent()
+        assertEquals(asked + 1, pings)
+        assertFalse(watch.state.value.unreachable)
+        assertEquals(1, online)
+    }
+
+    @Test
+    fun aLateAnswerForAnAccountThatHasGoneChangesNothing() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val watch = ServerWatch(
+            backgroundScope,
+            // A check that is on its way and can't be called back.
+            ping = {
+                pings++
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gate.await() }
+                throw ApiError.Network("gone")
+            },
+            cameOnline = { online++ }, signInGone = { signedOut++ },
+        )
+        watch.check()
+        runCurrent()
+        assertEquals(1, pings)
+        // That account signs out, and another signs in, while the check is out.
+        watch.reset()
+        // Its answer arrives: the first account's server is gone. That is nothing to do
+        // with the account signed in now.
+        gate.complete(Unit)
+        runCurrent()
+        assertFalse(watch.state.value.unreachable)
+        assertTrue(watch.state.value.sure)
     }
 
     @Test

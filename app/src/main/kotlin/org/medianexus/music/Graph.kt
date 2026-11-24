@@ -95,7 +95,22 @@ class Graph(context: Context) {
         // Not a server on the home network while the app isn't allowed to reach it: it can't
         // answer, so asking is for nothing. Allowed, asking resumes (see localAccess.allowed).
         mayAsk = { !localAccess.certain.value },
+        wanted = ::wantsToKnow,
     )
+
+    /** Set by the playback service: something is playing, or meant to be (Play is down). */
+    @Volatile var playing = false
+
+    /**
+     * Whether anything wants to know, now, that the server is back: the app's screens in
+     * front, something playing or meant to be, downloads waiting, or changes held for the
+     * server. With none of those, an out-of-reach server is not asked after (see ServerWatch).
+     */
+    private fun wantsToKnow(): Boolean {
+        if (org.medianexus.music.downloads.DownloadKeeper.visible || playing) return true
+        val account = accounts.state.value ?: return false
+        return account.held.waiting.value > 0 || account.downloads?.state?.value?.busy == true
+    }
 
     /** What belongs to whoever is signed in: their library, covers, likes, downloads and
      *  queue. */
@@ -139,9 +154,7 @@ class Graph(context: Context) {
      * While the server couldn't be reached last time it was asked, asks it again (a ping).
      * The watch does so every 15 seconds by itself; this is the screens coming to the front.
      */
-    fun checkIfDown() {
-        if (watch.state.value.unreachable) watch.check()
-    }
+    fun checkIfDown() = watch.nudge()
 
     /**
      * The server answers again after being out of reach (`back`), or offline mode has been
