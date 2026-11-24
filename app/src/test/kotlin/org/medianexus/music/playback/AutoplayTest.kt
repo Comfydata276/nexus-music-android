@@ -126,6 +126,25 @@ class AutoplayTest {
     }
 
     @Test
+    fun whatThePersonDoesWhileItLooksStopsItEvenBeforeTheQueueEnded() {
+        // (M3b fixes 2, B2.) The last song starts and autoplay begins to look; the person
+        // pauses (and plays on) while it is looking; the queue then ends, and the songs land.
+        // They join the queue, but nothing plays: its place was taken when it began to look.
+        val scope = TestScope()
+        val found = Found()
+        val gate = CompletableDeferred<Unit>()
+        val auto = runner(Source(similar = songs("s", 5), gate = gate), scope, found = found)
+        val queue = queueOf(songs("q", 2))
+        auto.lastSong(queue)
+        scope.runCurrent()
+        intent++
+        assertTrue(auto.ended(queue))
+        gate.complete(Unit)
+        scope.runCurrent()
+        assertEquals(false, found.calls.single().third)
+    }
+
+    @Test
     fun theSettingOffMeansNoAutoplayButARadioCarriesOnWhateverItSays() {
         val scope = TestScope()
         val found = Found()

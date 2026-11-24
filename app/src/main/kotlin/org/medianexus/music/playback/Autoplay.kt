@@ -75,8 +75,8 @@ class AutoplayRunner(
     /** The queue entry the songs on their way were found for. */
     private var seed: Long? = null
     private var job: kotlinx.coroutines.Job? = null
-    /** The player has ended and waits for them: what the person had last done then. */
-    private var waitingSince: Long? = null
+    /** The player has ended and waits for them. */
+    private var waiting = false
 
     private fun wanted(queue: Queue): Boolean {
         if (queue.isEmpty || queue.repeat != Repeat.OFF || offline() || scope.coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return false
@@ -92,7 +92,7 @@ class AutoplayRunner(
 
     override fun ended(queue: Queue): Boolean {
         if (!wanted(queue)) return false
-        waitingSince = intent()
+        waiting = true
         look(queue)
         return true
     }
@@ -103,6 +103,9 @@ class AutoplayRunner(
         if (uid == seed && job?.isActive == true) return
         job?.cancel()
         seed = uid
+        // Its place in the order of choices as it starts looking: anything the person does
+        // while it looks (a pause, a stop, another choice) takes a later one, and stops it.
+        val asked = intent()
         val last = queue.songs[queue.order.last()]
         // (Every song in the queue once, read here on the player's thread.)
         val known = HashSet<String>(queue.songs.size * 2)
@@ -116,13 +119,13 @@ class AutoplayRunner(
                 emptyList()
             }
             // As it lands, on the player's thread: still wanted (the setting, offline, the
-            // queue's end not changed by then), and carried on into only if the person has done
-            // nothing since the queue ended (no pause or stop, the sleep timer, the sound taken
-            // away, another choice).
-            val since = waitingSince
-            waitingSince = null
+            // queue's end not changed by then), and carried on into only if the player is
+            // waiting at the end and the person has done nothing since it began to look (no
+            // pause or stop, the sleep timer, the sound taken away, another choice).
+            val wait = waiting
+            waiting = false
             if (seed != uid || !wanted(queue)) return@launch
-            found(uid, songs, since != null && since == intent())
+            found(uid, songs, wait && asked == intent())
         }
     }
 }
