@@ -62,4 +62,10 @@ class CarRadioTest {
         assertNull(tree.play(CarNode.Track("radio:st9", ListRef.Radio, 1)))
         assertEquals(0, asked.count { it == "getSong" })
     }
+
+    @Test
+    fun theRadioFolderIsTheStationsWithNothingToShuffle() = runBlocking<Unit> {
+        // Found in the car: "Shuffle", "1 song" headed the folder of one station.
+        assertEquals(listOf("Test FM", "Other FM"), tree().children(CarNode.Radio)!!.map { it.title })
+    }
 }

@@ -490,7 +490,8 @@ class CarTree(
                 (if (isOffline) playableGenres() else first(library.genres(), part, again) { playableGenres().takeIf { it.isNotEmpty() } }.orEmpty()).map(::genreEntry),
             )
             CarNode.Liked -> songs(likedSongs(part, again), ListRef.Liked)
-            CarNode.Radio -> songs(stations(part, again), ListRef.Radio)
+            // Live stations: nothing to shuffle.
+            CarNode.Radio -> songs(stations(part, again), ListRef.Radio).let { Listing(it.body, inside = it.inside) }
             is CarNode.Album -> songs(albumSongs(node.id, part, again).first, ListRef.Album(node.id))
             is CarNode.Playlist -> songs(playlistSongs(node.id, part, again = again).first, ListRef.Playlist(node.id))
             is CarNode.Artist -> {
