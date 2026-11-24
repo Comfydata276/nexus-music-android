@@ -17,6 +17,7 @@ import org.medianexus.music.library.Arrange
 import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.PlayQueue
 import org.medianexus.music.net.Song
+import org.medianexus.music.playback.Choices
 
 /** What of the queue is saved on the server: the songs around the one playing, which one
  *  that is, and how far into it (milliseconds). */
@@ -47,11 +48,20 @@ interface QueueHere {
 
     /**
      * Puts another device's queue in place of this one, at `cursor` and `positionMs` into
-     * that song, as changed at `stamp`; and plays it if `play`, else leaves it paused.
-     * Putting it there is not a change to pass on. False if it wasn't done (the queue from
-     * the phone's own last run hasn't been put back yet, or the account has gone).
+     * that song, as changed at `stamp`. Putting it there is not a change to pass on.
+     *
+     * `choice` is the place "Continue here" took in the order of choices
+     * ([org.medianexus.music.playback.Choices]) when it was tapped: the queue is played,
+     * if nothing has taken a later place by the time it is ready. Null for a queue taken up
+     * without being asked: left paused, and it takes no place of its own.
+     *
+     * `still` is asked at the last moment, when the queue is ready to go in: false, and it
+     * isn't done (sharing has been switched off meanwhile).
+     *
+     * False if it wasn't done (also: the account has gone, or something is playing here that
+     * a queue taken up unasked must not replace).
      */
-    suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, play: Boolean): Boolean
+    suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, choice: Long?, still: () -> Boolean): Boolean
 }
 
 /** The rules for sharing the queue, as plain functions: Windows' `upload_queue`,
@@ -118,7 +128,8 @@ object QueueShare {
  * person changes it, if nothing newer has happened meanwhile (see [upload]); asks the server for the saved queue at each look; takes it up, paused,
  * if another device saved it after anything was last done here and nothing is playing; and
  * otherwise, if another device has been playing in the last half hour, offers "Continue
- * here". It never starts playing by itself.
+ * here" (see [continueHere]). It never starts playing by itself, and with the setting off it
+ * offers nothing and puts nothing in the player, whatever was already on its way.
  *
  * The account's; the player's side ([here]) is the playback service's while it has one.
  */
@@ -129,6 +140,9 @@ class QueueStep(
     private val device: () -> String,
     /** Sharing is switched on and the server may be asked now. */
     private val may: () -> Boolean,
+    /** The setting itself is on, whether or not the server can be reached just now. With it
+     *  off nothing is offered, and nothing of another device's is put in the player. */
+    private val on: () -> Boolean = may,
     private val scope: CoroutineScope,
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
     private val pause: suspend (Long) -> Unit = { delay(it) },
@@ -225,6 +239,8 @@ class QueueStep(
         } catch (_: ApiError) {
             return
         }
+        // The setting was switched off while the answer was on its way: it is not used.
+        if (!may()) return
         val name = device()
         // With no player (the playback service isn't up) there is nothing to take it up, and
         // nothing playing here: it is only noted, for when there is.
@@ -235,7 +251,7 @@ class QueueStep(
             if (player == null || !QueueShare.adopted(theirs, name, player.stamp(), player.playing())) return@withContext
             val (cursor, position) = QueueShare.place(theirs)
             // Taken up: there's nothing left to offer, and it is not this phone's to save.
-            if (player.replace(theirs.songs, cursor, position, QueueShare.changedAt(theirs), play = false)) {
+            if (player.replace(theirs.songs, cursor, position, QueueShare.changedAt(theirs), choice = null, still = on)) {
                 tookUp = true
                 offer.value = null
             }
@@ -244,8 +260,10 @@ class QueueStep(
 
     /** Remembers what another device has been playing in the last half hour, so it can be
      *  offered as "Continue here" (Windows' `note_elsewhere`). */
-    private fun note(theirs: PlayQueue, name: String, currentId: String?) {
-        offer.value = if (QueueShare.offered(theirs, name, currentId, clock())) {
+    private fun note(theirs: PlayQueue, name: String, currentId: String?) = synchronized(offering) {
+        // (Asked under the same lock as [forget], which is called once the setting is off:
+        // whichever of the two comes second, nothing is left on offer.)
+        offer.value = if (on() && QueueShare.offered(theirs, name, currentId, clock())) {
             val song = theirs.songs.firstOrNull { it.id == theirs.current } ?: theirs.songs.first()
             Elsewhere(theirs, song.title, song.artistLabel)
         } else {
@@ -253,20 +271,28 @@ class QueueStep(
         }
     }
 
-    /** Takes up what another device was playing, from where it had got to, and plays it:
-     *  the person asked for it (Windows' `continue_here`). */
+    private val offering = Any()
+
+    /**
+     * Takes up what another device was playing, from where it had got to, and plays it: the
+     * person asked for it (Windows' `continue_here`). It is a choice like any other: it takes
+     * its place in the order of choices now, at the tap, and by the time its queue is ready
+     * it is played only if nothing has taken a later place (a pause, something else chosen).
+     */
     fun continueHere() {
         val theirs = offer.value?.queue ?: return
         offer.value = null
+        if (!on()) return
+        val place = Choices.take()
         scope.launch(main) {
             val player = here ?: return@launch
             val (cursor, position) = QueueShare.place(theirs)
-            player.replace(theirs.songs, cursor, position, QueueShare.changedAt(theirs), play = true)
+            player.replace(theirs.songs, cursor, position, QueueShare.changedAt(theirs), choice = place, still = on)
         }
     }
 
     /** Nothing is offered any more (sharing switched off). */
-    fun forget() {
+    fun forget() = synchronized(offering) {
         offer.value = null
     }
 

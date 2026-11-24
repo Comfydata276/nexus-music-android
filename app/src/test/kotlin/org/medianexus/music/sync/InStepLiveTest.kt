@@ -267,8 +267,8 @@ class InStepLiveTest {
             override fun currentId() = current
             override fun playing() = playing
             override fun stamp() = t - 1_000
-            override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, play: Boolean): Boolean {
-                replaced += "${songs.map { it.id }} at $cursor, $positionMs ms, ${if (play) "playing" else "paused"}"
+            override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, choice: Long?, still: () -> Boolean): Boolean {
+                replaced += "${songs.map { it.id }} at $cursor, $positionMs ms, ${if (choice != null) "playing" else "paused"}"
                 return true
             }
         }

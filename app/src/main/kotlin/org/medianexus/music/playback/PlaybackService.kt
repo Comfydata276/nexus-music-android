@@ -1259,23 +1259,32 @@ class PlaybackService : MediaLibraryService() {
         override fun playing(): Boolean = exo.playWhenReady && !player.queue.isEmpty
         override fun stamp(): Long = queueStamp
 
-        override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, play: Boolean): Boolean {
+        override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, choice: Long?, still: () -> Boolean): Boolean {
             // Not before this phone's own queue from its last run is back: that comes first,
             // and what another device saved takes its place only if it is the newer.
             era.restoring.await()
             if (this@PlaybackService.era !== era || songs.isEmpty()) return false
             // (Looked at again: something may have been started here while that was waited for.)
-            if (!play && (exo.playWhenReady && !player.queue.isEmpty || stamp <= queueStamp)) return false
-            val chosen = Choices.latest
+            if (choice == null && (exo.playWhenReady && !player.queue.isEmpty || stamp <= queueStamp)) return false
+            // The place it acts for in the order of choices. "Continue here" took its own, at
+            // the tap. A queue taken up without being asked is nobody's choice and takes
+            // none: it acts for the newest there is, so a start the person made just before
+            // it, still being made ready, is not overtaken by it and plays over it.
+            val place = choice ?: Choices.latest
             val next = withContext(Dispatchers.Default) { player.prepare(songs, cursor.coerceIn(0, songs.size - 1), context = "", shuffle = false) }
             if (this@PlaybackService.era !== era) return false
-            // Taken up without being asked, it gives way to anything the person chose while
-            // it was being made ready.
-            if (!play && (!Choices.stands(chosen) || exo.playWhenReady && !player.queue.isEmpty)) return false
-            if (play) holdForeground(why = "to carry on from another device")
+            // Not once sharing has been switched off. And it gives way to anything the person
+            // chose meanwhile (a pause, a stop, something else to play): since the tap, for
+            // "Continue here"; while it was being made ready, taken up unasked.
+            if (!still() || !Choices.stands(place)) return false
+            if (choice == null && exo.playWhenReady && !player.queue.isEmpty) return false
+            if (choice != null) holdForeground(why = "to carry on from another device")
+            val before = queueStamp
             queueStamp = stamp
-            quietly { player.play(next, positionMs, playNow = play) }
-            return true
+            var done = false
+            quietly { done = player.playFor(place, next, positionMs, playNow = choice != null) }
+            if (!done) queueStamp = before
+            return done
         }
     }
 

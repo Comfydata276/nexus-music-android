@@ -121,13 +121,21 @@ internal class PretendPlayer(var playing: Boolean = false, var current: String? 
     /** What `replace` answers: whether the player took the queue. */
     var takes = true
 
+    /** The place in the order of choices each queue came with (null: taken up unasked). */
+    val choices = ArrayList<Long?>()
+
+    /** Something that happens while a queue is being made ready. */
+    var meanwhile: () -> Unit = {}
+
     override fun upload() = queue
     override fun currentId() = current
     override fun playing() = playing
     override fun stamp() = stamp
-    override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, play: Boolean): Boolean {
-        if (!takes) return false
-        replaced += "${songs.map { it.id }} at $cursor, $positionMs ms, ${if (play) "playing" else "paused"}"
+    override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, choice: Long?, still: () -> Boolean): Boolean {
+        meanwhile()
+        if (!takes || !still()) return false
+        choices += choice
+        replaced += "${songs.map { it.id }} at $cursor, $positionMs ms, ${if (choice != null) "playing" else "paused"}"
         queue = QueueUpload(songs.map { it.id }, songs[cursor].id, positionMs)
         this.stamp = stamp
         return true

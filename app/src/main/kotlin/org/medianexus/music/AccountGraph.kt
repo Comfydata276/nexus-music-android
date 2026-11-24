@@ -302,7 +302,7 @@ class AccountGraph(
             },
             // (Not while this phone's clock is wrong: a queue saved then would be told to
             // other devices as changed at a time that never was.)
-            may = { mayShare() && step?.clockWrong?.value != true }, scope = scope, pause = pause,
+            may = { mayShare() && step?.clockWrong?.value != true }, on = { settings.value.sync }, scope = scope, pause = pause,
         )
     }
 
