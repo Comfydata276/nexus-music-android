@@ -442,8 +442,10 @@ How it is built (M1a):
   out: so a count of media players, ours among them, and the kind of output each goes to:
   the phone's speaker, Bluetooth, USB, a remote submix such as Android Auto takes the sound
   through); and the media volume. What it cannot find out is whether Android has muted it:
-  that is only in `dumpsys audio`. So "moving, in the foreground, listed, going to the car"
-  from a drive where nothing was heard is Android muting it.
+  that is only in `dumpsys audio`. "Moving" says the player is progressing, not that sound
+  reached a speaker. So "moving, in the foreground, listed, going to the car" from a drive
+  where nothing was heard says the sound was lost after the player: Android muting it, or
+  the car's own volume or source.
 - Debug builds log the player's events (tag `NexusPlayer`) and have `DebugControl`, a
   receiver the rig can drive the player with from adb.
 
