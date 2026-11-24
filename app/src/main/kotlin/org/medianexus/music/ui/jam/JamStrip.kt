@@ -57,18 +57,21 @@ fun JamStrip(modifier: Modifier = Modifier) {
         else -> return
     }
     val colors = Theme.colors
-    // The words in full on a line of their own, the buttons under them at the end: beside
-    // them, at a phone's width, the words were cut to half a sentence.
-    androidx.compose.foundation.layout.Column(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.radius))
-            .background(colors.accent)
-            .padding(start = 12.dp, end = 4.dp, top = 6.dp)
-            .semantics(mergeDescendants = false) { liveRegion = LiveRegionMode.Polite },
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(end = 8.dp)) {
+    val buttons: @Composable () -> Unit = {
+        when {
+            linked != null -> {
+                StripLink(stringResource(R.string.jam_play_here)) { jams.playHere() }
+                StripLink(stringResource(R.string.jam_stop_steering)) { jams.leave() }
+            }
+            joined != null -> {
+                StripLink(stringResource(R.string.jam_find_songs)) { ui.open(Route.Jam()) }
+                StripLink(stringResource(R.string.jam_leave)) { jams.leave() }
+            }
+            else -> StripLink(stringResource(R.string.jam_manage)) { ui.open(Route.Jam()) }
+        }
+    }
+    val words: @Composable (Modifier) -> Unit = { inner ->
+        Row(inner, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(R.drawable.ic_party_popper, size = 16.dp, tint = Color.White)
             BasicText(
                 text,
@@ -78,17 +81,27 @@ fun JamStrip(modifier: Modifier = Modifier) {
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
-            when {
-                linked != null -> {
-                    StripLink(stringResource(R.string.jam_play_here)) { jams.playHere() }
-                    StripLink(stringResource(R.string.jam_stop_steering)) { jams.leave() }
-                }
-                joined != null -> {
-                    StripLink(stringResource(R.string.jam_find_songs)) { ui.open(Route.Jam()) }
-                    StripLink(stringResource(R.string.jam_leave)) { jams.leave() }
-                }
-                else -> StripLink(stringResource(R.string.jam_manage)) { ui.open(Route.Jam()) }
+    }
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.radius))
+            .background(colors.accent)
+            .semantics(mergeDescendants = false) { liveRegion = LiveRegionMode.Polite },
+    ) {
+        if (maxWidth >= 600.dp) {
+            // Wide (a phone on its side): the words and the buttons on one line, as Windows'.
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                words(Modifier.weight(1f).padding(vertical = 6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { buttons() }
+            }
+        } else {
+            // Narrow: the words in full on a line of their own, the buttons under them at the
+            // end; beside them, the words were cut to half a sentence.
+            androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 6.dp)) {
+                words(Modifier.padding(end = 8.dp))
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) { buttons() }
             }
         }
     }
