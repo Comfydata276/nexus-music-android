@@ -1,6 +1,8 @@
 package org.medianexus.music.ui.lists
 
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -129,14 +131,30 @@ fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, count
         }
         if (step != 0f) scope.launch { drag.offset += list.scrollBy(step) }
     }
+    // The handle takes the touch from the moment it is pressed, so the row under it neither
+    // plays nor starts a selection (its long press), however long the finger rests before
+    // moving: and so the drag goes with the finger at once.
     return pointerInput(place) {
-        detectDragGestures(
-            onDragStart = { drag.start(place, size) },
-            onDragEnd = { drag.drop()?.let { (from, to) -> onMoved(from, to) } },
-            onDragCancel = { drag.reset() },
-        ) { change, amount ->
-            change.consume()
-            dragBy(amount.y)
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            down.consume()
+            drag.start(place, size)
+            var finished = false
+            try {
+                while (true) {
+                    val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) {
+                        change.consume()
+                        finished = true
+                        break
+                    }
+                    val dy = change.positionChange().y
+                    change.consume()
+                    if (dy != 0f) dragBy(dy)
+                }
+            } finally {
+                if (finished) drag.drop()?.let { (from, to) -> onMoved(from, to) } else drag.reset()
+            }
         }
     }
 }

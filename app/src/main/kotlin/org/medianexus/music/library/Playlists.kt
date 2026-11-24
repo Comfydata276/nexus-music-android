@@ -117,9 +117,10 @@ class Playlists(
     /** The last removal or move, while it can still be taken back. */
     val undo: StateFlow<PlaylistUndo?> = lastUndo
 
-    /** Whether this account may change `playlist`: its own (a playlist that names no owner is
-     *  taken to be). Someone else's can be played, not changed: Navidrome refuses. */
-    fun canEdit(playlist: Playlist): Boolean = playlist.owner.isEmpty() || playlist.owner.equals(username, ignoreCase = true)
+    /** Whether this account may change `playlist`: not if the server says it may not
+     *  (Navidrome's `readonly`), nor if it is someone else's (a playlist that names no owner
+     *  is taken to be the account's). Someone else's can be played, not changed. */
+    fun canEdit(playlist: Playlist): Boolean = !playlist.readonly && (playlist.owner.isEmpty() || playlist.owner.equals(username, ignoreCase = true))
 
     private fun turn(id: String) = synchronized(lock) { turns.getOrPut(id) { Mutex() } }
 

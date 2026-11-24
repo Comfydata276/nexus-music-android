@@ -126,6 +126,8 @@ data class Playlist(
     val songCount: Int = 0,
     val duration: Int = 0,
     val coverArt: String = "",
+    /** The server's word that this account may not change it (Navidrome sends it). */
+    val readonly: Boolean = false,
     @SerialName("entry") val songs: List<Song> = emptyList(),
 )
 

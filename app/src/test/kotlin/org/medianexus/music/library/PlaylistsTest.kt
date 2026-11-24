@@ -350,6 +350,8 @@ class PlaylistsTest {
         assertTrue(playlists.canEdit(Playlist(id = "p1", owner = "Tester")))
         assertTrue(playlists.canEdit(Playlist(id = "p1")))
         assertFalse(playlists.canEdit(Playlist(id = "p9", owner = "guest")))
+        // The server's own word, whoever it names.
+        assertFalse(playlists.canEdit(Playlist(id = "p1", owner = "tester", readonly = true)))
     }
 
     @Test

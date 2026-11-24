@@ -238,7 +238,12 @@ class SongDataSource(
         if (id == null) {
             val source = upstream.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }
             plain = source
-            return guarded { source.open(dataSpec) }
+            return guarded { source.open(dataSpec) }.also {
+                // An address that names no song is an internet radio station's: what it says
+                // of itself (its ICY headers, which tell the player where the titles it announces
+                // are in the stream) and its kind are passed on; nothing else of its answer.
+                headers = source.responseHeaders.filterKeys { key -> key != null && (key.startsWith("icy-", ignoreCase = true) || key.equals("Content-Type", ignoreCase = true)) }
+            }
         }
         // Refused here if the account this was made for has gone.
         val lease = leases.lease(generation).also { this.lease = it }
