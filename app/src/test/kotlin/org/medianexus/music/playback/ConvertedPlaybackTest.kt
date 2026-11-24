@@ -16,7 +16,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.test.utils.TestExoPlayerBuilder
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
@@ -56,6 +55,10 @@ class ConvertedPlaybackTest {
      *  its length, honouring byte ranges and ignoring any time to start from. */
     private var sendsTheFile = false
     private val asked = CopyOnWriteArrayList<String>()
+    /** The first answer's reading stops here (a byte), on the loading thread, until opened. */
+    private var holdAt = -1
+    private val held = java.util.concurrent.CompletableFuture<Unit>()
+    private val open = java.util.concurrent.CountDownLatch(1)
 
     private fun tag(size: Int): ByteArray {
         val body = size - 10
@@ -112,6 +115,11 @@ class ConvertedPlaybackTest {
         }
 
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (holdAt in 0..at) {
+                holdAt = -1
+                held.complete(Unit)
+                open.await()
+            }
             if (failAt in 0..at) throw HttpDataSource.HttpDataSourceException(IOException("Connection reset"), DataSpec(uri!!), 2000, HttpDataSource.HttpDataSourceException.TYPE_READ)
             if (at >= bytes.size) return C.RESULT_END_OF_INPUT
             var count = minOf(length, bytes.size - at, 4_096)
@@ -206,15 +214,13 @@ class ConvertedPlaybackTest {
 
     private val conversions = Conversions()
     private var player: ExoPlayer? = null
+    private val clock = androidx.media3.test.utils.FakeClock(/* isAutoAdvancing = */ true)
 
     /** The player as the service builds its own: the app's data source, the app's way of
      *  reading MP3, the app's retry policy (without the waiting). */
     private fun start(): ExoPlayer {
         val sources = SongDataSource.Factory(leases, DataSource.Factory { Server() }, pause = {})
-        val made = TestExoPlayerBuilder(RuntimeEnvironment.getApplication())
-            .setRenderers(Listener())
-            .setMediaSourceFactory(DefaultMediaSourceFactory(sources, songExtractors()).setLoadErrorHandlingPolicy(RideOut()))
-            .build()
+        val made = madeUpClockPlayer(RuntimeEnvironment.getApplication(), DefaultMediaSourceFactory(sources, songExtractors()).setLoadErrorHandlingPolicy(RideOut()), Listener(), clock = clock)
         player = made
         made.setMediaItem(MediaItem.Builder().setMediaId("one").setUri(songUri("one")).build())
         made.prepare()
@@ -293,6 +299,30 @@ class ConvertedPlaybackTest {
         assertTrue(heard.last().songMs in 299_950..299_999)
         // By time, from the whole second before; never by byte.
         assertEquals(listOf("timeOffset=0", "timeOffset=241"), asked.toList())
+    }
+
+    @Test
+    fun aLoadThatTheMachineIsSlowToRunIsNotTakenForAStuckPlayer() {
+        // The loading thread is held two seconds into the song, as a busy machine can leave it
+        // without the processor, while the playback thread runs eleven minutes of the player's
+        // made-up clock asking whether it is ready. (Media3's stuck-buffering detector, at its
+        // ten minutes, failed the player here: ConvertedPlaybackTest once failed that way in a
+        // release check, at its first `untilPositionAtLeast(2_000)`.)
+        fiveMinutes()
+        holdAt = tagBytes + 3 * askedKbps * (2_000 / 24)
+        val exo = start()
+        exo.play()
+        androidx.media3.test.utils.robolectric.RobolectricUtil.runMainLooperUntil({ held.isDone }, NOT_FOR_EVER_MILLIS, androidx.media3.common.util.Clock.DEFAULT)
+        val from = clock.elapsedRealtime()
+        androidx.media3.test.utils.robolectric.RobolectricUtil.runMainLooperUntil(
+            { clock.elapsedRealtime() - from > 11 * 60_000 || exo.playerError != null },
+            NOT_FOR_EVER_MILLIS, androidx.media3.common.util.Clock.DEFAULT,
+        )
+        assertNull("taken for stuck", exo.playerError)
+        open.countDown()
+        advance(exo).untilPositionAtLeast(3_000)
+        assertNull(exo.playerError)
+        assertHeardRightly(from = 0)
     }
 
     @Test

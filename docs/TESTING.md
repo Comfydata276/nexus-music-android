@@ -657,6 +657,21 @@ get this wrong and are the examples to avoid: one judged a limit by the wall clo
 shared machine, and one waited for the service to stop "because there was nothing to
 resume" while moving the clock on, so that what stopped it was a time limit.
 
+**Media3's stuck-player detector is off in tests on a made-up clock** (`madeUpClockPlayer`,
+in `playback/Advancing.kt`; M3b, item 8). It calls a player stuck when ten minutes pass *by
+the player's clock* with it buffering and nothing more loaded. The test kit's clock moves on by
+itself, so those ten minutes are the playback thread asking "ready yet?" sixty thousand times,
+which it can do in well under a second, while the loading thread is real and on no made-up
+clock: on a busy machine it went that long without the processor, and
+`ConvertedPlaybackTest` failed once with `StuckPlayerException` (stuck buffering) in a release
+check. Confirmed from Media3 1.11.1's sources (`StuckPlayerDetector`, `FakeClock`,
+`TestExoPlayerBuilder`, which sets no stuck-buffering time and so leaves Media3's default
+600,000 ms) and forced in `ConvertedPlaybackTest.aLoadThatTheMachineIsSlowToRunIsNotTakenForAStuckPlayer`:
+the loading thread held at a gate while the player's clock runs eleven minutes. It failed
+with the detector on, and passes. `ConvertedPlaybackTest`, `PinnedCopyTest` and
+`DoneMeansDoneTest` make their players there; the app's own player is on the real clock and
+keeps the detector.
+
 And a test that runs Media3 can still run it differently from the way the player does. The
 MP3 header reader passed its tests and did nothing on the emulator: the test handed the
 extractor a file to read, where Media3 first tries each kind of file on a stream and only

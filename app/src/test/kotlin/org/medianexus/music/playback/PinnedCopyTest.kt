@@ -17,7 +17,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.test.utils.TestExoPlayerBuilder
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
@@ -191,10 +190,7 @@ class PinnedCopyTest {
 
     private fun start(): ExoPlayer {
         val sources = SongDataSource.Factory(leases, DataSource.Factory { Server() }, pause = {})
-        val made = TestExoPlayerBuilder(RuntimeEnvironment.getApplication())
-            .setRenderers(Listener())
-            .setMediaSourceFactory(DefaultMediaSourceFactory(sources, songExtractors()).setLoadErrorHandlingPolicy(RideOut()))
-            .build()
+        val made = madeUpClockPlayer(RuntimeEnvironment.getApplication(), DefaultMediaSourceFactory(sources, songExtractors()).setLoadErrorHandlingPolicy(RideOut()), Listener())
         player = made
         made.setMediaItem(MediaItem.Builder().setMediaId("one").setUri(songUri("one")).build())
         made.prepare()

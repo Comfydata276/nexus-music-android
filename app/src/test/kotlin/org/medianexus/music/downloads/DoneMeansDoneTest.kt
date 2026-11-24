@@ -19,7 +19,6 @@ import androidx.media3.exoplayer.BaseRenderer
 import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.test.utils.TestExoPlayerBuilder
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -48,6 +47,7 @@ import org.medianexus.music.net.Song
 import org.medianexus.music.net.Subsonic
 import org.medianexus.music.playback.Conversions
 import org.medianexus.music.playback.RideOut
+import org.medianexus.music.playback.madeUpClockPlayer
 import org.medianexus.music.playback.SongDataSource
 import org.medianexus.music.playback.SongLease
 import org.medianexus.music.playback.SongLeases
@@ -315,10 +315,7 @@ class DoneMeansDoneTest {
             }
         }
         val frames = Frames()
-        val exo = TestExoPlayerBuilder(context)
-            .setRenderers(frames)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(SongDataSource.Factory(leases, noNetwork, pause = {}), songExtractors()).setLoadErrorHandlingPolicy(RideOut()))
-            .build()
+        val exo = madeUpClockPlayer(context, DefaultMediaSourceFactory(SongDataSource.Factory(leases, noNetwork, pause = {}), songExtractors()).setLoadErrorHandlingPolicy(RideOut()), frames)
         player?.release()
         player = exo
         exo.setMediaItem(MediaItem.Builder().setMediaId(id).setUri(songUri(id)).build())
