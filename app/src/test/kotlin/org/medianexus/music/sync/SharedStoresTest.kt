@@ -34,6 +34,10 @@ import org.medianexus.music.store.RecentlyPlayed
  * shared queue, and the sync playlist being nowhere among the playlists.
  */
 class SharedStoresTest {
+    /** No test here may wait for ever: one that did would hold the machine's one turn at
+     *  building, for everyone, until someone noticed. */
+    @get:org.junit.Rule val limit: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(60)
+
     @get:Rule val folder = TemporaryFolder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 

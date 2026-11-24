@@ -1259,8 +1259,12 @@ class PlaybackService : MediaLibraryService() {
             if (this@PlaybackService.era !== era || songs.isEmpty()) return false
             // (Looked at again: something may have been started here while that was waited for.)
             if (!play && (exo.playWhenReady && !player.queue.isEmpty || stamp <= queueStamp)) return false
+            val chosen = Choices.latest
             val next = withContext(Dispatchers.Default) { player.prepare(songs, cursor.coerceIn(0, songs.size - 1), context = "", shuffle = false) }
             if (this@PlaybackService.era !== era) return false
+            // Taken up without being asked, it gives way to anything the person chose while
+            // it was being made ready.
+            if (!play && (!Choices.stands(chosen) || exo.playWhenReady && !player.queue.isEmpty)) return false
             if (play) holdForeground(why = "to carry on from another device")
             queueStamp = stamp
             quietly { player.play(next, positionMs, playNow = play) }

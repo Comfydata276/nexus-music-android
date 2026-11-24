@@ -28,6 +28,10 @@ import org.medianexus.music.store.SettingsStore
  * devices"), each with the case that breaks if the rule is taken out.
  */
 class PhoneSharedTest {
+    /** No test here may wait for ever: one that did would hold the machine's one turn at
+     *  building, for everyone, until someone noticed. */
+    @get:org.junit.Rule val limit: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(60)
+
     @get:Rule val folder = TemporaryFolder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private val io = Dispatchers.Unconfined

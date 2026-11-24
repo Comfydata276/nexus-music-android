@@ -23,6 +23,10 @@ import org.medianexus.music.net.Playlist
  * a pretend one that counts every question and every write.
  */
 class InStepTest {
+    /** No test here may wait for ever: one that did would hold the machine's one turn at
+     *  building, for everyone, until someone noticed. */
+    @get:org.junit.Rule val limit: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(60)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
     @After
