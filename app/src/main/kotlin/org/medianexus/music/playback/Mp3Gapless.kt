@@ -278,6 +278,7 @@ class GaplessAudioRenderer(
 }
 
 /** The period a format was read from (see [GaplessAudioRenderer]). */
+@OptIn(UnstableApi::class)
 class ReadFrom(val period: MediaSource.MediaPeriodId?)
 
 /** The sink, told the period the sound it is configured for was read from. */
