@@ -36,6 +36,10 @@ data class Downloaded(
     /** The file's modification time when it was marked whole (milliseconds since 1970; 0 for
      *  one marked before this was kept): with its name, which file this entry is of. */
     val modified: Long = 0,
+    /** The version of the check this file passed when it was marked whole, or has passed
+     *  since (`Media3AudioCheck.VERSION`; 0 for one marked by a build that looked only at a
+     *  file's headers). One below the present version is checked again, once. */
+    val checked: Int = 0,
 ) {
     /** Its bit rate in kbps, as near as its size and the song's length say (Windows'
      *  `saved_as`). */
@@ -334,6 +338,30 @@ class Catalogue(
             return went
         }
     }
+
+    /**
+     * A download marked whole by an earlier build has now passed the present check
+     * (`version`): noted, so it is not checked again. Only if it is still the download that
+     * was looked at (`was`). Nothing is published for it: nothing anyone is shown changes.
+     */
+    fun passed(was: Downloaded, version: Int) {
+        synchronized(lock) {
+            if (songs[was.song.id] != was) return
+            val now = was.copy(checked = version)
+            try {
+                append(Change(add = now))
+            } catch (_: IOException) {
+                // Checked again next time: nothing is lost.
+                return
+            }
+            songs[was.song.id] = now
+            compactIfDue()
+        }
+    }
+
+    /** The downloads as they stand this instant, the newest change included (what [state]
+     *  last published may be a moment behind for a change nobody is shown: see [passed]). */
+    fun entries(): List<Downloaded> = synchronized(lock) { songs.values.toList() }
 
     /** Remembers a list as downloaded (or with its songs as they are now), or forgets it. */
     fun keep(collection: DownloadedList) = synchronized(lock) {

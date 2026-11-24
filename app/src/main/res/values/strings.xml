@@ -286,7 +286,7 @@
     <string name="size_gb">%1$d GB</string>
     <string name="storage">Storage</string>
     <string name="notice_sign_in_gone">Your saved sign-in no longer works. Sign in again.</string>
-    <string name="bad_download">The downloaded copy of “%1$s” wouldn\'t play, so it\'s being streamed. If that keeps happening, remove the download and fetch it again.</string>
+    <string name="bad_download">The downloaded copy of “%1$s” wouldn\'t play. It will be downloaded again when your server can be reached.</string>
 
     <!-- Download marks and the download button (Windows' TrackRow and ActionBar) -->
     <string name="waiting_to_download">Waiting to download</string>

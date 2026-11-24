@@ -79,6 +79,9 @@ import org.robolectric.shadows.ShadowNetworkInfo
 @RunWith(RobolectricTestRunner::class)
 class DoneMeansDoneTest {
     @get:Rule val folder = TemporaryFolder()
+
+    /** (The check asks the system for a decoder: a phone has these.) */
+    @get:Rule val decoders = phoneDecoders()
     private val server = GatedServer()
     private lateinit var context: Context
     private lateinit var database: StandaloneDatabaseProvider

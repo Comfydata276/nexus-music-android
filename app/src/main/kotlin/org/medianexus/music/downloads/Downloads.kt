@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -169,7 +170,7 @@ class Downloads(
     private val network: StateFlow<NetworkNow> = MutableStateFlow(NetworkNow()),
     /** What says whether a file that has arrived is the song (a stand-in, in tests whose
      *  songs are not audio). */
-    private val check: AudioCheck = Media3AudioCheck,
+    private val check: AudioCheck = Media3AudioCheck.system,
     /** Where the catalogue is written from the main thread's side, and the start-up sweep of
      *  the folder runs: one thing at a time, in the order asked, never on the main thread.
      *  (A test's own, to hold it.) */
@@ -187,7 +188,7 @@ class Downloads(
     /** Done once Media3's manager has read what was waiting and the start-up sweep of the
      *  folder has finished: until then no work is accepted (see [Catalogue.sweep]). */
     private val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
-    private var released = false
+    @Volatile private var released = false
 
     /** Songs on their way, by id, as they were asked for (and in what form). Known here the
      *  moment a song is asked for, before Media3's own list of downloads says so. */
@@ -605,6 +606,7 @@ class Downloads(
                         opening = false
                         gate()
                         measure()
+                        recheckOld()
                     }
                 }
             }
@@ -784,8 +786,11 @@ class Downloads(
             main.post { publish() }
         }
 
-        private fun fetchUntilSettled(ask: Ask, form: SavedForm, progressListener: Downloader.ProgressListener?) {
+        private fun fetchUntilSettled(ask: Ask, asked: SavedForm, progressListener: Downloader.ProgressListener?) {
             var tries = 0
+            // A file this phone was found to have no decoder for is not fetched as it is
+            // again: the server's conversion, as streaming asks for one it can't play.
+            var form = if (!asked.converted && ask.song.id in undecodable) convertedForm() else asked
             while (true) {
                 try {
                     fetch.fetch(ask.song, form, api.streamUrl(ask.song.id, form.bitrate)) { got, total ->
@@ -811,6 +816,15 @@ class Downloads(
                         }
                         reachedFailed()
                         throw e
+                    }
+                    // The file as it is arrived whole, and nothing on this phone decodes
+                    // what is in it (an ALAC in an .m4a, say): never marked as a download.
+                    // The server's conversion is downloaded in its place.
+                    if (e.undecodable && !form.converted) {
+                        undecodable += ask.song.id
+                        form = convertedForm()
+                        note("downloads: the phone has no decoder for one as it is; the server's conversion is downloaded instead")
+                        continue
                     }
                     // What arrived was not the song, whole: fetched afresh, a few times, by
                     // itself (the server's next answer may be right). Anything else won't
@@ -839,6 +853,126 @@ class Downloads(
             catalogue.remove(listOf(id))
             val stem = SongFetch.stem(id)
             catalogue.dir.listFiles()?.forEach { if (SongFetch.stemOfPart(it.name) == stem) it.delete() }
+        }
+    }
+
+    /** Songs whose files, as they are, this phone was found to have no decoder for. */
+    private val undecodable: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** The form a song the phone can't play as it is is downloaded in (see [savedForm]). */
+    private fun convertedForm(): SavedForm = settings.value.downloadQuality.let { SavedForm(if (it == 0) 320 else it, "mp3") }
+
+    // ---- Downloads that turn out not to be whole ---------------------------------------------
+
+    /** Songs unmarked and fetched again in this run of the app, because their files didn't
+     *  play or didn't pass the check: one that fails again is not fetched a third time. */
+    private val demoted = HashSet<String>()
+
+    /**
+     * A downloaded file turned out not to be what "Done" promised (it failed when played,
+     * for a reason that is the file's; or, marked by an earlier build, it does not pass the
+     * check a download must pass now): **it stops being a download**. It is unmarked (and
+     * its file goes), shown as on its way again, and fetched again as soon as the server can
+     * be reached: until then it waits, as any download does. What wanted it (a list
+     * downloaded whole, its own Download) still does.
+     *
+     * Only that file: `file` and `modified` are the name and modification time of the copy
+     * that failed (0: whatever the entry has), and a download that has been replaced since is
+     * left alone. And only once in a run of the app: a fresh copy that fails the same way is
+     * listed as failed, with the reason, not fetched over and over.
+     */
+    fun demote(id: String, file: String, modified: Long, why: String) {
+        scope.launch(Dispatchers.Main.immediate) {
+            ready.await()
+            val entry = onDisk {
+                val entry = catalogue.entry(id)?.takeIf { it.file == file && (modified == 0L || it.modified == 0L || it.modified == modified) } ?: return@onDisk null
+                entry.takeIf { catalogue.remove(listOf(id)).isNotEmpty() }
+            } ?: return@launch
+            if (::manager.isInitialized && !released) manager.removeDownload(id)
+            note("downloads: one marked whole $why: it is no longer a download" + if (id in demoted) "" else ", and is fetched again")
+            if (!demoted.add(id)) {
+                later { catalogue.failed(Failed(entry.song, "It was downloaded again and still wouldn't play.")) }
+                return@launch
+            }
+            refetch(listOf(entry.song))
+        }
+    }
+
+    /**
+     * Fetches again songs that are meant to be downloaded and are not (a download found
+     * wanting). What can't be queued for want of room is **listed as failed for want of
+     * room**, not dropped with nothing said.
+     */
+    private suspend fun refetch(songs: List<Song>) {
+        val asked = download(songs)
+        if (asked is Asked.NoRoom) {
+            note("downloads: ${songs.size} to be fetched again could not be queued: not enough room on the phone")
+            later { for (song in songs) if (!catalogue.has(song.id)) catalogue.failed(Failed(song, "Not enough room on the phone to download it again.")) }
+        }
+    }
+
+    /** What is wrong with a download's file, read through now; null if nothing is, or it
+     *  can't be said (the file can't be read, or the look was called off). */
+    private fun faultIn(was: Downloaded): Fault? {
+        val file = catalogue.wholeFileOf(was.song.id) ?: return null
+        val seen = try {
+            check.inspect(file, was.suffix) { released }
+        } catch (_: IOException) {
+            return null
+        }
+        val form = SavedForm(was.bitrate, was.suffix)
+        return SongFetch.faultOf(was.song, form, seen, wholeByLength = !form.converted && was.song.size > 0 && was.song.size == was.bytes)
+    }
+
+    private fun wordsFor(fault: Fault): String = when (fault) {
+        Fault.NO_DECODER -> "holds what this phone has no decoder for"
+        Fault.CUT_SHORT, Fault.WRONG_LENGTH -> "stops before the song's end"
+        Fault.DAMAGED -> "is damaged"
+        Fault.NOT_A_SONG -> "is not a song"
+    }
+
+    /**
+     * A download stopped while it was playing, for a reason that says nothing by itself
+     * about the file (a decoder that fell over): its file is read through now, off the main
+     * thread, and if the file is at fault it is demoted (see [demote]).
+     */
+    fun verifyNow(id: String) {
+        scope.launch(Dispatchers.IO) {
+            val was = catalogue.entry(id) ?: return@launch
+            val fault = faultIn(was) ?: return@launch
+            demote(id, was.file, was.modified, wordsFor(fault))
+        }
+    }
+
+    /**
+     * **Downloads marked whole by an earlier build are checked once, the way a download is
+     * checked now** (`Downloaded.checked`): read through to the end, in the background, one
+     * at a time. One that passes is noted and never read again; one that doesn't is demoted
+     * and fetched again. Only while the server can be asked: until it can, a copy that would
+     * be taken away could not be replaced, and is no worse than it was.
+     */
+    private fun recheckOld() {
+        scope.launch(Dispatchers.IO) {
+            var looked = 0
+            var bad = 0
+            for (was in catalogue.entries()) {
+                if (was.checked >= Media3AudioCheck.VERSION) continue
+                reach.first { !it.offline }
+                if (released) return@launch
+                if (catalogue.entry(was.song.id)?.file != was.file) continue
+                looked++
+                val fault = faultIn(was)
+                if (released) return@launch
+                if (fault == null) {
+                    catalogue.passed(was, Media3AudioCheck.VERSION)
+                } else {
+                    bad++
+                    demote(was.song.id, was.file, was.modified, wordsFor(fault))
+                }
+                // (Gently: something may be playing.)
+                delay(RECHECK_PAUSE_MILLIS)
+            }
+            if (looked > 0) note("downloads: $looked marked whole by an earlier version were read through to the end; $bad were not whole, and are fetched again")
         }
     }
 
@@ -894,6 +1028,9 @@ class Downloads(
         const val SPARE = 500L * 1024 * 1024
 
         private const val TICK_MILLIS = 500L
+
+        /** Between one old download read through again and the next. */
+        private const val RECHECK_PAUSE_MILLIS = 50L
 
         /** While songs arrive, the folder is added up again every this many ticks. */
         private const val MEASURE_EVERY_TICKS = 10

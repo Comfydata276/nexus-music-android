@@ -31,6 +31,9 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class WholeDownloadTest {
     @get:Rule val folder = TemporaryFolder()
+
+    /** (The check asks the system for a decoder: a phone has these.) */
+    @get:Rule val decoders = phoneDecoders()
     private val server = GatedServer()
     private val http = OkHttpClient()
     private lateinit var catalogue: Catalogue

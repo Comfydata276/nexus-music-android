@@ -152,7 +152,7 @@ class DownloadsTest {
     private val engineNotes: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
     /** What says a file is the song (see above): a test may make it slow to answer. */
-    private var check = AudioCheck { _, _ -> Inspected("flac", true, -1) }
+    private var check = AudioCheck { _, _, _ -> Inspected("flac", true, -1) }
 
     private fun downloads(): Downloads {
         val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient())
@@ -553,7 +553,7 @@ class DownloadsTest {
         // notice it has been stopped (as a thread in the middle of a write to disk is).
         val checking = java.util.concurrent.CountDownLatch(1)
         val letGo = java.util.concurrent.CountDownLatch(1)
-        check = AudioCheck { _, _ ->
+        check = AudioCheck { _, _, _ ->
             checking.countDown()
             while (true) {
                 try {
@@ -576,7 +576,7 @@ class DownloadsTest {
         first.release()
         made.remove(first)
         idle()
-        check = AudioCheck { _, _ -> Inspected("flac", true, -1) }
+        check = AudioCheck { _, _, _ -> Inspected("flac", true, -1) }
         val second = downloads()
         until("read") { second.state.value.settled }
         // It has the song to fetch, and doesn't begin: the old fetch still has the part file.

@@ -1209,13 +1209,15 @@ class PlaybackService : MediaLibraryService() {
                     exo.prepare()
                 }
                 // A downloaded file that couldn't be read or parsed (or holds what this phone
-                // has no way to play): that file is set aside for this session, left where it
-                // is, and the song streamed, as Windows does (`bad_downloads`). Only when it
-                // was the download that was playing, and only that file: one downloaded
-                // again has a fresh chance.
+                // has no way to play): that file is passed over from this instant (set
+                // aside, so the song is streamed if it can be), and **stops being a
+                // download**: unmarked, and fetched again when the server can be reached
+                // (`Downloads.demote`). Only when it was the download that was playing, and
+                // only that file: one downloaded again has a fresh chance.
                 download != null && Recovery.laidAtTheFile(error.errorCode, failure?.local == true) &&
                     era?.account?.availability?.setAside(song.id, download.file, download.modified) == true -> {
                     graph.diagnostics.note("a downloaded copy wouldn't play (${error.errorCodeName}): streamed instead")
+                    era?.account?.downloads?.demote(song.id, download.file.name, download.modified, "wouldn't play (${error.errorCodeName})")
                     graph.toasts.show(getString(R.string.bad_download, song.title))
                     reading.remove(song.id)
                     publishExtras()
@@ -1226,6 +1228,9 @@ class PlaybackService : MediaLibraryService() {
                 download != null && undecodable(error) && !Recovery.laidAtTheFile(error.errorCode, false) &&
                     player.queue.currentUid()?.let { triedAgain.add(it) } == true -> {
                     graph.diagnostics.note("a downloaded copy stopped (${error.errorCodeName}): nothing set aside, tried again")
+                    // (And its file is read through, in case it is the file after all:
+                    // bytes damaged inside a frame stop a decoder, not the reader.)
+                    era?.account?.downloads?.verifyNow(song.id)
                     exo.prepare()
                 }
                 download == null && undecodable(error) && era?.needsConverting?.mark(song.id) == true -> {

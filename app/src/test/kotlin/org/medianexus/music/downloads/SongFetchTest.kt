@@ -80,7 +80,7 @@ class SongFetchTest {
     /** The bytes here are not audio: what is and isn't a song is WholeDownloadTest's. Here a
      *  stand-in says each file is the kind it was asked for as, an MP3 running as long as its
      *  bytes come to at 128 kbps. */
-    private fun fetcher() = SongFetch(http, catalogue, check = { file, suffix ->
+    private fun fetcher() = SongFetch(http, catalogue, check = { file, suffix, _ ->
         if (suffix == "mp3") Inspected("mp3", true, file.length() * 1_000_000 / 16_000) else Inspected("flac", true, -1)
     })
 
