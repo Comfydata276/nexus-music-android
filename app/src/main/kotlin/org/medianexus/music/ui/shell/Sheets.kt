@@ -24,6 +24,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,11 +75,16 @@ sealed interface Sheet {
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
-    val ui = LocalUi.current
     val colors = Theme.colors
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    // A sheet's choice is made once (each sheet has a host of its own): a second tap on its
+    // button, or the keyboard's tick, while it closes does nothing, so one "Create" is one
+    // playlist and one "Delete" one deletion.
+    val chosen = remember { booleanArrayOf(false) }
     fun choose(action: () -> Unit) {
+        if (chosen[0]) return
+        chosen[0] = true
         action()
         scope.launch { state.hide() }.invokeOnCompletion { onClose() }
     }
@@ -104,6 +110,7 @@ fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
                     Entry(R.drawable.ic_circle_arrow_down, stringResource(R.string.remove_from_downloads)) { choose(sheet.onRemove) }
                 }
                 Sheet.Offline -> {
+                    val ui = LocalUi.current
                     val reach = org.medianexus.music.ui.downloads.reachNow()
                     // Gone while the sheet was up (the server answered): nothing to say.
                     if (!reach.offline) {

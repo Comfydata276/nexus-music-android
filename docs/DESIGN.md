@@ -1657,6 +1657,10 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
   longer the last change the server said yes to on the playlist (another removal since, while
   the first toast was still showing), it does nothing and says "Can't undo: the playlist has
   changed since."
+- **One confirmation, one action.** A sheet's choice is made once (`SheetHost`): a second tap
+  on its button, or the keyboard's tick, while it closes does nothing. Every way a playlist is
+  made goes through the name sheet, so one "Create" is one playlist; the same holds for
+  "Delete" and every other sheet's button.
 
 ## Working with the Windows app
 
