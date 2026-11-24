@@ -65,12 +65,26 @@ sealed interface Pending {
  * - **A file that can't be read is set aside** (`held.damaged.json`) and said, as the
  *   settings file is; it is never read as "nothing held" and written over.
  *
+ * - **Durably gone before the next is sent.** When the server has answered for a change, the
+ *   list without it is written and synced, and only then is the next change sent. If that
+ *   write fails, sending stops there (said once in Diagnostics) and is tried again later:
+ *   otherwise an older like could still be on the disk after a newer unlike had reached the
+ *   server, and be sent again, after it, when the app next started.
+ * - **One sender per account for the whole process.** Everything here but the way to the
+ *   server belongs to the *file* ([Shared]), not to this object: signing out and straight
+ *   back in to the same account makes a second `HeldChanges` while the first may still be
+ *   part-way through a pass, and the two are one queue, one writer and one pass at a time.
+ * - **A file that can't be read and can't be set aside stays as it is.** Nothing is written
+ *   over it: until it can be moved out of the way no change is acknowledged as held (it is
+ *   sent if the server is there; if not, its maker is told it didn't save).
+ *
  * **Plays, and what can't be promised.** The Subsonic interface has no way to make a
  * submission safe to repeat, so if the app is killed in the instant between the server
  * accepting a play and the phone recording that it did, the play is sent again and counted
  * twice. That instant is one small write, begun the moment the answer arrives and not
  * interruptible by the account going; it is not nothing. Likes and ratings sent twice come
- * to the same thing.
+ * to the same thing. **A play that can be neither sent nor kept is lost**, and that is
+ * written in Diagnostics (nobody is watching a play to be told).
  */
 class HeldChanges(
     private val file: File,
@@ -82,6 +96,9 @@ class HeldChanges(
     /** The server stopped answering part-way, or something answered in its place. */
     private val lostTouch: () -> Unit = {},
     private val note: (String) -> Unit = {},
+    /** Sending stopped because the phone wouldn't take a write: worth trying again in a
+     *  while (see the class). */
+    private val tryLater: () -> Unit = {},
 ) {
     /** How a change stood when [submit] returned. */
     enum class Outcome {
@@ -105,28 +122,46 @@ class HeldChanges(
         @Volatile var parked = false
     }
 
-    private val lock = Any()
-    private var queue: MutableList<Entry>? = null
-    private val writes = Mutex()
-    private val passes = Mutex()
-    private val count = MutableStateFlow(0)
-    private val broken = MutableStateFlow(false)
-    private var unsavedSaid = false
+    /**
+     * Everything about one file of held changes, for the whole process: its queue, its one
+     * writer and its one pass at a time. Every `HeldChanges` made for that file shares it.
+     */
+    private class Shared {
+        val lock = Any()
+        var queue: MutableList<Entry>? = null
+        val writes = Mutex()
+        val passes = Mutex()
+        val count = MutableStateFlow(0)
+        val broken = MutableStateFlow(false)
+        var unsavedSaid = false
 
-    /** Changes that had waited and have now been dealt with, not yet counted by [flush]. */
-    private val caughtUp = java.util.concurrent.atomic.AtomicInteger()
+        /** The file on the disk may still hold changes the server has answered for (the
+         *  write that takes them off has not succeeded): nothing more is sent until it has. */
+        @Volatile var dirty = false
+        var dirtySaid = false
+
+        /** The file couldn't be read, and couldn't be moved out of the way: it must not be
+         *  written over. */
+        @Volatile var inTheWay = false
+
+        /** Changes that had waited and have now been dealt with, not yet counted by [flush]. */
+        val caughtUp = java.util.concurrent.atomic.AtomicInteger()
+    }
+
+    private val shared: Shared = synchronized(all) { all.getOrPut(file.absolutePath) { Shared() } }
+    private val lock get() = shared.lock
 
     /** How many changes are waiting (or being sent), for the screens and Diagnostics. */
-    val waiting: StateFlow<Int> = count.asStateFlow()
+    val waiting: StateFlow<Int> = shared.count.asStateFlow()
 
     /** The file of held changes couldn't be read, and was set aside (see the class). */
-    val damaged: StateFlow<Boolean> = broken.asStateFlow()
+    val damaged: StateFlow<Boolean> = shared.broken.asStateFlow()
 
     /** Reads what was held, the first time it's needed. */
     private fun loaded(): MutableList<Entry> = synchronized(lock) {
-        queue ?: read().mapTo(ArrayList()) { Entry(it, null).apply { saved = true; parked = true } }.also {
-            queue = it
-            count.value = it.size
+        shared.queue ?: read().mapTo(ArrayList()) { Entry(it, null).apply { saved = true; parked = true } }.also {
+            shared.queue = it
+            shared.count.value = it.size
         }
     }
 
@@ -138,16 +173,19 @@ class HeldChanges(
         } catch (_: IllegalArgumentException) {
         }
         // Not read as "nothing held" and written over: set aside, and said.
-        val aside = siblingWithExtension(file, "damaged.json")
-        val moved = try {
-            java.nio.file.Files.move(file.toPath(), aside.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-            true
-        } catch (_: IOException) {
-            false
-        }
-        note("held changes: the file of them couldn't be read" + if (moved) "; it was set aside, and what it held was not sent" else ", nor set aside")
-        broken.value = true
+        val moved = setAside()
+        note("held changes: the file of them couldn't be read" + if (moved) "; it was set aside, and what it held was not sent" else ", nor set aside: it is left as it is, and nothing is written over it")
+        shared.inTheWay = !moved
+        shared.broken.value = true
         return emptyList()
+    }
+
+    /** Moves the file out of the way (`held.damaged.json`); false if it couldn't be. */
+    private fun setAside(): Boolean = try {
+        java.nio.file.Files.move(file.toPath(), siblingWithExtension(file, "damaged.json").toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        true
+    } catch (_: IOException) {
+        false
     }
 
     /** What is waiting, oldest first. */
@@ -167,7 +205,7 @@ class HeldChanges(
         withContext(io) { loaded() }
         synchronized(lock) {
             loaded() += entry
-            count.value = loaded().size
+            shared.count.value = loaded().size
         }
         save()
         pass()
@@ -186,21 +224,29 @@ class HeldChanges(
     suspend fun flush(): Int {
         withContext(io) { loaded() }
         pass()
-        return caughtUp.getAndSet(0)
+        return shared.caughtUp.getAndSet(0)
     }
 
     /**
      * One pass over the queue, one at a time and in order (see the class). Every change left
      * in the queue at its end has had its maker told it is held.
      */
-    private suspend fun pass() = passes.withLock {
+    private suspend fun pass() = shared.passes.withLock {
         var strange = 0
         /** The server stopped answering, or something answered in its place. */
         var lost = false
+        /** The phone wouldn't take the write that takes a sent change off the disk. */
+        var stuck = false
         val behind = HashSet<String>()
         val tried = HashSet<Entry>()
         try {
             while (!offline()) {
+                // Something the server has answered for may still be on the disk: off it
+                // first. Nothing is sent after it until it is durably gone (see the class).
+                if (shared.dirty && !save()) {
+                    stuck = true
+                    break
+                }
                 val entry = synchronized(lock) { loaded().firstOrNull { it !in tried && it.change.id !in behind } } ?: break
                 val error = try {
                     send(entry.change)
@@ -212,14 +258,16 @@ class HeldChanges(
                     error == null || (error is ApiError.Server && !error.signInRefused) -> {
                         // Dealt with: it leaves the queue and the disk now, before anything
                         // else is done, so that a play the server has counted is not there
-                        // to be sent again.
+                        // to be sent again. (Whether it has left the disk is asked at the
+                        // top of the loop, before the next is sent.)
                         synchronized(lock) {
                             loaded().remove(entry)
-                            count.value = loaded().size
+                            shared.count.value = loaded().size
+                            shared.dirty = true
                         }
                         save()
                         strange = 0
-                        if (entry.parked) caughtUp.incrementAndGet()
+                        if (entry.parked) shared.caughtUp.incrementAndGet()
                         entry.settled?.complete(if (error == null) Settled.Taken else Settled.Failed(error))
                     }
                     error is ApiError.NotSubsonic && strange < 2 -> {
@@ -241,6 +289,11 @@ class HeldChanges(
             // the pass is cut short because the account has gone: it is all still on file.)
             park()
         }
+        if (stuck) {
+            if (!shared.dirtySaid) note("held changes: one the server has taken could not be taken off the phone; nothing more is sent until it can be")
+            shared.dirtySaid = true
+            tryLater()
+        }
         if (lost) lostTouch()
     }
 
@@ -260,8 +313,11 @@ class HeldChanges(
                     lostNow += entry
                 }
             }
-            count.value = loaded().size
+            shared.count.value = loaded().size
         }
+        // Nobody is watching a play to be told it didn't save: it is written down instead.
+        val plays = lostNow.count { it.change is Pending.Played }
+        if (plays > 0) note("held changes: $plays ${if (plays == 1) "play" else "plays"} could be neither sent to the server nor kept on the phone, and ${if (plays == 1) "is" else "are"} lost")
         lostNow.forEach { it.settled?.complete(Settled.Failed(ApiError.Network("The change couldn't be kept on the phone to send later."))) }
     }
 
@@ -271,25 +327,44 @@ class HeldChanges(
      * leave the file.
      */
     private suspend fun save(): Boolean = withContext(NonCancellable + io) {
-        writes.withLock {
+        shared.writes.withLock {
             val now = synchronized(lock) { loaded().toList() }
             try {
+                // A file that couldn't be read is still where this one goes: moved out of
+                // the way first, and if it can't be, nothing is written over it.
+                if (shared.inTheWay) {
+                    if (!setAside()) throw IOException("The damaged file is in the way")
+                    shared.inTheWay = false
+                }
                 if (now.isNotEmpty() || file.exists()) writeAtomically(file, json.encodeToString(LIST, now.map { it.change }).toByteArray(), durable = true)
                 now.forEach { it.saved = true }
-                unsavedSaid = false
+                // (What was written is the queue as it stood when this began: anything
+                // dealt with since is still to come off.)
+                synchronized(lock) { if (loaded().toList() == now) shared.dirty = false }
+                if (!shared.dirty) shared.dirtySaid = false
+                shared.unsavedSaid = false
                 true
             } catch (_: IOException) {
                 // Said once. What couldn't be written is sent if the server is there now;
                 // if not, its maker is told it didn't save (see park).
-                if (!unsavedSaid) note("held changes: they couldn't be written to the phone")
-                unsavedSaid = true
+                if (!shared.unsavedSaid) note("held changes: they couldn't be written to the phone")
+                shared.unsavedSaid = true
                 false
             }
         }
     }
 
-    private companion object {
-        val json = Json { ignoreUnknownKeys = true; classDiscriminator = "type" }
-        val LIST = ListSerializer(Pending.serializer())
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true; classDiscriminator = "type" }
+        private val LIST = ListSerializer(Pending.serializer())
+
+        /** Each file's one sender, for as long as the process lives. */
+        private val all = HashMap<String, Shared>()
+
+        /** As if the process had been started again: what was known of `file` in memory is
+         *  forgotten, and the next `HeldChanges` for it reads the disk. For tests. */
+        internal fun restarted(file: File) {
+            synchronized(all) { all.remove(file.absolutePath) }
+        }
     }
 }

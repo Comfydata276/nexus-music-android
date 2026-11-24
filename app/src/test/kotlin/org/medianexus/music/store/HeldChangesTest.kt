@@ -56,13 +56,22 @@ class HeldChangesTest {
         sent.clear()
     }
 
-    private fun held(send: suspend (Pending) -> Unit = {}) = HeldChanges(
-        file(), Dispatchers.IO,
-        send = { change -> send(change); sent += said(change) },
-        offline = { offline },
-        lostTouch = { lostTouch++ },
-        note = { notes += it },
-    )
+    /** The sender, as a run of the app has it. `restarted` (the usual case here): as the app
+     *  started afresh has it, knowing only what is on the disk; otherwise as the same run has
+     *  it when the account is signed in to again. */
+    private fun held(restarted: Boolean = true, send: suspend (Pending) -> Unit = {}): HeldChanges {
+        if (restarted) HeldChanges.restarted(file())
+        return HeldChanges(
+            file(), Dispatchers.IO,
+            send = { change -> send(change); sent += said(change) },
+            offline = { offline },
+            lostTouch = { lostTouch++ },
+            note = { notes += it },
+            tryLater = { later++ },
+        )
+    }
+
+    private var later = 0
 
     // ---- Windows' rules ---------------------------------------------------------------------
 
@@ -280,5 +289,115 @@ class HeldChangesTest {
             folderSync = ::forceFolder
             offline = false
         }
+    }
+
+    // ---- Durably gone before the next; one sender; a file in the way (offline hardening 2, item 4)
+
+    @Test
+    fun nothingIsSentWhileOneTheServerHasTakenMayStillBeOnTheDisk() = runBlocking {
+        left(star("a", true))
+        val held = held()
+        // The phone will take no write (its storage is full, or failing).
+        folder.root.setWritable(false)
+        try {
+            assertEquals(1, held.flush())
+            assertEquals(listOf("a+"), sent.toList())
+            // The server has the like; the phone's file still says it is waiting. Now the
+            // song is unliked. Sent, the unlike would reach the server while the like is
+            // still on the disk to be sent again, after it, when the app next starts.
+            try {
+                held.submit(star("a", false))
+                fail("it could be neither kept nor sent in its turn")
+            } catch (_: ApiError.Network) {
+            }
+            assertEquals(listOf("a+"), sent.toList())
+            // Said once, and to be tried again later.
+            assertEquals(1, notes.count { "could not be taken off the phone" in it })
+            held.flush()
+            assertEquals(1, notes.count { "could not be taken off the phone" in it })
+            assertTrue(later >= 1)
+        } finally {
+            folder.root.setWritable(true)
+        }
+        // The phone takes writes again: the like comes off the disk, and what follows goes.
+        held.flush()
+        assertEquals(HeldChanges.Outcome.TAKEN, held.submit(star("a", false)))
+        assertEquals(listOf("a+", "a-"), sent.toList())
+        // And nothing is sent again when the app next starts.
+        sent.clear()
+        assertEquals(0, held().flush())
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun anAccountSignedInToAgainHasStillOnlyOneSender() = runBlocking {
+        left(star("a", true), star("b", true))
+        // The account's first sender is part-way through sending when the account is signed
+        // out of and straight back in to: a second sender is made for the same file.
+        val reached = CompletableDeferred<Unit>()
+        val go = CompletableDeferred<Unit>()
+        val first = held { if (it.id == "a") { reached.complete(Unit); go.await() } }
+        val sending = async(Dispatchers.Default) { first.flush() }
+        reached.await()
+        val second = held(restarted = false)
+        val also = async(Dispatchers.Default) { second.flush() }
+        // The second has nothing to do but wait its turn: it sends nothing while the first
+        // is sending.
+        kotlinx.coroutines.delay(100)
+        assertTrue(sent.isEmpty())
+        go.complete(Unit)
+        sending.await()
+        also.await()
+        // Each change reached the server once.
+        assertEquals(listOf("a+", "b+"), sent.toList())
+        assertEquals(0, second.waiting.value)
+        assertTrue(second.all().isEmpty())
+    }
+
+    @Test
+    fun aDamagedFileThatCannotBeSetAsideIsNotWrittenOver() = runBlocking {
+        file().writeText("""[{"type":"star","kind":"song","id":"x","starr""")
+        // Where it would be set aside to is taken by something that can't be replaced.
+        val aside = File(folder.root, "held.damaged.json").also { File(it, "kept").mkdirs() }
+        offline = true
+        val held = held()
+        try {
+            held.submit(star("a", true))
+            fail("there is nowhere to keep it")
+        } catch (_: ApiError.Network) {
+        }
+        // The file that couldn't be read is as it was: not an empty queue written over it.
+        assertEquals("""[{"type":"star","kind":"song","id":"x","starr""", file().readText())
+        assertTrue(held.damaged.value)
+        assertTrue(notes.any { "nor set aside" in it })
+        // The server there, a change is sent, and still nothing is written over the file.
+        offline = false
+        assertEquals(HeldChanges.Outcome.TAKEN, held.submit(star("b", true)))
+        assertEquals("""[{"type":"star","kind":"song","id":"x","starr""", file().readText())
+        // Once it can be set aside it is, and changes are held again.
+        aside.deleteRecursively()
+        offline = true
+        assertEquals(HeldChanges.Outcome.HELD, held.submit(star("c", true)))
+        assertEquals("""[{"type":"star","kind":"song","id":"x","starr""", aside.readText())
+        assertEquals(listOf(star("c", true)), held().all())
+        offline = false
+    }
+
+    @Test
+    fun aPlayThatCanBeNeitherSentNorKeptIsWrittenDown() = runBlocking {
+        offline = true
+        val held = held()
+        folder.root.setWritable(false)
+        try {
+            try {
+                held.submit(Pending.Played("a", at = 1_700_000_000_000))
+                fail("it could be neither sent nor kept")
+            } catch (_: ApiError.Network) {
+            }
+        } finally {
+            folder.root.setWritable(true)
+            offline = false
+        }
+        assertEquals(1, notes.count { "1 play could be neither sent to the server nor kept on the phone, and is lost" in it })
     }
 }

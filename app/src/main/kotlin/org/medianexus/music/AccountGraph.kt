@@ -114,7 +114,22 @@ class AccountGraph(
         // whether it is there at all.
         lostTouch = { suspect() },
         note = wiring?.note ?: {},
+        // The phone wouldn't take a write the sender depends on: tried again in a while.
+        tryLater = { heldAgainLater() },
     )
+
+    private var heldRetry: kotlinx.coroutines.Job? = null
+
+    private fun heldAgainLater() {
+        synchronized(this) {
+            if (heldRetry?.isActive == true) return
+            heldRetry = scope.launch {
+                kotlinx.coroutines.delay(HELD_RETRY_MILLIS)
+                synchronized(this@AccountGraph) { heldRetry = null }
+                flush()
+            }
+        }
+    }
 
     val likes: Likes = Likes(pages, library.liked(), send = { target, id, liked -> submit(Pending.Star(target.name.lowercase(), id, liked)) }, scope)
 
@@ -266,5 +281,8 @@ class AccountGraph(
         /** How often the copy of the library is checked against the server while the app is
          *  in use (Windows' five minutes). */
         const val COPY_CHECK_MILLIS = 5 * 60 * 1000L
+
+        /** How long after the phone refused a write to the held changes they are tried again. */
+        const val HELD_RETRY_MILLIS = 30_000L
     }
 }
