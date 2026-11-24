@@ -119,6 +119,9 @@ class PlaysToTheEndTest {
 
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
+    /** What the server has been asked so far (a copy: it is added to from its own threads). */
+    private val asked: List<GatedServer.Asked> get() = synchronized(server.asked) { server.asked.toList() }
+
     private fun until(what: String, ok: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
         while (true) {
@@ -177,7 +180,7 @@ class PlaysToTheEndTest {
         assertFalse(catalogue.has("s1"))
         assertEquals("What arrived is damaged: it can't be read through to its end.", engine.state.value.failed.single().reason)
         // Fetched afresh three times in all, in case it was the journey that did it.
-        assertEquals(Downloads.VERIFY_TRIES, server.asked.count { "stream" in it.path })
+        assertEquals(Downloads.VERIFY_TRIES, asked.count { "stream" in it.path })
         assertTrue(dir.listFiles()!!.none { it.name.endsWith(".flac") || it.name.endsWith(".part") })
         // The whole file, then, is a download.
         originals["s1"] = five
@@ -239,12 +242,12 @@ class PlaysToTheEndTest {
         assertArrayEquals(twenty, File(dir, entry.file).readBytes())
         assertTrue(dir.listFiles()!!.none { it.name.endsWith(".m4a") || it.name.endsWith(".part") })
         // The file as it is was asked for once, and never again for this song.
-        assertEquals(1, server.asked.count { "stream" in it.path && it.query("format") == "raw" })
+        assertEquals(1, asked.count { "stream" in it.path && it.query("format") == "raw" })
         engine.remove(listOf("s4"))
         until("removed") { !catalogue.has("s4") }
         run { engine.download(listOf(song)) }
         until("again") { catalogue.has("s4") }
-        assertEquals(1, server.asked.count { "stream" in it.path && it.query("format") == "raw" })
+        assertEquals(1, asked.count { "stream" in it.path && it.query("format") == "raw" })
     }
 
     // ---- Afterwards -------------------------------------------------------------------------
@@ -269,9 +272,9 @@ class PlaysToTheEndTest {
         assertFalse(File(dir, was.file).exists())
         // The list it belongs to is still downloaded whole: it wants the song back.
         assertEquals(listOf("playlist:p1"), engine.state.value.collections.map { it.key })
-        val before = server.asked.count { "stream" in it.path }
+        val before = asked.count { "stream" in it.path }
         repeat(20) { idle() }
-        assertEquals(before, server.asked.count { "stream" in it.path })
+        assertEquals(before, asked.count { "stream" in it.path })
         // The server is back: fetched again, with nobody asking.
         reach.value = Reach()
         until("downloaded again") { catalogue.has("s1") && !engine.state.value.busy }
@@ -307,14 +310,14 @@ class PlaysToTheEndTest {
         until("downloaded") { catalogue.has("s1") && catalogue.has("s2") && !engine.state.value.busy }
         // One of the files is damaged where it lies (same length, bytes changed in a frame).
         catalogue.fileOf("s1")!!.writeBytes(hurt())
-        val asked = server.asked.count { it.query("id") == "s2" }
+        val forTheGoodOne = asked.count { it.query("id") == "s2" }
         // The decoder stopped on each: neither is blamed for that alone; each is read through.
         engine.verifyNow("s1")
         engine.verifyNow("s2")
-        until("the damaged one fetched again") { server.asked.count { it.query("id") == "s1" } == 2 && catalogue.has("s1") && !engine.state.value.busy }
+        until("the damaged one fetched again") { asked.count { it.query("id") == "s1" } == 2 && catalogue.has("s1") && !engine.state.value.busy }
         assertArrayEquals(five, catalogue.fileOf("s1")!!.readBytes())
         // The good one was left alone.
-        assertEquals(asked, server.asked.count { it.query("id") == "s2" })
+        assertEquals(forTheGoodOne, asked.count { it.query("id") == "s2" })
         assertTrue(catalogue.has("s2"))
     }
 
@@ -352,7 +355,7 @@ class PlaysToTheEndTest {
         until("said") { notes.any { it.startsWith("downloads: 4 marked whole by an earlier version were read through to the end; 3 were not whole") } }
         assertTrue(engine.state.value.failed.isEmpty())
         // The whole one was left where it was; the others are the server's files now.
-        assertEquals(0, server.asked.count { it.query("id") == "good" })
+        assertEquals(0, asked.count { it.query("id") == "good" })
         assertArrayEquals(five, catalogue.fileOf("hurt")!!.readBytes())
         assertArrayEquals(twenty, catalogue.fileOf("short")!!.readBytes())
         assertEquals("mp3", catalogue.entries().first { it.song.id == "alac" }.suffix)
@@ -379,7 +382,7 @@ class PlaysToTheEndTest {
         idle()
         assertTrue(catalogue.has("hurt"))
         reach.value = Reach()
-        until("fetched again") { server.asked.any { it.query("id") == "hurt" } && catalogue.has("hurt") && !engine.state.value.busy }
+        until("fetched again") { asked.any { it.query("id") == "hurt" } && catalogue.has("hurt") && !engine.state.value.busy }
         assertArrayEquals(five, catalogue.fileOf("hurt")!!.readBytes())
     }
 }
