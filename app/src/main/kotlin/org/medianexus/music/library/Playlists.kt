@@ -62,6 +62,7 @@ data class PlaylistUndo(val playlist: String, val leftAs: Playlist, val before: 
  *   fresh just before it is written. Only if the two are the same (the songs in order, and the
  *   name) is it written, and then the rows the person chose are simply those rows. If they
  *   differ, nothing is sent: the page shows the fresh copy and the person is told, once.
+ *   A card's menu (from the list of playlists) saw only the name and how many songs: those.
  *   Adding songs at the end is the one change that doesn't depend on what the playlist holds.
  *   (Windows instead carries a change out on a playlist changed since, by the song and which
  *   copy of it; the phone refuses and asks again: docs/DESIGN.md.)
@@ -282,12 +283,12 @@ class Playlists(
             val now = if (change is Change.Create) null else reading(id) { server.playlist(id) }
             if (now != null && !canEdit(now)) throw failed(PlaylistRefused.Outcome.REFUSED, ApiError.Server(50, ""))
             if (now != null && byPosition(change) && now.hidesSongs) {
-                pages.put(playlistSpec(id), now)
+                keep(now)
                 throw failed(PlaylistRefused.Outcome.MISSING_SONGS)
             }
             val drawn = flight.drawn
             if (now != null && change !is Change.Append && drawn != null && !same(now, drawn)) {
-                pages.put(playlistSpec(id), now)
+                keep(now)
                 throw failed(if (flight.undo) PlaylistRefused.Outcome.UNDO_CHANGED else PlaylistRefused.Outcome.CHANGED)
             }
             writing = true
@@ -319,7 +320,7 @@ class Playlists(
                     // The person's own change: the songs it added or took out are dated now,
                     // for other devices too (before the page is told, which only notices).
                     added?.changed(id, now.songs.map { it.id }, after.songs.map { it.id }, clock() / 1000)
-                    pages.put(playlistSpec(id), after)
+                    keep(after)
                     if (!flight.undo && (change is Change.Remove || change is Change.Order)) {
                         synchronized(lock) { lastUndo.value = PlaylistUndo(id, after, now.songs, clock()) }
                     }
@@ -352,16 +353,30 @@ class Playlists(
         if (first) refusals.emit(PlaylistRefused(id, "", PlaylistRefused.Outcome.GONE, error))
     }
 
+    /** A copy of the playlist read or sent just now, kept as its page, and its row in the list
+     *  of playlists brought up to it: what a card shows (its name and count) is what a card's
+     *  change is compared with. */
+    private suspend fun keep(p: Playlist) {
+        pages.put(playlistSpec(p.id), p)
+        runCatching { pages.update(listSpec()) { list -> list.map { if (it.id == p.id) it.copy(name = p.name, songCount = p.held ?: p.songs.size) else it } } }
+    }
+
     /** After a change nobody knows the fate of: the playlist as the server has it now (or,
      *  for a new one, the list of playlists). */
     private fun catchUp(id: String) = scope.launch {
         runCatching { if (id.startsWith("new:")) pages.fresh(listSpec()) else pages.fresh(playlistSpec(id)) }
     }
 
-    private fun same(a: Playlist, b: Playlist): Boolean = a.name == b.name && drawnIds(b).let { it == null || it == a.songs.map { s -> s.id } }
+    /** Whether the fresh copy `a` is still what `b` was drawn from: its name and its songs in
+     *  order, or for a card, its name and how many songs (all a card shows; the list counts what
+     *  the server holds). */
+    private fun same(a: Playlist, b: Playlist): Boolean = a.name == b.name && when (val drawn = drawnIds(b)) {
+        null -> b.songCount == (a.held ?: a.songs.size)
+        else -> drawn == a.songs.map { it.id }
+    }
 
     /** The songs a copy was drawn with, in order; null for one from the list of playlists,
-     *  which names a playlist without its songs (a card's menu: only its name was seen). */
+     *  which names a playlist without its songs (a card's menu: only its name and count). */
     private fun drawnIds(p: Playlist): List<String>? = if (p.songs.isEmpty() && p.songCount > 0) null else p.songs.map { it.id }
 
     private fun applied(p: Playlist, change: Change): Playlist = when (change) {

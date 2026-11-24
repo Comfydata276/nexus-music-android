@@ -1632,6 +1632,13 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
   again on the fresh read. Adding at the end, renaming and deleting go as before. A playlist
   the list doesn't have is taken to hide songs. *The Windows app removes and moves the same
   way and is exposed to the same fault.*
+- **A card's change compares what the card showed: its name and how many songs** (Library's
+  list shows both). If either has changed on the server, nothing is sent and the person is told
+  ("This playlist was changed somewhere else. Nothing was changed here."), and the card is
+  brought up to what was read. After the phone's own change, or a fresh read made for one, the
+  list's row takes the new name and count too, so a card is never behind the phone's own
+  changes. The count compared is the server's own (the list's, which counts songs missing
+  from the library).
 
 ## Working with the Windows app
 

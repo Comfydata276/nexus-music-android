@@ -145,7 +145,9 @@ class PlaylistsTest {
     private lateinit var pages: PageCache
     private lateinit var playlists: Playlists
 
-    private fun listSpec() = PageSpec("playlists", ListSerializer(Playlist.serializer())) { server.lists.keys.map { Playlist(id = it, name = server.names[it] ?: "Mix") } }
+    private fun listSpec() = PageSpec("playlists", ListSerializer(Playlist.serializer())) {
+        synchronized(server.lists) { server.lists.map { (id, songs) -> Playlist(id = id, name = server.names[id] ?: "Mix", owner = "tester", songCount = songs.size) } }
+    }
     private fun spec(id: String) = PageSpec("playlist:$id", Playlist.serializer()) { playlists.fetched(id) { server.playlist(id) } }
 
     @Before
@@ -243,12 +245,45 @@ class PlaylistsTest {
     }
 
     @Test
-    fun aCardsMenuSawOnlyTheNameSoOnlyTheNameMustBeTheSame() = runBlocking<Unit> {
+    fun aCardsMenuSawOnlyTheNameAndCountSoOnlyThoseMustBeTheSame() = runBlocking<Unit> {
         // From the list of playlists: a name and a count, no songs.
         val card = Playlist(id = "p1", name = "Mix", owner = "tester", songCount = 5)
         server.elsewhere("p1", "e d c b a")
         assertTrue(made { playlists.rename(card, "Road trip", it) })
         assertEquals("Road trip", server.names["p1"])
+    }
+
+    @Test
+    fun aCardWhoseCountHasChangedSendsNothing() = runBlocking<Unit> {
+        for (case in listOf("rename", "delete")) {
+            server.elsewhere("p1", "a b c d e")
+            server.names["p1"] = "Mix"
+            val card = pages.fresh(listSpec()).first { it.id == "p1" }
+            assertEquals(5, card.songCount)
+            // Another device adds a song: the card still says five.
+            server.elsewhere("p1", "a b c d e f")
+            val said = listen()
+            val before = writes()
+            assertFalse(case, made { if (case == "rename") playlists.rename(card, "Road trip", it) else playlists.delete(card, it) })
+            assertEquals(case, Outcome.CHANGED, said.await().outcome)
+            assertEquals(case, before, writes())
+            assertEquals(case, "Mix", server.names["p1"])
+            assertEquals(case, "a b c d e f", server.now("p1"))
+            // The card is brought up to what was read: now its change goes.
+            val now = pages.kept(listSpec())!!.first { it.id == "p1" }
+            assertEquals(case, 6, now.songCount)
+            assertTrue(case, made { if (case == "rename") playlists.rename(now, "Road trip", it) else playlists.delete(now, it) })
+        }
+    }
+
+    @Test
+    fun theCardsCountFollowsThePhonesOwnChange() = runBlocking<Unit> {
+        pages.fresh(listSpec())
+        val page = opened()
+        assertTrue(made { playlists.remove(page, listOf(0), it) })
+        val card = pages.kept(listSpec())!!.first { it.id == "p1" }
+        assertEquals(4, card.songCount)
+        assertTrue(made { playlists.rename(card, "Road trip", it) })
     }
 
     @Test
