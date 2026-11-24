@@ -171,7 +171,7 @@ class PlaybackService : MediaLibraryService() {
 
     /** What the server is told about listening: "now playing", and each play that counts
      *  (which the log of plays notes too: see [counted]). */
-    private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::counted)
+    private val plays = PlayReporter(nowPlaying = ::reportNowPlaying, played = ::counted, started = ::recordStarted)
     private var failures = 0
 
     /** The songs passed over, with no server, since something last played (see
@@ -1673,10 +1673,15 @@ class PlaybackService : MediaLibraryService() {
         plays.playing(uid, song, exo.currentPosition / 1000.0, clock(), from)
     }
 
+    /** Something started: Recently played, whether or not plays are reported, a station too
+     *  (as Windows' `record_played`). */
+    private fun recordStarted(song: Song) {
+        account?.recentlyPlayed?.played(song)
+    }
+
+    /** A song (never a station: see [PlayReporter]) started: "now playing", for the server. */
     private fun reportNowPlaying(song: Song) {
         val graph = account ?: return
-        // Recently played, whether or not plays are reported (as Windows' `record_played`).
-        graph.recentlyPlayed.played(song)
         // ("Now playing" is of the moment: offline, there is nobody to tell, and nothing kept.)
         if (!this.graph.settings.value.scrobble || this.graph.watch.offline) return
         graph.scope.launch { runCatching { graph.api.scrobble(song.id, submission = false) } }

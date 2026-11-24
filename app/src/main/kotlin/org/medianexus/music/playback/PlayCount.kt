@@ -102,9 +102,13 @@ class PlayCount {
  * repeating one song, or a queue that reached its end and was started again from the top.
  */
 class PlayReporter(
+    /** "Now playing", for the server: a song has started (never a radio station, whose id is
+     *  the app's own: Windows tells the server nothing of one). */
     private val nowPlaying: (Song) -> Unit,
     /** A play counts: the song, and the playlist it was played from (its route key), or "". */
     private val played: (songId: String, from: String) -> Unit,
+    /** Anything has started, a station too: for Recently played, which keeps stations. */
+    private val started: (Song) -> Unit = {},
 ) {
     private val count = PlayCount()
     /** The queue entry whose play is being counted. */
@@ -126,7 +130,8 @@ class PlayReporter(
         entry = uid
         this.from = from
         count.start(if (song.radioUrl.isEmpty()) song.id else "", song.duration.toDouble(), seconds, nowMs)
-        nowPlaying(song)
+        started(song)
+        if (song.radioUrl.isEmpty()) nowPlaying(song)
     }
 
     /** Still playing, now at `seconds`. */

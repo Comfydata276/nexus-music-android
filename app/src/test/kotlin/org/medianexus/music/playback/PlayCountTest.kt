@@ -178,4 +178,18 @@ class PlayCountTest {
         for (s in 91..99) t.reporter.tick(s.toDouble(), 10_000 + (s - 90) * 1000L)
         assertTrue(t.played.isEmpty())
     }
+
+    /** A radio station is started (Recently played keeps it) but the server is told nothing of
+     *  it, not even "now playing": its id is the app's own (Windows sends neither). */
+    @Test
+    fun aStationIsNeverToldToTheServer() {
+        val nowPlaying = mutableListOf<String>()
+        val started = mutableListOf<String>()
+        val reporter = PlayReporter({ nowPlaying += it.id }, { _, _ -> }, { started += it.id })
+        reporter.playing(1, Song(id = "station", radioUrl = "http://radio.invalid/live"), 0.0, 0)
+        reporter.left(30.0, 30_000)
+        reporter.playing(2, song("a", 10), 0.0, 30_000)
+        assertEquals(listOf("a"), nowPlaying)
+        assertEquals(listOf("station", "a"), started)
+    }
 }
