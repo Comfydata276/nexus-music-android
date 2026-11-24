@@ -48,6 +48,10 @@ sealed interface Route {
     @Serializable data object RecentlyPlayed : Route
     /** The internet radio stations set up on the server (Library). */
     @Serializable data object Radio : Route
+    /** One of the "Made for you" mixes, by its id ("on-repeat", "genre:Rock", "rule:<id>"). */
+    @Serializable data class Mix(val id: String, val title: String = "", val cover: String = "") : Route
+    /** "Your stats", for a period (`Stats.TODAY` … `Stats.ALL`, a finer choice, or a year). */
+    @Serializable data class Stats(val period: Int = org.medianexus.music.library.Stats.TODAY) : Route
 
     /** The key the Windows app files the page under ("album:<id>"): where its list's
      *  choices are remembered, and what a queue started from it is said to come from. */
@@ -61,6 +65,9 @@ sealed interface Route {
             Downloads -> "downloads"
             is Downloaded -> "downloads:$list"
             Songs -> org.medianexus.music.library.Library.SONGS
+            // (Windows' keys: what a queue started there is said to come from.)
+            is Mix -> "mix:$id"
+            is Stats -> "stats"
             else -> ""
         }
 }

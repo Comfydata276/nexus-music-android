@@ -1,6 +1,7 @@
 package org.medianexus.music.ui.library
 
 import org.medianexus.music.ui.menu.askNewPlaylist
+import org.medianexus.music.ui.mixes.askNewMix
 import org.medianexus.music.ui.menu.openMenu
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -188,6 +189,16 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                     ) { Icon(R.drawable.ic_radio, size = 24.dp, tint = Theme.colors.muted) }
                 }
             }
+            // What's been played most (Windows' "Your stats", in its sidebar under Radio): from
+            // what is on the phone, so offline too.
+            item(key = "stats", contentType = "row") {
+                ListRow(stringResource(R.string.your_stats), stringResource(R.string.stats_detail), onClick = { ui.open(Route.Stats()) }) {
+                    Box(
+                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(R.drawable.ic_chart_no_axes_column, size = 24.dp, tint = Theme.colors.muted) }
+                }
+            }
             // A new playlist (Windows' "+" beside Playlists), with nothing in it yet.
             item(key = "new", contentType = "row") {
                 ListRow(stringResource(R.string.new_playlist), "", onClick = { ui.askNewPlaylist(emptyList()) }) {
@@ -195,6 +206,16 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                         Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
                         contentAlignment = Alignment.Center,
                     ) { Icon(R.drawable.ic_plus, size = 24.dp, tint = Theme.colors.muted) }
+                }
+            }
+            // A mix of one's own, made to rules (the same "+" menu on Windows): it is named here,
+            // and its rules are set from its page's "…".
+            item(key = "new-mix", contentType = "row") {
+                ListRow(stringResource(R.string.new_mix_from_rules), "", onClick = { ui.askNewMix() }) {
+                    Box(
+                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(R.drawable.ic_list_music, size = 24.dp, tint = Theme.colors.muted) }
                 }
             }
             when {

@@ -609,4 +609,129 @@
     <string name="remove_downloads">Remove downloads</string>
     <string name="more">More</string>
     <string name="more_options_for_named">More options for %1$s</string>
+    <!-- Made for you, mixes of one's own, and Your stats (M5b): Windows' words (src/mixes.rs,
+         src/actions.rs, src/pages.rs). -->
+    <string name="made_for_you">Made for you</string>
+    <string name="mix_on_repeat">On repeat</string>
+    <string name="mix_on_repeat_about">What you\'ve played most lately</string>
+    <string name="mix_top">Your top songs</string>
+    <string name="mix_top_about">Your most played of all time</string>
+    <string name="mix_rediscover">Rediscover</string>
+    <string name="mix_rediscover_about">Favourites you haven\'t played in a while</string>
+    <string name="mix_genre">%1$s mix</string>
+    <string name="mix_genre_about">From a genre you play a lot</string>
+    <string name="mix_default_title">Mix</string>
+    <string name="mix_not_enough">There isn\'t enough listening to make this mix from yet.</string>
+    <string name="mix_none_fit">No song in your library fits these rules yet. Change them from the “…” menu.</string>
+    <string name="mix_offline_none">None of this mix\'s songs are on this phone.</string>
+    <string name="library_still_read">Your library is still being read. Try again in a moment.</string>
+    <string name="save_as_playlist">Save as playlist</string>
+    <string name="new_mix_from_rules">New mix from rules</string>
+    <string name="name_your_mix">Name your mix</string>
+    <string name="name_your_mix_detail">A mix picks songs from your library by rules you set: a genre, a rating, how long since you played them. You choose the rules next, from the mix\'s menu.</string>
+    <string name="mix_name">Name</string>
+    <string name="create_mix">Create mix</string>
+    <string name="mix_set_rules">Set its rules from the “…” menu</string>
+    <string name="mix_rule_genre">Genre: %1$s</string>
+    <string name="mix_rule_rating">Rating: %1$s</string>
+    <string name="mix_rule_liked">Liked songs only: %1$s</string>
+    <string name="mix_rule_years">Years: %1$s</string>
+    <string name="mix_rule_played">Last played: %1$s</string>
+    <string name="mix_rule_added">Added: %1$s</string>
+    <string name="mix_rule_order">Order: %1$s</string>
+    <string name="mix_rule_size">Length: %1$d songs</string>
+    <string name="mix_any">any</string>
+    <string name="mix_yes">yes</string>
+    <string name="mix_no">no</string>
+    <string name="mix_years_from">from %1$d</string>
+    <string name="mix_years_up_to">up to %1$d</string>
+    <string name="mix_years_range">%1$d to %2$d</string>
+    <string name="mix_stars_or_more_short">%1$d or more</string>
+    <string name="mix_rating">Rating</string>
+    <string-array name="mix_ratings">
+        <item>Any</item>
+        <item>1 star or more</item>
+        <item>2 or more</item>
+        <item>3 or more</item>
+        <item>4 or more</item>
+        <item>5 stars</item>
+    </string-array>
+    <string name="mix_last_played">Last played</string>
+    <string name="mix_added_title">Added to the library</string>
+    <string name="mix_order">Order</string>
+    <string name="mix_length">Length</string>
+    <string name="mix_songs">%1$d songs</string>
+    <string name="mix_genre_title">Genre</string>
+    <string name="mix_genre_detail">Part of a genre\'s name, such as “rock”. Leave it empty for any genre.</string>
+    <string name="mix_years_title">Years</string>
+    <string name="mix_years_detail">A year, or a range such as “1990-1999”, “2010-” or “-1985”. Leave it empty for any year.</string>
+    <string name="mix_set">Set</string>
+    <string name="mix_rename">Rename</string>
+    <string name="mix_rename_title">Rename the mix</string>
+    <string name="mix_delete">Delete mix</string>
+    <string name="mix_deleted">Deleted “%1$s”</string>
+    <string name="mix_not_saved">That didn\'t save: the phone wouldn\'t keep the change.</string>
+    <string name="mix_menu_named">More options for %1$s</string>
+    <string-array name="mix_played">
+        <item>Any time</item>
+        <item>Never played</item>
+        <item>Not in the last month</item>
+        <item>Not in the last six months</item>
+        <item>Not in the last year</item>
+    </string-array>
+    <string-array name="mix_added">
+        <item>Any time</item>
+        <item>In the last month</item>
+        <item>In the last six months</item>
+        <item>In the last year</item>
+    </string-array>
+    <string-array name="mix_orders">
+        <item>Shuffled</item>
+        <item>Most played first</item>
+        <item>Newest first</item>
+        <item>Longest since played first</item>
+    </string-array>
+    <string name="mix_words_five_stars">5 stars</string>
+    <string name="mix_words_stars_or_more">%1$d stars or more</string>
+    <string name="mix_words_liked">liked</string>
+    <string name="mix_words_from_on">from %1$d on</string>
+    <string name="mix_words_up_to">up to %1$d</string>
+    <string name="mix_words_years">%1$d to %2$d</string>
+    <string name="mix_words_added">added %1$s</string>
+    <string name="mix_words_any_song">Any song, %1$s</string>
+    <string name="your_stats">Your stats</string>
+    <string name="stats_detail">What you\'ve played most</string>
+    <string name="stats_today">Today</string>
+    <string name="stats_week">This week</string>
+    <string name="stats_month">This month</string>
+    <string name="stats_all">All time</string>
+    <string name="stats_everything">Everything</string>
+    <string name="stats_3_months">Last 3 months</string>
+    <string name="stats_6_months">Last 6 months</string>
+    <string name="stats_12_months">Last 12 months</string>
+    <string name="stats_note_everything">“Everything” goes by your server\'s count of each song\'s plays, which takes in every app you\'ve listened with. The shorter stretches of time, and the playlists, go by the plays Nexus Music itself has counted, which start on %1$s.</string>
+    <string name="stats_note_before">Plays here are the ones Nexus Music has counted, which start on %1$s. “All time” uses your server\'s own count, which takes in every app.</string>
+    <string name="stats_empty_today">Nothing played yet today. Songs show up here once you\'re half way through them.</string>
+    <string name="stats_empty_week">Nothing played yet this week.</string>
+    <string name="stats_empty_month">Nothing played yet this month.</string>
+    <string name="stats_empty_all">Nothing has been played yet.</string>
+    <string name="stats_empty_other">Nothing was played in this time.</string>
+    <string name="stats_hours_listened">hours listened</string>
+    <string name="stats_minute_listened">minute listened</string>
+    <string name="stats_minutes_listened">minutes listened</string>
+    <string name="stats_song_played">song played</string>
+    <string name="stats_songs_played">songs played</string>
+    <string name="stats_different_song">different song</string>
+    <string name="stats_different_songs">different songs</string>
+    <string name="stats_artist">artist</string>
+    <string name="stats_artists">artists</string>
+    <string name="stats_play">%1$s play</string>
+    <string name="stats_plays">%1$s plays</string>
+    <string name="stats_album_plays">%1$s • %2$s</string>
+    <string name="stats_top_artists">Top artists</string>
+    <string name="stats_top_songs">Top songs</string>
+    <string name="stats_top_albums">Top albums</string>
+    <string name="stats_top_genres">Top genres</string>
+    <string name="stats_top_playlists">Top playlists</string>
+    <string name="stats_figure">%1$s %2$s</string>
 </resources>

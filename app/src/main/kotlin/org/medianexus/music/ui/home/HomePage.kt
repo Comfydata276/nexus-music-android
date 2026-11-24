@@ -82,6 +82,16 @@ fun HomePage() {
     val downloaded = remember(downloads?.downloaded, downloads?.collections, likedName) {
         downloads?.let { state -> org.medianexus.music.ui.downloads.DownloadsView.of(state, likedName).let { it.playlists + it.albums } }.orEmpty()
     }
+    // "Made for you": worked out off the main thread, so the page never waits for it; the
+    // row fills in when it is ready (Windows puts it first of the shelves). Offline, each mix
+    // holds the songs that can be played, and one with none isn't shown.
+    val mixes = org.medianexus.music.ui.mixes.mixesNow()
+    val playableIds = org.medianexus.music.ui.mixes.playableIds()
+    val made = remember(mixes, playableIds, res) {
+        mixes?.mixes.orEmpty().map { org.medianexus.music.ui.mixes.MixText.playable(it, playableIds) }.filter { it.size > 0 || (playableIds == null && it.kind == org.medianexus.music.library.Mix.Kind.RULES) }.map { mix ->
+            org.medianexus.music.ui.parts.CardData(org.medianexus.music.ui.parts.CardKind.MIX, mix.id, org.medianexus.music.ui.mixes.MixText.title(res, mix), org.medianexus.music.ui.mixes.MixText.about(res, mix), mix.cardCover)
+        }
+    }
     val nothingYet = feeds.all { it.value == null } && downloaded.isEmpty()
     // As on Windows, what was played lately is what the page can't do without; the rest are
     // extras whose failure doesn't blank it. Offline, not reaching the server is what offline
@@ -125,6 +135,9 @@ fun HomePage() {
                         )
                     }
                     if (tiles.isNotEmpty()) item(key = "tiles", contentType = "tiles") { Tiles(tiles) }
+                    if (made.isNotEmpty()) item(key = "made", contentType = "shelf") {
+                        Shelf(stringResource(R.string.made_for_you), made, onOpen = { ui.open(it) })
+                    }
                     items(shelves, key = { it.title }, contentType = { "shelf" }) { shelf ->
                         Shelf(
                             stringResource(shelf.title),

@@ -182,7 +182,8 @@ fun Ui.open(card: org.medianexus.music.ui.parts.CardData) {
         when (kind) {
             org.medianexus.music.ui.parts.CardKind.ALBUM -> Route.Album(card.id, card.title, card.subtitle, card.cover)
             org.medianexus.music.ui.parts.CardKind.ARTIST -> Route.Artist(card.id, card.title, card.cover)
-            org.medianexus.music.ui.parts.CardKind.PLAYLIST, org.medianexus.music.ui.parts.CardKind.MIX -> Route.Playlist(card.id, card.title, card.cover)
+            org.medianexus.music.ui.parts.CardKind.PLAYLIST -> Route.Playlist(card.id, card.title, card.cover)
+            org.medianexus.music.ui.parts.CardKind.MIX -> Route.Mix(card.id, card.title, card.cover)
             org.medianexus.music.ui.parts.CardKind.GENRE -> Route.Genre(card.id)
         },
     )

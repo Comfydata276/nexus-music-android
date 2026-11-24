@@ -232,6 +232,8 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         Route.Songs -> org.medianexus.music.ui.lists.SongsPage()
         Route.RecentlyPlayed -> org.medianexus.music.ui.lists.RecentlyPlayedPage()
         Route.Radio -> org.medianexus.music.ui.lists.RadioPage()
+        is Route.Mix -> org.medianexus.music.ui.mixes.MixPage(route)
+        is Route.Stats -> org.medianexus.music.ui.stats.StatsPage(route)
         is Route.Downloaded -> org.medianexus.music.ui.downloads.DownloadedListPage(route)
         Route.Licences -> org.medianexus.music.ui.settings.LicencesPage(onBack = navigator::back)
     }
