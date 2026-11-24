@@ -20,7 +20,6 @@ import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.test.utils.TestExoPlayerBuilder
-import androidx.media3.test.utils.robolectric.TestPlayerRunHelper.advance
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -54,6 +53,7 @@ import org.medianexus.music.playback.SongLease
 import org.medianexus.music.playback.SongLeases
 import org.medianexus.music.playback.SongWhere
 import org.medianexus.music.playback.StreamForm
+import org.medianexus.music.playback.advance
 import org.medianexus.music.playback.cacheKey
 import org.medianexus.music.playback.songExtractors
 import org.medianexus.music.playback.songUri

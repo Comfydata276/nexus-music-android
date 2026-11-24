@@ -17,7 +17,6 @@ import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.test.utils.TestExoPlayerBuilder
-import androidx.media3.test.utils.robolectric.TestPlayerRunHelper.advance
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList

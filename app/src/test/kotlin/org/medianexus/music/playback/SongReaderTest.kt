@@ -30,7 +30,16 @@ import org.junit.Test
  */
 class SongReaderTest {
     private lateinit var server: MockWebServer
-    private val http = OkHttpClient()
+    /** With no limit of its own on how long the server may take. The stand-in server makes
+     *  each answer in full before it sends any of it (for the hour-long song of one test
+     *  here, 58 MB a time), and OkHttp's ten seconds for an answer to begin were ten seconds
+     *  of a machine that may be busy with something else: nothing here is about how long
+     *  that takes. */
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(java.time.Duration.ZERO).readTimeout(java.time.Duration.ZERO).writeTimeout(java.time.Duration.ZERO).build()
+
+    /** Only so that a read which will never end fails its test and does not hang the build. */
+    @get:org.junit.Rule val notForEver: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(600)
     private val asked = CopyOnWriteArrayList<String>()
 
     // ---- The stand-in server ------------------------------------------------------------------
