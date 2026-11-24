@@ -366,9 +366,14 @@ How it is built (M1a):
   so whether a song plays offline is never a look at the disk.
 - **Offline** (by hand, or the server out of reach: see "Offline mode" below), a list started
   is only those of its songs that are downloaded or kept, each at its place in the whole list
-  (Windows' `play_from`); it starts at the song asked for, or the next one that plays (Windows
-  starts at the first that plays); none: "That isn't downloaded, so it can't play while you're
-  offline". A stream that fails for want of the server asks whether it is there at all.
+  (Windows' `play_from`). A song chosen (a row tapped, on the phone or in the car) that
+  doesn't play starts nothing: whatever is playing carries on, and the person is told "That
+  isn't downloaded, so it can't play while you're offline"; it is never swapped for another.
+  A list asked for as a list (its play button, Shuffle) starts at its first song that plays,
+  or the next one after where it was asked to start (Windows starts at the first that plays);
+  none: the same words. A song found by the car's search whose album doesn't hold it (an old
+  kept page, a song kept from it separately) plays by itself, as a spoken request does. A
+  stream that fails for want of the server asks whether it is there at all.
 - **Nothing private leaves the data source**: it reports the song's own address
   (`nexus://…`), the cache is never told where a redirect led, and a failure is thrown as
   its kind alone, with no cause. A playback error reaches every app with a controller.
@@ -1168,8 +1173,8 @@ Wi-Fi only on, they waited, and carried on when it was back.
 
 - **Four tabs always**, Downloads empty until there are downloads (not a tab that appears).
 - **Fetching ahead on mobile data**: the next song only; none with Data Saver (above).
-- **A list started offline** starts at the song asked for or the next that plays (Windows: the
-  first that plays).
+- **A list started offline** from its play button or Shuffle starts at the first that plays;
+  a song chosen that doesn't play starts nothing (see Playback above).
 - **A song removed by hand from a list downloaded whole** makes the list no longer downloaded
   whole (Windows fetches it back).
 - **"Now playing" reports** are not held offline (Windows doesn't hold them either).

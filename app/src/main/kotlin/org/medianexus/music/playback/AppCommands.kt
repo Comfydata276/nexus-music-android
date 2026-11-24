@@ -61,7 +61,7 @@ object AppCommands {
     sealed interface Started {
         class Ready(val queue: Queue) : Started
 
-        /** Offline, and nothing of the list plays. */
+        /** Offline, and the song chosen, or nothing of the list, plays. */
         data object NothingOffline : Started
 
         data object Gone : Started
@@ -112,8 +112,10 @@ object AppCommands {
         val shown = rows.shown
         val list = shown?.let { songs.pick(it) } ?: songs
         val places = shown?.toList() ?: songs.indices.toList()
-        // Offline (`plays` given): only what can play, each still at its place in the list.
-        val cut = if (plays != null) playableOnly(list, rows.first, plays) ?: return Started.NothingOffline else null
+        // Offline (`plays` given): only what can play, each still at its place in the list. A
+        // song that was chosen and can't play starts nothing, not its neighbour; the play
+        // button asks for the list, and starts at the first of it that plays.
+        val cut = if (plays != null) playableFrom(list, rows.first, chosen = startId != null, plays) ?: return Started.NothingOffline else null
         return Started.Ready(
             player.prepare(
                 cut?.songs ?: list,

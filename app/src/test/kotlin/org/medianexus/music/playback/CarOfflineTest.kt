@@ -9,6 +9,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -141,6 +142,36 @@ class CarOfflineTest {
         assertEquals(0, playableOnly(album.songs.take(3), 2, plays)!!.start)
         // None: nothing to start.
         assertEquals(null, playableOnly(album.songs, 0) { false })
+    }
+
+    @Test
+    fun aSongChosenInTheCarThatDoesNotPlayStartsNothingNotItsNeighbour() = runBlocking {
+        val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+        // Song 1 of the album, tapped in the car (the kept page lists it): it isn't on the
+        // phone. It used to start song 2 in its place.
+        val list = tree().play(CarNode.Track("s1", ListRef.Album("al-1"), 0))!!
+        assertTrue(list.chosen)
+        assertEquals("s1", list.songs[list.start].id)
+        assertNull(playableFrom(list.songs, list.start, list.chosen, availability::plays))
+        // Song 2, which is: the album from it, only what plays.
+        val two = tree().play(CarNode.Track("s2", ListRef.Album("al-1"), 1))!!
+        assertEquals(listOf("s2", "s3", "s4"), playableFrom(two.songs, two.start, two.chosen, availability::plays)!!.songs.map { it.id })
+        // Shuffle, which asks for the list and not a song, still passes over song 1.
+        val shuffled = tree().shuffled(ListRef.Album("al-1"))!!
+        assertEquals(listOf("s2", "s3", "s4"), playableFrom(shuffled.songs, shuffled.start, shuffled.chosen, availability::plays)!!.songs.map { it.id })
+    }
+
+    @Test
+    fun aSearchResultItsAlbumDoesNotHoldPlaysByItself() = runBlocking {
+        // A song of the album kept from being played, which the album's kept page (an old one)
+        // doesn't list: found by the car's search, under its album.
+        val five = Song(id = "s5", title = "Song 5", album = "First Light", albumId = "al-1", artist = "Paper Lanterns", artistId = "ar-1", track = 5, suffix = "flac")
+        kept.kept(cacheKey("s5", StreamForm(0, "flac")), five)
+        val found = tree().search("song 5").first { it.title == "Song 5" }
+        // It used to be refused (nothing played): its album was found, without it.
+        val list = tree().play(CarIds.parse(found.id) as CarNode.Track)!!
+        assertEquals(listOf("s5"), list.songs.map { it.id })
+        assertTrue(list.chosen)
     }
 
     @Test

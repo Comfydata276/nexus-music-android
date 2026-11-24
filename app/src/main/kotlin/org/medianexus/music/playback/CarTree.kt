@@ -74,6 +74,8 @@ data class PlayList(
     val source: String,
     val shuffle: Boolean? = null,
     val anyStart: Boolean = false,
+    /** A song was chosen (a row tapped): offline, if it can't play, nothing starts. */
+    val chosen: Boolean = false,
 )
 
 /**
@@ -775,17 +777,18 @@ class CarTree(private val library: Library, private val words: CarWords = CarWor
     /** What choosing a song plays: its list, from it. Null if the song can't be found. */
     suspend fun play(track: CarNode.Track): PlayList? {
         val known = if (track.list is ListRef.Album) runCatching { songsOf(track.list) }.getOrNull() else songsOf(track.list)
-        if (known == null) {
-            // A song with no album to speak of: just the song (offline, if it is on the phone).
-            // (Not yet known whether the server is there: the phone's own, if it has it.)
+        val start = known?.first?.let { songs -> if (songs.getOrNull(track.index)?.id == track.songId) track.index else songs.indexOfFirst { it.id == track.songId } } ?: -1
+        if (known == null || start < 0) {
+            // A song with no album to speak of, or one its album doesn't hold (an old kept
+            // page of it, a song kept from it separately): just the song, as a spoken request
+            // plays it (offline, if it is on the phone). (Not yet known whether the server is
+            // there: the phone's own, if it has it.)
             val here = if (isOffline || isUnsure) playable().songs.firstOrNull { it.id == track.songId } else null
             val song = here ?: if (isOffline || (isUnsure && settled())) return null else library.song(track.songId)
-            return PlayList(listOf(song), 0, song.title, "")
+            return PlayList(listOf(song), 0, song.title, "", chosen = true)
         }
         val (songs, context, source) = known
-        val start = if (songs.getOrNull(track.index)?.id == track.songId) track.index else songs.indexOfFirst { it.id == track.songId }
-        if (start < 0) return null
-        return PlayList(songs, start, context, source)
+        return PlayList(songs, start, context, source, chosen = true)
     }
 
     /** Whether a song is liked now, for searches of what is on the phone (see [CarOffline.liked]). */

@@ -2213,8 +2213,9 @@ class PlaybackService : MediaLibraryService() {
         val plays = playsOffline()
         // Made into a queue off the main thread: a list can be thousands of songs.
         val next = withContext(Dispatchers.Default) {
-            // Offline, only what is on the phone, each at its place in the whole list.
-            val cut = plays?.let { playableOnly(list.songs, list.start, it) }
+            // Offline, only what is on the phone, each at its place in the whole list. A song
+            // chosen that isn't starts nothing, not its neighbour.
+            val cut = plays?.let { playableFrom(list.songs, list.start, list.chosen, it) }
             if (plays != null && cut == null) return@withContext null
             // A list with a source is that page's whole list, so each song's place is its origin.
             val origins = if (list.source.isNotEmpty()) cut?.origins ?: list.songs.indices.toList() else null

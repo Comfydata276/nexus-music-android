@@ -166,6 +166,49 @@ class DrawnPlaysTest {
         assertEquals(drawn, queue())
     }
 
+    /** Offline, with every song of the copy downloaded. */
+    private fun offlineWithAllDownloaded() {
+        val copy = account.copy.state.value!!
+        for (n in 0 until copy.songs.size) {
+            val song = copy.songs.song(n)
+            account.catalogue.add(org.medianexus.music.downloads.Downloaded(song, "${song.id}.flac", 4, at = 1, suffix = "flac"))
+        }
+        app.graph.watch.manual(true)
+        settle()
+    }
+
+    @Test
+    fun offlineATappedSongThatCanNoLongerPlayStartsNothingNotItsNeighbour() {
+        offlineWithAllDownloaded()
+        val copy = account.copy.state.value!!
+        val shown = songsShown(copy, ListView(ListView.TITLE, filter = "amber"))
+        val row = 4
+        val tapped = copy.songs.id(shown.order[row])
+        tap(songsTap(shown, row, any = false, context = "Songs")!!)
+        // Held: the song tapped stops being on the phone (its download removed).
+        account.catalogue.remove(setOf(tapped))
+        gate.complete(Unit)
+        until("the person was told") { said.isNotEmpty() }
+        // Nothing started (it used to start the next row's song): what was there stays.
+        assertEquals(listOf(app.getString(org.medianexus.music.R.string.cant_play_offline)), said)
+        assertEquals("Before", inside.player.queue.context)
+        assertEquals("before0", inside.player.queue.current()?.id)
+    }
+
+    @Test
+    fun offlineThePlayButtonStillPassesOverWhatCannotPlay() {
+        offlineWithAllDownloaded()
+        val copy = account.copy.state.value!!
+        val shown = songsShown(copy, ListView(ListView.TITLE, filter = "amber"))
+        val drawn = shown.order.map { copy.songs.id(it) }
+        tap(songsTap(shown, 0, any = true, context = "Songs")!!)
+        account.catalogue.remove(setOf(drawn[0]))
+        gate.complete(Unit)
+        until("the play button played") { inside.player.queue.context == "Songs" }
+        // It asks for the list, not a song: from the first of it that plays.
+        assertEquals(drawn.drop(1), queue())
+    }
+
     @Test
     fun aTapOnALongPlaylistPlaysTheRowsDrawnWhateverItsPageBecomes() {
         val library = account.library
