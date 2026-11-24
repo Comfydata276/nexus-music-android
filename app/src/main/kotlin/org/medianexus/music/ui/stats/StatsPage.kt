@@ -118,13 +118,13 @@ fun StatsPage(route: Route.Stats) {
                 item(key = "loading") { SkeletonRows() }
             }
             // (Each period starts at its top, its rows at their starts: not where the last was.)
-            else -> androidx.compose.runtime.key(shown.period) { StatsContent(shown, snapshot!!, head) }
+            else -> androidx.compose.runtime.key(shown.period) { StatsContent(shown, head) }
         }
     }
 }
 
 @Composable
-private fun StatsContent(page: Stats.Page, library: LibrarySnapshot, head: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
+private fun StatsContent(page: Stats.Page, head: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
     val ui = LocalUi.current
     val res = LocalResources.current
     val note = noteFor(res, page)
@@ -149,7 +149,9 @@ private fun StatsContent(page: Stats.Page, library: LibrarySnapshot, head: andro
     val liked = likedSongs()
     val player = ui.player
     val from by player.from.collectAsStateWithLifecycle()
-    val songs = remember(page, library) { PlacedSongs.of(library.songs, page.songs) }
+    // The ranking's own table: never another copy's (while a newer copy's ranking is worked
+    // out, this one is drawn whole, as it was made).
+    val songs = remember(page) { PlacedSongs.of(page.table, page.songs) }
     val context = stringResource(R.string.mix_top)
     val key = Route.Stats(page.period).key
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {

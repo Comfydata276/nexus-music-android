@@ -127,4 +127,22 @@ class StatsTest {
         assertEquals("5,210", Stats.grouped(5210))
         assertEquals("1,234,567", Stats.grouped(1_234_567))
     }
+
+    /** A ranking is one value with the table it was made from (M5b fixes, item 7): while a
+     *  newer, smaller copy of the library arrives and its ranking is worked out, the page goes
+     *  on drawing this one against its own table, never the newer one (where another song
+     *  would take its place, or a place would be past the end). */
+    @Test
+    fun theRankingCarriesTheTableItWasMadeFrom() {
+        val now = at(2026, 11, 18, 15)
+        val older = table((1..5).map { Song(id = "s$it", title = "Song $it") })
+        val log = Plays.of(listOf(Triple("s5", stamp(2026, 11, 18, 9), ""), Triple("s5", stamp(2026, 11, 18, 10), ""), Triple("s2", stamp(2026, 11, 18, 11), "")))
+        val page = Stats.page(Stats.TODAY, older, emptyList(), emptyList(), 0, log, emptyList(), now)
+        assertTrue(page.table === older)
+        // The copy is refreshed: s5 has gone and the rest have moved up.
+        val newer = table(listOf(Song(id = "s2", title = "Song 2"), Song(id = "s1", title = "Song 1")))
+        assertTrue(page.songs.max() >= newer.size)
+        assertEquals(listOf("s5", "s2"), page.songs.map { page.table.id(it) })
+        assertEquals(listOf("s2"), Stats.page(Stats.TODAY, newer, emptyList(), emptyList(), 0, log, emptyList(), now).let { p -> p.songs.map { p.table.id(it) } })
+    }
 }

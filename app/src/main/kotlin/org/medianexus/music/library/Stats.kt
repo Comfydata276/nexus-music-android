@@ -149,6 +149,9 @@ object Stats {
     /** The page (Windows' `stats`): `period` as it was taken (a year no longer offered is all
      *  time), the filters under All time, and either what was played or nothing. */
     class Page(
+        /** The copy of the library it was worked out from: [songs] are places in it, and mean
+         *  nothing in any other (a newer copy, which a page being worked out lags behind). */
+        val table: SongTable,
         val period: Int,
         val filters: List<Filter>,
         val note: Note,
@@ -201,7 +204,7 @@ object Stats {
             else -> if (span.first < started) Note.BEFORE_LOG else Note.NONE
         }
         if (played.isEmpty()) {
-            return Page(taken, filters, if (allTime) note else Note.NONE, started, 0, 0, 0, 0, IntArray(0), LongArray(0), emptyList(), emptyList(), emptyList(), emptyList())
+            return Page(table, taken, filters, if (allTime) note else Note.NONE, started, 0, 0, 0, 0, IntArray(0), LongArray(0), emptyList(), emptyList(), emptyList(), emptyList())
         }
         // The same plays, added up by artist, by album and by kind of music (one count per
         // name, not a boxed number per play).
@@ -238,7 +241,7 @@ object Stats {
         val topLists = lists.mapNotNull { (id, n) -> known[id]?.let { Ranked(it, n) } }.take(10)
         val top = played.copyOf(minOf(25, played.size))
         return Page(
-            taken, filters, note, started, seconds, total, played.size, byArtist.size,
+            table, taken, filters, note, started, seconds, total, played.size, byArtist.size,
             top, LongArray(top.size) { times[top[it]] },
             topArtists, topAlbums, topGenres, topLists,
         )
