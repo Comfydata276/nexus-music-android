@@ -1,7 +1,5 @@
 package org.medianexus.music.library
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import org.medianexus.music.net.Playlist
 import org.medianexus.music.net.Song
 
@@ -15,12 +13,10 @@ import org.medianexus.music.net.Song
 
 /** One song's place in a list where the same song can appear more than once: the song, and
  *  which of its appearances this is (0 for the first). */
-@Serializable
 data class Spot(val id: String, val nth: Int)
 
-/** A song put in, straight after `after` (or first, with none). Its details are kept so the
- *  phone can show it while the change waits to be sent. */
-@Serializable
+/** A song put in, straight after `after` (or first, with none), with its details, for showing
+ *  it while the change waits its turn. */
 data class Placed(val song: Song, val after: Spot?)
 
 /**
@@ -28,33 +24,32 @@ data class Placed(val song: Song, val after: Spot?)
  * changed in the meantime. The first three are Windows' `Edit`; the rest are the other changes
  * the phone makes to a playlist, which go to the server by the same way (see `Playlists`).
  */
-@Serializable
 sealed interface PlaylistEdit {
     /** Take these out. */
-    @Serializable @SerialName("remove")
+    
     data class Remove(val spots: List<Spot>) : PlaylistEdit
 
     /** Put one song straight after another, or first. */
-    @Serializable @SerialName("move")
+    
     data class Move(val song: Spot, val after: Spot?) : PlaylistEdit
 
     /** Put songs in, each straight after another (or first), in the order given. */
-    @Serializable @SerialName("insert")
+    
     data class Insert(val songs: List<Placed>) : PlaylistEdit
 
     /** Add songs at the end (Subsonic's `songIdToAdd`, as Windows adds them). */
-    @Serializable @SerialName("append")
+    
     data class Append(val songs: List<Song>) : PlaylistEdit
 
-    @Serializable @SerialName("rename")
+    
     data class Rename(val name: String) : PlaylistEdit
 
-    @Serializable @SerialName("delete")
+    
     data object Delete : PlaylistEdit
 
     /** A new playlist with these songs (its change's id is the phone's own name for it until
      *  the server has made it: "new:<random>"). */
-    @Serializable @SerialName("create")
+    
     data class Create(val name: String, val songs: List<Song>) : PlaylistEdit
 }
 

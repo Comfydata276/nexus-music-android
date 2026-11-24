@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -132,7 +133,16 @@ fun PlaylistPage(route: Route.Playlist) {
         org.medianexus.music.ui.downloads.DownloadedListPage(Route.Downloaded(route.key, route.name))
         return
     }
-    val playlist = feed.value
+    val ui = LocalUi.current
+    val playlists = ui.account?.playlists
+    // The server's copy, with the changes made here still waiting on top (never written into
+    // the kept page: see Playlists).
+    val waiting = (playlists?.waiting ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap()) }).collectAsStateWithLifecycle().value
+    val kept = feed.value
+    val playlist = remember(kept, waiting) { kept?.let { playlists?.shown(it, waiting) ?: it } }
+    // Gone from the server (its error 70, met by a change): the page goes.
+    val gone = (playlists?.gone ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptySet()) }).collectAsStateWithLifecycle().value
+    androidx.compose.runtime.LaunchedEffect(route.id in gone) { if (route.id in gone) ui.navigator.back() }
     val hero = if (playlist == null) {
         HeroData(stringResource(R.string.kind_playlist), route.name, cover = route.cover, playlist = true)
     } else {
@@ -141,10 +151,10 @@ fun PlaylistPage(route: Route.Playlist) {
         val facts = remember(playlist, res) { listFacts(res, playlist.songs) }
         HeroData(stringResource(R.string.kind_playlist), playlist.name, playlist.owner, facts, playlist.coverArt, playlist = true)
     }
-    val ui = LocalUi.current
-    // Changed only if it is the account's own: someone else's plays, and says why it can't
-    // be changed (Navidrome would refuse).
-    val mine = playlist != null && ui.account?.playlists?.canEdit(playlist) == true
+    // Changed only if it is known to be the account's own: someone else's plays, and says why
+    // it can't be changed. And only with the server there: changes are never kept for later.
+    val mine = kept != null && playlists?.canEdit(kept) == true
+    val online = !org.medianexus.music.ui.downloads.reachNow().let { it.offline || !it.sure }
     SongListPage(
         key = route.key,
         hero = hero,
@@ -153,10 +163,10 @@ fun PlaylistPage(route: Route.Playlist) {
         feed = feed,
         empty = stringResource(if (mine) R.string.playlist_empty_editable else R.string.playlist_empty),
         downloadable = true,
-        editable = playlist.takeIf { mine },
-        onMore = { ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, playlist)) },
-        note = if (playlist != null && !mine) stringResource(R.string.not_your_playlist, playlist.owner) else null,
-        below = { if (mine && playlist != null) recommendations(playlist) },
+        editable = playlist.takeIf { mine && online },
+        onMore = { ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, kept)) },
+        note = if (kept != null && !mine) stringResource(R.string.not_your_playlist, kept.owner) else null,
+        below = { if (mine && online && playlist != null) recommendations(playlist) },
     )
 }
 

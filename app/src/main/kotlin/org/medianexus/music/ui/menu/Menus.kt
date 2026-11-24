@@ -162,12 +162,15 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
             if (ui.account?.downloads != null) Entry(R.drawable.ic_download, stringResource(R.string.download), onClick = download)
             // (From a card, the playlist as the kept list of playlists has it: whose it is.)
             val known = target.playlist ?: org.medianexus.music.ui.shell.rememberPageFeed("playlists") { it.playlists() }.value?.firstOrNull { it.id == target.id }
-            val mine = known?.let { ui.account?.playlists?.canEdit(it) } ?: true
-            if (mine) {
-                Entry(R.drawable.ic_pencil, stringResource(R.string.rename)) { choose { ui.askRename(target.id, target.title) } }
-                Entry(R.drawable.ic_trash_2, stringResource(R.string.delete_playlist), danger = true) { choose { ui.askDelete(target.id, target.title) } }
-            } else {
-                Note(stringResource(R.string.not_your_playlist, known?.owner.orEmpty()))
+            // Offered only when it is known to be the account's own: not while its record
+            // hasn't loaded (and checked again as each change is sent).
+            when {
+                known == null -> {}
+                ui.account?.playlists?.canEdit(known) == true -> {
+                    Entry(R.drawable.ic_pencil, stringResource(R.string.rename)) { choose { ui.askRename(known) } }
+                    Entry(R.drawable.ic_trash_2, stringResource(R.string.delete_playlist), danger = true) { choose { ui.askDelete(known) } }
+                }
+                else -> Note(stringResource(R.string.not_your_playlist, known.owner))
             }
         }
         is Collection.Artist -> {}
@@ -207,7 +210,7 @@ private fun PlaylistPicker(songs: List<Song>, choose: (() -> Unit) -> Unit) {
     val feed = org.medianexus.music.ui.shell.rememberPageFeed("playlists") { it.playlists() }
     val settings = ui.graph.settings.state.collectAsStateWithLifecycle().value
     val playlists = remember(feed.value, settings.pinnedPlaylists) {
-        val own = feed.value.orEmpty().filter { ui.account?.playlists?.canEdit(it) != false }
+        val own = feed.value.orEmpty().filter { ui.account?.playlists?.canEdit(it) == true }
         org.medianexus.music.library.SearchRank.playlistsInOrder(own, settings.pinnedPlaylists)
     }
     Title(stringResource(R.string.add_to_playlist))
@@ -215,26 +218,45 @@ private fun PlaylistPicker(songs: List<Song>, choose: (() -> Unit) -> Unit) {
     Entry(R.drawable.ic_plus, stringResource(R.string.new_playlist)) { choose { ui.askNewPlaylist(songs) } }
     if (playlists.isNotEmpty()) Rule()
     for (playlist in playlists) {
-        Entry(R.drawable.ic_list_music, playlist.name) { choose { ui.addToPlaylist(playlist.id, playlist.name, songs) } }
+        Entry(R.drawable.ic_list_music, playlist.name) { choose { ui.addToPlaylist(playlist, songs) } }
     }
 }
 
+/** Says why a playlist can't be changed now, if it can't; true if it can. */
+fun Ui.said(unavailable: org.medianexus.music.library.Playlists.Unavailable?): Boolean {
+    unavailable ?: return true
+    toast(graph.resources.getString(when (unavailable) {
+        org.medianexus.music.library.Playlists.Unavailable.OFFLINE -> R.string.playlists_need_server
+        org.medianexus.music.library.Playlists.Unavailable.NOT_YOURS -> R.string.playlist_not_changeable
+    }))
+    return false
+}
+
 /**
- * Adds songs to a playlist, first asking what to do about any already in it (Windows'
- * `add_to_playlist`, its words and choices: the cautious answer is the highlighted one).
+ * Adds songs to a playlist, first asking what to do about any already in it, as the server has
+ * the playlist now (Windows' `add_to_playlist`, its words and choices: the cautious answer is
+ * the highlighted one). `done` is told whether the server took the songs (never if none were
+ * added: the question answered "Don't add", or nothing could be sent).
  */
-fun Ui.addToPlaylist(playlist: String, name: String, songs: List<Song>) {
+fun Ui.addToPlaylist(playlist: Playlist, songs: List<Song>, done: () -> Unit = {}) {
     val account = account ?: return
     val res = graph.resources
-    graph.scope.launch {
-        val there = account.playlists.alreadyIn(playlist, songs)
+    if (account.playlists.canEdit(playlist).not()) return run { said(org.medianexus.music.library.Playlists.Unavailable.NOT_YOURS) }
+    graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+        if (!said(account.playlists.reachableNow())) return@launch
+        val there = account.playlists.alreadyIn(playlist.id, songs)
         val fresh = if (there == null) songs else songs.filter { it.id !in there }
         val repeats = songs.size - fresh.size
         fun add(these: List<Song>) {
-            account.playlists.add(playlist, name, these)
-            toast(res.getString(R.string.added_to_named, name))
+            said(account.playlists.add(playlist, these) { taken ->
+                if (taken) {
+                    toast(res.getString(R.string.added_to_named, playlist.name))
+                    done()
+                }
+            })
         }
         if (repeats == 0) return@launch add(songs)
+        val name = playlist.name
         val (title, message, addAll, skip) = when {
             songs.size == 1 -> listOf(res.getString(R.string.already_added), res.getString(R.string.already_in_one, name), res.getString(R.string.add_anyway), res.getString(R.string.dont_add))
             fresh.isEmpty() -> listOf(res.getString(R.string.already_added), res.getString(R.string.already_in_all, name), res.getString(R.string.add_anyway), res.getString(R.string.dont_add))
@@ -253,28 +275,33 @@ fun Ui.addToPlaylist(playlist: String, name: String, songs: List<Song>) {
 /** "New playlist": a name, then made with these songs (none, from Library's own button). */
 fun Ui.askNewPlaylist(songs: List<Song>) {
     val res = graph.resources
+    if (!said(account?.playlists?.reachableNow())) return
     sheet = Sheet.Drawn { choose ->
         Ask(stringResource(R.string.name_your_playlist), "", stringResource(R.string.create_playlist), choose) { name ->
             val account = account ?: return@Ask
-            if (account.playlists.create(name, songs)) toast(res.getString(R.string.created_named, name))
-            else toast(res.getString(R.string.new_playlist_offline))
+            if (said(account.playlists.create(name, songs) { taken -> if (taken) toast(res.getString(R.string.created_named, name)) })) Unit
         }
     }
 }
 
-fun Ui.askRename(id: String, now: String) {
+fun Ui.askRename(record: Playlist) {
+    if (!said(account?.playlists?.reachableNow())) return
     sheet = Sheet.Drawn { choose ->
-        Ask(stringResource(R.string.rename_playlist), now, stringResource(R.string.save), choose) { name -> account?.playlists?.rename(id, name) }
+        Ask(stringResource(R.string.rename_playlist), record.name, stringResource(R.string.save), choose) { name -> said(account?.playlists?.rename(record, name)) }
     }
 }
 
-/** Windows' question before deleting a playlist; done, the playlist's page (if open) goes. */
-fun Ui.askDelete(id: String, name: String) {
+/** Windows' question before deleting a playlist; once the server has deleted it, the
+ *  playlist's page (if open) goes. */
+fun Ui.askDelete(record: Playlist) {
     val res = graph.resources
-    sheet = Sheet.Confirm(res.getString(R.string.delete_playlist_title), res.getString(R.string.delete_playlist_detail, name), res.getString(R.string.delete_playlist)) {
-        account?.playlists?.delete(id, name)
-        toast(res.getString(R.string.playlist_deleted))
-        if ((navigator.visible.lastOrNull()?.route as? Route.Playlist)?.id == id) navigator.back()
+    if (!said(account?.playlists?.reachableNow())) return
+    sheet = Sheet.Confirm(res.getString(R.string.delete_playlist_title), res.getString(R.string.delete_playlist_detail, record.name), res.getString(R.string.delete_playlist)) {
+        said(account?.playlists?.delete(record) { taken ->
+            if (!taken) return@delete
+            toast(res.getString(R.string.playlist_deleted))
+            if ((navigator.visible.lastOrNull()?.route as? Route.Playlist)?.id == record.id) navigator.back()
+        })
     }
 }
 
@@ -284,10 +311,9 @@ fun Ui.removeFromPlaylist(playlist: Playlist, rows: List<Int>) {
     val account = account ?: return
     val res = graph.resources
     val count = rows.distinct().count { it in playlist.songs.indices }
-    if (count == 0) return
-    account.playlists.remove(playlist, rows)
-    val said = if (count == 1) res.getString(R.string.removed_from_playlist) else res.getString(R.string.removed_many_from_playlist, count)
-    graph.toasts.show(said, res.getString(R.string.undo)) { undoPlaylist(playlist.name) }
+    if (count == 0 || !said(account.playlists.remove(playlist, rows))) return
+    val words = if (count == 1) res.getString(R.string.removed_from_playlist) else res.getString(R.string.removed_many_from_playlist, count)
+    graph.toasts.show(words, res.getString(R.string.undo)) { undoPlaylist(playlist) }
 }
 
 /** Moves a playlist's song from one row to another (the playlist in its own order), with
@@ -295,14 +321,13 @@ fun Ui.removeFromPlaylist(playlist: Playlist, rows: List<Int>) {
 fun Ui.movePlaylistSong(playlist: Playlist, from: Int, to: Int) {
     val account = account ?: return
     val res = graph.resources
-    if (from == to) return
-    account.playlists.move(playlist, from, to)
-    graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(playlist.name) }
+    if (from == to || !said(account.playlists.move(playlist, from, to))) return
+    graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(playlist) }
 }
 
 /** Windows' `undo_last`: "Put back". */
-fun Ui.undoPlaylist(name: String) {
-    if (account?.playlists?.undoLast(name) == true) toast(graph.resources.getString(R.string.put_back))
+fun Ui.undoPlaylist(record: Playlist) {
+    if (account?.playlists?.undoLast(record) == true) toast(graph.resources.getString(R.string.put_back))
 }
 
 /** "Save queue as playlist": the songs in the queue now, in the order they play. */

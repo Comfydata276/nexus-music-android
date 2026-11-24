@@ -132,12 +132,10 @@ class AccountGraph(
         answered = { change, refusal ->
             likes.answered(change, refusal == null)
             freshest.settled(change, refusal == null)
-            playlists.answered(change, refusal)
             ratings.answered(change, refusal)
         },
         moved = {
             likes.heldChanged()
-            playlists.heldChanged()
             freshest.heldChanged()
         },
     )
@@ -176,18 +174,20 @@ class AccountGraph(
     /** Changes to the account's playlists, and how a playlist is shown while they are on
      *  their way (see [org.medianexus.music.library.Playlists]). */
     val playlists: org.medianexus.music.library.Playlists = org.medianexus.music.library.Playlists(
-        object : org.medianexus.music.library.PlaylistServer {
-            override suspend fun playlist(id: String) = api.playlist(id)
-            override suspend fun createPlaylist(name: String, songIds: List<String>) = api.createPlaylist(name, songIds)
-            override suspend fun renamePlaylist(id: String, name: String) = api.renamePlaylist(id, name)
-            override suspend fun addToPlaylist(id: String, songIds: List<String>) = api.addToPlaylist(id, songIds)
-            override suspend fun replacePlaylist(id: String, songIds: List<String>) = api.replacePlaylist(id, songIds)
-            override suspend fun removeManyFromPlaylist(id: String, positions: List<Int>) = api.removeManyFromPlaylist(id, positions)
-            override suspend fun deletePlaylist(id: String) = api.deletePlaylist(id)
+        // Reads by the ordinary way; every change by the way that never sends one twice.
+        api.once().let { once ->
+            object : org.medianexus.music.library.PlaylistServer {
+                override suspend fun playlist(id: String) = api.playlist(id)
+                override suspend fun createPlaylist(name: String, songIds: List<String>) = once.createPlaylist(name, songIds)
+                override suspend fun renamePlaylist(id: String, name: String) = once.renamePlaylist(id, name)
+                override suspend fun addToPlaylist(id: String, songIds: List<String>) = once.addToPlaylist(id, songIds)
+                override suspend fun replacePlaylist(id: String, songIds: List<String>) = once.replacePlaylist(id, songIds)
+                override suspend fun removeManyFromPlaylist(id: String, positions: List<Int>) = once.removeManyFromPlaylist(id, positions)
+                override suspend fun deletePlaylist(id: String) = once.deletePlaylist(id)
+            }
         },
         pages, listSpec = { library.playlists() }, playlistSpec = { library.playlist(it) },
-        submit = { change, written -> submit(change, written) },
-        held = held.queued, offline = { reach.value.offline }, username = account.username, scope = scope,
+        reachable = { reach.value.let { !it.offline && it.sure } }, username = account.username, scope = scope,
         added = added,
     )
 
@@ -249,7 +249,6 @@ class AccountGraph(
     init {
         library.likedShown = likes::songsOf
         library.playlistShown = playlists::fetched
-        library.playlistsShown = playlists::onTopOfList
         likes.load()
         scope.launch { recentlyPlayed.open() }
         // Every copy of a playlist read from the server (or the phone) is looked at, so a song
@@ -340,7 +339,6 @@ class AccountGraph(
         is Pending.Star -> api.setStarred(StarTarget.entries.firstOrNull { it.name.equals(change.kind, ignoreCase = true) } ?: StarTarget.SONG, change.id, change.starred)
         is Pending.Rating -> api.setRating(change.id, change.rating)
         is Pending.Played -> api.scrobbleAt(change.id, change.at)
-        is Pending.PlaylistChange -> playlists.send(change)
     }
 
     /** Sends what is waiting (Windows' `flush_pending`), if the server may be asked. */

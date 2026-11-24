@@ -50,7 +50,11 @@ private fun Recommended(playlist: Playlist) {
     // Asked once for the page (by the playlist's id), from what it had then.
     val songs = remember(playlist.id) { playlist.songs }
     val picks by produceState<Recommend.Picks?>(null, playlist.id, offline) {
-        if (offline || songs.isEmpty()) return@produceState
+        // (Offline, what was on screen goes too: nothing can be added.)
+        if (offline || songs.isEmpty()) {
+            value = null
+            return@produceState
+        }
         value = try {
             coroutineScope {
                 val similar = Recommend.seeds(songs).map { seed -> async { runCatching { library.similarSongs(seed.id, 30) }.getOrDefault(emptyList()) } }.awaitAll()
@@ -85,10 +89,9 @@ private fun Recommended(playlist: Playlist) {
                         if (done) R.drawable.ic_check else R.drawable.ic_plus,
                         if (done) stringResource(R.string.added_to_playlist_short) else stringResource(R.string.add_named_to_playlist, song.title),
                         {
-                            if (!done) {
-                                added = added + song.id
-                                ui.addToPlaylist(playlist.id, playlist.name, listOf(song))
-                            }
+                            // Ticked once the server has it: not as the button is pressed, nor
+                            // when the warning was answered "Don't add".
+                            if (!done) ui.addToPlaylist(playlist, listOf(song)) { added = added + song.id }
                         },
                         tint = if (done) Theme.colors.accentBright else Theme.colors.muted,
                         enabled = true,

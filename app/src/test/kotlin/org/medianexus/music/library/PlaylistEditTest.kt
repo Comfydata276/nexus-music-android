@@ -91,18 +91,4 @@ class PlaylistEditTest {
         assertEquals(list("a b c a"), twice.songs.map { it.id })
         assertEquals("Mix again", PlaylistEdits.applyTo(playlist, PlaylistEdit.Rename("Mix again")).name)
     }
-
-    @Test
-    fun anEditKeptOnThePhoneReadsBackTheSame() {
-        val json = kotlinx.serialization.json.Json { classDiscriminator = "type" }
-        val edits = listOf(
-            PlaylistEdit.Remove(listOf(Spot("a", 1))),
-            PlaylistEdit.Move(Spot("b", 0), null),
-            PlaylistEdit.Insert(listOf(Placed(Song(id = "c", title = "C"), Spot("a", 0)))),
-            PlaylistEdit.Append(listOf(Song(id = "d"))),
-            PlaylistEdit.Rename("New"),
-            PlaylistEdit.Delete,
-        )
-        for (edit in edits) assertEquals(edit, json.decodeFromString(PlaylistEdit.serializer(), json.encodeToString(PlaylistEdit.serializer(), edit)))
-    }
 }

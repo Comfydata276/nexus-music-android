@@ -286,7 +286,14 @@ class Graph(context: Context) {
                 if (account == null) return@collectLatest
                 kotlinx.coroutines.flow.merge(
                     account.likes.refused.map { context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim() },
-                    account.playlists.refused.map { context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim() },
+                    account.playlists.refused.map {
+                        when {
+                            it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.UNCONFIRMED -> context.getString(R.string.playlist_unconfirmed)
+                            it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.UNSENT -> context.getString(R.string.playlist_unsent)
+                            (it.error as? org.medianexus.music.net.ApiError.Server)?.code == 70L -> context.getString(R.string.playlist_gone)
+                            else -> context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim()
+                        }
+                    },
                     account.ratings.refused.map { context.getString(R.string.couldnt_save_rating, it.error.message.orEmpty()).trim() },
                 ).collect { toasts.show(it) }
             }

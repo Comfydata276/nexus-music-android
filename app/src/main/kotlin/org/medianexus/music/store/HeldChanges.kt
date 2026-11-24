@@ -45,12 +45,6 @@ sealed interface Pending {
     /** A song that was played, and when. */
     @Serializable @SerialName("played")
     data class Played(override val id: String, val at: Long) : Pending
-
-    /** A change to a playlist (`id` is the playlist's), described by the songs themselves so
-     *  that it is carried out on the playlist as the server has it when it is sent (see
-     *  `PlaylistEdit`). Changes to one playlist reach the server in the order made. */
-    @Serializable @SerialName("playlist")
-    data class PlaylistChange(override val id: String, val edit: org.medianexus.music.library.PlaylistEdit, val at: Long = 0) : Pending
 }
 
 /**

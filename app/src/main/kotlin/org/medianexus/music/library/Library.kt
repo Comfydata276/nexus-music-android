@@ -48,17 +48,14 @@ class Library(
 
     // ---- Playlists ------------------------------------------------------------------------
 
-    fun playlists() = PageSpec("playlists", ListSerializer(Playlist.serializer())) { playlistsShown(api.playlists()) }
+    fun playlists() = PageSpec("playlists", ListSerializer(Playlist.serializer())) { api.playlists() }
 
     /** One playlist with its songs. */
     fun playlist(id: String) = PageSpec("playlist:$id", Playlist.serializer()) { playlistShown(id) { api.playlist(id) } }
 
-    /** What the server sends of a playlist, as the phone shows it: set by the account to its
-     *  playlists' `fetched`, so that changes still on their way are carried out on top. */
+    /** How a playlist is read from the server: set by the account to its playlists'
+     *  `fetched`, so that a read takes turns with a change being made to it. */
     @Volatile var playlistShown: suspend (id: String, fetch: suspend () -> Playlist) -> Playlist = { _, fetch -> fetch() }
-
-    /** The same for the list of playlists (renames and deletions on their way). */
-    @Volatile var playlistsShown: (List<Playlist>) -> List<Playlist> = { it }
 
     /** The internet radio stations set up on the server, as entries that play (Windows'
      *  Radio page). */

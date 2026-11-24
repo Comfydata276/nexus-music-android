@@ -572,7 +572,11 @@
     <string name="add_all">Add all</string>
     <string name="add_new_ones">Add new ones</string>
     <string name="not_your_playlist">This playlist belongs to %1$s. You can play it, but not change it.</string>
-    <string name="new_playlist_offline">You\'re offline. A new playlist is made on your server, so try again when you\'re back online.</string>
+    <string name="playlists_need_server">Playlists can only be changed while your server can be reached.</string>
+    <string name="playlist_not_changeable">This playlist can\'t be changed from your account.</string>
+    <string name="playlist_unconfirmed">Couldn\'t confirm that change. Check the playlist.</string>
+    <string name="playlist_unsent">Couldn\'t reach your server. The playlist wasn\'t changed.</string>
+    <string name="playlist_gone">That playlist is no longer on your server.</string>
     <string name="save_queue_as_playlist">Save queue as playlist</string>
     <string name="there_are_no_songs">There are no songs in that.</string>
     <string name="playlist_empty_editable">This playlist is empty. Use a song\'s menu and choose Add to playlist.</string>

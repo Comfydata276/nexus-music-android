@@ -1,15 +1,13 @@
 package org.medianexus.music.library
 
-import java.util.Collections
-import java.util.IdentityHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,9 +16,9 @@ import org.medianexus.music.net.Playlist
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.PageCache
 import org.medianexus.music.store.PageSpec
-import org.medianexus.music.store.Pending
 
-/** What a playlist change asks of the server (the Subsonic calls behind it). */
+/** What a playlist change asks of the server (the Subsonic calls behind it). The changes go
+ *  by a way that never sends a request twice (`Subsonic.once`). */
 interface PlaylistServer {
     suspend fun playlist(id: String): Playlist
     suspend fun createPlaylist(name: String, songIds: List<String>): Playlist
@@ -31,9 +29,18 @@ interface PlaylistServer {
     suspend fun deletePlaylist(id: String)
 }
 
-/** A change to a playlist that didn't save, already put right on the phone. `name` is the
- *  playlist's, as shown when the change was made. */
-data class PlaylistRefused(val playlist: String, val name: String, val edit: PlaylistEdit, val error: ApiError)
+/** A change to a playlist that didn't happen, or may not have, and whatever was waiting
+ *  behind it, already dropped. `name` is the playlist's, as shown when it was made. */
+data class PlaylistRefused(val playlist: String, val name: String, val outcome: Outcome, val error: ApiError) {
+    enum class Outcome {
+        /** The server said no. */
+        REFUSED,
+        /** No answer came: it may or may not have been done. */
+        UNCONFIRMED,
+        /** The server was never reached: it wasn't done. */
+        UNSENT,
+    }
+}
 
 /** The last removal or move, which "Undo" takes back (Windows' `Undo`). */
 sealed interface PlaylistUndo {
@@ -49,45 +56,38 @@ sealed interface PlaylistUndo {
 
 /**
  * The one owner of changes to the account's playlists (Windows' `edit_playlist` and its
- * neighbours in src/actions.rs), and of how a playlist is shown while they are on their way.
+ * neighbours in src/actions.rs).
  *
- * **The safety rule, from src/playlists.rs.** A removal or a move is described by the songs
- * themselves, which copy of a song included ([Spot]), never by position, and carried out on
- * the playlist as the server has it at the moment it is sent ([send]): a change made on another
- * device in the meantime is kept, and the wrong song is never removed.
- *
- * **One sender, in order, and held when offline.** Every change goes through the account's one
- * ordered sender (`HeldChanges`), like a like: written to the phone, then sent, one at a time,
- * in the order made; with no server, held and sent when it is back. Because a change says
- * which songs it means, sending it later, to a playlist that has changed since, is as safe as
- * sending it now. Only a new playlist is not made offline: the server gives it its id.
- *
- * **Shown at once, and what is held wins over what the server says.** A playlist is shown as
- * the server last sent it with every change still on its way carried out on top, in the order
- * made ([onTop]): the kept copy has the change the moment it is made, and a fresh copy from the
- * server, which won't have it until it is sent, is shown with it too. A fetch of a playlist and
- * the sending of a change to it take turns ([fetched]), and a change is marked sent while its
- * turn is still held, so no copy is shown with a change carried out twice. Refused (the
- * playlist has gone, or isn't this account's), the change is dropped, the playlist is asked for
- * again, and the person is told ([refused]).
- *
- * **What can't be promised**, as for plays: the Subsonic interface has no way to make a change
- * safe to send twice. An app killed in the instant between the server taking a change and the
- * phone recording it sends it again: a move comes to the same thing, but a removal of one of
- * several copies of a song takes out another, and songs added are added twice.
+ * - **Only with the server there, and never kept for later.** With the server not known to be
+ *   reachable no change is made ([Unavailable.OFFLINE]). A change waits in memory only, behind
+ *   the changes to the same playlist made before it, and goes with the process: closed before
+ *   it was sent, it never happened. (Changes used to be held on the phone and sent when the
+ *   server came back; a review showed what that did to a playlist changed elsewhere meanwhile.)
+ * - **By the song, on the server's copy as it is then** (src/playlists.rs): a removal or a move
+ *   names the songs, which copy of each included, and is worked out on the playlist as the
+ *   server sends it, read immediately before the write with nothing in between. Subsonic can't
+ *   make the write conditional on that read, so a change another device makes in that instant
+ *   can still be overwritten: the window Windows has too, accepted (docs/DESIGN.md).
+ * - **One attempt.** The write goes once ([PlaylistServer] goes by `Subsonic.once`) and is never
+ *   sent again: done, refused, or nobody knows (then the playlist is read again and the person
+ *   is asked to check it).
+ * - **A change that doesn't happen takes the ones behind it with it**: every change to that
+ *   playlist still waiting is dropped unsent, the playlist read again, and the person told
+ *   once. Undo is the reverse change, waiting behind what it undoes, under the same rule.
+ * - **What is shown is the server's copy with the changes still waiting on top** ([shown]),
+ *   worked out each time: the kept page only ever holds what the server said. A fetch of a
+ *   playlist and a change to it take turns, and a change leaves [waiting] as the server's copy
+ *   with it in is kept, so it is never shown twice.
+ * - **Only the account's own** ([canEdit]), known: checked as a change is made and again on the
+ *   playlist read just before it is written.
  */
 class Playlists(
     private val server: PlaylistServer,
     private val pages: PageCache,
     private val listSpec: () -> PageSpec<List<Playlist>>,
     private val playlistSpec: (String) -> PageSpec<Playlist>,
-    /** The account's one sender: writes the change, tells `written` once it is in the queue,
-     *  and returns once it is sent or held; throws if refused or if it couldn't be kept. */
-    private val submit: suspend (Pending, written: () -> Unit) -> Unit,
-    /** What the account's sender holds, oldest first. */
-    private val held: StateFlow<List<Pending>>,
-    /** Nothing may be asked of the server now. */
-    private val offline: () -> Boolean,
+    /** The server is known to be there. */
+    private val reachable: () -> Boolean,
     /** Whose playlists can be changed: the account's own. */
     private val username: String,
     private val scope: CoroutineScope,
@@ -95,19 +95,29 @@ class Playlists(
     private val added: org.medianexus.music.store.Added? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    /** Why a change can't be made now. */
+    enum class Unavailable {
+        /** The server isn't known to be there. */
+        OFFLINE,
+        /** Not known to be the account's own (someone else's, read-only, or not loaded). */
+        NOT_YOURS,
+    }
+
+    /** A change waiting its turn: `done` is told whether the server took it. */
+    class Waiting(val edit: PlaylistEdit, val name: String, val done: (Boolean) -> Unit)
+
     private val lock = Any()
+    private val queues = MutableStateFlow<Map<String, List<Waiting>>>(emptyMap())
 
-    /** Changes made and not yet in the sender's queue (being written). */
-    private val making = ArrayList<Pending.PlaylistChange>()
+    /** The changes waiting, by playlist, in the order made. */
+    val waiting: StateFlow<Map<String, List<Waiting>>> = queues.asStateFlow()
 
-    /** Changes the server has taken that may still be in the sender's queue for a moment. */
-    private val sent: MutableSet<Pending.PlaylistChange> = Collections.newSetFromMap(IdentityHashMap())
-
-    /** Each playlist's fetches and sends take turns. */
+    /** Each playlist's fetches and changes take turns. */
     private val turns = HashMap<String, Mutex>()
+    private fun turn(id: String) = synchronized(lock) { turns.getOrPut(id) { Mutex() } }
 
-    /** Changes are put in the sender's queue in the order they were made. */
-    private val order = Mutex()
+    /** The playlists whose changes are being sent now. */
+    private val working = HashSet<String>()
 
     private val refusals = MutableSharedFlow<PlaylistRefused>(extraBufferCapacity = 8)
     val refused: SharedFlow<PlaylistRefused> = refusals.asSharedFlow()
@@ -117,236 +127,214 @@ class Playlists(
     /** The last removal or move, while it can still be taken back. */
     val undo: StateFlow<PlaylistUndo?> = lastUndo
 
-    /** Whether this account may change `playlist`: not if the server says it may not
-     *  (Navidrome's `readonly`), nor if it is someone else's (a playlist that names no owner
-     *  is taken to be the account's). Someone else's can be played, not changed. */
+    private val goneNow = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Playlists the server said no longer exist (its error 70): their pages close. */
+    val gone: StateFlow<Set<String>> = goneNow.asStateFlow()
+
+    /** Whether this account may change `playlist`: its own (one that names no owner is taken
+     *  to be), and not one Navidrome calls read-only. Someone else's plays, unchanged. */
     fun canEdit(playlist: Playlist): Boolean = !playlist.readonly && (playlist.owner.isEmpty() || playlist.owner.equals(username, ignoreCase = true))
 
-    private fun turn(id: String) = synchronized(lock) { turns.getOrPut(id) { Mutex() } }
+    /** A playlist as the server sent it with `waiting` (the changes to it still waiting) on
+     *  top, in order. */
+    fun shown(playlist: Playlist, waiting: Map<String, List<Waiting>> = queues.value): Playlist =
+        waiting[playlist.id].orEmpty().fold(playlist) { shown, it -> PlaylistEdits.applyTo(shown, it.edit) }
 
-    /** The changes to `id` still on their way, in the order made. */
-    private fun onTheirWay(id: String): List<PlaylistEdit> = synchronized(lock) {
-        val queued = held.value.filterIsInstance<Pending.PlaylistChange>()
-        val all = queued + making.filter { mine -> queued.none { it === mine } }
-        all.filter { it.id == id && it !in sent }.map { it.edit }
-    }
-
-    /** A playlist as the server sent it, with every change to it still on its way on top. */
-    fun onTop(playlist: Playlist): Playlist = onTheirWay(playlist.id).fold(playlist) { shown, edit -> PlaylistEdits.applyTo(shown, edit) }
-
-    /** The list of playlists as the server sent it, with renames and deletions still on their
-     *  way on top. */
-    fun onTopOfList(list: List<Playlist>): List<Playlist> = list.mapNotNull { playlist ->
-        val edits = onTheirWay(playlist.id)
-        if (edits.isEmpty()) return@mapNotNull playlist
-        if (edits.any { it == PlaylistEdit.Delete }) return@mapNotNull null
-        edits.filterIsInstance<PlaylistEdit.Rename>().lastOrNull()?.let { playlist.copy(name = it.name) } ?: playlist
-    }
-
-    /** Fetches a playlist (`fetch`, the server's), taking turns with the sending of changes to
-     *  it, and shows it with the changes still on their way. */
-    suspend fun fetched(id: String, fetch: suspend () -> Playlist): Playlist = turn(id).withLock { onTop(fetch()) }
+    /** Fetches a playlist (`fetch`, the server's), taking turns with the changes to it. */
+    suspend fun fetched(id: String, fetch: suspend () -> Playlist): Playlist = turn(id).withLock { fetch() }
 
     // ---- Making changes ---------------------------------------------------------------------
 
     /**
-     * Makes a change to a playlist: shown at once, then sent in its turn (see the class). `name`
-     * is the playlist's, for what is said if it doesn't save. Returns false, doing nothing, if
-     * it can't be made now: a new playlist while offline.
+     * Makes a change to playlist `id` (`record`: the playlist as the app knows it, for whether
+     * it is the account's own; none for a new one). It waits behind the changes to the same
+     * playlist made before it; `done` is told whether the server took it. Returns why it can't
+     * be made now, doing nothing, or null.
      */
-    fun edit(playlist: String, edit: PlaylistEdit, name: String): Boolean {
-        if (edit is PlaylistEdit.Create && offline()) return false
-        val change = Pending.PlaylistChange(playlist, edit, at = clock())
-        synchronized(lock) { making += change }
-        // Started here and now: the changes take their turns in the order they were made.
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            order.lock()
-            var let = false
-            val letGo = { if (!let) { let = true; order.unlock() } }
-            try {
-                show(change)
-                submit(change, letGo)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: ApiError) {
-                refused(change, name, e)
-            } finally {
-                letGo()
-                synchronized(lock) { making.remove(change) }
-            }
+    fun edit(id: String, record: Playlist?, edit: PlaylistEdit, name: String, done: (Boolean) -> Unit = {}): Unavailable? {
+        if (!reachable()) return Unavailable.OFFLINE
+        if (edit !is PlaylistEdit.Create && (record == null || !canEdit(record))) return Unavailable.NOT_YOURS
+        val start = synchronized(lock) {
+            queues.value = queues.value + (id to (queues.value[id].orEmpty() + Waiting(edit, name, done)))
+            working.add(id)
         }
-        return true
-    }
-
-    /** The phone's own copies take the change: the playlist, and the list of playlists. */
-    private suspend fun show(change: Pending.PlaylistChange) {
-        when (val edit = change.edit) {
-            is PlaylistEdit.Create -> {}
-            is PlaylistEdit.Rename, PlaylistEdit.Delete -> pages.update(listSpec()) { onTopOfList(it) }
-            else -> pages.update(playlistSpec(change.id)) { PlaylistEdits.applyTo(it, edit) }
-        }
-        if (change.edit is PlaylistEdit.Rename) pages.update(playlistSpec(change.id)) { PlaylistEdits.applyTo(it, change.edit) }
+        if (start) scope.launch { work(id) }
+        return null
     }
 
     /** Takes these rows of `playlist` (as shown) out, and remembers how to put them back. */
-    fun remove(playlist: Playlist, rows: Collection<Int>) {
+    fun remove(playlist: Playlist, rows: Collection<Int>): Unavailable? {
         val places = rows.filter { it in playlist.songs.indices }.distinct().sorted()
-        if (places.isEmpty()) return
-        val ids = playlist.songs.map { it.id }
-        lastUndo.value = PlaylistUndo.Removed(playlist.id, playlist.songs, places, clock())
-        edit(playlist.id, PlaylistEdits.removing(ids, places), playlist.name)
+        if (places.isEmpty()) return null
+        val unavailable = edit(playlist.id, playlist, PlaylistEdits.removing(playlist.songs.map { it.id }, places), playlist.name)
+        if (unavailable == null) lastUndo.value = PlaylistUndo.Removed(playlist.id, playlist.songs, places, clock())
+        return unavailable
     }
 
     /** Moves the song at row `from` of `playlist` (as shown) to row `to`. */
-    fun move(playlist: Playlist, from: Int, to: Int) {
+    fun move(playlist: Playlist, from: Int, to: Int): Unavailable? {
         val songs = playlist.songs
-        if (from == to || from !in songs.indices || to !in songs.indices) return
-        lastUndo.value = PlaylistUndo.Moved(playlist.id, songs, from, to, clock())
-        edit(playlist.id, PlaylistEdits.moving(songs.map { it.id }, from, to), playlist.name)
+        if (from == to || from !in songs.indices || to !in songs.indices) return null
+        val unavailable = edit(playlist.id, playlist, PlaylistEdits.moving(songs.map { it.id }, from, to), playlist.name)
+        if (unavailable == null) lastUndo.value = PlaylistUndo.Moved(playlist.id, songs, from, to, clock())
+        return unavailable
     }
 
     /**
      * Takes back the last removal or move, if it was made in the last minute (Windows'
-     * `undo_last`): the songs go back beside their old neighbours, or the song back after the
-     * one it followed, in the playlist as it is by then. False if there is nothing to undo.
+     * `undo_last`): the reverse change, behind what it undoes. It is never sent if that didn't
+     * happen (its failure dropped it, and forgot it could be undone). False if there is nothing
+     * to undo, or it can't be done now.
      */
-    fun undoLast(name: String): Boolean {
-        val undo = lastUndo.value ?: return false
+    fun undoLast(record: Playlist): Boolean {
+        val undo = lastUndo.value?.takeIf { it.playlist == record.id } ?: return false
         lastUndo.value = null
         if (clock() - undo.at > UNDO_MILLIS) return false
-        val edit = when (undo) {
+        val reverse = when (undo) {
             is PlaylistUndo.Removed -> PlaylistEdits.restoring(undo.before, undo.places)
             is PlaylistUndo.Moved -> {
                 val after = undo.before.map { it.id }.toMutableList().apply { add(undo.to, removeAt(undo.from)) }
                 PlaylistEdits.moving(after, undo.to, undo.from)
             }
         }
-        return edit(undo.playlist, edit, name)
+        return edit(record.id, record, reverse, record.name) == null
     }
 
     /** Adds songs at the end of a playlist. */
-    fun add(playlist: String, name: String, songs: List<Song>) {
+    fun add(record: Playlist, songs: List<Song>, done: (Boolean) -> Unit = {}): Unavailable? {
         val wanted = songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }
-        if (wanted.isNotEmpty()) edit(playlist, PlaylistEdit.Append(wanted), name)
+        if (wanted.isEmpty()) return null
+        return edit(record.id, record, PlaylistEdit.Append(wanted), record.name, done)
     }
 
-    /** A new playlist with these songs; false (nothing done) while offline. */
-    fun create(name: String, songs: List<Song>): Boolean =
-        edit("new:" + java.util.UUID.randomUUID(), PlaylistEdit.Create(name, songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }), name)
+    /** A new playlist with these songs. */
+    fun create(name: String, songs: List<Song>, done: (Boolean) -> Unit = {}): Unavailable? =
+        edit("new:" + java.util.UUID.randomUUID(), null, PlaylistEdit.Create(name, songs.filter { it.id.isNotEmpty() && it.radioUrl.isEmpty() }), name, done)
 
-    fun rename(playlist: String, name: String) {
-        if (name.isNotBlank()) edit(playlist, PlaylistEdit.Rename(name.trim()), name.trim())
-    }
+    fun rename(record: Playlist, name: String): Unavailable? = if (name.isBlank()) null else edit(record.id, record, PlaylistEdit.Rename(name.trim()), name.trim())
 
-    fun delete(playlist: String, name: String) {
-        edit(playlist, PlaylistEdit.Delete, name)
-    }
+    fun delete(record: Playlist, done: (Boolean) -> Unit = {}): Unavailable? = edit(record.id, record, PlaylistEdit.Delete, record.name, done)
+
+    /** Why no change can be made now, if none can: the server isn't known to be there. */
+    fun reachableNow(): Unavailable? = if (reachable()) null else Unavailable.OFFLINE
 
     /**
-     * Which of `songs` are already in the playlist, to warn before adding them (Windows asks
-     * the server for the playlist as it is now; the phone does too when it can, and otherwise
-     * goes by what it shows). Null if the playlist can't be read at all: then they are added
+     * Which of `songs` are already in the playlist, to warn before adding them, as the server
+     * has the playlist now (Windows asks it too). Null if it can't be read: then they are added
      * without the question, as on Windows.
      */
     suspend fun alreadyIn(playlist: String, songs: List<Song>): Set<String>? {
         val now = try {
-            if (offline()) pages.kept(playlistSpec(playlist)) else pages.fresh(playlistSpec(playlist))
+            pages.fresh(playlistSpec(playlist))
         } catch (_: ApiError) {
-            pages.kept(playlistSpec(playlist))
-        } ?: return null
+            return null
+        }
         val present = now.songs.mapTo(HashSet()) { it.id }
         return songs.mapNotNullTo(HashSet()) { song -> song.id.takeIf { it in present } }
     }
 
-    // ---- Sending --------------------------------------------------------------------------
+    // ---- Sending ----------------------------------------------------------------------------
+
+    /** Sends the changes to `id`, one at a time, until none is waiting. */
+    private suspend fun work(id: String) {
+        while (true) {
+            val next = synchronized(lock) {
+                queues.value[id]?.firstOrNull() ?: run {
+                    working.remove(id)
+                    return
+                }
+            }
+            val failure = try {
+                send(id, next)
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Failed) {
+                e
+            }
+            if (failure == null) {
+                next.done(true)
+                continue
+            }
+            // It didn't happen, or may not have: nothing is applied on top of it.
+            val dropped = synchronized(lock) {
+                queues.value[id].orEmpty().also { queues.value = queues.value - id }
+            }
+            if (lastUndo.value?.playlist == id) lastUndo.value = null
+            dropped.forEach { it.done(false) }
+            refusals.emit(PlaylistRefused(id, next.name, failure.outcome, failure.error))
+            catchUp(id, failure.error)
+        }
+    }
+
+    private class Failed(val outcome: PlaylistRefused.Outcome, val error: ApiError) : Exception()
 
     /**
-     * Sends one change, as the account's sender asks (Windows' `edit_playlist`): a removal or a
-     * move is worked out on the playlist as the server has it now, and only what that comes to
-     * is sent. Throws the request's [ApiError] if it didn't go.
+     * Sends one change, as Windows' `edit_playlist` does: the playlist read as the server has it
+     * now, whether it is still the account's to change, and only what the change comes to there
+     * written, once. Then the server's copy with it in is kept and the change leaves [waiting],
+     * before anything else may read the playlist.
      */
-    suspend fun send(change: Pending.PlaylistChange) {
-        val id = change.id
-        turn(id).withLock {
-            when (val edit = change.edit) {
+    private suspend fun send(id: String, waiting: Waiting) = turn(id).withLock {
+        var writing = false
+        try {
+            val edit = waiting.edit
+            val now = if (edit is PlaylistEdit.Create) null else server.playlist(id)
+            if (now != null && !canEdit(now)) throw ApiError.Server(50, "")
+            val ids = now?.songs?.map { it.id }.orEmpty()
+            writing = true
+            when (edit) {
                 is PlaylistEdit.Create -> {
-                    val ids = edit.songs.map { it.id }
-                    val made = server.createPlaylist(edit.name, ids)
-                    if (made.id.isNotEmpty()) added?.create(made.id, ids, clock() / 1000)
+                    val songIds = edit.songs.map { it.id }
+                    val made = server.createPlaylist(edit.name, songIds)
+                    if (made.id.isNotEmpty()) added?.create(made.id, songIds, clock() / 1000)
                 }
                 is PlaylistEdit.Rename -> server.renamePlaylist(id, edit.name)
-                PlaylistEdit.Delete -> {
-                    server.deletePlaylist(id)
-                    added?.forget(id)
-                }
+                PlaylistEdit.Delete -> server.deletePlaylist(id)
                 is PlaylistEdit.Append -> {
-                    val ids = edit.songs.map { it.id }
-                    server.addToPlaylist(id, ids)
-                    added?.record(id, ids, clock() / 1000)
+                    val songIds = edit.songs.map { it.id }
+                    server.addToPlaylist(id, songIds)
+                    added?.record(id, songIds, clock() / 1000)
                 }
-                is PlaylistEdit.Remove -> {
-                    val now = server.playlist(id).songs.map { it.id }
-                    val places = PlaylistEdits.positions(now, edit.spots)
-                    if (places.isNotEmpty()) server.removeManyFromPlaylist(id, places)
-                }
-                is PlaylistEdit.Move, is PlaylistEdit.Insert -> {
-                    val now = server.playlist(id).songs.map { it.id }
-                    val next = PlaylistEdits.apply(now, edit)
-                    if (next != now) server.replacePlaylist(id, next)
-                }
+                is PlaylistEdit.Remove -> PlaylistEdits.positions(ids, edit.spots).takeIf { it.isNotEmpty() }?.let { server.removeManyFromPlaylist(id, it) }
+                is PlaylistEdit.Move, is PlaylistEdit.Insert -> PlaylistEdits.apply(ids, edit).takeIf { it != ids }?.let { server.replacePlaylist(id, it) }
             }
-            // Sent: no copy fetched from now on is to have it carried out again.
-            synchronized(lock) { sent += change }
-        }
-        // The server's own copies: how the playlist stands now, and the list (its name, its
-        // length). Asked for behind the change, not waited on.
-        scope.launch { catchUp(change) }
-    }
-
-    private suspend fun catchUp(change: Pending.PlaylistChange) {
-        try {
-            when (change.edit) {
-                PlaylistEdit.Delete -> pages.forget(playlistSpec(change.id).key)
-                is PlaylistEdit.Create -> {}
-                else -> pages.fresh(playlistSpec(change.id))
+            writing = false
+            // Done. The server's copy with it in, then the change leaves what is waiting.
+            val after = when (edit) {
+                PlaylistEdit.Delete, is PlaylistEdit.Create -> null
+                else -> runCatching { server.playlist(id) }.getOrNull()
             }
-            pages.fresh(listSpec())
-        } catch (_: ApiError) {
-            // Asked for again the next time either is looked at.
+            synchronized(lock) { queues.value = (queues.value + (id to queues.value[id].orEmpty().filter { it !== waiting })).filterValues { it.isNotEmpty() } }
+            when {
+                edit == PlaylistEdit.Delete -> pages.forget(playlistSpec(id).key)
+                after != null -> pages.put(playlistSpec(id), after)
+            }
+            if (edit is PlaylistEdit.Create || edit is PlaylistEdit.Rename || edit == PlaylistEdit.Delete) scope.launch { runCatching { pages.fresh(listSpec()) } }
+        } catch (e: ApiError) {
+            throw when {
+                e is ApiError.Server -> Failed(PlaylistRefused.Outcome.REFUSED, e)
+                !writing || (e is ApiError.Network && e.unsent) -> Failed(PlaylistRefused.Outcome.UNSENT, e)
+                else -> Failed(PlaylistRefused.Outcome.UNCONFIRMED, e)
+            }
         }
     }
 
-    /** What is held has moved on: changes that have left it are forgotten here too. */
-    fun heldChanged() = synchronized(lock) {
-        val queued = held.value
-        sent.retainAll { mine -> queued.any { it === mine } }
-    }
-
-    /**
-     * A change that had been held has had its answer (told by the sender, as it leaves the
-     * queue). Refused, it is put right and said.
-     */
-    fun answered(change: Pending, refusal: ApiError?) {
-        if (change !is Pending.PlaylistChange || refusal == null) return
-        scope.launch { refused(change, nameOf(change), refusal) }
-    }
-
-    /** A playlist's name as the phone shows it, for what is said about a change to it. */
-    private suspend fun nameOf(change: Pending.PlaylistChange): String = when (val edit = change.edit) {
-        is PlaylistEdit.Create -> edit.name
-        else -> pages.kept(playlistSpec(change.id))?.name ?: (edit as? PlaylistEdit.Rename)?.name.orEmpty()
-    }
-
-    /** A change that didn't save: the phone's copies are put right from the server, and the
-     *  person is told. */
-    private suspend fun refused(change: Pending.PlaylistChange, name: String, error: ApiError) {
-        synchronized(lock) { making.remove(change) }
-        refusals.emit(PlaylistRefused(change.id, name, change.edit, error))
-        if (offline()) return
+    /** After a change that didn't happen, or may not have: the playlist as the server has it
+     *  now; one the server says is gone (70) goes from the phone and Library. */
+    private suspend fun catchUp(id: String, error: ApiError) {
+        if (id.startsWith("new:")) return
         try {
-            if (change.edit !is PlaylistEdit.Create) pages.fresh(playlistSpec(change.id))
-            pages.fresh(listSpec())
+            if (error is ApiError.Server && error.code == 70L) {
+                goneNow.value = goneNow.value + id
+                pages.forget(playlistSpec(id).key)
+                pages.update(listSpec()) { list -> list.filter { it.id != id } }
+            } else {
+                pages.fresh(playlistSpec(id))
+            }
         } catch (_: ApiError) {
+            // Asked for again the next time it is looked at.
         }
     }
 
