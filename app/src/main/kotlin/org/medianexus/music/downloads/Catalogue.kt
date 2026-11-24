@@ -512,8 +512,11 @@ class Catalogue(
                 out.write(json.encodeToString(ListSerializer(Downloaded.serializer()), songs.values.toList()).toByteArray())
                 out.fd.sync()
             }
+            CrashPoints.reached("compact-written")
             if (main.isFile) Files.move(main.toPath(), File(dir, BACKUP_FILE).toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            CrashPoints.reached("compact-aside")
             Files.move(temp.toPath(), main.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            CrashPoints.reached("compact-placed")
         } catch (e: IOException) {
             temp.delete()
             throw e
@@ -528,6 +531,7 @@ class Catalogue(
         syncDirOrFail(dir)
         RandomAccessFile(File(dir, LOG_FILE), "rw").use { log ->
             log.setLength(0)
+            CrashPoints.reached("compact-emptied")
             log.fd.sync()
         }
         logged = 0

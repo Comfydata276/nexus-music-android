@@ -92,8 +92,11 @@ fun interface AudioCheck {
  *   there, silently; that is seen here by where it stopped ([Inspected.gaveUp]).
  * - **A FLAC's frames are checked against their own checksums** (the CRC-16 that ends every
  *   frame): a FLAC's reader finds frames by their headers and never looks inside, so bytes
- *   changed in the middle of the sound went unseen, and Android's decoder stops at such a
- *   frame. No other format here carries a checksum that can be checked without decoding.
+ *   changed in the middle of the sound went unseen. (Android's decoder plays on past such a
+ *   frame, with whatever it makes of it: seen on the Android 16 emulator, a FLAC with
+ *   sixty-four bytes changed inside a frame played its full 26 seconds with no error. So
+ *   nothing at playback says so either; reading it through is the only place it is caught.)
+ *   No other format here carries a checksum that can be checked without decoding.
  * - **Whether the phone has a decoder for it** is asked of the system, as the player's own
  *   renderer asks ([decodes]): an ALAC in an `.m4a` is an MP4 the extractor reads perfectly
  *   and nothing on the phone plays.

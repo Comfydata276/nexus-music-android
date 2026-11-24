@@ -1136,6 +1136,11 @@ class PlaybackService : MediaLibraryService() {
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
             val from = oldPosition.positionMs / 1000.0
             val sameEntry = entryOf(oldPosition.mediaItem) != null && entryOf(oldPosition.mediaItem) == entryOf(newPosition.mediaItem)
+            // A download that came to its end well before the song's length: no error (the
+            // reader took a stretch it couldn't read for the end of the song, or the file
+            // stops short), and nothing was said. Its file is read through, and if it is at
+            // fault it stops being a download and is fetched again.
+            if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) endedAt(oldPosition.mediaItem, oldPosition.positionMs)
             when {
                 // Repeating one song: the play that just finished is counted, and the next
                 // time round is a new play of it.
@@ -1147,7 +1152,18 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             // The end of the queue. The same song started again from the top is a new play.
-            if (playbackState == Player.STATE_ENDED) plays.ended(clock())
+            if (playbackState == Player.STATE_ENDED) {
+                endedAt(exo.currentMediaItem, exo.currentPosition)
+                plays.ended(clock())
+            }
+        }
+
+        /** A song has played to its end at `positionMs`: see [Recovery.endedEarly]. */
+        private fun endedAt(item: MediaItem?, positionMs: Long) {
+            val song = (item?.localConfiguration?.tag as? QueuePlayer.SongTag)?.song ?: return
+            if (reading[song.id] !is SongCopy.Download || !Recovery.endedEarly(positionMs, song.duration)) return
+            graph.diagnostics.note("a downloaded copy ended well before the song's length: its file is read through")
+            era?.account?.downloads?.verifyNow(song.id)
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -1235,8 +1251,8 @@ class PlaybackService : MediaLibraryService() {
                 download != null && undecodable(error) && !Recovery.laidAtTheFile(error.errorCode, false) &&
                     player.queue.currentUid()?.let { triedAgain.add(it) } == true -> {
                     graph.diagnostics.note("a downloaded copy stopped (${error.errorCodeName}): nothing set aside, tried again")
-                    // (And its file is read through, in case it is the file after all:
-                    // bytes damaged inside a frame stop a decoder, not the reader.)
+                    // (And its file is read through, in case it is the file after all: the
+                    // reader finds a file's frames without looking inside them.)
                     era?.account?.downloads?.verifyNow(song.id)
                     exo.prepare()
                 }

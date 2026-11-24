@@ -122,4 +122,18 @@ class RecoveryTest {
         assertEquals(null, Recovery.nextThatPlays(current = 7, count = 9) { it in onPhone })
         assertEquals(null, Recovery.nextThatPlays(current = 0, count = 1) { true })
     }
+
+    @Test
+    fun aSongThatStopsWellBeforeItsLengthEndedEarly() {
+        // Half way through a three-minute song.
+        assertTrue(Recovery.endedEarly(positionMs = 90_000, seconds = 180))
+        // A second or two out (a library's lengths are whole seconds): no.
+        assertFalse(Recovery.endedEarly(positionMs = 178_200, seconds = 180))
+        assertFalse(Recovery.endedEarly(positionMs = 180_400, seconds = 180))
+        // A long one is allowed a fiftieth: a two-hour mix a minute and a half short is not it.
+        assertFalse(Recovery.endedEarly(positionMs = 7_200_000 - 90_000, seconds = 7_200))
+        assertTrue(Recovery.endedEarly(positionMs = 7_200_000 - 200_000, seconds = 7_200))
+        // No length known: nothing to hold it against.
+        assertFalse(Recovery.endedEarly(positionMs = 5_000, seconds = 0))
+    }
 }

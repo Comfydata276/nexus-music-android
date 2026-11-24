@@ -67,6 +67,7 @@ import androidx.media3.session.SessionToken
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es like <song id>
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es unlike <song id>
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es toggle "playlist:<id>"
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es inspect two-hours.flac
  *
  * (`toggle` is a list's download button pressed: it downloads the list, cancels it, or, all
  * of it being downloaded, removes it.)
@@ -97,6 +98,32 @@ class DebugControl : BroadcastReceiver() {
             val done = goAsync()
             Thread {
                 done.resultData = runCatching { org.medianexus.music.downloads.DebugMeasure.availability(context.cacheDir) }.getOrElse { "failed: $it" }
+                done.finish()
+            }.start()
+            return
+        }
+        intent.getStringExtra("inspect")?.let { name ->
+            // What reading a file through costs (the check a download passes: docs/TESTING.md,
+            // "Done means it plays to the end"): the time, and the most the app's heap grew
+            // by while it ran. The file is one in the app's cache folder.
+            val done = goAsync()
+            Thread {
+                done.resultData = runCatching {
+                    val file = java.io.File(context.cacheDir, name)
+                    val runtime = Runtime.getRuntime()
+                    System.gc()
+                    Thread.sleep(200)
+                    val before = runtime.totalMemory() - runtime.freeMemory()
+                    val peak = java.util.concurrent.atomic.AtomicLong(before)
+                    val watching = java.util.concurrent.atomic.AtomicBoolean(true)
+                    val watcher = Thread { while (watching.get()) { peak.accumulateAndGet(runtime.totalMemory() - runtime.freeMemory()) { a, b -> maxOf(a, b) }; Thread.sleep(5) } }.apply { start() }
+                    val began = System.nanoTime()
+                    val seen = org.medianexus.music.downloads.Media3AudioCheck.system.inspect(file, name.substringAfterLast('.'))
+                    val took = (System.nanoTime() - began) / 1_000_000
+                    watching.set(false)
+                    watcher.join()
+                    "${file.length()} bytes read through in $took ms; the heap grew by at most ${(peak.get() - before) / 1024} KB; it is ${seen.container}, runs ${seen.ranUs / 1000} ms (says ${seen.durationUs / 1000} ms), broken ${seen.broken}, partial ${seen.partial}, decodable ${seen.decodable}"
+                }.getOrElse { "failed: $it" }
                 done.finish()
             }.start()
             return

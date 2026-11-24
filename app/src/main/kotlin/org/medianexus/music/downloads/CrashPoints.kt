@@ -12,6 +12,12 @@ package org.medianexus.music.downloads
  * `renamed` (moved to its own name; the folder not yet synced), `placed` (the folder synced;
  * not yet marked), `append-half` (half of the mark's line written to the log),
  * `appended` (the mark on the disk, not yet in memory).
+ *
+ * And in the list being written whole (every two hundred marks or so): `compact-written` (the
+ * new list in a file of its own, synced), `compact-aside` (the old list renamed to the
+ * backup: no list at its own name), `compact-placed` (the new list at its name; the folder
+ * not yet synced, the log still whole), `compact-emptied` (the log cut to nothing, not yet
+ * synced).
  */
 object CrashPoints {
     @Volatile var at: ((String) -> Unit)? = null
