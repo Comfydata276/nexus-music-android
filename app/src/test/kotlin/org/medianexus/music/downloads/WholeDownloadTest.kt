@@ -149,6 +149,19 @@ class WholeDownloadTest {
         assertTrue(catalogue.dir.listFiles()!!.none { it.name.contains("s1") })
     }
 
+    /** A real library's figure for how long a song runs can be out (and an MP3 with no header
+     *  to say is only estimated by the phone): a file that is exactly the length the server
+     *  stated and the library gives is whole all the same, and must not be refused. */
+    @Test
+    fun aWholeOriginalIsNotRefusedBecauseTheLibraryHasItsRunningTimeWrong() {
+        val wrong = asThree().copy(duration = 30)
+        library["s1"] = wrong
+        server.handler = { GatedServer.file(it, three, "v1") }
+        fetcher().fetch(wrong, flac, url())
+        assertArrayEquals(three, File(catalogue.dir, "s1.flac").readBytes())
+        assertEquals(three.size.toLong(), catalogue.entry("s1")?.bytes)
+    }
+
     @Test
     fun aShortAnswerThatAgreesWithItselfIsNotTheSongTheLibraryHas() {
         // The answer is 10,000 bytes and says so; the library says the song is longer, and

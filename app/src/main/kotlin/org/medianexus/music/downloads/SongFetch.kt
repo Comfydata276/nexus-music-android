@@ -402,7 +402,14 @@ class SongFetch(
         // A conversion comes with no length: how long it runs is the only word on whether it
         // is whole, so it must say.
         if (form.converted && seen.durationUs <= 0) throw DownloadFailure("The download was cut short.", again = true)
-        if (seen.durationUs > 0 && !runsAsLongAs(song, seen.durationUs)) {
+        // An original that is the length the server stated and the length the library gives
+        // is the server's file, whole. If the container's own reckoning of how long it runs
+        // differs from the library's then, one of those two figures is rough (an MP3 with no
+        // header to say is only estimated; a library can be out), and that is no reason to
+        // refuse a file known to be complete. So how long it runs decides only where the
+        // lengths can't: a conversion, or a library that gives no size.
+        val wholeByLength = !form.converted && song.size > 0 && song.size == bytes && (arrived.said < 0 || arrived.said == bytes)
+        if (!wholeByLength && seen.durationUs > 0 && !runsAsLongAs(song, seen.durationUs)) {
             if (!newer() || !runsAsLongAs(song, seen.durationUs) || (!form.converted && song.size > 0 && song.size != bytes)) {
                 throw DownloadFailure(
                     if (seen.durationUs < song.duration * 1_000_000L) "The download was cut short." else "The server sent a different file from the one in its library.",
