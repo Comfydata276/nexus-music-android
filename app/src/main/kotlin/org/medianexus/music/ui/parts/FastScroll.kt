@@ -23,6 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -33,12 +34,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import org.medianexus.music.ui.theme.Theme
 import kotlin.math.roundToInt
 
@@ -50,9 +56,10 @@ const val FAST_SCROLL_FROM = 60
  * Artists), made of what Compose gives. It shows at the right edge while the list moves, and
  * can then be dragged: the list follows the finger, a bubble beside it saying where in the
  * list that is (`label` of the item under it: a letter, or a month and year for a list in the
- * order songs were added). Hidden again a moment after the list comes to rest, and while
- * hidden it leaves the edge to the list. For a screen reader the list scrolls as any list
- * does; the handle is for a finger only.
+ * order songs were added). Hidden again a moment after the list comes to rest. Only the
+ * handle itself takes touches, and only while it shows: the rest of the edge, and all of it
+ * while hidden, is the list's. For a screen reader it is a position in the list that moves
+ * up and down in steps, saying where it is as the bubble does.
  *
  * `count` items of the list, from item `first` of the lazy list (what comes before them, a
  * header, isn't moved through).
@@ -76,11 +83,14 @@ fun BoxScope.FastScroll(state: LazyGridState, first: Int, count: Int, label: (In
 private fun BoxScope.Handle(at: Float, moving: Boolean, count: Int, scrollTo: suspend (Int) -> Unit, label: (Int) -> String?) {
     val colors = Theme.colors
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
     var height by remember { mutableFloatStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
     var shown by remember { mutableStateOf(false) }
-    // Where the finger has taken it (0 to 1), while dragging.
+    // Where the finger has taken it (0 to 1), while dragging; and each place it was taken to,
+    // numbered, for the list to follow (kept after the finger lifts, so the last is applied).
     var target by remember { mutableFloatStateOf(-1f) }
+    var goTo by remember { mutableStateOf(0 to -1f) }
     val labelOf by rememberUpdatedState(label)
     val thumb = with(density) { THUMB.toPx() }
     // Shown while the list moves or the handle is held, and for a moment after.
@@ -92,55 +102,82 @@ private fun BoxScope.Handle(at: Float, moving: Boolean, count: Int, scrollTo: su
     }
     // The list follows the finger: only to the latest place, however fast it moves.
     LaunchedEffect(count) {
-        snapshotFlow { target }.collectLatest { if (it >= 0f) scrollTo((it * (count - 1)).roundToInt().coerceIn(0, count - 1)) }
+        snapshotFlow { goTo }.collectLatest { (_, to) -> if (to >= 0f) scrollTo((to * (count - 1)).roundToInt().coerceIn(0, count - 1)) }
     }
     val alpha by animateFloatAsState(if (shown) 1f else 0f, label = "fast scroll")
     val fraction = if (dragging && target >= 0f) target else at
     val top = (fraction * (height - thumb)).coerceAtLeast(0f)
+    val topNow by rememberUpdatedState(top)
+    // `y` is down the whole edge, not the handle (which moves with the finger).
     fun place(y: Float) {
         if (height <= thumb) return
         target = ((y - thumb / 2) / (height - thumb)).coerceIn(0f, 1f)
+        goTo = (goTo.first + 1) to target
     }
+    val row = (fraction * (count - 1)).roundToInt().coerceIn(0, count - 1)
+    // The edge itself takes no touches: a strip over the list would take the taps meant for
+    // the rows beneath it (their "…" above all). It only measures the height to move in.
     Box(
         Modifier
             .align(Alignment.TopEnd)
             .fillMaxHeight()
             .width(TOUCH)
-            .onSizeChanged { height = it.height.toFloat() }
-            .semantics { hideFromAccessibility() }
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    // Hidden, the edge is the list's: the touch goes through.
-                    if (!shown) return@awaitEachGesture
-                    down.consume()
-                    dragging = true
-                    place(down.position.y)
-                    while (true) {
-                        val change = awaitPointerEvent().changes.firstOrNull() ?: break
-                        if (!change.pressed) break
-                        change.consume()
-                        place(change.position.y)
-                    }
-                    dragging = false
-                    target = -1f
-                }
-            },
+            .onSizeChanged { height = it.height.toFloat() },
     ) {
         Box(
             Modifier
                 .align(Alignment.TopEnd)
                 .offset { IntOffset(0, top.roundToInt()) }
-                .padding(end = 4.dp)
-                .alpha(alpha)
-                .width(if (dragging) 8.dp else 5.dp)
+                .width(TOUCH)
                 .height(THUMB)
-                .clip(RoundedCornerShape(4.dp))
-                .background(if (dragging) colors.accentBright else colors.muted),
-        )
+                // For a screen reader, a position in the list that is moved up and down in
+                // steps, saying where it is as the bubble does.
+                .semantics {
+                    progressBarRangeInfo = ProgressBarRangeInfo(row.toFloat(), 0f..(count - 1).toFloat())
+                    stateDescription = labelOf(row) ?: "${row + 1}"
+                    setProgress { value ->
+                        val to = value.roundToInt().coerceIn(0, count - 1)
+                        scope.launch { scrollTo(to) }
+                        true
+                    }
+                }
+                // Only the handle takes touches, and only while it shows.
+                .then(
+                    if (!shown && !dragging) Modifier else Modifier.pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+                            dragging = true
+                            var y = topNow + down.position.y
+                            place(y)
+                            while (true) {
+                                val change = awaitPointerEvent().changes.firstOrNull() ?: break
+                                // (The last movement too, on lifting.)
+                                y += change.positionChange().y
+                                change.consume()
+                                place(y)
+                                if (!change.pressed) break
+                            }
+                            dragging = false
+                            target = -1f
+                        }
+                    },
+                ),
+        ) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 4.dp)
+                    .alpha(alpha)
+                    .width(if (dragging) 8.dp else 5.dp)
+                    .height(THUMB)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (dragging) colors.accentBright else colors.muted),
+            )
+        }
     }
     // The bubble: where in the list the handle is.
-    val text = if (dragging) labelOf((fraction * (count - 1)).roundToInt().coerceIn(0, count - 1)) else null
+    val text = if (dragging) labelOf(row) else null
     if (text != null) {
         Box(
             Modifier

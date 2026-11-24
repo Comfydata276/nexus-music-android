@@ -1776,7 +1776,11 @@ How it is built (M3a, finding music):
   phone put liked songs first.
 - **Long lists have a fast-scroll handle** (`ui/parts/FastScroll`, Compose only): shown while
   the list moves, draggable then, a bubble with the letter of the sort, the month songs were
-  added, the year or the place; hidden, it leaves the edge to the list.
+  added, the year or the place. Only the handle itself takes touches, and only while it
+  shows: the edge it moves in is the list's (a row's "…" under it opens), and all of it while
+  hidden. A drag's last movement is applied before the release. For TalkBack it is an
+  adjustable position in the list (up and down in steps of a twentieth), saying the bubble's
+  label.
 - **Sorted by date added** (and the Songs page's own order), a row shows its date where the
   length goes, as Windows' date-added column writes it (Today, Yesterday, "3 Mar 2024").
 - **In large type** (font scale 1.3 and up) a title on the Songs page may take two lines.
