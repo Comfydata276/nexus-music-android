@@ -23,7 +23,12 @@ import org.medianexus.music.store.Settings
  * levelling values the library copy has for songs that came without them).
  */
 @OptIn(UnstableApi::class)
-class PlayerSound(private val scope: CoroutineScope, private val work: CoroutineDispatcher = Dispatchers.Default) {
+class PlayerSound(
+    private val scope: CoroutineScope,
+    private val work: CoroutineDispatcher = Dispatchers.Default,
+    /** Log what the processor costs, every half minute (debug builds). */
+    logCost: Boolean = org.medianexus.music.BuildConfig.DEBUG,
+) {
     /** Levelling values from the phone's copy of the library, for the songs the player holds
      *  that came without their own (a download kept before its song had them). They are the
      *  account's whose copy they came from: gone the moment another account takes over.
@@ -57,6 +62,25 @@ class PlayerSound(private val scope: CoroutineScope, private val work: Coroutine
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
             .setAudioProcessors(arrayOf<AudioProcessor>(processor) + after)
             .build()
+
+    init {
+        // Debug builds say what the processor costs, as a share of the time the sound it
+        // processed lasts (TESTING.md, "Sound and lyrics").
+        if (logCost) scope.launch {
+            var sound = 0L
+            var busy = 0L
+            while (true) {
+                kotlinx.coroutines.delay(30_000)
+                val s = processor.soundNanos
+                val b = processor.busyNanos
+                if (s > sound) {
+                    android.util.Log.d("NexusSound", "processed %.1f s of sound in %.1f ms: %.3f%% of the time".format((s - sound) / 1e9, (b - busy) / 1e6, (b - busy) * 100.0 / (s - sound)))
+                }
+                sound = s
+                busy = b
+            }
+        }
+    }
 
     /** The settings or shuffle may have changed: a new value for the processor if they have. */
     fun update(settings: Settings, shuffled: Boolean) {

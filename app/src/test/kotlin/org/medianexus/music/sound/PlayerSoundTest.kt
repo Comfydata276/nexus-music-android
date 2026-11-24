@@ -36,7 +36,7 @@ class PlayerSoundTest {
 
     @Test
     fun the_fallback_values_are_the_accounts_and_go_with_it() = runTest {
-        val sound = PlayerSound(this, StandardTestDispatcher(testScheduler))
+        val sound = PlayerSound(this, StandardTestDispatcher(testScheduler), logCost = false)
         val first = Any()
         val second = Any()
         sound.account(first)

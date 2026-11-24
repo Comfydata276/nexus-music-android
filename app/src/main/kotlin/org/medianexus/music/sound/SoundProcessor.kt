@@ -12,6 +12,7 @@ import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import org.medianexus.music.BuildConfig
 import org.medianexus.music.net.ReplayGain
 import org.medianexus.music.net.Song
 import org.medianexus.music.playback.QueuePlayer
@@ -153,14 +154,18 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     private val window = Timeline.Window()
     private val periodHolder = Timeline.Period()
 
-    /** Frames that have been through it: for tests, which show it was left out. */
-    @Volatile
+    /** Frames that have been through it (read by tests, after the fact). */
     var framesProcessed = 0L
         private set
 
-    /** Time spent processing them, in nanoseconds: what it costs (debug builds log it). */
+    /** Debug builds only: the time spent processing, and how long the sound processed lasts,
+     *  in nanoseconds (logged as what it costs: see PlayerSound). */
     @Volatile
     var busyNanos = 0L
+        private set
+
+    @Volatile
+    var soundNanos = 0L
         private set
 
     override fun onConfigure(inputAudioFormat: AudioFormat): AudioFormat {
@@ -221,7 +226,7 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
-        val began = System.nanoTime()
+        val began = if (BuildConfig.DEBUG) System.nanoTime() else 0L
         val s = sound
         if (s !== lastSound) {
             lastSound = s
@@ -285,7 +290,10 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         inputBuffer.position(inputBuffer.position() + frames * frameBytes)
         out.flip()
         framesProcessed += frames
-        busyNanos += System.nanoTime() - began
+        if (BuildConfig.DEBUG) {
+            busyNanos += System.nanoTime() - began
+            soundNanos += frames * 1_000_000_000L / rate
+        }
     }
 
     // ---- Inside ---------------------------------------------------------------------------
