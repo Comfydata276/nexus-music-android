@@ -139,4 +139,36 @@ class OrderOfChoicesTest {
         controller.sendCustomCommand(androidx.media3.session.SessionCommand(AppActions.PLAY, android.os.Bundle.EMPTY), again)
         until("the tap played") { service.inside().player.queue.current()?.id == "late0" }
     }
+
+    @Test
+    fun aPlayWaitingForTheSavedQueueIsDroppedByAStopMeanwhile() {
+        val inside = service.inside()
+        // Something loaded to resume, paused.
+        val songs = List(3) { Song(id = "q$it", title = "Q $it") }
+        app.graph.player.play(songs, 0, "A list")
+        until("the list played") { inside.player.queue.current()?.id == "q0" }
+        controller.pause()
+        settle()
+        val gate = CompletableDeferred<Unit>()
+        service.resumptionWaited = { gate.await() }
+        val headset = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            "com.example.car", 4_321, 10_123, androidx.media3.session.MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, android.os.Bundle.EMPTY, true,
+        )
+        @Suppress("DEPRECATION")
+        val resuming = inside.callback.onPlaybackResumption(inside.session, headset, true)
+        settle()
+        // While it waits: Stop.
+        controller.stop()
+        settle()
+        gate.complete(Unit)
+        until("the resumption answered") { resuming.isDone }
+        assertEquals("a Stop was overtaken by the Play it came after", true, runCatching { resuming.get() }.isFailure)
+        // With nothing in between, the same Play resumes.
+        service.resumptionWaited = {}
+        @Suppress("DEPRECATION")
+        val again = inside.callback.onPlaybackResumption(inside.session, headset, true)
+        until("the second resumption answered") { again.isDone }
+        assertEquals("q0", again.get().mediaItems.firstOrNull()?.mediaId?.let { inside.player.queue.current()?.id })
+        assertFalse(inside.exo.playWhenReady && inside.exo.isPlaying)
+    }
 }

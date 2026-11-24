@@ -612,6 +612,10 @@ class PlaybackService : MediaLibraryService() {
         return true
     }
 
+    /** Tests only: what a Play waiting for the saved queue does once it has waited (a gate). */
+    @androidx.annotation.VisibleForTesting
+    internal var resumptionWaited: suspend () -> Unit = {}
+
     /** Playing could not be started from where it was asked for: said on the session, in
      *  the player's error line, until the next start that works (see [cannotStart]). */
     private var cantStart = false
@@ -2140,18 +2144,27 @@ class PlaybackService : MediaLibraryService() {
             // gives way to any.
             val request = if (isForPlayback) requests.begin(controller, start = null) else null
             if (request != null) holdForeground(why = "for Play with nothing loaded")
+            // A Play: its place in the order of choices is taken as it arrives; if anything
+            // takes a later one while the saved queue is waited for (a Stop, a choice), it is
+            // dropped (order of choices).
+            val place = if (isForPlayback) Choices.take() else null
             return scope.future {
                 try {
-                    resumption(controller, isForPlayback)
+                    resumption(controller, isForPlayback, place)
                 } finally {
                     request?.let(::requestEnded)
                 }
             }
         }
 
-        private suspend fun resumption(controller: MediaSession.ControllerInfo, isForPlayback: Boolean): MediaItemsWithStartPosition {
+        private suspend fun resumption(controller: MediaSession.ControllerInfo, isForPlayback: Boolean, place: Long?): MediaItemsWithStartPosition {
             val era = withTimeoutOrNull(RESUME_WAIT_MILLIS) { eraOrNull() }
             val ready = era != null && withTimeoutOrNull(RESUME_WAIT_MILLIS) { era.restoring.await() } != null && era === this@PlaybackService.era
+            resumptionWaited()
+            if (place != null && !Choices.stands(place)) {
+                main.post { if (holding) standDown() }
+                throw UnsupportedOperationException("Overtaken by a newer choice")
+            }
             if (!isForPlayback) {
                 val item = (if (ready) player.currentItem() else null) ?: throw UnsupportedOperationException("Nothing to resume")
                 return MediaItemsWithStartPosition(listOf(item), 0, exo.currentPosition)
