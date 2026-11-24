@@ -141,6 +141,7 @@ private fun Sound(graph: Graph) {
     SettingRow(title, detail, stacked = true) {
         Choices(QUALITY_NAMES.map { stringResource(it) }, at, title) { chosen -> graph.settings.update { it.copy(bitrate = QUALITIES[chosen]) } }
     }
+    VolumeAndTone(graph)
 }
 
 @Composable
@@ -244,7 +245,7 @@ private fun About(onDiagnostics: () -> Unit, onLicences: () -> Unit) {
  * row is narrow. `nested`: it belongs to the setting above, set in beside a rule.
  */
 @Composable
-private fun SettingRow(
+internal fun SettingRow(
     title: String,
     detail: String,
     nested: Boolean = false,
@@ -281,7 +282,7 @@ private fun SettingRow(
 
 /** Names a run of related settings within a section (Windows' `SettingHeading`). */
 @Composable
-private fun SettingHeading(text: String) {
+internal fun SettingHeading(text: String) {
     Box(Modifier.fillMaxWidth().heightIn(min = 52.dp), contentAlignment = Alignment.BottomStart) {
         BasicText(text, Modifier.padding(bottom = 6.dp).semantics { heading() }, style = Theme.type.heading.copy(color = Theme.colors.text))
     }
@@ -290,7 +291,7 @@ private fun SettingHeading(text: String) {
 /** Windows' segmented choices; on a narrow phone, with large type, they scroll sideways
  *  rather than squeeze. */
 @Composable
-private fun Choices(options: List<String>, selected: Int, label: String, onChoose: (Int) -> Unit) {
+internal fun Choices(options: List<String>, selected: Int, label: String, onChoose: (Int) -> Unit) {
     Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
         Segmented(options, selected, onChoose, label)
     }

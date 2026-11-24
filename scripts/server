@@ -19,6 +19,9 @@
 #                             told) in a folder of its own, for measuring the phone's copy of
 #                             the library, its search and the Songs page; --remove (or
 #                             remove) takes it away again
+#   scripts/server --instance sound sounds [remove]   songs for levelling, lyrics, the equaliser
+#   scripts/server --instance sound soundcheck eq|level <recording> ...
+#                             measure a recording of them against what the settings should do
 #   scripts/server sweepcheck <recording>
 #                             find gaps in a recording of the "Continuous Sweep" album
 #   scripts/server joincheck <recording>[,<recording-2>...] <song file>...
@@ -143,12 +146,28 @@ case "${1:-}" in
     arg="${2:-80}"; [ "$arg" = "--remove" ] && arg=remove
     rig_run python3 /work/tools/library/manyalbums.py "$base" "$lib_inside" "$arg"
     ;;
+  sounds)
+    # The sound milestone's songs: levelling values, lyrics, tones (tools/library/sounds.py).
+    # For an instance of its own (scripts/server --instance sound ...), not the ordinary one.
+    [ -n "$instance" ] || die "sounds: on an instance of its own (--instance sound), so the ordinary hundred songs stay as they are"
+    container_running "$name" || die "the test server isn't running (scripts/server --instance $instance start)"
+    rig_run python3 /work/tools/library/sounds.py "$base" "$lib_inside" ${2:+"$2"}
+    ;;
   biglibrary)
     # Tens of thousands of distinct songs in half-kilobyte files (tools/library/biglibrary.py).
     container_running "$name" || die "the test server isn't running (scripts/server start)"
     arg="${2:-50000}"; [ "$arg" = "--remove" ] && arg=remove
     case "$arg" in --*) arg=50000; shift 1 ;; *) shift 2 || shift 1 ;; esac
     rig_run python3 /work/tools/library/biglibrary.py "$base" "$lib_inside" "$arg" "$@"
+    ;;
+  soundcheck)
+    # Measure a recording against what the sound settings should do to the songs of
+    # "sounds" (tools/library/soundcheck.py): eq <recording> <six gains> [preamp], or
+    # level <recording> <title,title,...> <quiet|normal|loud> <auto|song|album>.
+    what="${2:?soundcheck: eq or level?}"; file="${3:?soundcheck: which recording?}"; [ -f "$file" ] || die "soundcheck: no such file: $file"
+    [ -f "$library/sounds.json" ] || die "soundcheck: no sounds.json in $library (scripts/server --instance $instance sounds)"
+    shift 3
+    rig_run sh -c 'w=$0; lib=$1; shift; cat > /tmp/recording.wav && python3 /work/tools/library/soundcheck.py "$w" /tmp/recording.wav "$lib/sounds.json" "$@"' "$what" "$lib_inside" "$@" < "$file"
     ;;
   sweepcheck)
     # Look for gaps in a recording of the "Continuous Sweep" album (tools/library/sweepcheck.py).

@@ -87,6 +87,8 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var graph: Graph
     private lateinit var exo: ExoPlayer
     private lateinit var player: QueuePlayer
+    /** Levelling, the equaliser and mono: one processor in the player's sink (see SoundProcessor). */
+    private val sound by lazy { org.medianexus.music.sound.PlayerSound(scope) }
     private lateinit var session: MediaLibrarySession
     private val scope = MainScope()
     private val main = Handler(Looper.getMainLooper())
@@ -246,6 +248,11 @@ class PlaybackService : MediaLibraryService() {
             mayPrepare = { !requests.isDropped(session.controllerForCurrentRequest) },
         )
         exo.addListener(watcher)
+        exo.addListener(sleepWatch)
+        // The sleep timer: the time is up (told on another thread), or the song it was waiting
+        // for has ended (the player pauses at the end of each song while it waits).
+        graph.sleep.player = SleepTimer.Sleeper { main.post(::sleepNow) }
+        scope.launch { graph.sleep.state.collect { exo.pauseAtEndOfMediaItems = it == SleepTimer.State.EndOfSong } }
         // Debug builds log what the player does (track joins, underruns, errors): how
         // gapless joins and seeking are checked on the emulator, which can't record sound.
         if (BuildConfig.DEBUG) exo.addAnalyticsListener(EventLogger("NexusPlayer"))
@@ -292,6 +299,8 @@ class PlaybackService : MediaLibraryService() {
         // Streaming quality changed in Settings: the song playing switches to it at once,
         // from where it is, as on Windows (`reload_current`).
         scope.launch { graph.settings.state.map { it.bitrate }.distinctUntilChanged().drop(1).collect { qualityChanged() } }
+        // The sound settings reach the sound processor as one value, heard at once.
+        scope.launch { graph.settings.state.collect { sound.update(it, player.queue.shuffle) } }
         main.postDelayed(ticker, TICK_MILLIS)
         // The server found to be out of reach, with a song chosen that isn't on the phone:
         // passed over then, not after the stream's own tries have run their course.
@@ -683,6 +692,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         if (::graph.isInitialized) graph.playing = false
+        if (::graph.isInitialized) graph.sleep.player = null
         main.removeCallbacksAndMessages(null)
         if (::ahead.isInitialized) ahead.release()
         // Handed to the app's writer, which finishes it whatever becomes of this service.
@@ -695,9 +705,26 @@ class PlaybackService : MediaLibraryService() {
         super.onDestroy()
     }
 
+    /** The sleep timer's time is up: the music pauses, where it is, with the queue as it was. */
+    private fun sleepNow() {
+        if (!exo.playWhenReady) return
+        player.pause()
+        graph.toasts.show(getString(R.string.sleep_paused))
+    }
+
+    /** "End of this song": the player paused at its end by itself (it was asked to), which is
+     *  the sleep timer done. */
+    private val sleepWatch = object : Player.Listener {
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && graph.sleep.songEnded()) {
+                graph.toasts.show(getString(R.string.sleep_paused))
+            }
+        }
+    }
+
     /**
-     * Where the audio processors for crossfade, levelling, the equaliser and mono will go:
-     * `DefaultRenderersFactory.buildAudioSink` with them in its chain.
+     * The renderers: Media3's, with the MP3 trim put right and the sound processor in the
+     * sink. (Crossfade, which needs two songs sounding at once, is not here.)
      */
     private fun renderers() = object : DefaultRenderersFactory(this) {
         override fun buildAudioRenderers(
@@ -716,14 +743,11 @@ class PlaybackService : MediaLibraryService() {
             if (at >= 0) out[at] = GaplessAudioRenderer(context, codecAdapterFactory, mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener, audioSink) { graph.diagnostics.note(it) }
         }
 
+        // Media3's sink with the sound processor in it, and after it, in debug builds only, a
+        // tap that can write what goes to the speaker to a file (see DebugAudio); none in a
+        // release build.
         override fun buildAudioSink(context: android.content.Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean) =
-            androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                .setEnableFloatOutput(enableFloatOutput)
-                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                // Debug builds only: a tap that can write what goes to the speaker to a file
-                // (see DebugAudio); none in a release build.
-                .setAudioProcessors(DebugAudio.processors(context))
-                .build()
+            sound.sink(context, enableFloatOutput, enableAudioTrackPlaybackParams, DebugAudio.processors(context))
     }
 
     // ---- Who is signed in ---------------------------------------------------------------------
@@ -1033,6 +1057,11 @@ class PlaybackService : MediaLibraryService() {
         updateButtons()
         save()
         aheadNow()
+        // Auto levelling goes by song when shuffled; and the songs held now may need their
+        // levelling values from the library copy.
+        sound.update(graph.settings.value, queue.shuffle)
+        lyricsAhead()
+        sound.songsHeld(List(exo.mediaItemCount) { exo.getMediaItemAt(it) }.mapNotNull { (it.localConfiguration?.tag as? QueuePlayer.SongTag)?.song }, era?.account?.copy?.state?.value)
     }
 
     /**
@@ -2333,6 +2362,22 @@ class PlaybackService : MediaLibraryService() {
         }
         val availability = era?.account?.availability
         ahead.want(if (availability == null) emptyList() else FetchAhead.upcoming(player.queue, count) { availability.isDownloaded(it.id) || availability.isKept(it) })
+    }
+
+    /** The lyrics of the song playing and the next few are fetched ahead (see LyricsBook), as
+     *  sparingly as songs are: five on Wi-Fi, the next one on mobile data, none with Data
+     *  Saver on or offline (Windows fetches the next five). */
+    private fun lyricsAhead() {
+        val account = era?.account ?: return
+        val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+        val count = when {
+            graph.watch.offline -> return
+            connectivity?.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED -> return
+            connectivity?.isActiveNetworkMetered == true -> FetchAhead.ON_MOBILE_DATA
+            else -> 5
+        }
+        val now = player.queue.current() ?: return
+        account.lyrics.ahead(listOf(now.id) + FetchAhead.upcoming(player.queue, count) { false })
     }
 
     // ---- A call in progress -----------------------------------------------------------------

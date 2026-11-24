@@ -100,6 +100,8 @@ fun NowPlaying(onClose: () -> Unit) {
     // is passed on to the page from here.)
     val activity = androidx.activity.compose.LocalActivity.current
     var closing by remember { mutableStateOf(false) }
+    // The lyrics in the cover's place (Windows' lyrics button), until turned off again.
+    var lyrics by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     PredictiveBackHandler(enabled = ui.nowPlaying && !ui.queueOpen) { progress ->
         try {
             progress.collect { backProgress = it.progress }
@@ -196,8 +198,9 @@ fun NowPlaying(onClose: () -> Unit) {
                     // Turned on its side: the cover beside the controls, which scroll if large
                     // type makes them taller than a short screen.
                     Row(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(32.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Art(now.coverArt, (tall - 16.dp).coerceAtMost(wide * 0.45f))
-                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { Controls(showAlbum = !fromAlbum, queueButton = false) }
+                        val side = (tall - 16.dp).coerceAtMost(wide * 0.45f)
+                        if (lyrics) LyricsPanel(now, Modifier.size(side)) else Art(now.coverArt, side)
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { Controls(showAlbum = !fromAlbum, queueButton = false, lyrics = lyrics, onLyrics = { lyrics = !lyrics }) }
                     }
                 } else {
                     // The cover takes what the controls leave; if large type leaves it too
@@ -209,8 +212,8 @@ fun NowPlaying(onClose: () -> Unit) {
                         verticalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Spacer(Modifier.height(8.dp))
-                        Art(now.coverArt, side)
-                        Column(Modifier.padding(top = 16.dp, bottom = 8.dp)) { Controls(showAlbum = !fromAlbum) }
+                        if (lyrics) LyricsPanel(now, Modifier.fillMaxWidth().height(side)) else Art(now.coverArt, side)
+                        Column(Modifier.padding(top = 16.dp, bottom = 8.dp)) { Controls(showAlbum = !fromAlbum, lyrics = lyrics, onLyrics = { lyrics = !lyrics }) }
                     }
                 }
             }
@@ -228,7 +231,7 @@ private fun Art(cover: String, side: Dp) {
 }
 
 @Composable
-private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true) {
+private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true, lyrics: Boolean = false, onLyrics: () -> Unit = {}) {
     val ui = LocalUi.current
     val res = androidx.compose.ui.platform.LocalResources.current
     val player = ui.player
@@ -338,10 +341,12 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
             iconSize = 24.dp,
         )
     }
-    if (queueButton) {
-        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
-            IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
-        }
+    // The sleep timer and the lyrics (Windows' player bar has both), then the queue.
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        SleepButton()
+        IconButton(R.drawable.ic_mic_vocal, stringResource(if (lyrics) R.string.hide_lyrics else R.string.lyrics), onLyrics, active = lyrics)
+        Spacer(Modifier.weight(1f))
+        if (queueButton) IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
     }
 }
 

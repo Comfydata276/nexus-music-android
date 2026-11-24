@@ -243,6 +243,9 @@ class AccountGraph(
     /** The account's downloads; null where nothing of Android is to hand (tests). */
     val downloads: Downloads? = wiring?.downloads?.invoke(this)
 
+    /** Lyrics kept on the phone, fetched ahead, and kept with the downloads (see LyricsBook). */
+    val lyrics = org.medianexus.music.lyrics.LyricsBook(File(account.dirs.cache, "lyrics"), File(account.dirs.data, "lyrics"), { api.lyrics(it) }, scope, io, offline = { reach.value.offline })
+
     init {
         library.likedShown = likes::songsOf
         library.playlistShown = playlists::fetched
@@ -271,6 +274,15 @@ class AccountGraph(
         // server can be asked: now, and
         // whenever the app stops being offline (the server back, or offline mode switched off
         // by hand, which starts the sender just as the server returning does).
+        // A downloaded song has its lyrics with no signal: fetched as it arrives, and for one
+        // already on the phone, when the server can next be asked (as sparingly as downloads:
+        // with Wi-Fi only on, on Wi-Fi).
+        downloads?.let { d ->
+            scope.launch {
+                kotlinx.coroutines.flow.combine(d.state.map { it.downloaded.keys }.distinctUntilChanged(), reach.map { it.offline }.distinctUntilChanged()) { ids, _ -> ids }
+                    .collect { ids -> lyrics.downloaded(ids) { !settings.value.downloadWifiOnly || wiring?.network?.value?.unmetered != false } }
+            }
+        }
         scope.launch {
             held.open()
             reach.map { it.offline }.distinctUntilChanged().collect { offline -> if (!offline) flush() }

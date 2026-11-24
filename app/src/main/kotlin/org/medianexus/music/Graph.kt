@@ -138,6 +138,10 @@ class Graph(context: Context) {
     /** What the server last said in refusing something asked from the car (see [Refusals]). */
     val refusals = Refusals()
 
+    /** The sleep timer: the app's, not a screen's, so it carries on with the screens closed
+     *  (see SleepTimer); the playback service pauses the music when it says. */
+    val sleep = org.medianexus.music.playback.SleepTimer(scope)
+
     /** Whether a server on the home network can be reached (Android 17's permission). */
     val localAccess = LocalAccess(context.applicationContext, session, settings, scope)
 
