@@ -833,7 +833,10 @@ away", "verified and in place", "failed its checks"). For the hard cases: `--es 
 stands); `--es like <song id>` and `--es unlike <song id>` are its heart; and `--es killat
 <moment>` has the app kill itself (SIGKILL) at a named moment of a download's last steps
 (`CrashPoints`: `last-write`, `arrived`, `verified`, `renamed`, `placed`, `append-half`,
-`appended`; `never` to stop).
+`appended`, and in the catalogue's writing of its list whole `compact-written`,
+`compact-aside`, `compact-placed`, `compact-emptied`; `never` to stop). `--es inspect
+<file>` reads a file in the app's cache folder through, as a download is checked, and says
+how long it took and how much the heap grew.
 
 Ending the app mid-download: `am kill` does nothing while a user-initiated job is running
 (Android ranks the app as perceptible, oom adj 201). To kill it as the low-memory killer
@@ -1001,6 +1004,106 @@ APK 6,112,634 bytes (before: 6,062,082); cold start 511 ms median, 506 to 541 (5
 100-song playlist 8.99% slow frames (10.07%). One run each: about 4 MB more memory, which is
 within what two runs of one build have differed by here, and not shown to be the hardening's.
 
+### The second hardening of the offline engine: what was checked
+
+The reviewer, asked again after the first hardening, still answered no. What was changed is
+in `docs/DESIGN.md` ("What the second hardening of the offline engine decided", and where
+each thing belongs); this is how it was checked. Reports are under
+`~/.cache/nexus-music-android/reports/offline-hardening-2/`, pictures under
+`shots/offline-hardening-2/`.
+
+**Tests that fail on the code as shipped (0.2.0).** Run against a checkout of that code
+where they compile against it: the four of `PlaysToTheEndTest` at download (a FLAC with good
+headers and damaged sound marked Done; a conversion that stopped part-way, of a song with
+no length, marked Done; a file nothing on the phone decodes marked Done; an original with
+no size and no length refused), the four of `HeldChangesTest` for the sender, the five new
+ones of `CarColdTest`, the two of `WholeDownloadTest` for a date as a validator, and the one
+of `ServerWatchTest` for a stale answer. The group and Cancel tests of `DownloadsTest` were
+run against a shim that did what the Downloads page did (four of six failed; the other two
+guard what already held), and the six of `OnTheDiskTest` and `HeldChangesTest` against the
+callers before they looked at whether a folder had been synced (all failed). The tests for
+Wi-Fi only, the room, Remove all, demotion, the re-check of old downloads and the phone's
+screens are of things the shipped code has no way to be asked, so they were not run against
+it. The decoder is asked of Android's own list of codecs as Robolectric stands in for it
+(`phoneDecoders`: AAC, FLAC, MP3, Opus, Vorbis, and not ALAC).
+
+Two tests that wait on real time (`PinnedCopyTest`, `SongReaderTest`) timed out once each
+with an emulator playing music on the same machine, and passed on being run again.
+
+**On the Android 16 emulator** (debug build unless said):
+
+| Check | What was seen | Where |
+|---|---|---|
+| Downloads marked by the earlier build | Installed over it: "32 marked whole by an earlier version were read through to the end; 0 were not whole" (46 and 0 on Android 17 and on Android 9), every entry then `"checked":1` | `smoke-android17.txt`, `smoke-android9.txt` |
+| **A file damaged in its audio on the server**, same length: a FLAC with 64 bytes changed inside a frame; an MP3 with 140 KiB of junk over its middle | Each fetched three times and listed as failed, "What arrived is damaged: it can't be read through to its end."; the other 17 songs of the two albums downloaded. The server's files put back, Retry failed downloaded both | `damaged-android16.txt` |
+| **The same MP3 damaged where it lies on the phone**, after it was marked, and played | The player gave no error: the reader stopped at 16.5 s and the player ran on in silence to 40.01 s. Having played to its end the file was read through: "one marked whole is damaged: it is no longer a download", "1 are fetched again", and its bytes were the server's again | the same |
+| **A downloaded FLAC with bytes changed inside a frame**, played | Played all 26.01 s with no error (Android's decoder plays on past the frame); read through at its end, demoted, fetched again, the server's bytes | the same |
+| Item 1: the album "Nordlys" (7 songs, downloaded whole; a playlist holds one of them and Liked songs another) removed by its button on the Downloads page | 51 downloads became 46; the album's page shows the two songs the other lists hold; "Morning mix" and Liked songs still downloaded whole. Pressed again: "Its songs stay downloaded: something else you've downloaded has them" | `item1-groups-android16.txt`; `01a` to `01f` |
+| Item 1: Cancel all with 49 songs of a list waiting (held in offline mode: at the emulator's speed nothing is waiting long enough otherwise) | On the way 49, then 0, and the list no longer among those downloaded whole; offline mode off and the app started again: nothing fetched | the same |
+| Item 5: Wi-Fi and mobile data both up, signed in at `10.0.2.2` (which both reach), bytes counted per interface (`/proc/net/dev`) | Default route on the Wi-Fi: 105.7 MB on `wlan0`, 0 on `eth0`. **Default route on mobile data, the Wi-Fi still connected** (its internet check made to fail, so Android prefers mobile data): 105.5 MB on `wlan0`, 13 KB on `eth0` (the app's ordinary requests). The first run of that showed 2.15 MB on `eth0`: the covers kept with the downloads, which now come by the unmetered network too | `item5-wifi-only-android16.txt` |
+| Item 5: the Wi-Fi marked metered just after a 100-song download was asked for (`cmd netpolicy set metered-network AndroidWifi true`) | "held WIFI", nothing downloaded, 7 KB on `wlan0` in the next five seconds; unmetered again: all 100 within ten seconds, on `wlan0` | the same |
+| Item 5: the Wi-Fi off, mobile data the only network | "held WIFI", `wlan0` unchanged, 13 KB on `eth0`; the Wi-Fi on again: all 100 on `wlan0` | the same |
+| Item 5: Remove all | The account's downloads folder holds `downloads.json` ("[]") and the emptied log, and nothing else | the same |
+| Item 6: a song that is neither downloaded nor kept, chosen through the probe 0.2 s into a cold start on a black hole (`scripts/slowlink hole`) | Buffering until the first check failed at 3.97 s, then "out of reach: passed over to place 29 of the queue" (the 28th is not on the phone either) and playing from its download at 4.14 s | `item6-pass-over-android16.txt` |
+| Item 7: a playlist downloaded and then deleted on the server; offline mode on | Library, Playlists lists it (the server's list no longer has it) and it opens; an artist opens as their albums on the phone, and one of those opens; Home's "Show all" is the albums on the phone | `item7-screens-android16.txt`; `07a` to `07g` |
+| Item 7: the Downloads page with 46, and with 276, waiting | The first five, "and 41 more waiting" ("and 271 more waiting"), Show all; Playlists and Albums straight after | `07h`, `07i`, `07j` |
+| **Killed at the worst moments, with more than 200 downloads** (a 330-song list, removed and asked for again each round, so that the catalogue's list is written whole under the kills): the seven moments of a download twice each, and the four of the list being written whole twice each (`compact-written`, `-aside`, `-placed`, `-emptied`) | 22 kills: marked but not whole on disk, 0 every time. As left by the four kinds of kill inside the writing: the old list and a 200-line log; no list at its own name, the backup and the log; the new list and the whole log; the new list and an empty log. Each read back as all 254 marks. Left to finish: 330 marked, **330 identical to the server's file byte for byte** | `kills-android16.txt`, `killrun2.sh`, `audit.py` |
+| The car check, the release build (6,250,842 bytes): online; the server stopped, cold; cold on a black hole | Online 48 passed, none failed. Stopped: `--mode offline` 25 and none, the whole check 47 and none. Black hole, cold: `--mode offline` 24 passed, none failed, one warning (below), three times, once with only 54 of the library's 330 songs on the phone; the whole check 46 and none | `carcheck-android16.txt`, and the JSON reports it names |
+
+**The warning that keeps `--mode offline` from 25 of 25 on a black hole.** In the seconds
+before the app knows the server is gone, the car is shown the kept library as it is shown
+online, so the kept list of playlists includes the test library's empty playlist ("No
+folder is empty": a warning, as it is online), and with songs missing from the phone the
+kept Home row lists albums that aren't on it. Opened in those seconds, such a folder waits
+to know (3.9 s was the slowest) and is then empty. Nothing failed: the check that failed
+before (a song chosen from another tab in the first four seconds) passes, and the case it
+was about is the row above (the song is passed over the moment the app knows).
+
+**What reading a file through costs** (`DebugControl --es inspect`, Android 16 emulator,
+debug build, three runs each; `check-times-android16.txt`):
+
+| File | Time | The app's heap grew by, at most |
+|---|---|---|
+| An MP3 with a 20 MB picture in its tag (26.7 MB, four minutes) | 138, 25 and 14 ms | 0.9 MB (the tag is stepped over) |
+| A ten-hour M4A (153 MB, 1.55 million samples) | 559, 329 and 318 ms | 68 MB (Media3 holds an MP4's sample tables in memory, as it does to play it; a five-minute song's are under a megabyte) |
+| A two-hour FLAC (778 MB) | 11.8, 11.7 and 11.5 s | 15 MB (it is searched for frames a byte at a time, and every frame's checksum worked out) |
+
+A debug build runs several times slower than a release one; these are the slow end.
+
+**Smoke** (`smoke-android17.txt`, `smoke-android9.txt`): on Android 17 and Android 9, the
+build installed over the earlier one's data: old downloads read through, an album
+downloaded, a kill half-way through a mark while a 100-song list arrived (the log's last
+line torn, nothing marked that wasn't whole, all 100 after a restart), a like held offline
+and unliked as offline mode went off (held 0, the server not liked), and on 17 Remove all
+(two files left in the folder). No crash of the app on either.
+
+**Measured** (release builds, Android 17, signed in, 46 songs downloaded, the 100-song
+playlist, `--keep`; this build and the one before this work, aef0cdc, on the same emulator
+and data the same hour; `measure-android17.json`, `measure-android17-before-aef0cdc.json`):
+APK 6,250,842 bytes (before: 6,217,014); cold start 564 ms median, 533 to 593 (595, 527 to
+627); idle 89.0 MB (82.9); playing 95.2 MB, 98.7 in the background (90.4, 94.0); the
+100-song playlist 9.86% slow frames (9.23%). One run each. About 5 MB more memory in each
+state, which is more than two runs of one build have differed by here and may be this
+work's; it was not tracked down.
+
+**What these runs found that the tests had not** (all put right, and described above): the
+covers of downloads coming over mobile data with Wi-Fi only on; a damaged download playing
+its whole stated length with no error, so that nothing could be hung on the player saying
+so; and a comment that said Android's FLAC decoder stops at a damaged frame, which it
+doesn't.
+
+**Rig notes.** `scripts/slowlink` does not slow or cut a transfer bound to a network (the
+job's, or the unmetered one with Wi-Fi only on): on the emulator a bound connection to
+`127.0.0.1` doesn't pass through adb's tunnel. To see Wi-Fi only by interface, sign in at
+`http://10.0.2.2:4533`, turn on `settings put global mobile_data_always_on 1`, and read
+`/proc/net/dev` (`wlan0` is the Wi-Fi, `eth0` mobile data). `cmd wifi set-connected-score`
+does not move the default route; dropping the Wi-Fi's own internet check does (`adb root`,
+`iptables -I OUTPUT -o wlan0 -p tcp --dport 80 -j DROP`, the same for 443, then the Wi-Fi off
+and on). `adb root` drops the tunnel to the test server: `scripts/emu adb reverse tcp:4533
+tcp:4533` puts it back. `scripts/server manyalbums --remove` leaves the genre "Paging test"
+listed with its songs until the server is told to forget its missing files (as `biglibrary
+--remove` does).
+
 ## The library on the phone, search and the Songs page (M3a)
 
 Debug builds answer to `DebugControl --es library say|memory|search|forget` (see
@@ -1097,6 +1200,27 @@ a phone); a real phone's speed; the first fetch over mobile data (only the rig's
 - **Real networks.** The server is one hop away with no delay. `scripts/emu adb emu
   network speed edge` and `... network delay gprs` can slow it; dropping the connection
   mid-song is `scripts/emu shell svc wifi disable; svc data disable`.
+- **Wi-Fi only on a real phone.** The emulator's Wi-Fi and mobile data are two virtual
+  interfaces that both reach the test server. Whether One UI gives the app the unmetered
+  network it asks for and keeps it up (its "switch to mobile data" setting, a home Wi-Fi
+  with no internet beyond it, a hotspot marked metered), and how quickly it says a network
+  has gone, are the phone's to show. Diagnostics says when Android would not say which
+  network is unmetered.
+- **Which files the real phone has no decoder for.** The check asks the phone's own list of
+  codecs; the emulator's is Google's. A Samsung phone has decoders an emulator hasn't (and
+  the reverse is possible), so which originals are downloaded converted will differ.
+- **The first user's existing downloads.** They are read through once by this build. The
+  test library's files all passed; a real library has files made by every encoder there has
+  ever been, and one that Media3's reader stumbles over, or a FLAC with a frame that fails
+  its checksum, will be taken away and fetched again (and listed as failed, with the
+  reason, if the server's copy is the same). Diagnostics says how many.
+- **What the car shows when a song is passed over.** The line is sent to every controller
+  as a non-fatal error; how Android Auto draws one, and for how long, is Google's.
+- **A power cut.** The kills here are of the process: the disk keeps everything the system
+  had been handed. Whether a file, a rename and a folder that were synced really outlast
+  the battery going is the phone's storage keeping its word, and can't be staged here.
+- **How long reading a file through takes on the phone**, and under a release build: the
+  emulator's storage is this machine's.
 - **Internet radio, Lidarr, the jam relay, sign-in through Authentik.** The test server
   has none of them.
 - **Performance on real hardware.** Start-up and frame times here compare builds, nothing

@@ -51,7 +51,7 @@ One Gradle module, `app`, package `org.medianexus.music`:
 | `store` | What's kept on the phone: the account, settings, cached pages, the library copy, covers, the downloads list, changes waiting for the server. |
 | `library` | Turns server answers into what screens show; search; likes; playlists. |
 | `playback` | The playback service, the queue, play reporting, Android Auto's browse tree and voice search. |
-| `downloads` | Offline downloads: the catalogue of what is downloaded (the mark that a download is whole), the whole-file fetcher, the engine on Media3's download manager, the job and service that keep it going, and the downloads laid out for browsing with no signal. |
+| `downloads` | Offline downloads: the catalogue of what is downloaded (the mark that a download is whole), the whole-file fetcher and the check that reads a file through, the engine on Media3's download manager, the job and service that keep it going, and the downloads laid out for browsing with no signal. |
 | `ui` | Compose: `theme`, `parts` (shared components), one package per screen. |
 
 Rules that hold everywhere:
@@ -316,18 +316,28 @@ How it is built (M1a):
   copy each song was opened from; the service puts its bit rate in the session's extras, and
   the line under the song ("FLAC · 48 kHz · 24-bit", or "MP3 · 160 kbps" for a conversion or
   a download saved smaller) says that, not what the downloads and settings would give now.
-- **A download that won't play** is not deleted: it is set aside for this run of the app
-  (`Availability.setAside`, Windows' `bad_downloads`), the person is told, and the song is
-  streamed. **Only for a failure that can be laid at that file**, met while it was the
-  download that was playing (`Recovery.laidAtTheFile`): it couldn't be read, it couldn't be
-  parsed, or it holds what this phone has no way to play. And **what is set aside is the
-  file**, not the song: its name and the modification time it had when it was marked whole
-  (kept in its catalogue entry, so asking is still never a look at the disk); downloaded
-  again, it has a fresh chance. A decoder that fell over or couldn't be had, or the sound
-  output failing, says nothing about the file: nothing is set aside, and the entry is made
-  ready again, once. Such failures are final at once: the player's retry rule used to take a
-  file it couldn't parse (Media3's `ParserException` is an `IOException`) for a dropped
-  connection and ask for it four more times, fifteen seconds of silence.
+- **A download that won't play stops being a download**: it is passed over from that
+  instant (`Availability.setAside`, so the song is streamed if it can be), unmarked, shown
+  as on its way again, and fetched again when the server can be reached
+  (`Downloads.demote`); a fresh copy that fails the same way in the same run is listed as
+  failed, not fetched over and over. (It used to be set aside until the app was next
+  started, and went on being shown as downloaded.) **Only for a failure that can be laid at
+  that file**, met while it was the download that was playing (`Recovery.laidAtTheFile`): it
+  couldn't be read, it couldn't be parsed, or it holds what this phone has no way to play.
+  And **only that file**: its name and the modification time it had when it was marked
+  whole; downloaded again, it has a fresh chance. A decoder that fell over or couldn't be
+  had, or the sound output failing, says nothing about the file by itself: the entry is made
+  ready again, once, and the file is read through (below). Such failures are final at once:
+  the player's retry rule used to take a file it couldn't parse (Media3's `ParserException`
+  is an `IOException`) for a dropped connection and ask for it four more times, fifteen
+  seconds of silence.
+- **A download that has played to its end is read through**, once in a run of the app, by
+  the check a download passes (`playedOut`, `Downloads.verifyNow`), and demoted if it no
+  longer passes. The player itself can't be gone by: on the Android 16 emulator a FLAC with
+  bytes changed inside a frame played its whole length with no error (the decoder plays on
+  past it), and an MP3 with a stretch of junk in its middle "played" its whole stated length,
+  the last twenty-three seconds in silence (Media3's reader takes the junk for the end of
+  the song, and the player runs the clock on). No error, no early end.
 - **Fetching ahead** (`FetchAhead`, Windows' `keep_ahead`): the songs of the next places in
   the queue that aren't downloaded or kept whole are read whole, one at a time, through the
   player's own data source and thrown away as they go, so they are kept by exactly the rules
@@ -587,12 +597,28 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
     Playlists, Liked songs, a playlist, an album, each place asked for by id, a song chosen,
     search and a spoken request. The list of playlists puts the downloaded ones in whether
     or not the server's list is kept.
-  - **Just after a cold start**, before the server has answered or failed to (four seconds at
-    most; no time at all with no network), whatever has an answer on the phone is answered
-    from it, and what hasn't waits only to know (then the server's answer, or nothing, at
-    once). What the car is shown in that moment is the kept library as it is shown online,
-    without covers that aren't on the phone; when it is known, the car is told to look again.
-    No cover is fetched while the server is known to be out of reach.
+  - **While it isn't known whether the server is there** (the first seconds of a cold
+    start: four at most, none at all with no network; and the moment after offline mode is
+    switched off), **every path answers at once from what the phone has**, and the server is
+    asked behind the answer, the car being told to look again when it lands (`CarTree.first`,
+    `PageCache.later`): the kept page (shown as it is shown online, without covers that
+    aren't on the phone), else what the downloads and kept songs make of it. Home takes each
+    of its three pages by itself (it used to wait for all three if any one was not kept);
+    the artist and genre branches, each place asked for by id, a song chosen, search (never
+    held up for the list of playlists) and a spoken request (a downloaded playlist asked for
+    by name counts as on the phone) all go the same way. Only where the phone has nothing at
+    all is anything waited for, and then only to *know* (those few seconds): after which it
+    is the server's answer, or the phone's nothing. No cover is fetched while the server is
+    known to be out of reach.
+  - **A song that isn't on the phone, at the cursor when the server is known to be out of
+    reach and not yet heard, is passed over at once** for the next in the queue that can be
+    played, with a line saying so ("Can't reach your server: skipped to a song on this
+    phone"); with none, the player stops where it is and says that
+    (`PlaybackService.passOverOutOfReach`, asked when the check fails, when the player comes
+    to such a song, and when its stream fails). It used to wait as "Reconnecting…" for as
+    long as the stream's own tries took: the stream's loader looks only at the switch set by
+    hand. A song that was *playing* when the server went still stays where it is and carries
+    on when the server is back.
 - Albums and playlists show as grids with artwork; songs as lists. Choosing a song plays
   its whole album or playlist from that song.
 - **Artwork** reaches the car through a small read-only content provider backed by the
@@ -726,26 +752,72 @@ How it is built (M1a):
 - **Downloads** (`downloads/`; how they are kept going is "Downloads: what Android allows"
   below), in the account's own data folder (`files/accounts/<key>/downloads`), which needs
   no permission and which the system never clears; no choice of folder.
-  - **"Done" means the right song, whole, on disk** (`SongFetch`, `AudioCheck`). A download
-    arrives in a part file of its own; once it has come to a clean end it is **verified**,
-    and only then moved to its own name (the folder synced) and entered in the account's
-    catalogue, **which is the mark**: a file without an entry is never played and is cleared
-    away. Verified means all of: it is as long as the server said that answer was; for the
-    file as it is, that is also the size the library gives the song (if they disagree, the
-    server is asked for the song again, once, and its newer word gone by); its bytes are
-    audio in the container it should be in, as Media3's own extractors read them (not its
-    name, not what the server called it); and the container says it runs as long as the song
-    is known to (no more than a second and a two-hundredth short, two seconds and a hundredth
-    over; again the server's newer word if the first disagrees). For a conversion, which
-    comes with no length, that last is what tells a whole one from one that ended early (it
-    replaced "at least four fifths of its length at the rate asked"). One that fails is
-    fetched afresh, three times in all, then listed as failed with the reason.
+  - **"Done" means the right song, whole, on disk, read through to its end** (`SongFetch`,
+    `Media3AudioCheck`). A download arrives in a part file of its own; once it has come to a
+    clean end it is **verified**, and only then moved to its own name (the folder synced) and
+    entered in the account's catalogue, **which is the mark**: a file without an entry is
+    never played and is cleared away. Verified means all of:
+    - it is as long as the server said that answer was; for the file as it is, that is also
+      the size the library gives the song (if they disagree, the server is asked for the
+      song again, once, and its newer word gone by; a library that gives no size can't
+      disagree, and if the server stated no length either, being read through is what
+      vouches for it);
+    - its bytes are audio in the container it should be in, as Media3's own extractors read
+      them (not its name, not what the server called it);
+    - **every sample of it reads, from the first to the end of the file**, with no error and
+      no end part-way through anything (not decoded: read and let go). The first check
+      stopped once it had a track and a length, so good headers with nothing sound behind
+      them passed. Two things Media3's readers pass in silence are caught as well: a FLAC
+      frame that doesn't match its own checksum (each frame ends with a CRC-16; the reader
+      finds frames by their headers and never looks inside), and an MP3 with a stretch that
+      is not MP3, where the reader looks 128 KiB for the next frame and then *ends the song
+      there*, with no error (seen by where it stopped; taken for damage unless what it had
+      read by then is the song's length, when the rest is only a tag);
+    - **the phone has a decoder for it**, asked of the system as the player's renderer asks
+      (`MediaCodecUtil.getDecoderInfosSoftMatch`). If not (an ALAC in an `.m4a`), the file as
+      it is is never marked: the server's conversion is downloaded in its place, as
+      streaming asks for one the phone can't play;
+    - where its length in bytes can't vouch for it (a conversion, which comes with none; a
+      library that gives the song no size), **its samples run as long as the song is known
+      to** (no more than a second and a two-hundredth short, two seconds and a hundredth
+      over; the server's newer word if the first disagrees), by where its last sample ends,
+      not by what its header says; and it does not stop part-way through a frame. With no
+      length known for the song either, a clean end is all there is, and is taken.
+    One that fails is fetched afresh, three times in all, then listed as failed with the
+    reason. **Bounded**: one file is read through at a time across the app; the look is
+    called off when the download is; no embedded picture is decoded and an ID3 tag is
+    stepped over rather than read into memory (Media3 reads the whole tag first); what it
+    cannot avoid is what the player itself needs, an MP4's sample tables (TESTING.md has the
+    times and memory).
+  - **What "Done" guarantees, in three sentences.** A song marked Done is a file on the
+    phone that was read from its first byte to its last when it was marked, by the player's
+    own reader: every sample was there, it was the length the server said it was (or, with
+    no length to go by, ran as long as the song is known to), a FLAC's frames matched their
+    own checksums, and the phone has a decoder for what is in it. It is not a promise about
+    the sound: nothing was decoded, so bytes that were wrong inside the frames of an MP3, an
+    AAC, an Ogg or a WAV as the server sent them go unseen, and so does a conversion of a
+    song the library gives no length for that the server cut short exactly between two
+    frames. And it is true of the file as it was then: a file whose length has changed since
+    is not opened and is fetched again at the next start, and a file that has played to its
+    end is read through again (once a run) and, if it no longer passes, unmarked and fetched
+    again.
+  - **Downloads marked by an earlier build are read through once** (`Downloaded.checked`,
+    `Downloads.recheckOld`), in the background, one at a time, only while the server can be
+    asked (one that would be taken away could not otherwise be replaced, and is no worse
+    than it was); what passes is noted and not read again, what doesn't is demoted and
+    fetched again.
   - **Picking up where it stopped.** The file as it is can be carried on with, but only as
     part of the *same* file. A part has a record beside it (`.<name>.part.meta`): the
-    server's validator for the copy it came from (a strong `ETag`, else `Last-Modified`), the
-    file's whole length, and how much of the part is known to have reached the disk (it is
-    synced every megabyte and when a fetch stops; after a power cut a resume starts from
-    there). The rest is asked for on condition that the server's copy is still that one
+    server's validator for the copy it came from, the file's whole length, and how much of the
+    part is known to have reached the disk (it is synced every megabyte and when a fetch
+    stops, **and its record with it, renamed into place and the folder synced each time**:
+    after a power cut a resume starts from there. Only the first record used to be written so,
+    and a power cut could give back a record several checkpoints old, or none). **The
+    validator must be a strong one**: an `ETag` that isn't marked weak, or a `Last-Modified`
+    that is at least a minute older than the `Date` of the answer it came in (a file changed
+    twice in one second has one date, and the server can't tell the copies apart: HTTP's rule
+    for `If-Range`). A date closer than that, or an answer with no date to hold it against,
+    is no validator, and the song is fetched from its start. The rest is asked for on condition that the server's copy is still that one
     (`If-Range`), and taken only if the answer is exactly the rest of it: the range from where
     the part stops to the end, the same total, the same validator in the answer (a server
     that ignores the condition is not believed). A changed copy, a server that gives no
@@ -763,7 +835,14 @@ How it is built (M1a):
     renamed to a backup, the new one into place, the folder synced, and only then the log
     emptied in place, so that a stop at any step leaves a list and a log that together say
     everything; a list that can't be read falls back to the one before, and says so. If the
-    list can't be written whole that is said in Diagnostics and tried again later. Unmarking
+    list can't be written whole that is said in Diagnostics and tried again later. **Nothing
+    is done on the strength of a folder that couldn't be synced** (`syncDirOrFail`): the log
+    is not emptied, a mark is not written in a log whose own name may not be on the disk, a
+    download is not marked when its file's name may not be, and a durable write (a list kept,
+    a change held) is a write that failed. Every caller used to ignore whether the sync had
+    worked. A download found at start-up to be missing or short, with no room to fetch it
+    again, is listed as failed for want of room (it was dropped, while Diagnostics said it
+    was being fetched). Unmarking
     comes before deleting: a download whose removal can't be written stays a download. The
     sweep that clears away what is nobody's runs once, when Media3's manager has read its
     queue and before any work is accepted, under the catalogue's lock, and leaves alone what
@@ -791,17 +870,34 @@ How it is built (M1a):
     back the next time the list is looked at).
   - **A song's file is kept while anything wants it**: any list downloaded whole that holds
     it, or having been downloaded by itself (recorded with the lists, under a key of its own
-    that is never shown as one). Removing or cancelling a list touches only its songs that
-    nothing else wants, and never changes another list's standing. A list's button is a
-    Cancel only when that list is itself on its way; with one of its songs arriving for
-    another list, it downloads the list.
+    that is never shown as one). **Every removal or cancelling of a group goes through one
+    path** (`Downloads.withdraw`): a list's own button, and a group's button on the Downloads
+    page (which used to delete every song it showed and forget every list any of them was
+    in). The wish for the group goes, and of its songs only those no other list downloaded
+    whole holds are touched; no other list's standing changes. A group that is no list
+    downloaded whole (an album made of songs downloaded one at a time) *is* those songs' own
+    downloads, and removing it removes them. A list's button is a Cancel only when that list
+    is itself on its way; with one of its songs arriving for another list, it downloads the
+    list.
+  - **A Cancel stays cancelled.** Cancelling, one song or everything, stops what is waiting
+    and in flight and withdraws the wish to keep whole the lists those songs were for (as
+    removing a song by hand does), so the next look at the list, or the server coming back,
+    doesn't fetch them again. What had already arrived stays downloaded. A page of a list
+    that arrives while the list is being cancelled asks for nothing.
+  - **Remove all** gives back everything in the downloads' folder (`Catalogue.clear`): the
+    songs, parts of downloads cut short and their records, the covers kept with the
+    downloads, the list before the present one, anything left lying.
   - **Nothing is started that won't fit**: what the server says each file is (or its length at
     the rate asked), **with what is already queued and arriving still needs**, and half a
     gigabyte to spare, against the space free (Windows' check and words). Requests take turns,
     each decided on what the one before left, so two albums asked for together cannot both
     pass a check that only one fits; and what is on its way is known the moment it is asked
     for, so asking again never starts it again (Media3 restarts a download whose request is
-    added twice). Failures are kept with their reason in plain words (`failed.json`), and
+    added twice). **And the room is watched as bytes arrive**: that check is an estimate made
+    when the songs were asked for, so each download looks again before it begins and every
+    128 KiB, and stops cleanly, with half the spare room still free ("The phone is nearly out
+    of space."), giving back what had arrived of it. Failures are kept with their reason in
+    plain words (`failed.json`), and
     "Retry failed" asks again; the words name no server. Every write to the catalogue from the
     engine's side is made off the main thread, in order; one that fails (a full phone) is
     said in Diagnostics and never thrown.
@@ -839,14 +935,31 @@ How it is built (M1a):
     says it isn't sure (`Reach.sure`), and the car is answered from the phone wherever the
     phone has an answer. Each check belongs to the account it was made for: a late answer for
     one that has gone changes nothing.
+  - **Offline mode switched off is not online yet.** The app is out of reach, and not sure of
+    it, until a check of the server has succeeded (the same four seconds): the sender of held
+    changes and the downloads are not let go on the strength of a switch.
+  - **One ask at a time, and the newest answer wins.** Every ask goes one way and takes a
+    number as it begins; an answer older than one already acted on changes nothing (the
+    periodic ask used to go out beside one already in flight, and a slow failure could undo a
+    later success). Something that wants to know now (the app coming to the front, Play, a
+    network back) gives up an ask that has been out more than four seconds for a new one.
 - **Changes for the server go through one sender, once, in order** (`HeldChanges`): likes,
   ratings and plays are written to the phone (`held.json`) and then sent in their turn.
   There is no other way to the server, so nothing overtakes a change that is waiting: a like
   made in offline mode and an unlike made the moment it is switched off arrive as a like and
   then an unlike. A change is acknowledged only once it is on the disk (if it can be neither
-  kept nor sent, its maker is told it didn't save); it leaves the file as soon as its own
-  answer arrives; a file that can't be read is set aside (`held.damaged.json`) and said, never
-  read as empty and written over. Windows' rules for what an answer means are kept
+  kept nor sent, its maker is told it didn't save; a play, which nobody is watching, is
+  written in Diagnostics); it leaves the file as soon as its own answer arrives, **and the
+  next is not sent until it has**: if the phone won't take that write, sending stops there,
+  says so once, and is tried again in half a minute (an older like could otherwise stay on
+  the disk after a newer unlike had reached the server, and be sent again, after it, at the
+  next start). **One sender per account for the whole process**: the queue, its writer and
+  its pass belong to the file, not to the object made for one sign-in, so signing out and
+  straight back in to the same account cannot run two, or let an old write land over a new
+  one. A file that can't be read is set aside (`held.damaged.json`) and said, never read as
+  empty and written over; one that can't be set aside either is left as it is, and nothing
+  is acknowledged as held until it can be moved out of the way. What is said to have been
+  sent ("the 2 changes you made offline…") counts what the server accepted, once. Windows' rules for what an answer means are kept
   (`send_all`, its tests ported): what the server dealt with (took, or refused for good)
   goes; a proxy's error page in the server's place counts as "try again", and later changes
   to the same song wait behind it while the rest go on; no answer, or a sign-in it won't
@@ -883,23 +996,45 @@ manager is used, as is; the keeping-going is ours. **Why not jobs alone**: befor
 runs ten minutes at a time and is then put off by Android's quotas, so a long download from
 the app on screen is held up by a foreground service there.
 
-**When downloads may run, and on what** (`Downloads.gate`, `NetworkWatch`). Decided in one
-place, from: the network as the system reports it (there or not; unmetered or not, for "Wi-Fi
-only"), at every change of its capabilities, so the same network turning metered stops them
-at once; offline mode; whether our own server answers (`ServerWatch`); and whether Android
-has stopped the job. **Never from whether Android has "validated" the network as reaching
-the internet**: a music server on a home Wi-Fi with no internet beyond it is there all the
-same. Media3's own network requirement waits for a validated network and re-checks on
-validation changing, so Media3 is asked for none; and `JobInfo.setRequiredNetworkType` asks
-for a validated network too, so the job asks for its network by what it is
-(`setRequiredNetwork`: carries ordinary traffic, VPN or not; unmetered for Wi-Fi only).
-**When Android stops the job** (`onStopJob`: the network it was given went, its time is up)
-the transfers stop with it, there and then ("Paused by Android for now"), and resume when
-the job runs again or the app is opened; they used to carry on in the process. **Transfers
-go out on the network the job was given** (its socket factory and name lookups), not the
-default route: a job given Wi-Fi must not download over mobile data because that is the
-default at that moment. Signed out, the job is cancelled, running or not, and the service
-stopped; a schedule Android rejects is asked for again.
+**When downloads may run, and on what** (`Downloads.gate`, `NetworkWatch`,
+`UnmeteredNetwork`). Decided in one place, from: offline mode; whether our own server answers
+(`ServerWatch`); whether Android has stopped the job; and the network. **Never from whether
+Android has "validated" the network as reaching the internet**: a music server on a home
+Wi-Fi with no internet beyond it is there all the same. Media3's own network requirement
+waits for a validated network and re-checks on validation changing, so Media3 is asked for
+none; and `JobInfo.setRequiredNetworkType` asks for a validated network too, so the job asks
+for its network by what it is (`setRequiredNetwork`: carries ordinary traffic, VPN or not;
+unmetered for Wi-Fi only).
+
+**"Download on Wi-Fi only" is a promise, not a look at the default route.** With Wi-Fi and
+mobile data both up, the phone's default network can be mobile data while the Wi-Fi is
+there (a Wi-Fi with no internet beyond it; a weak one), and can change between one look and
+the next. So with Wi-Fi only on:
+
+- while downloads are waiting the system is asked for an unmetered network
+  (`ConnectivityManager.requestNetwork`; `CHANGE_NETWORK_STATE` is declared for it), and
+  **every attempt at a transfer is bound to exactly the network it gives**: its sockets and
+  its name lookups (`BoundRoute`). Nothing else is used; the covers kept with the downloads
+  come the same way;
+- with none, nothing is transferred, whatever the default route looks like ("Waiting for
+  Wi-Fi");
+- a transfer in flight takes no more bytes once its network has gone or turned metered
+  (asked at every read), and waits; it carries on, from where it stopped, by the next
+  unmetered network. Switching Wi-Fi only on stops a transfer that was going by the default
+  route;
+- each attempt takes its route as it begins (a downloader that had been running used to
+  keep the client it was made with);
+- an unmetered network that is up and doesn't reach the server (a sign-in page) is left
+  alone for a minute, rather than having every waiting song thrown at it until all have
+  failed. Nothing else is tried meanwhile: that is what the setting says.
+
+With Wi-Fi only off: any network, as the system reports it (there or not), and transfers go
+out on the network Android gave the job (followed when Android gives it another:
+`onNetworkChanged`), falling back to the phone's own route if that network doesn't reach the
+server. **When Android stops the job** (`onStopJob`: the network it was given went, its time
+is up) the transfers stop with it, there and then ("Paused by Android for now"), and resume
+when the job runs again or the app is opened. Signed out, the job is cancelled, running or
+not, and the service stopped; a schedule Android rejects is asked for again.
 
 What was seen on the emulators (docs/TESTING.md, "Downloads"): on 16 and 17 the app killed
 mid-download by `am kill` is not killed at all (a user-initiated job ranks it as perceptible,
@@ -938,7 +1073,9 @@ decided on the way:
 - **How close "as long as the song is known to be" must be**: no more than a second and a
   two-hundredth of its length short, two seconds and a hundredth over. The library gives a
   length in whole seconds and an encoder adds a few hundredths; nothing else is allowed for.
-- **How long a file is, is read as the player would read it** (Media3's extractors): a FLAC,
+- **How long a file is, is read as the player would read it** (since the second hardening:
+  by where its last sample ends, every sample having been read; what follows is how it was
+  first done, from what the container says). Media3's extractors: a FLAC,
   MP4, WAV or Matroska says; an Ogg's last page says; an MP3 says in its Xing or VBRI
   header, or, with neither (every conversion the server streams), by its size at its
   constant bit rate. A file that states no length (a bare AAC stream) is judged on its size
@@ -953,8 +1090,9 @@ decided on the way:
   be told apart.
 - **A list's download button, with one of its songs arriving for another list**, downloads
   the list (Windows would cancel; there would be nothing of this list's to cancel).
-- **Cancelling one song by hand** leaves the lists it is in downloaded whole, as before (the
-  next look at the list fetches it again); removing one by hand makes them no longer whole.
+- **Cancelling one song by hand** left the lists it is in downloaded whole (the next look at
+  the list fetched it again); removing one by hand makes them no longer whole. (The second
+  hardening made a Cancel do the same as a removal: see below.)
 - **The first check after start-up is given four seconds.** Long enough for a slow mobile
   link; short enough that a car is not kept from what is on the phone.
 - **No network at start-up is "out of reach" without asking**, and the server is asked all
@@ -963,6 +1101,41 @@ decided on the way:
 - **Before the phone is first unlocked after a restart** the app is not started at all
   (it is not "direct boot aware", and could not be without everything it builds at start-up
   being rebuilt to run with none of its data): see TESTING.md for what a car is shown then.
+
+### What the second hardening of the offline engine decided
+
+The reviewer, asked again, still answered no. What was changed is described where it belongs
+above; what had to be decided on the way, and what was found:
+
+- **A FLAC with a frame that fails its checksum is refused at download**, though Android's
+  decoder would play on past it (seen on the emulator). The damage is as likely the
+  journey's as the server's, and a fresh fetch puts it right; if all three fetches are the
+  same, the server's own file is damaged, and the song is listed as failed with that reason
+  rather than kept with a flaw nobody was told of.
+- **No checksum, no word**: an MP3, AAC, Ogg or WAV carries nothing that can be checked
+  without decoding, so bytes changed inside their frames go unseen at download. Decoding
+  every download was not taken on (it is the cost of playing it).
+- **A download is read through again when it has played to its end**, not when the player
+  reports trouble: for a damaged file the player reported none.
+- **Old downloads are read through only while the server can be asked.**
+- **Cancelling one song by hand now takes its lists out of "downloaded whole"** (the first
+  hardening left them whole, and the next look at the list fetched the song back), so that
+  one Cancel and Cancel all mean the same.
+- **A group on the Downloads page that is no list downloaded whole is removed by removing
+  its songs' own downloads**; a song of it that another list holds stays.
+- **An MP3's reader giving up before the file's end is damage unless the song's length had
+  been reached** (then the rest is taken for a tag). With no length known, it is damage.
+- **Sixty seconds** between a modification date and its answer's own date before the date
+  counts as a validator (RFC 7232's figure; RFC 9110 says one).
+- **Half the spare room** (250 MB) is where a download in flight stops.
+- **With Wi-Fi only on and the Wi-Fi not reaching the server, downloads wait** (and try once
+  a minute) even though mobile data would reach it.
+- **While it isn't known whether the server is there, the car is shown the kept library as
+  it is shown online**, so a folder of something that isn't on the phone can still be
+  listed for those seconds; opened, it waits to know (four seconds at most) and is then
+  empty.
+- **What "changes sent" counts** is what the server accepted; one it turned down for good
+  was not sent in any sense the person means.
 
 ### What the design left open, and what was decided (M2b)
 
@@ -1210,8 +1383,12 @@ How it is built (M2b):
   connection, offline mode, the server), a bar, Cancel all and each song with its bar and
   Cancel; "Couldn't be downloaded" with Windows' line, Retry failed and each song with its
   reason; then Playlists (downloaded whole), Albums (anything of them downloaded) and Songs,
-  each with the room it takes (`DownloadsView`). All from the downloads' own record: it opens at
-  once with no server from a cold start. A playlist or album opened from it is the downloads'
+  each with the room it takes (`DownloadsView`). **Everything waiting and everything that
+  failed are folded to their first five**, with how many more and a way to open them
+  (`Folded`): five thousand waiting songs were five thousand rows ahead of the music. The
+  grouping is made again only when what is downloaded changes, never for a song's progress
+  (`DownloadsViews`). All from the downloads' own record: it opens at once with no server
+  from a cold start. A playlist or album opened from it is the downloads'
   copy (`Route.Downloaded`, `DownloadedListPage`), which needs neither server nor kept page;
   an album, playlist or Liked songs page opened offline with no kept copy falls back to it.
   Played from there, a list is named `downloads`, `downloads:album:<id>` or `downloads:<list>`,
@@ -1227,8 +1404,15 @@ How it is built (M2b):
   kept says it isn't on this phone. **Home** leads with "Your downloads" (the lists and albums
   on the phone) and keeps only albums with something that plays; **Library**'s Albums, Artists
   and Genres are those of the songs that play (`OnThePhone`, which the car's tree uses too),
-  its playlists those downloaded whole or kept with a song that plays; **Search** looks only in
-  the songs that play (`LocalSearch`) and says so; a genre shows its albums on the phone.
+  its playlists every one downloaded whole (from the downloads' own record, whether or not
+  the server's list of playlists is kept or has it) and those of the kept list with a song
+  that plays; **Search** looks only in the songs that play (`LocalSearch`) and says so, and
+  lists the same playlists; a genre shows its albums on the phone. **Everything shown
+  opens, from what is on the phone**: an artist's page offline is their albums with
+  something that plays (and its play button their songs on the phone); an album with songs
+  kept from being played opens with those; "More by" keeps only albums on the phone; "Show
+  all" on a Home shelf is the albums on the phone, not the Albums page that pages through
+  the server.
 - **Coming back**: "Back online" when the server answers after being out of reach; offline
   mode switched off by hand and the server found there catches up the same way (Windows'
   `check_connection`), without saying so; if held changes were sent, it is said once ("Back
