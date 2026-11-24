@@ -2062,10 +2062,12 @@ How it is built (M4a, sound and lyrics):
   been pushed past where it was (the gain in force above 1, or the equaliser running), it goes
   through Windows' soft limiter (`soft_clip`, untouched below 0.8 of full scale), whole,
   whatever is ramping: never faded in or out, never blended with the unlimited sample. When
-  neither, nothing can go over full scale and nothing is rounded off: Normal and Quiet never
-  round a peak, as on Windows and as the setting says. (The lead's rule was "always on"; on
-  sound that nothing has raised the limiter could only round off peaks that Windows leaves
-  alone, so it is on whenever anything could raise one.) What it costs: at the instant the gain
+  neither, nothing can go over full scale and nothing is rounded off. Normal and Quiet never
+  push a peak past full scale, but they can round one a little: a quiet song they turn up has
+  its gain above 1, and a raised peak above 0.8 of full scale goes through the limiter's knee,
+  as on Windows (the setting's words, Windows' own, say only the first). (The lead's rule was
+  "always on"; on sound that nothing has raised the limiter could only round off peaks that
+  Windows leaves alone, so it is on whenever anything could raise one.) What it costs: at the instant the gain
   first rises above 1, or the equaliser starts, a sample already above 0.8 of full scale is
   rounded where a moment before it wasn't; Windows switches its limiter the same way.
 - **Formats.** It takes 16-bit and float PCM at any sample rate and channel count, and hands

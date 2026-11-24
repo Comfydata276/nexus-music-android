@@ -43,10 +43,6 @@ class Sound private constructor(
      *  (Windows' `active`.) */
     val eqOn: Boolean = equaliser && (gains.any { abs(it) > 0.05f } || preampDb < -0.01f)
 
-    /** Anything at all is to be done to the sound. With nothing (and nothing ramping), the
-     *  processor hands every sample on as it came. */
-    val wanted: Boolean = levelling || eqOn || mono
-
     companion object {
         val OFF = Sound(false, 1, 0, -6f, FloatArray(6), 0f, false, false, false)
 
@@ -96,7 +92,9 @@ fun interface SongTags {
  * - **No clipping.** Whenever a sample may have been pushed past where it was (a gain above
  *   1, or the equaliser running), it goes through Windows' soft limiter, whole, whatever is
  *   ramping: never faded in or out, never blended. Otherwise nothing can go over full scale,
- *   and nothing is rounded off (Normal and Quiet never round a peak, as on Windows).
+ *   and nothing is rounded off. (Normal and Quiet never push a peak past full scale; but a
+ *   quiet song they turn up has its gain above 1, and a raised peak above 0.8 of full scale
+ *   is rounded a little by the limiter's knee, as on Windows.)
  * - **Nothing made on the audio thread** while it runs: the settings arrive as one value
  *   swapped in ([Sound]), filters and buffers are made when the format changes, and a song is
  *   looked up at the flush that begins it.

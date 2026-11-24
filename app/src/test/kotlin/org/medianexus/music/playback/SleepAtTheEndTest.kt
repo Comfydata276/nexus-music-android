@@ -16,18 +16,23 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 
 /**
- * Rule 6 of the fixes: when the sleep timer pauses the music, that counts as the person
- * having stopped it, and nothing starts it again. The case the reviewer raised: repeat all,
- * a queue too long for the player to hold whole (it goes round to the top by hand when the
- * player ends), and "End of this song" pausing at the end of the last song the player holds.
- * Media3 pauses there and stays ready at the end, so the queue's going round (which happens
- * when the player ends) is never reached; it now also goes round only to line up, not to
- * play, if the player was not playing. The real ExoPlayer under the queue's player.
+ * The case the reviewer raised for the sleep timer: repeat all, a queue too long for the
+ * player to hold whole (it goes round to the top by hand when the player ends), and "End of
+ * this song" pausing at the end of the last song the player holds. What this checks is that
+ * Media3 pauses there and stays there, ready and paused, and nothing starts it again. The
+ * real ExoPlayer under the queue's player.
+ *
+ * **The guard has no test.** The queue's going round at the true end now lines up without
+ * playing if the person (or the timer) had stopped (`QueuePlayer`, `carryOn` in the ended
+ * branch of repeat all). That branch runs only when the player ends, and paused at the end of
+ * its last item by "End of this song" it never does: it stays ready. No other way to the end
+ * with the music stopped was found, so the guard is there for safety and nothing here would
+ * fail without it.
  */
 @RunWith(RobolectricTestRunner::class)
 class SleepAtTheEndTest {
     @Test
-    fun paused_by_the_sleep_timer_at_the_end_of_the_queue_on_repeat_all_it_stays_paused() {
+    fun paused_at_the_end_of_the_last_song_held_on_repeat_all_media3_stays_ready_and_paused() {
         val context = RuntimeEnvironment.getApplication()
         val exo = madeUpClockPlayer(context, FakeMediaSourceFactory(), FakeRenderer(C.TRACK_TYPE_VIDEO))
         val player = QueuePlayer(exo, Queue(), { MediaMetadata.EMPTY }, changed = {}, byPlace = { false })
