@@ -373,6 +373,20 @@
     <!-- Finding music (M3a): the Songs page, finding and sorting in a list, Recently played, a
          song's details. Windows' words where the feature is the same. -->
     <string name="songs_newest_first">%1$s, newest first</string>
+    <!-- The Songs page's header: how many, and in what order they are shown. -->
+    <string name="songs_in_order">%1$s, %2$s</string>
+    <string name="order_newest_first">newest first</string>
+    <string name="order_oldest_first">oldest first</string>
+    <string name="order_by_title">by title</string>
+    <string name="order_by_title_reversed">by title, Z to A</string>
+    <string name="order_by_artist">by artist</string>
+    <string name="order_by_artist_reversed">by artist, Z to A</string>
+    <string name="order_by_album">by album</string>
+    <string name="order_by_album_reversed">by album, Z to A</string>
+    <string name="order_shortest_first">shortest first</string>
+    <string name="order_longest_first">longest first</string>
+    <string name="added_today">Today</string>
+    <string name="added_yesterday">Yesterday</string>
     <string name="songs_empty">Your library is still being fetched. It\'ll be here in a moment.</string>
     <string name="songs_arriving">Fetching your library: %1$s so far</string>
     <string name="songs_offline_empty">Your library hasn\'t been fetched to this phone yet. It will be when your server can be reached.</string>

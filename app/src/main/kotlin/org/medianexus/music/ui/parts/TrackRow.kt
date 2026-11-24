@@ -84,6 +84,9 @@ fun TrackRow(
     mark: org.medianexus.music.ui.downloads.RowMark = org.medianexus.music.ui.downloads.RowMark.NONE,
     /** A second line of its own in place of the artist (why it couldn't be downloaded). */
     detail: String? = null,
+    /** Lines the title may take: two where titles that share a long beginning must be told
+     *  apart in large type (the Songs page); the row grows to fit. */
+    titleLines: Int = 1,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val colors = Theme.colors
@@ -110,7 +113,7 @@ fun TrackRow(
     Row(
         modifier
             .fillMaxWidth()
-            .height(Theme.dimens.rowHeight)
+            .then(if (titleLines > 1) Modifier.heightIn(min = Theme.dimens.rowHeight) else Modifier.height(Theme.dimens.rowHeight))
             .alpha(if (unavailable) 0.4f else 1f)
             .background(if (track.selected) colors.press else androidx.compose.ui.graphics.Color.Transparent)
             .then(press)
@@ -139,7 +142,7 @@ fun TrackRow(
             BasicText(
                 track.title,
                 style = Theme.type.rowTitle.copy(color = if (track.current) colors.accentBright else colors.text),
-                maxLines = 1,
+                maxLines = titleLines,
                 overflow = TextOverflow.Ellipsis,
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

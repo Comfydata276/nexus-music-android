@@ -49,6 +49,8 @@ import org.medianexus.music.ui.parts.TitleBar
 import org.medianexus.music.ui.parts.TrackRow
 import org.medianexus.music.ui.parts.TrackRowData
 import org.medianexus.music.ui.parts.clock
+import org.medianexus.music.ui.parts.FastScroll
+import org.medianexus.music.ui.parts.initialOf
 import org.medianexus.music.ui.parts.songCount
 import org.medianexus.music.ui.shell.LocalUi
 import org.medianexus.music.ui.shell.SongMenu
@@ -146,79 +148,109 @@ fun SongsContent() {
             val offline = org.medianexus.music.ui.downloads.reachNow().offline
             PageStatus(PageState.Empty(stringResource(if (offline && fetching == null) R.string.songs_offline_empty else R.string.songs_empty), icon = R.drawable.ic_music))
         }
-        else -> LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
-            val total = copy?.songs?.size ?: 0
-            val facts = @Composable { modifier: Modifier ->
-                // (What it is, "Songs", is said just above: by Library's chip, or the page's title.)
-                Column(modifier) {
-                    BasicText(res.getString(R.string.songs_newest_first, songCount(res, total)), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
-                    fetching?.takeIf { it.first }?.let {
-                        BasicText(res.getString(R.string.songs_arriving, songCount(res, it.songs)), Modifier.padding(top = 2.dp), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+        else -> Box(Modifier.fillMaxSize()) {
+            // In large type, titles that share a long beginning are told apart by a second line.
+            val titleLines = if (androidx.compose.ui.platform.LocalDensity.current.fontScale >= LARGE_TYPE) 2 else 1
+            val today = stringResource(R.string.added_today)
+            val yesterday = stringResource(R.string.added_yesterday)
+            // Sorted by when songs were added (the page's own order is newest first): the date on
+            // each row where its length otherwise goes, as Windows' date-added column.
+            val byDate = view.sort == ListView.OWN || view.sort == ListView.ADDED
+            LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
+                val total = copy?.songs?.size ?: 0
+                val facts = @Composable { modifier: Modifier ->
+                    // (What it is, "Songs", is said just above: by Library's chip, or the page's title.)
+                    Column(modifier) {
+                        // How many, and in the order shown (its own: newest first).
+                        BasicText(res.getString(R.string.songs_in_order, songCount(res, total), res.getString(orderWords(view, ownWords = R.string.order_newest_first))), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+                        fetching?.takeIf { it.first }?.let {
+                            BasicText(res.getString(R.string.songs_arriving, songCount(res, it.songs)), Modifier.padding(top = 2.dp), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+                        }
                     }
                 }
-            }
-            val actions = @Composable { inline: Boolean ->
-                ActionBar(
-                    title = context,
-                    canPlay = now?.order?.isNotEmpty() == true,
-                    playing = from.isList(key) && !from.paused,
-                    onPlay = { if (from.isList(key)) player.playPause() else play(0, any = true) },
-                    shuffle = shuffle,
-                    onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
-                    inline = inline,
-                )
-            }
-            val find = @Composable { modifier: Modifier ->
-                FindAndSort(box, view, playlist = false, modifier = modifier, onSort = { choice ->
-                    val next = view.sortedBy(choice)
-                    sorted = next.sort
-                    descending = next.descending
-                    ui.rememberSort(key, next)
-                })
-            }
-            if (sideways) {
-                // On its side there is height for a few rows: the facts, the play button and the
-                // find box share one line, so the first view has songs in it.
-                item(key = "head", contentType = "head") {
-                    Row(Modifier.fillMaxWidth().padding(start = Theme.dimens.pagePad), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        actions(true)
-                        facts(Modifier.weight(0.7f))
-                        find(Modifier.weight(1f))
-                    }
-                }
-            } else {
-                item(key = "head", contentType = "head") { facts(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).padding(top = 8.dp)) }
-                item(key = "actions", contentType = "actions") { actions(false) }
-                item(key = "find", contentType = "find") { find(Modifier) }
-            }
-            when {
-                now == null || table == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
-                now.order.isEmpty() -> item(key = "nothing", contentType = "empty") {
-                    Box(Modifier.fillMaxWidth().heightIn(min = 160.dp), contentAlignment = Alignment.Center) {
-                        PageStatus(PageState.Empty(stringResource(R.string.nothing_matches_here, view.filter.trim())))
-                    }
-                }
-                else -> items(now.order.size, key = { row -> table.id(now.order[row]) }, contentType = { "song" }) { row ->
-                    val t = now.order[row]
-                    // Made when the row is shown, and kept while it is.
-                    val song = remember(table, t) { table.song(t) }
-                    val base = remember(song, row) {
-                        val detail = if (song.album.isNotEmpty()) "${song.artistLabel} • ${song.album}" else song.artistLabel
-                        TrackRowData(song.id, song.title, detail, song.coverArt, (row + 1).toString(), clock(song.duration))
-                    }
-                    val current = from.isRow(key, ownPlace.getOrElse(t) { -1 }, song.id)
-                    TrackRow(
-                        base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
-                        onClick = { play(row) },
-                        onMore = { ui.menu = SongMenu(song) },
-                        showDuration = true,
-                        mark = marks.rowMark(song),
+                val actions = @Composable { inline: Boolean ->
+                    ActionBar(
+                        title = context,
+                        canPlay = now?.order?.isNotEmpty() == true,
+                        playing = from.isList(key) && !from.paused,
+                        onPlay = { if (from.isList(key)) player.playPause() else play(0, any = true) },
+                        shuffle = shuffle,
+                        onShuffle = { ui.toggleListShuffle(key, from.source, queueShuffle) },
+                        inline = inline,
                     )
+                }
+                val find = @Composable { modifier: Modifier ->
+                    FindAndSort(box, view, playlist = false, modifier = modifier, onSort = { choice ->
+                        val next = view.sortedBy(choice)
+                        sorted = next.sort
+                        descending = next.descending
+                        ui.rememberSort(key, next)
+                    })
+                }
+                if (sideways) {
+                    // On its side there is height for a few rows: the facts, the play button and the
+                    // find box share one line, so the first view has songs in it.
+                    item(key = "head", contentType = "head") {
+                        Row(Modifier.fillMaxWidth().padding(start = Theme.dimens.pagePad), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            actions(true)
+                            facts(Modifier.weight(0.7f))
+                            find(Modifier.weight(1f))
+                        }
+                    }
+                } else {
+                    item(key = "head", contentType = "head") { facts(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).padding(top = 8.dp)) }
+                    item(key = "actions", contentType = "actions") { actions(false) }
+                    item(key = "find", contentType = "find") { find(Modifier) }
+                }
+                when {
+                    now == null || table == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
+                    now.order.isEmpty() -> item(key = "nothing", contentType = "empty") {
+                        Box(Modifier.fillMaxWidth().heightIn(min = 160.dp), contentAlignment = Alignment.Center) {
+                            PageStatus(PageState.Empty(stringResource(R.string.nothing_matches_here, view.filter.trim())))
+                        }
+                    }
+                    else -> items(now.order.size, key = { row -> table.id(now.order[row]) }, contentType = { "song" }) { row ->
+                        val t = now.order[row]
+                        // Made when the row is shown, and kept while it is.
+                        val song = remember(table, t) { table.song(t) }
+                        val base = remember(song, row, byDate) {
+                            val detail = if (song.album.isNotEmpty()) "${song.artistLabel} • ${song.album}" else song.artistLabel
+                            val end = if (byDate) Arrange.dateLabel(table.createdMillis(t) / 1000, today, yesterday) else clock(song.duration)
+                            TrackRowData(song.id, song.title, detail, song.coverArt, (row + 1).toString(), end)
+                        }
+                        val current = from.isRow(key, ownPlace.getOrElse(t) { -1 }, song.id)
+                        TrackRow(
+                            base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
+                            onClick = { play(row) },
+                            onMore = { ui.menu = SongMenu(song) },
+                            showDuration = true,
+                            mark = marks.rowMark(song),
+                            titleLines = titleLines,
+                        )
+                    }
+                }
+            }
+            // The handle for moving through 50,000 songs, its bubble saying where: the letter of
+            // what the list is sorted by, or the month songs were added.
+            val shownNow = now
+            if (shownNow != null && table != null) {
+                FastScroll(list, first = if (sideways) 1 else 3, count = shownNow.order.size) { row ->
+                    val t = shownNow.order[row]
+                    when (shownNow.view.sort) {
+                        ListView.TITLE -> initialOf(table.title(t))
+                        ListView.ARTIST -> initialOf(table.artistLabel(t))
+                        ListView.ALBUM -> initialOf(table.album(t))
+                        ListView.DURATION -> clock(table.duration(t))
+                        else -> Arrange.monthOf(table.createdMillis(t) / 1000)
+                    }
                 }
             }
         }
     }
 }
+
+/** Font scale from which song titles may take two lines (the design's large-type case is 1.3). */
+const val LARGE_TYPE = 1.3f
 
 /**
  * Recently played: the last hundred songs played, newest first, each playable again by itself

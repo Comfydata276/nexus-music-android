@@ -82,9 +82,10 @@ data class ListView(val sort: Int = OWN, val descending: Boolean = false, val fi
  * worked out from), how (`view`), and the result (`order`, places in the list). A screen
  * keeps showing the last arrangement while a newer one is worked out off the main thread;
  * its rows are not to be tapped meanwhile ([tappable]), since what a tap hands the player is
- * this arrangement, and the person is already typing or choosing another.
+ * this arrangement, and the person is already typing or choosing another. `added`, for an
+ * arrangement by date added, is when each song (by place in the list) was added.
  */
-class Shown<L>(val list: L, val view: ListView, val order: IntArray) {
+class Shown<L>(val list: L, val view: ListView, val order: IntArray, val added: LongArray? = null) {
     /** Whether this is the arrangement of `list` as `view` now has it. */
     fun tappable(list: L, view: ListView): Boolean = this.list === list && this.view == view
 }
@@ -187,6 +188,23 @@ object Arrange {
         if (seconds <= 0) return 0
         return Instant.ofEpochSecond(seconds).atZone(zone).toLocalDate().atStartOfDay(zone).toEpochSecond()
     }
+
+    /** When a song was added, as a list sorted by it shows it in place of the song's length
+     *  (Windows' `date_label`): `today` or `yesterday`, else "3 Mar 2024"; nothing if not
+     *  known. */
+    fun dateLabel(seconds: Long, today: String, yesterday: String, now: Long = System.currentTimeMillis() / 1000, zone: ZoneId = ZoneId.systemDefault(), locale: java.util.Locale = java.util.Locale.getDefault()): String {
+        if (seconds <= 0) return ""
+        val day = Instant.ofEpochSecond(seconds).atZone(zone).toLocalDate()
+        return when (java.time.temporal.ChronoUnit.DAYS.between(day, Instant.ofEpochSecond(now).atZone(zone).toLocalDate())) {
+            0L -> today
+            1L -> yesterday
+            else -> day.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", locale))
+        }
+    }
+
+    /** The month and year of a time, for a list's fast-scroll bubble ("Mar 2024"). */
+    fun monthOf(seconds: Long, zone: ZoneId = ZoneId.systemDefault(), locale: java.util.Locale = java.util.Locale.getDefault()): String? =
+        if (seconds <= 0) null else Instant.ofEpochSecond(seconds).atZone(zone).format(java.time.format.DateTimeFormatter.ofPattern("MMM yyyy", locale))
 
     /** A time as the server writes it ("2024-03-09T10:15:00Z"), in seconds; 0 if it isn't one
      *  (Windows' `parse_time`). */

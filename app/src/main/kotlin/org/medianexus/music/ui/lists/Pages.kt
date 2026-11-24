@@ -1,5 +1,7 @@
 package org.medianexus.music.ui.lists
 
+import org.medianexus.music.ui.parts.FastScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -418,6 +420,9 @@ fun <T> CardGrid(
     /** At the foot of the grid: a page on its way, or one that failed. */
     footer: (@Composable () -> Unit)? = null,
     state: androidx.compose.foundation.lazy.grid.LazyGridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState(),
+    /** For a long grid, what its fast-scroll bubble says of an item (its letter, its year):
+     *  given, the grid has the handle (see [org.medianexus.music.ui.parts.FastScroll]). */
+    scrollLabel: ((T) -> String?)? = null,
 ) {
     if (onNearEnd != null) {
         val near by remember(state) { androidx.compose.runtime.derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 12 } }
@@ -428,29 +433,34 @@ fun <T> CardGrid(
             if (near) lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { onNearEnd() }
         }
     }
-    LazyVerticalGrid(
-        GridCells.Adaptive(minWidth),
-        modifier.fillMaxSize(),
-        state = state,
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        if (header != null) {
-            item(key = "header", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "header") { header() }
-        }
-        if (failed != null) {
-            item(key = "failed", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "failed") {
-                org.medianexus.music.ui.parts.FailedStrip(failed, onRetry)
+    Box(modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            GridCells.Adaptive(minWidth),
+            Modifier.fillMaxSize(),
+            state = state,
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (header != null) {
+                item(key = "header", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "header") { header() }
             }
+            if (failed != null) {
+                item(key = "failed", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "failed") {
+                    org.medianexus.music.ui.parts.FailedStrip(failed, onRetry)
+                }
+            }
+            items(items, key = { "card/${key(it)}" }, contentType = { "card" }) { item ->
+                val data = remember(item) { card(item) }
+                MediaCard(data, onClick = { onOpen(data) })
+            }
+            if (footer != null) {
+                item(key = "footer", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "footer") { footer() }
+            }
+            item(key = "end", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(8.dp)) }
         }
-        items(items, key = { "card/${key(it)}" }, contentType = { "card" }) { item ->
-            val data = remember(item) { card(item) }
-            MediaCard(data, onClick = { onOpen(data) })
+        if (scrollLabel != null) {
+            FastScroll(state, first = (if (header != null) 1 else 0) + (if (failed != null) 1 else 0), count = items.size) { scrollLabel(items[it]) }
         }
-        if (footer != null) {
-            item(key = "footer", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "footer") { footer() }
-        }
-        item(key = "end", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(8.dp)) }
     }
 }

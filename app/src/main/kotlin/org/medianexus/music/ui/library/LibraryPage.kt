@@ -303,6 +303,13 @@ private fun AlbumsPart(sorting: Pair<Int, (Int) -> Unit>, places: SortPlaces) {
                     onNearEnd = { pages.more() },
                     progress = pages.fetched,
                     state = grid,
+                    // The fast-scroll bubble, by what the albums are in order of (those loaded so far).
+                    scrollLabel = when (list) {
+                        AlbumList.AlphabeticalByName -> { album -> org.medianexus.music.ui.parts.initialOf(album.name) }
+                        AlbumList.AlphabeticalByArtist -> { album -> org.medianexus.music.ui.parts.initialOf(album.artistLabel) }
+                        AlbumList.ByYearDescending -> { album -> album.year.takeIf { it > 0 }?.toString() }
+                        else -> { _ -> null }
+                    },
                     footer = when {
                         pages.failed != null -> ({ FailedStrip(pages.failed?.message.orEmpty(), { scope.launch { pages.retry() } }) })
                         pages.asking -> ({ SkeletonRows(rows = 1) })
@@ -333,6 +340,7 @@ private fun Artists() {
                 onOpen = { ui.open(it) },
                 failed = error?.message,
                 onRetry = feed::refresh,
+                scrollLabel = { artist -> org.medianexus.music.ui.parts.initialOf(artist.name) },
             )
         }
     }

@@ -1,5 +1,6 @@
 package org.medianexus.music.ui.lists
 
+import org.medianexus.music.ui.parts.FastScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -187,51 +188,78 @@ fun SongListPage(
                     },
                 )
             }
-            LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
-                item(key = "hero", contentType = "hero") { Hero(hero, onSubtitle = onSubtitle, actions = if (sideways) ({ actions(true) }) else null) }
-                if (!sideways) item(key = "actions", contentType = "actions") { actions(false) }
-                if (error != null && songs != null) {
-                    item(key = "failed", contentType = "failed") { FailedStrip(error.message.orEmpty(), feed::refresh) }
-                }
-                if (findable && !songs.isNullOrEmpty()) item(key = "find", contentType = "find") {
-                    FindAndSort(box, view, playlist = key.startsWith("playlist:"), onSort = { choice ->
-                        val next = view.sortedBy(choice)
-                        sorted = next.sort
-                        descending = next.descending
-                        ui.rememberSort(key, next)
-                    })
-                }
-                when {
-                    songs == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
-                    songs.isEmpty() -> if (empty.isNotEmpty()) item(key = "empty", contentType = "empty") {
-                        Box(Modifier.fillMaxWidth().heightIn(min = 240.dp)) { PageStatus(PageState.Empty(empty)) }
+            val today = stringResource(org.medianexus.music.R.string.added_today)
+            val yesterday = stringResource(org.medianexus.music.R.string.added_yesterday)
+            // Sorted by date added: the date on each row where its length otherwise goes.
+            val added = arranged?.added
+            Box(Modifier.fillMaxSize()) {
+                LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
+                    item(key = "hero", contentType = "hero") { Hero(hero, onSubtitle = onSubtitle, actions = if (sideways) ({ actions(true) }) else null) }
+                    if (!sideways) item(key = "actions", contentType = "actions") { actions(false) }
+                    if (error != null && songs != null) {
+                        item(key = "failed", contentType = "failed") { FailedStrip(error.message.orEmpty(), feed::refresh) }
                     }
-                    shown == null -> {}
-                    shown.isEmpty() -> item(key = "nothing", contentType = "empty") {
-                        Box(Modifier.fillMaxWidth().heightIn(min = 160.dp)) { PageStatus(PageState.Empty(stringResource(org.medianexus.music.R.string.nothing_matches_here, view.filter.trim()))) }
+                    if (findable && !songs.isNullOrEmpty()) item(key = "find", contentType = "find") {
+                        FindAndSort(box, view, playlist = key.startsWith("playlist:"), onSort = { choice ->
+                            val next = view.sortedBy(choice)
+                            sorted = next.sort
+                            descending = next.descending
+                            ui.rememberSort(key, next)
+                        })
                     }
-                    else -> items(shown.size, key = { row -> "${shown[row]}/${songs[shown[row]].id}" }, contentType = { "song" }) { row ->
-                        // Its place in the list itself: what plays, and what marks it playing.
-                        val index = shown[row]
-                        val song = songs[index]
-                        val heading = if (discs && view.isDefault && (index == 0 || songs[index - 1].discNumber != song.discNumber)) "$discWord ${song.discNumber.coerceAtLeast(1)}" else null
-                        val base = remember(song, row, look) { rowOf(song, row, look) }
-                        Column {
-                            heading?.let { ListHeading(it) }
-                            val current = from.isRow(key, index, song.id)
-                            TrackRow(
-                                base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
-                                onClick = { if (tappable) ui.play(songs, index, context, key, view = arranged!!.view) },
-                                onMore = { ui.menu = SongMenu(song) },
-                                showCover = !look.album,
-                                showNumber = look.album,
-                                showDuration = true,
-                                mark = marks.rowMark(song),
-                            )
+                    when {
+                        songs == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
+                        songs.isEmpty() -> if (empty.isNotEmpty()) item(key = "empty", contentType = "empty") {
+                            Box(Modifier.fillMaxWidth().heightIn(min = 240.dp)) { PageStatus(PageState.Empty(empty)) }
+                        }
+                        shown == null -> {}
+                        shown.isEmpty() -> item(key = "nothing", contentType = "empty") {
+                            Box(Modifier.fillMaxWidth().heightIn(min = 160.dp)) { PageStatus(PageState.Empty(stringResource(org.medianexus.music.R.string.nothing_matches_here, view.filter.trim()))) }
+                        }
+                        else -> items(shown.size, key = { row -> "${shown[row]}/${songs[shown[row]].id}" }, contentType = { "song" }) { row ->
+                            // Its place in the list itself: what plays, and what marks it playing.
+                            val index = shown[row]
+                            val song = songs[index]
+                            val heading = if (discs && view.isDefault && (index == 0 || songs[index - 1].discNumber != song.discNumber)) "$discWord ${song.discNumber.coerceAtLeast(1)}" else null
+                            val base = remember(song, row, look, added) {
+                                rowOf(song, row, look).let { r -> if (added != null) r.copy(duration = org.medianexus.music.library.Arrange.dateLabel(added[index], today, yesterday)) else r }
+                            }
+                            Column {
+                                heading?.let { ListHeading(it) }
+                                val current = from.isRow(key, index, song.id)
+                                TrackRow(
+                                    base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
+                                    onClick = { if (tappable) ui.play(songs, index, context, key, view = arranged!!.view) },
+                                    onMore = { ui.menu = SongMenu(song) },
+                                    showCover = !look.album,
+                                    showNumber = look.album,
+                                    showDuration = true,
+                                    mark = marks.rowMark(song),
+                                )
+                            }
+                        }
+                    }
+                    below(columns)
+                }
+                // A long list's handle: the bubble says where by what the list is sorted by.
+                val rows = shown
+                if (rows != null && songs != null && rows.size >= org.medianexus.music.ui.parts.FAST_SCROLL_FROM) {
+                    // (The rows follow the hero, the play button unless it sits beside the hero,
+                    // a failure strip if any, and the find box if the list can be found in.)
+                    val first = 1 + (if (!sideways) 1 else 0) + (if (error != null) 1 else 0) + (if (findable) 1 else 0)
+                    FastScroll(list, first, rows.size) { row ->
+                        val song = songs[rows[row]]
+                        when (arranged?.view?.sort ?: org.medianexus.music.library.ListView.OWN) {
+                            org.medianexus.music.library.ListView.TITLE -> org.medianexus.music.ui.parts.initialOf(song.title)
+                            org.medianexus.music.library.ListView.ARTIST -> org.medianexus.music.ui.parts.initialOf(song.artistLabel)
+                            org.medianexus.music.library.ListView.ALBUM -> org.medianexus.music.ui.parts.initialOf(song.album)
+                            org.medianexus.music.library.ListView.DURATION -> clock(song.duration)
+                            org.medianexus.music.library.ListView.ADDED -> added?.let { org.medianexus.music.library.Arrange.monthOf(it[rows[row]]) }
+                            // In the list's own order: how far down it is.
+                            else -> (row + 1).toString()
                         }
                     }
                 }
-                below(columns)
             }
         }
     }
@@ -251,7 +279,8 @@ fun rememberShown(songs: List<Song>?, view: org.medianexus.music.library.ListVie
     if (songs == null) return null
     if (view.isDefault) return remember(songs, view) { org.medianexus.music.library.Shown(songs, view, IntArray(songs.size) { it }) }
     val work = { cancelled: () -> Boolean ->
-        org.medianexus.music.library.Shown(songs, view, org.medianexus.music.library.Arrange.arrange(songs.columns(), view, cancelled, (if (view.sort == org.medianexus.music.library.ListView.ADDED) dates(songs) else null).let { d -> { i: Int -> d?.get(i) ?: 0L } }))
+        val added = if (view.sort == org.medianexus.music.library.ListView.ADDED) dates(songs) else null
+        org.medianexus.music.library.Shown(songs, view, org.medianexus.music.library.Arrange.arrange(songs.columns(), view, cancelled) { i -> added?.get(i) ?: 0L }, added)
     }
     if (songs.size <= ARRANGED_AT_ONCE) return remember(songs, view) { work { false } }
     val arranged by androidx.compose.runtime.produceState<org.medianexus.music.library.Shown<List<Song>>?>(null, songs, view) {

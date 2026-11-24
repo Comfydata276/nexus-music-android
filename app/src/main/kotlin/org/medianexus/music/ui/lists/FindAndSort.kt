@@ -59,6 +59,17 @@ fun sortWord(sort: Int, playlist: Boolean): Int = when (sort) {
     else -> if (playlist) R.string.sort_custom else R.string.sort_default
 }
 
+/** The words for the order a list is shown in, its way round included ("by title, Z to A",
+ *  "oldest first"); `ownWords` for the list's own order. */
+fun orderWords(view: ListView, ownWords: Int): Int = when (view.sort) {
+    ListView.TITLE -> if (view.descending) R.string.order_by_title_reversed else R.string.order_by_title
+    ListView.ARTIST -> if (view.descending) R.string.order_by_artist_reversed else R.string.order_by_artist
+    ListView.ALBUM -> if (view.descending) R.string.order_by_album_reversed else R.string.order_by_album
+    ListView.DURATION -> if (view.descending) R.string.order_longest_first else R.string.order_shortest_first
+    ListView.ADDED -> if (view.descending) R.string.order_newest_first else R.string.order_oldest_first
+    else -> ownWords
+}
+
 /**
  * A list's find box and its sort button, as Windows' action bar has them (`FilterBox`,
  * `SortButton`), side by side under the list's play button. What is typed narrows the list at
