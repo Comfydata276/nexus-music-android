@@ -2,6 +2,7 @@ package org.medianexus.music.playback
 
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
+import org.medianexus.music.library.PlacedSongs
 import org.medianexus.music.net.Song
 
 /** Repeat, as the Windows app numbers it (and saves it in the settings): 0 off, 1 the whole
@@ -28,11 +29,16 @@ object Repeat {
  * the queue can tell its entries apart even when one song is in it twice.
  */
 class Queue internal constructor(order: MutableList<Int>) {
-    constructor() : this(mutableListOf())
+    // The play order, the entry numbers and the places are kept as numbers, not boxed: a
+    // queue can be 50,000 long (see Numbers.kt).
+    constructor() : this(IntList())
 
-    var songs = mutableListOf<Song>()
+    /** Mostly places in a table of songs (the phone's copy of the library, or the table a saved
+     *  queue was read into) rather than songs: see [PlacedSongs]. A song is made when one is
+     *  asked for, never all of them. */
+    var songs = PlacedSongs()
         private set
-    var uids = mutableListOf<Long>()
+    var uids: MutableList<Long> = LongList()
         private set
 
     /** (Given from outside only by a test, which counts what is done to it.) */
@@ -44,7 +50,7 @@ class Queue internal constructor(order: MutableList<Int>) {
     /** The page the queue was started from (its route key), and for each entry of `songs`
      *  its position in that page's song list. */
     var source = ""
-    var origins = mutableListOf<Int?>()
+    var origins: MutableList<Int?> = PlaceList()
         private set
     /** The ids of every song in that page's list, as last seen. */
     var sourceList = mutableListOf<String>()
@@ -93,7 +99,7 @@ class Queue internal constructor(order: MutableList<Int>) {
     fun queuedAhead(): Int {
         var count = 0
         for (place in cursor + 1 until order.size) {
-            if (!songs[order[place]].queued) break
+            if (!songs.isQueued(order[place])) break
             count++
         }
         return count
@@ -141,8 +147,9 @@ class Queue internal constructor(order: MutableList<Int>) {
     ) {
         revision++
         this.filter = filter
-        songs.clear()
-        list.mapTo(songs) { if (it.queued) it.copy(queued = false) else it }
+        // Places stay places: a list of 50,000 from the copy of the library is shared, not made
+        // into songs.
+        songs = PlacedSongs.from(list) { if (it.queued) it.copy(queued = false) else it }
         uids.clear()
         repeat(songs.size) { uids += newUid() }
         order.clear()
@@ -161,8 +168,7 @@ class Queue internal constructor(order: MutableList<Int>) {
     /** Puts back a queue exactly as it was saved: the songs, their order and the place. */
     fun restore(saved: SavedQueue) {
         revision++
-        songs.clear()
-        songs.addAll(saved.songs)
+        songs = PlacedSongs.from(saved.songs)
         uids.clear()
         repeat(songs.size) { uids += newUid() }
         order.clear()
@@ -219,7 +225,7 @@ class Queue internal constructor(order: MutableList<Int>) {
     /** The song that's playing has had its turn: it's no longer waiting in the queue. */
     fun trackChanged() {
         val entry = order.getOrNull(cursor) ?: return
-        if (songs[entry].queued) songs[entry] = songs[entry].copy(queued = false)
+        if (songs.isQueued(entry)) songs[entry] = songs[entry].copy(queued = false)
     }
 
     // ---- Shuffle --------------------------------------------------------------------------
@@ -327,7 +333,7 @@ class Queue internal constructor(order: MutableList<Int>) {
         revision++
         val entry = order.removeAt(f)
         order.add(t, entry)
-        songs[entry] = songs[entry].copy(queued = queued)
+        if (songs.isQueued(entry) != queued) songs[entry] = songs[entry].copy(queued = queued)
     }
 
     /** Moves entries in the playing order as a player is asked to: `from` until `to` go to
@@ -379,12 +385,12 @@ class Queue internal constructor(order: MutableList<Int>) {
         for (entry in songs.indices) {
             if (gone[entry]) continue
             moved[entry] = kept
-            songs[kept] = songs[entry]
+            songs.copyEntry(entry, kept)
             uids[kept] = uids[entry]
             if (entry < origins.size) origins[kept] = origins[entry]
             kept++
         }
-        while (songs.size > kept) songs.removeAt(songs.size - 1)
+        songs.truncate(kept)
         while (uids.size > kept) uids.removeAt(uids.size - 1)
         while (origins.size > kept) origins.removeAt(origins.size - 1)
         var place = 0
@@ -477,10 +483,10 @@ class Queue internal constructor(order: MutableList<Int>) {
         revision++
         val (moved, arrivals) = compareLists(sourceList, ids)
         val lineup = followList(
-            Lineup(songs.toList(), origins.toList(), order.toList(), cursor, uids.toList()),
+            Lineup(songs, origins.toList(), order.toList(), cursor, uids.toList()),
             shuffle, moved, arrivals, view, songAt,
         ) { n -> random.nextInt(n.coerceAtLeast(1)) }
-        songs.clear(); songs.addAll(lineup.songs)
+        songs = PlacedSongs.from(lineup.songs)
         uids.clear(); lineup.entries.mapTo(uids) { if (it < 0) newUid() else it }
         origins.clear(); origins.addAll(lineup.origins)
         order.clear(); order.addAll(lineup.order)
@@ -491,13 +497,14 @@ class Queue internal constructor(order: MutableList<Int>) {
 
     /** A copy of the queue as it stands, for saving. */
     fun saved(position: Double, stamp: Long): SavedQueue = SavedQueue(
-        songs = songs.toList(),
-        order = order.toList(),
+        // Two small arrays, not a song each: the songs are made one at a time as it is written.
+        songs = songs.snapshot(),
+        order = IntList(order),
         cursor = cursor,
         position = position,
         context = context,
         source = source,
-        origins = origins.toList(),
+        origins = PlaceList(origins),
         stamp = stamp,
         sourceList = sourceList.toList(),
         listFilter = filter,
@@ -591,7 +598,8 @@ fun followList(
         }
     }
     // The new set of songs, and where each old entry went in it.
-    val newSongs = mutableListOf<Song>()
+    // Entries that are places in a table stay places (see PlacedSongs).
+    val newSongs = PlacedSongs()
     val newOrigins = mutableListOf<Int?>()
     val newEntries = mutableListOf<Long>()
     val went = arrayOfNulls<Int>(songs.size)
@@ -599,7 +607,7 @@ fun followList(
     for (item in items) {
         if (item >= 0) {
             went[item] = newSongs.size
-            newSongs += songs[item]
+            if (songs is PlacedSongs) newSongs.addFrom(songs, item) else newSongs += songs[item]
             newOrigins += now[item]
             newEntries += entries.getOrElse(item) { -1L }
         } else {

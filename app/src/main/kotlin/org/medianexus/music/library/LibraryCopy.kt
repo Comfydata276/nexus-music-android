@@ -177,8 +177,8 @@ class LibraryCopy(
                 }
                 // A first fetch cut short: what it got so far.
                 val began = CopyFile.readBegan(beganFile) ?: return@run null
-                val parts = readPages(began.second, began.first)
-                if (parts.isEmpty()) null else assemble(parts, began.first, complete = false)
+                val gathered = Gathering().also { readPages(it, began.second, began.first) }
+                if (gathered.pages == 0) null else gathered.snapshot(began.first, complete = false)
             }
         }
         if (found != null && current.value == null) current.value = found
@@ -259,34 +259,38 @@ class LibraryCopy(
         val began = withContext(io) { CopyFile.readBegan(beganFile) }
         val same = began != null && began.second == pageSize && began.first.count == status.count && began.first.lastScan == status.lastScan
         val stamp = if (same) began!!.first else CopyStamp(status.count, status.lastScan, now())
-        val parts = ArrayList<Part>()
+        // Each page goes into the packed form as it arrives (see Gathering): what is held while
+        // fetching is the copy as far as it has got, not every page's songs as objects.
+        val gathered = Gathering()
         withContext(io) {
             if (same) {
                 // Only pages kept under this very note: one left from another fetch is not.
-                parts += readPages(pageSize, stamp)
+                readPages(gathered, pageSize, stamp)
             } else {
                 pagesDir.deleteRecursively()
                 CopyFile.writeBegan(beganFile, stamp, pageSize)
             }
         }
-        val carriedOn = parts.size
-        fetchingNow.value = Fetching(parts.sumOf { it.found.songs.size }, first)
+        val carriedOn = gathered.pages
+        fetchingNow.value = Fetching(gathered.songCount, first)
         var lastShown = System.nanoTime()
         try {
             while (true) {
-                val last = parts.lastOrNull()
-                val want = if (last == null) Asked(pageSize, pageSize, pageSize) else last.next(pageSize)
+                val want = gathered.next(pageSize)
                 if (want.none) break
-                val page = parts.size
+                val page = gathered.pages
                 val found = server.page(want.artists, want.albums, want.songs, page * pageSize)
                 val part = Part(page, want, found)
-                withContext(io) { CopyFile.writePage(pageFile(page), stamp, part) }
+                withContext(io) {
+                    CopyFile.writePage(pageFile(page), stamp, part)
+                    gathered.add(part)
+                }
                 pageKept(page)
-                parts += part
-                fetchingNow.value = Fetching(fetchingNow.value?.songs?.plus(found.songs.size) ?: found.songs.size, first)
-                // The first time, what has arrived is there to be shown, a second at a time.
+                fetchingNow.value = Fetching(gathered.songCount, first)
+                // The first time, what has arrived is there to be shown, a second at a time:
+                // added to, sharing what was shown before, not put together again.
                 if (first && System.nanoTime() - lastShown > SHOW_EVERY_NANOS) {
-                    current.value = withContext(io) { assemble(parts, stamp, complete = false) }
+                    current.value = gathered.snapshot(stamp, complete = false)
                     lastShown = System.nanoTime()
                 }
             }
@@ -297,7 +301,7 @@ class LibraryCopy(
                 withContext(io) { pagesDir.deleteRecursively() }
                 return Fetched.Moved(after, if (after.scanning) "a scan is under way" else "it was scanned again")
             }
-            val whole = withContext(io) { assemble(parts, stamp, complete = true) }
+            val whole = withContext(io) { gathered.whole(stamp) }
             // As many songs as the server says it has (Navidrome's count is its songs; a server
             // that gives no count says 0, and isn't counted against).
             if (stamp.count > 0 && whole.songs.size.toLong() != stamp.count) {
@@ -325,30 +329,50 @@ class LibraryCopy(
     /** The pages of a fetch kept so far, in order, up to the first that's missing, can't be
      *  read, or was kept under another note than `stamp` (another fetch's, of another scan);
      *  that one and any after it are cleared away. */
-    private fun readPages(size: Int, stamp: CopyStamp): List<Part> {
-        val parts = ArrayList<Part>()
+    private fun readPages(into: Gathering, size: Int, stamp: CopyStamp) {
         while (true) {
-            val (kept, part) = CopyFile.readPage(pageFile(parts.size)) ?: break
-            if (kept != stamp || part.page != parts.size || part.asked.largest > size) break
-            parts += part
+            val (kept, part) = CopyFile.readPage(pageFile(into.pages)) ?: break
+            if (kept != stamp || part.page != into.pages || part.asked.largest > size) break
+            into.add(part)
         }
         pagesDir.listFiles()?.forEach { file ->
             val n = file.name.removePrefix("page-").removeSuffix(".bin").toIntOrNull()
-            if (n != null && n >= parts.size) file.delete()
+            if (n != null && n >= into.pages) file.delete()
         }
-        return parts
     }
 
-    private fun assemble(parts: List<Part>, stamp: CopyStamp, complete: Boolean): LibrarySnapshot {
-        val songs = SongTable.Builder()
-        val albums = LinkedHashMap<String, Album>()
-        val artists = LinkedHashMap<String, Artist>()
-        for (part in parts) {
+    /**
+     * The pages of a fetch so far, put together as they arrive: songs straight into the packed
+     * table (a page's 500 songs are let go once they are in it), albums and artists by id, and
+     * of each page only how many of each kind it asked for and brought (what the next page
+     * asks for). Not safe from two threads at once: one fetch at a time adds to it.
+     */
+    private class Gathering {
+        private val songs = SongTable.Builder()
+        private val albums = LinkedHashMap<String, Album>()
+        private val artists = LinkedHashMap<String, Artist>()
+        private var last: Part.Counted? = null
+        var pages = 0
+            private set
+        val songCount: Int get() = songs.count
+
+        fun add(part: Part) {
             for (song in part.found.songs) songs.add(song)
             for (album in part.found.albums) if (album.id.isNotEmpty()) albums.putIfAbsent(album.id, album.copy(songs = emptyList()))
             for (artist in part.found.artists) if (artist.id.isNotEmpty()) artists.putIfAbsent(artist.id, artist.copy(albums = emptyList()))
+            last = part.counted()
+            pages++
         }
-        return LibrarySnapshot(songs.build(), albums.values.toList(), artists.values.toList(), stamp, complete)
+
+        /** What the next page asks for. */
+        fun next(size: Int): Asked = last?.next(size) ?: Asked(size, size, size)
+
+        /** What has arrived, sharing the table's arrays (see [SongTable.Builder.snapshot]). */
+        fun snapshot(stamp: CopyStamp, complete: Boolean) =
+            LibrarySnapshot(songs.snapshot(), albums.values.toList(), artists.values.toList(), stamp, complete)
+
+        /** All of it, in arrays of its own. */
+        fun whole(stamp: CopyStamp) = LibrarySnapshot(songs.build(), albums.values.toList(), artists.values.toList(), stamp, complete = true)
     }
 
     /** How many of each kind a page asked for. */
@@ -360,11 +384,18 @@ class LibraryCopy(
     /** One page of a fetch: what it asked for, and what came. */
     class Part(val page: Int, val asked: Asked, val found: Found) {
         /** What the page after it asks for: more of each kind only while each came full. */
-        fun next(size: Int) = Asked(
-            if (asked.artists > 0 && found.artists.size >= asked.artists) size else 0,
-            if (asked.albums > 0 && found.albums.size >= asked.albums) size else 0,
-            if (asked.songs > 0 && found.songs.size >= asked.songs) size else 0,
-        )
+        fun next(size: Int) = counted().next(size)
+
+        fun counted() = Counted(asked, found.artists.size, found.albums.size, found.songs.size)
+
+        /** A page as far as the next one needs it: how many of each kind it asked for and got. */
+        class Counted(val asked: Asked, val artists: Int, val albums: Int, val songs: Int) {
+            fun next(size: Int) = Asked(
+                if (asked.artists > 0 && artists >= asked.artists) size else 0,
+                if (asked.albums > 0 && albums >= asked.albums) size else 0,
+                if (asked.songs > 0 && songs >= asked.songs) size else 0,
+            )
+        }
     }
 
     companion object {
@@ -457,15 +488,16 @@ internal object CopyFile {
 
     fun readBegan(file: File): Pair<CopyStamp, Int>? = readChecked(file, BEGAN) { input -> readStamp(input) to input.int() }
 
-    private fun writeChecked(file: File, kind: Int, body: (Packer) -> Unit) {
-        val out = Packer()
+    /** Written through a buffer as it is packed, with the checksum after it: never whole in
+     *  memory. */
+    private fun writeChecked(file: File, kind: Int, body: (Packer) -> Unit) = writeAtomically(file) { raw ->
+        val out = Packer(64 * 1024, raw)
         out.int(MAGIC)
         out.int(VERSION)
         out.int(kind)
         body(out)
-        val crc = CRC32().apply { update(out.bytes, 0, out.size) }
-        out.int(crc.value.toInt())
-        writeAtomically(file) { raw -> raw.write(out.bytes, 0, out.size) }
+        val sum = out.checksum()
+        raw.write(byteArrayOf((sum ushr 24).toByte(), (sum ushr 16).toByte(), (sum ushr 8).toByte(), sum.toByte()))
     }
 
     /** Read whole (the copy is a few megabytes), checked once, then taken apart in memory. */

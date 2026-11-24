@@ -13,6 +13,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.encodeToStream
+import org.medianexus.music.library.idAt
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.writeAtomically
 
@@ -22,6 +23,9 @@ import org.medianexus.music.store.writeAtomically
  */
 @Serializable
 data class SavedQueue(
+    /** Written a song at a time as Windows writes them; read back into a table of their own
+     *  (see [org.medianexus.music.library.PlacedSongs]), not as one object per song. */
+    @Serializable(with = org.medianexus.music.library.PlacedSongsSerializer::class)
     val songs: List<Song> = emptyList(),
     val order: List<Int> = emptyList(),
     val cursor: Int = 0,
@@ -57,7 +61,7 @@ data class SavedQueue(
 
     /** Which queue this is, as Windows works it out (`queue_shape`): where playback had got
      *  to is saved apart, against this. */
-    fun shape(): ULong = queueShape(songs.map { it.id }, order, context, source, origins, sourceList)
+    fun shape(): ULong = queueShape(List(songs.size) { songs.idAt(it) }, order, context, source, origins, sourceList)
 }
 
 /** Where playback has got to in the saved queue (`QueuePlace` on Windows). */

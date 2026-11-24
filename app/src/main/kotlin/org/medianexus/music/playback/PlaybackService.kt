@@ -766,8 +766,22 @@ class PlaybackService : MediaLibraryService() {
         // numbered ranges: every one of those folders is told to load again (see
         // CarTree.stale).
         next.scope.launch {
+            var following: kotlinx.coroutines.Job? = null
             now.pages.changes.collect { (key, value) ->
-                if (key == player.queue.source) songsIn(value)?.let { songs -> player.follow(key, songs, orderOf(key, songs, player.queue.filter)) }
+                if (key == player.queue.source) songsIn(value)?.let { songs ->
+                    // Nothing to do when the list's songs are the ones the queue last saw (most
+                    // refreshes of a page): no dates, no sort. Otherwise the list's order (its
+                    // dates added, a sort of thousands) is worked out off the main thread, and
+                    // only the queue's own change made on it; a newer copy of the list
+                    // overtakes one still being worked out.
+                    if (sameSongs(player.queue.sourceList, songs)) return@let
+                    val filter = player.queue.filter
+                    following?.cancel()
+                    following = next.scope.launch {
+                        val order = withContext(Dispatchers.Default) { orderOf(key, songs, filter) }
+                        if (player.queue.source == key) player.follow(key, songs, order)
+                    }
+                }
                 for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
             }
         }
@@ -915,6 +929,13 @@ class PlaybackService : MediaLibraryService() {
         if (view.isDefault) return songs.indices.toList()
         val added = if (view.sort == org.medianexus.music.library.ListView.ADDED) addedDates(key, songs) else null
         return org.medianexus.music.library.Arrange.arrange(songs.columns(), view) { added?.get(it) ?: 0 }.toList()
+    }
+
+    /** Whether a list holds these songs, in this order (by id). */
+    private fun sameSongs(ids: List<String>, songs: List<Song>): Boolean {
+        if (ids.size != songs.size) return false
+        for (i in ids.indices) if (ids[i] != songs[i].id) return false
+        return true
     }
 
     private fun songsIn(page: Any?): List<Song>? = when (page) {

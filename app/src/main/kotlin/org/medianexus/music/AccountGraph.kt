@@ -179,6 +179,9 @@ class AccountGraph(
                 LongArray(songs.size) { if (noted[it] > 0) noted[it] else day(songs[it]) }
             }
             key == "liked" -> LongArray(songs.size) { parse(songs[it].starred) }
+            // (The Songs page's list is places in the copy: read without making each a song.)
+            key == Library.SONGS && songs is org.medianexus.music.library.PlacedSongs ->
+                LongArray(songs.size) { org.medianexus.music.library.Arrange.dayStart(songs.createdSeconds(it)) }
             key == Library.SONGS -> LongArray(songs.size) { day(songs[it]) }
             else -> LongArray(songs.size)
         }

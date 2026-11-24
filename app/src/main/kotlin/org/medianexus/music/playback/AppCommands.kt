@@ -6,7 +6,9 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.SessionCommand
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
-import org.medianexus.music.library.columns
+import org.medianexus.music.library.arrangeable
+import org.medianexus.music.library.idAt
+import org.medianexus.music.library.pick
 import org.medianexus.music.net.Song
 
 /**
@@ -87,14 +89,16 @@ object AppCommands {
         // it, as the screen worked it out. Each song still knows its place in the list itself.
         val view = viewOf(args)
         val added = if (view?.sort == org.medianexus.music.library.ListView.ADDED) dates(source, songs) else null
-        val picked = StartPlace.pick(songs.columns(), { songs[it].id }, view, args.getInt("start"), args.getString("startId")?.takeIf { !args.getBoolean("anyStart") }) { added?.get(it) ?: 0 }
+        // Read without making a song of each where the list holds places (the Songs page's
+        // 50,000 are places in the copy of the library): see PlacedSongs.
+        val picked = StartPlace.pick(songs.arrangeable(), { songs.idAt(it) }, view, args.getInt("start"), args.getString("startId")?.takeIf { !args.getBoolean("anyStart") }) { added?.get(it) ?: 0 }
         val rows = when (picked) {
             is StartPlace.Picked.Rows -> picked
             StartPlace.Picked.Gone -> return Started.Gone
             StartPlace.Picked.Empty -> return Started.Empty
         }
         val shown = rows.shown
-        val list = shown?.map { songs[it] } ?: songs
+        val list = shown?.let { songs.pick(it) } ?: songs
         val places = shown?.toList() ?: songs.indices.toList()
         // Offline (`plays` given): only what can play, each still at its place in the list.
         val cut = if (plays != null) playableOnly(list, rows.first, plays) ?: return Started.NothingOffline else null
@@ -107,7 +111,7 @@ object AppCommands {
                 // A list from a page is always the page's whole list, in its order: each song's
                 // place in it is its place here (what marks the row playing).
                 origins = if (source.isNotEmpty()) (cut?.origins?.map { places[it] } ?: places) else null,
-                sourceList = songs.map { it.id },
+                sourceList = List(songs.size) { songs.idAt(it) },
                 shuffle = shuffle,
                 anyStart = args.getBoolean("anyStart"),
                 filter = view?.filter?.trim().orEmpty(),

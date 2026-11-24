@@ -3,20 +3,42 @@ package org.medianexus.music.store
 import java.io.IOException
 
 /**
- * Numbers and text put one after another into memory, for a file that is written whole
- * (big-endian, as Java's data streams write them). A stream that writes a number at a time
- * through a buffer costs several calls a number; the copy of a library of 50,000 songs is a
- * few million numbers.
+ * Numbers and text put one after another (big-endian, as Java's data streams write them),
+ * for a file that is written whole. A stream that writes a number at a time through a buffer
+ * costs several calls a number; the copy of a library of 50,000 songs is a few million
+ * numbers. Into memory, or, given a `sink`, through a buffer of `initial` bytes into it, with
+ * a checksum of everything that went through ([checksum]): the copy of a library is written
+ * without first being made whole in memory (13 MB for 50,000 songs, and as much again while
+ * its array grew).
  */
-class Packer(initial: Int = 64 * 1024) {
+class Packer(initial: Int = 64 * 1024, private val sink: java.io.OutputStream? = null) {
     var bytes = ByteArray(initial)
         private set
     var size = 0
         private set
+    private val crc = java.util.zip.CRC32()
 
     private fun room(n: Int) {
         if (size + n <= bytes.size) return
+        if (sink != null) {
+            flush()
+            if (n <= bytes.size) return
+        }
         bytes = bytes.copyOf(maxOf(bytes.size * 2, size + n))
+    }
+
+    /** Given a sink: passes on what is buffered. */
+    fun flush() {
+        if (sink == null || size == 0) return
+        crc.update(bytes, 0, size)
+        sink.write(bytes, 0, size)
+        size = 0
+    }
+
+    /** Given a sink: the checksum (CRC-32) of everything written so far, all of it passed on. */
+    fun checksum(): Int {
+        flush()
+        return crc.value.toInt()
     }
 
     fun int(value: Int) {

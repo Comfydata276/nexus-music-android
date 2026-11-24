@@ -107,8 +107,9 @@ class Library(
      * the screen shows the kept copy, so this is the same list.
      */
     suspend fun keptSongs(source: String): List<Song>? = when {
-        // Every song, newest first, from the phone's copy of the library (the Songs page).
-        source == SONGS -> copy?.state?.value?.let { copy -> copy.newestFirst.map { copy.songs.song(it) } }
+        // Every song, newest first, from the phone's copy of the library (the Songs page): as
+        // places in it, not 50,000 songs (see PlacedSongs).
+        source == SONGS -> copy?.state?.value?.let { copy -> PlacedSongs.of(copy.songs, copy.newestFirst) }
         // As the page shows it: with the likes and unlikes still being sent (see [likedShown]).
         source == "liked" -> likedShown(pages.kept(liked()))
         source.startsWith("album:") -> pages.kept(album(source.removePrefix("album:")))?.songs

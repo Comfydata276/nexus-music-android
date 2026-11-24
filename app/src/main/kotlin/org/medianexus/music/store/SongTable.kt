@@ -53,8 +53,12 @@ class SongTable private constructor(
     /** When it was added to the library, in milliseconds since 1970; 0 if not known. */
     fun createdMillis(i: Int): Long = times[i * TIMES + CREATED].let { if (it == NO_TIME) 0 else it }
 
+    /** How many songs have been made of the table (for the tests; not exact across threads). */
+    internal var made = 0L
+
     /** The song at `i`, whole. */
     fun song(i: Int): Song {
+        made++
         val t = i * TEXTS
         val n = i * NUMBERS
         val g = i * 4
@@ -125,15 +129,19 @@ class SongTable private constructor(
         }
     }
 
-    /** Puts a table together a song at a time. Text that songs share is kept once. */
-    class Builder {
+    /** Puts a table together a song at a time. Text that songs share is kept once. With
+     *  `distinct` (a library), a song whose id is in already is not added again; without (a
+     *  queue, which may hold a song twice), every song is. */
+    class Builder(private val distinct: Boolean = true) {
         private var size = 0
         private var ids = arrayOfNulls<String>(INITIAL)
         private var titles = arrayOfNulls<String>(INITIAL)
         private val textIds = HashMap<String, Int>()
-        private val texts = ArrayList<String>()
+        private var texts = arrayOfNulls<String>(256)
+        private var textCount = 0
         private val creditIds = HashMap<List<Credit>, Int>()
-        private val credits = ArrayList<List<Credit>>()
+        private var credits = arrayOfNulls<List<Credit>>(64)
+        private var creditCount = 0
         private var textRefs = IntArray(INITIAL * TEXTS)
         private var numbers = IntArray(INITIAL * NUMBERS)
         private var times = LongArray(INITIAL * TIMES)
@@ -143,9 +151,19 @@ class SongTable private constructor(
 
         val count: Int get() = size
 
-        private fun text(value: String): Int = textIds.getOrPut(value) { texts += value; texts.size - 1 }
+        // (Grown by copying into a new array, never written in place below the count: a table
+        // already handed out by [snapshot] reads the old array, and is never disturbed.)
+        private fun text(value: String): Int = textIds.getOrPut(value) {
+            if (textCount == texts.size) texts = texts.copyOf(textCount * 2)
+            texts[textCount] = value
+            textCount++
+        }
 
-        private fun creditsOf(value: List<Credit>): Int = creditIds.getOrPut(value) { credits += value; credits.size - 1 }
+        private fun creditsOf(value: List<Credit>): Int = creditIds.getOrPut(value) {
+            if (creditCount == credits.size) credits = credits.copyOf(creditCount * 2)
+            credits[creditCount] = value
+            creditCount++
+        }
 
         private fun room() {
             if (size < ids.size) return
@@ -161,7 +179,7 @@ class SongTable private constructor(
         /** Adds a song, unless one with its id is in already (the server's library moved
          *  while it was being read a page at a time, and a song came round twice). */
         fun add(song: Song): Boolean {
-            if (song.id.isEmpty() || !seen.add(song.id)) return false
+            if (distinct && (song.id.isEmpty() || !seen.add(song.id))) return false
             room()
             val i = size
             ids[i] = song.id
@@ -209,18 +227,32 @@ class SongTable private constructor(
             return at ?: NO_TIME
         }
 
-        /** The table as it stands; the builder can go on being added to. */
+        /** The table as it stands, in arrays of its own, no bigger than it needs; the builder
+         *  can go on being added to. */
         fun build(): SongTable = SongTable(
             size,
             ids.copyOf(size).requireNoNulls(),
             titles.copyOf(size).requireNoNulls(),
-            texts.toTypedArray(),
-            credits.toTypedArray(),
+            texts.copyOf(textCount).requireNoNulls(),
+            credits.copyOf(creditCount).requireNoNulls(),
             textRefs.copyOf(size * TEXTS),
             numbers.copyOf(size * NUMBERS),
             times.copyOf(size * TIMES),
             gains.copyOf(size * 4),
             HashMap(oddTimes),
+        )
+
+        /**
+         * The table as it stands, sharing the builder's arrays rather than copying them: for
+         * showing a library as it arrives, a second at a time, without copying everything that
+         * has arrived each time. Safe while the builder goes on: it only ever writes past what
+         * a snapshot reads, and when it needs more room it moves to new arrays, leaving the
+         * old ones to the snapshots that have them.
+         */
+        @Suppress("UNCHECKED_CAST")
+        fun snapshot(): SongTable = SongTable(
+            size, ids as Array<String>, titles as Array<String>, texts as Array<String>, credits as Array<List<Credit>>,
+            textRefs, numbers, times, gains, HashMap(oddTimes),
         )
     }
 
