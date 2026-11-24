@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -151,8 +153,10 @@ class Downloads(
     /** What says whether a file that has arrived is the song (a stand-in, in tests whose
      *  songs are not audio). */
     private val check: AudioCheck = Media3AudioCheck,
-    /** Where the start-up sweep of the folder runs (a test's own, to hold it). */
-    private val disk: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    /** Where the catalogue is written from the main thread's side, and the start-up sweep of
+     *  the folder runs: one thing at a time, in the order asked, never on the main thread.
+     *  (A test's own, to hold it.) */
+    private val disk: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
@@ -168,8 +172,9 @@ class Downloads(
     private val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
     private var released = false
 
-    /** Songs on their way, by id, as they were asked for. */
-    private val songs = HashMap<String, Song>()
+    /** Songs on their way, by id, as they were asked for (and in what form). Known here the
+     *  moment a song is asked for, before Media3's own list of downloads says so. */
+    private val asks = HashMap<String, Ask>()
     /** The songs of this batch (Windows' `batch_total` counts them): what has become of
      *  each is read from the catalogue, not counted from Media3's events, which a song asked
      *  for again, or removed meanwhile, would throw out. */
@@ -220,34 +225,55 @@ class Downloads(
 
     // ---- Asking for downloads --------------------------------------------------------------
 
+    /** One request at a time: each is decided on what the one before it left (what is queued,
+     *  the room it will take), not on what stood before either began. */
+    private val asking = Mutex()
+
+    /** A write to the catalogue from the main thread's side: done on [disk], in order. */
+    private suspend fun <T> onDisk(write: () -> T): T = withContext(disk) { write() }
+
+    /** The same, for where nothing waits for it. */
+    private fun later(write: () -> Unit) {
+        scope.launch(disk) { write() }
+    }
+
     /**
-     * Downloads these songs. Ones already downloaded or on their way are passed over. Nothing
-     * is started that would not fit, with half a gigabyte to spare (as Windows checks).
-     * `list` is the album, playlist or Liked songs they are, downloaded whole: it stays
-     * downloaded, and songs it gains are fetched too.
+     * Downloads these songs. Ones already downloaded or on their way are passed over (asking
+     * again for one on its way does not start it again). Nothing is started that would not
+     * fit, with half a gigabyte to spare (as Windows checks), **counting the room that what is
+     * already queued and arriving still needs**. `list` is the album, playlist or Liked songs
+     * they are, downloaded whole: it stays downloaded, and songs it gains are fetched too.
+     * `own`: the songs were asked for by themselves (a song's own Download), and keep their
+     * files whatever becomes of any list they are in.
      */
-    suspend fun download(wanted: List<Song>, list: DownloadedList? = null): Asked {
+    suspend fun download(wanted: List<Song>, list: DownloadedList? = null, own: Boolean = false): Asked = asking.withLock { ask(wanted, list, own) }
+
+    private suspend fun ask(wanted: List<Song>, list: DownloadedList?, own: Boolean): Asked {
         ready.await()
+        // (Whatever was being written to the catalogue has been, before it is read.)
+        onDisk {}
         val quality = settings.value.downloadQuality
-        val queued = now.value.active.mapTo(HashSet()) { it.song.id }
         val seen = HashSet<String>()
-        val fresh = wanted.filter { it.radioUrl.isEmpty() && it.id.isNotEmpty() && !catalogue.has(it.id) && it.id !in queued && seen.add(it.id) }
+        val proper = wanted.filter { it.radioUrl.isEmpty() && it.id.isNotEmpty() && seen.add(it.id) }
+        val fresh = proper.filter { !catalogue.has(it.id) && it.id !in asks }
         val needed = fresh.sumOf { expectedBytes(it, quality) }
         if (fresh.isNotEmpty()) {
+            val owed = owed()
             val free = withContext(Dispatchers.IO) { catalogue.dir.usableSpace }
-            if (needed + spare() > free) return Asked.NoRoom(needed, free)
+            if (needed + owed + spare() > free) return Asked.NoRoom(needed + owed, free)
         }
-        if (list != null) catalogue.keep(list.copy(at = list.at.takeIf { it > 0 } ?: (System.currentTimeMillis() / 1000)))
+        onDisk {
+            if (list != null) catalogue.keep(list.copy(at = list.at.takeIf { it > 0 } ?: (System.currentTimeMillis() / 1000)))
+            if (own) catalogue.single(proper.map { it.id })
+            if (fresh.isNotEmpty()) catalogue.clearFailures(fresh.map { it.id })
+        }
         if (fresh.isEmpty()) return Asked.AlreadyDownloaded
-        if (now.value.active.isEmpty()) {
-            batch.clear()
-        }
+        if (asks.isEmpty()) batch.clear()
         fresh.mapTo(batch) { it.id }
-        catalogue.clearFailures(fresh.map { it.id })
         for (song in fresh) {
             val form = savedForm(song, quality)
             val ask = Ask(song.copy(queued = false), form.bitrate, form.suffix)
-            songs[song.id] = ask.song
+            asks[song.id] = ask
             val request = DownloadRequest.Builder(song.id, Uri.parse(songUri(song.id)))
                 .setData(json.encodeToString(Ask.serializer(), ask).toByteArray())
                 .build()
@@ -259,27 +285,52 @@ class Downloads(
         return if (reach.value.offline) Asked.Offline else Asked.Started(fresh.size, fresh.first())
     }
 
+    /** The room that what is queued or arriving still needs: what each is expected to come
+     *  to, less what has arrived of it. */
+    private fun owed(): Long {
+        val arrived = manager.currentDownloads.associate { it.request.id to it.bytesDownloaded }
+        return asks.values.sumOf { ask ->
+            val whole = if (ask.bitrate > 0) ask.song.duration.toLong() * ask.bitrate * 125 else ask.song.size.coerceAtLeast(0)
+            (whole - (arrived[ask.song.id] ?: 0)).coerceAtLeast(0)
+        }
+    }
+
     /**
      * The download button on an album, playlist or Liked songs (Windows' `toggle_page_download`):
      * cancels what is under way, downloads what is missing, or, if all of it is downloaded,
      * removes it.
+     *
+     * **Only this list's standing changes, and only songs nothing else wants are touched**: a
+     * song another downloaded list holds, or that was downloaded by itself, stays downloaded
+     * (or goes on arriving), and the other list stays downloaded whole.
      */
-    suspend fun toggle(list: DownloadedList, songs: List<Song>): Toggled {
+    suspend fun toggle(list: DownloadedList, songs: List<Song>): Toggled = asking.withLock {
         ready.await()
-        val active = now.value.active.mapTo(HashSet()) { it.song.id }
-        val waiting = songs.filter { it.id in active }.map { it.id }
-        return when {
-            waiting.isNotEmpty() -> {
-                catalogue.forget(list.key)
-                cancel(waiting)
+        onDisk {}
+        val waiting = songs.filter { it.id in asks }.map { it.id }
+        // Whether it is this list that is on its way: a song of it arriving for another list,
+        // or by itself, doesn't make its button a Cancel (there would be nothing of this
+        // list's to cancel); pressed then, it downloads the list, as it would with nothing
+        // arriving.
+        val kept = catalogue.collection(list.key) != null
+        when {
+            waiting.isNotEmpty() && kept -> {
+                val others = onDisk {
+                    catalogue.forget(list.key)
+                    catalogue.wantedBesides(list.key)
+                }
+                stop(waiting.filter { it !in others })
                 Toggled.Cancelled
             }
-            songs.isNotEmpty() && songs.all { catalogue.has(it.id) } -> {
-                catalogue.forget(list.key)
-                remove(songs.map { it.id })
+            waiting.isEmpty() && songs.isNotEmpty() && songs.all { catalogue.has(it.id) } -> {
+                val others = onDisk {
+                    catalogue.forget(list.key)
+                    catalogue.wantedBesides(list.key)
+                }
+                drop(songs.map { it.id }.filter { it !in others })
                 Toggled.Removed
             }
-            else -> Toggled.Asked(download(songs, list.copy(songs = songs.map { it.id })))
+            else -> Toggled.Asked(ask(songs, list.copy(songs = songs.map { it.id }), own = false))
         }
     }
 
@@ -289,19 +340,26 @@ class Downloads(
         data class Asked(val asked: org.medianexus.music.downloads.Asked) : Toggled
     }
 
-    /** Stops these songs' downloads, waiting or part-way. */
+    /** Stops these songs' downloads, waiting or part-way, by hand: they are no longer wanted
+     *  for themselves either. */
     fun cancel(ids: Collection<String>) = onMain {
+        later { catalogue.unsingle(ids) }
+        stop(ids)
+    }
+
+    /** Stops these songs' downloads, and nothing more. */
+    private fun stop(ids: Collection<String>) = onMain {
         if (!::manager.isInitialized) return@onMain
         for (id in ids) {
             manager.removeDownload(id)
-            songs.remove(id)
+            asks.remove(id)
         }
         batch.removeAll(ids.filter { !catalogue.has(it) }.toSet())
         publish()
     }
 
     /** Stops everything on its way. */
-    fun cancelAll() = cancel(now.value.active.map { it.song.id })
+    fun cancelAll() = onMain { cancel(asks.keys.toList() + now.value.active.map { it.song.id }) }
 
     /** Has another go at the songs that couldn't be downloaded. */
     suspend fun retryFailed(onlyNetwork: Boolean = false): Asked? {
@@ -311,26 +369,41 @@ class Downloads(
     }
 
     /**
-     * Deletes these songs' downloaded copies, and stops any still on their way. A list
-     * downloaded whole that one of them belongs to is no longer kept whole (its other songs
-     * stay downloaded): otherwise the next look at it would fetch the song straight back.
+     * Deletes these songs' downloaded copies, by hand, and stops any still on their way. A
+     * list downloaded whole that one of them belongs to is no longer kept whole (its other
+     * songs stay downloaded): otherwise the next look at it would fetch the song straight
+     * back. (Removing a *list* is [toggle]'s, and changes no other list.)
      */
     fun remove(ids: Collection<String>) = onMain {
         val asked = ids.toSet()
-        for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) catalogue.forget(list.key)
-        val gone = ids.mapNotNull { catalogue.entry(it)?.song?.coverArt }
-        catalogue.remove(ids)
+        later {
+            for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) catalogue.forget(list.key)
+            catalogue.unsingle(ids)
+        }
+        drop(ids)
+    }
+
+    /** Deletes these songs' downloaded copies and stops any on their way, and nothing more:
+     *  the files go off the main thread, in turn with every other change to the catalogue. */
+    private fun drop(ids: Collection<String>) = onMain {
         if (::manager.isInitialized) for (id in ids) manager.removeDownload(id)
-        ids.forEach { songs.remove(it) }
-        unpin(gone)
+        ids.forEach { asks.remove(it) }
+        later {
+            val gone = ids.mapNotNull { catalogue.entry(it)?.song?.coverArt }
+            catalogue.remove(ids)
+            unpin(gone)
+        }
         publish()
     }
 
     /** Everything downloaded goes, and every list downloaded whole is forgotten. */
-    fun removeAll() {
-        catalogue.state.value.collections.forEach { catalogue.forget(it.key) }
-        val ids = catalogue.state.value.songs.keys + now.value.active.map { it.song.id }
-        remove(ids.toList())
+    fun removeAll() = onMain {
+        val ids = catalogue.state.value.songs.keys + asks.keys + now.value.active.map { it.song.id }
+        later {
+            catalogue.state.value.collections.forEach { catalogue.forget(it.key) }
+            catalogue.unsingle(catalogue.state.value.singles)
+        }
+        drop(ids.toList())
     }
 
     /** The lists downloaded whole: fetches whatever they have gained (Windows'
@@ -354,21 +427,23 @@ class Downloads(
      * Windows. Does nothing for a list that isn't downloaded whole.
      */
     suspend fun follow(list: DownloadedList, songs: List<Song>) {
+        onDisk {}
         val was = catalogue.collection(list.key) ?: return
         val next = list.copy(songs = songs.map { it.id }, at = was.at)
-        if (next != was) catalogue.keep(next)
+        // (Only if it is still downloaded whole by the time it is written.)
+        if (next != was) onDisk { if (catalogue.collection(list.key) != null) catalogue.keep(next) }
         val missing = songs.filter { !catalogue.has(it.id) }
         if (missing.isNotEmpty() && !reach.value.offline) download(missing)
     }
 
     // ---- Covers -----------------------------------------------------------------------------
 
+    /** Lets go of the covers nothing downloaded uses any more. (Off the main thread.) */
     private fun unpin(coverIds: List<String>) {
         val still = HashSet<String>()
         catalogue.state.value.songs.values.mapTo(still) { it.song.coverArt }
         catalogue.state.value.collections.mapTo(still) { it.coverArt }
-        val gone = coverIds.filter { it.isNotEmpty() && it !in still }.distinct()
-        if (gone.isNotEmpty()) scope.launch(Dispatchers.IO) { gone.forEach { covers.unpin(it) } }
+        coverIds.filter { it.isNotEmpty() && it !in still }.distinct().forEach { covers.unpin(it) }
     }
 
     // ---- What Media3 says -------------------------------------------------------------------
@@ -378,11 +453,11 @@ class Downloads(
             // What was waiting when the app last stopped: its songs, from what they were asked
             // for with. And what a download cut short left in the folder (part files with no
             // download waiting) is cleared away.
-            for (download in downloadManager.currentDownloads) ask(download)?.let { songs[it.song.id] = it.song }
-            if (batch.isEmpty()) batch += songs.keys
+            for (download in downloadManager.currentDownloads) if (!download.isTerminalState && download.state != Download.STATE_REMOVING) ask(download)?.let { asks[it.song.id] = it }
+            if (batch.isEmpty()) batch += asks.keys
             // Every download Media3 still holds, whatever was readable of it: the sweep must
             // leave their files alone.
-            val busy = downloadManager.currentDownloads.mapTo(HashSet()) { it.request.id } + songs.keys
+            val busy = downloadManager.currentDownloads.mapTo(HashSet()) { it.request.id } + asks.keys
             initialized = true
             publish()
             // What a download cut short left in the folder is cleared away, once, now: before
@@ -408,27 +483,30 @@ class Downloads(
             val id = download.request.id
             when (download.state) {
                 Download.STATE_COMPLETED -> {
-                    songs.remove(id)
+                    asks.remove(id)
                     catalogue.entry(id)?.song?.coverArt?.takeIf { it.isNotEmpty() }?.let { cover ->
                         // Have the artwork kept too, for when the server can't be reached.
                         scope.launch { covers.pin(cover) }
                     }
                 }
                 Download.STATE_FAILED -> {
-                    val song = songs.remove(id) ?: ask(download)?.song
+                    val song = asks.remove(id)?.song ?: ask(download)?.song
                     if (song != null) {
                         val failure = finalException?.let { generateSequence<Throwable>(it) { e -> e.cause }.firstNotNullOfOrNull { e -> e as? DownloadFailure } }
-                        catalogue.failed(Failed(song, failure?.reason ?: "It couldn't be downloaded.", failure?.network ?: true))
+                        // Written off the main thread (and a write that fails, the phone
+                        // being full, is said and not thrown: see Catalogue).
+                        later { catalogue.failed(Failed(song, failure?.reason ?: "It couldn't be downloaded.", failure?.network ?: true)) }
                         note("downloads: one failed (${if (failure?.network == true) "the server out of reach" else "see the Downloads list"})")
                     }
                 }
-                else -> ask(download)?.let { songs[id] = it.song }
+                Download.STATE_REMOVING -> asks.remove(id)
+                else -> if (id !in asks) ask(download)?.let { asks[id] = it }
             }
             publish()
         }
 
         override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
-            songs.remove(download.request.id)
+            asks.remove(download.request.id)
             publish()
         }
 
@@ -450,7 +528,7 @@ class Downloads(
         val current = manager.currentDownloads
         val active = current.mapNotNull { download ->
             if (download.state == Download.STATE_REMOVING || download.state == Download.STATE_COMPLETED || download.state == Download.STATE_FAILED) return@mapNotNull null
-            val song = songs[download.request.id] ?: ask(download)?.song ?: return@mapNotNull null
+            val song = asks[download.request.id]?.song ?: ask(download)?.song ?: return@mapNotNull null
             val state = if (download.state == Download.STATE_DOWNLOADING) {
                 val percent = download.percentDownloaded
                 SongState.Fetching(if (percent == C.PERCENTAGE_UNSET.toFloat()) -1f else (percent / 100f).coerceIn(0f, 0.99f))

@@ -130,6 +130,9 @@ class Catalogue(
         val songs: Map<String, Downloaded> = emptyMap(),
         val collections: List<DownloadedList> = emptyList(),
         val failed: Map<String, Failed> = emptyMap(),
+        /** Songs asked for by themselves (a song's own Download), which keep their files
+         *  whatever becomes of any list they are also in. */
+        val singles: Set<String> = emptySet(),
     ) {
         val ids: Set<String> get() = songs.keys
     }
@@ -252,7 +255,42 @@ class Catalogue(
      *  marked whole: anything else is not the download that was verified. */
     fun wholeFileOf(id: String): File? = entry(id)?.let { entry -> File(dir, entry.file).takeIf { entry.bytes > 0 && it.length() == entry.bytes } }
 
-    fun collection(key: String): DownloadedList? = synchronized(lock) { lists[key] }
+    fun collection(key: String): DownloadedList? = synchronized(lock) { lists[key]?.takeIf { key != SINGLES } }
+
+    /** These songs were asked for by themselves: each keeps its file while that stands,
+     *  whatever list it is also in. */
+    fun single(ids: Collection<String>) = synchronized(lock) {
+        val was = lists[SINGLES]?.songs.orEmpty()
+        val now = (was + ids).distinct()
+        if (now.size != was.size) {
+            lists[SINGLES] = DownloadedList(SINGLES, songs = now)
+            writeLists()
+            publish()
+        }
+    }
+
+    /** These songs are no longer wanted for themselves. */
+    fun unsingle(ids: Collection<String>) = synchronized(lock) {
+        val was = lists[SINGLES]?.songs ?: return@synchronized
+        val gone = ids.toSet()
+        val now = was.filter { it !in gone }
+        if (now.size != was.size) {
+            if (now.isEmpty()) lists.remove(SINGLES) else lists[SINGLES] = DownloadedList(SINGLES, songs = now)
+            writeLists()
+            publish()
+        }
+    }
+
+    /**
+     * The songs something wants kept, other than the list `except`: those asked for by
+     * themselves, and those of every other list downloaded whole. A song's file stays while
+     * it is one of these.
+     */
+    fun wantedBesides(except: String?): Set<String> = synchronized(lock) {
+        val out = HashSet<String>()
+        for ((key, list) in lists) if (key != except) out += list.songs
+        out
+    }
 
     /** Adds a whole download. Only to be called once the file is in place (see the class). */
     @Throws(IOException::class)
@@ -419,7 +457,7 @@ class Catalogue(
     }
 
     private fun publish() {
-        now.value = Snapshot(LinkedHashMap(songs), lists.values.toList(), LinkedHashMap(failures))
+        now.value = Snapshot(LinkedHashMap(songs), lists.values.filter { it.key != SINGLES }, LinkedHashMap(failures), lists[SINGLES]?.songs?.toSet().orEmpty())
     }
 
     /**
@@ -453,6 +491,10 @@ class Catalogue(
         private const val COMPACT_AFTER = 200
         const val LISTS_FILE = "collections.json"
         const val FAILED_FILE = "failed.json"
+
+        /** The key the songs asked for by themselves are kept under, among the lists (it is
+         *  not one, and is never shown as one). */
+        const val SINGLES = "songs"
         private val OWN_FILES = setOf(SONGS_FILE, BACKUP_FILE, LOG_FILE, LISTS_FILE, FAILED_FILE)
         private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     }

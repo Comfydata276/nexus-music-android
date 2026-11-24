@@ -76,7 +76,7 @@ class DownloadsTest {
         context = RuntimeEnvironment.getApplication()
         connected()
         database = StandaloneDatabaseProvider(context)
-        catalogue = Catalogue(folder.newFolder("downloads"))
+        catalogue = Catalogue(folder.newFolder("downloads"), note = { notes += it to Thread.currentThread() })
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -130,8 +130,19 @@ class DownloadsTest {
         }
     }
 
-    /** Where the start-up sweep runs: at once, unless a test holds it. */
-    private var disk: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
+    /** Where the catalogue is written and the start-up sweep runs: one thing at a time, at
+     *  once unless a test holds it. */
+    private val serial = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "disk").apply { isDaemon = true } }
+    private val held = java.util.concurrent.LinkedBlockingQueue<Runnable>()
+    @Volatile private var holding = false
+    private val disk = object : kotlinx.coroutines.CoroutineDispatcher() {
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            if (holding) held += block else serial.execute(block)
+        }
+    }
+
+    /** What the catalogue had to say, and on which thread it was doing what it said. */
+    private val notes: MutableList<Pair<String, Thread>> = Collections.synchronizedList(mutableListOf())
 
     private fun downloads(): Downloads {
         val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient())
@@ -302,12 +313,7 @@ class DownloadsTest {
     @Test
     fun noWorkIsAcceptedUntilTheStartUpSweepIsOver() {
         // The sweep is held: it runs when the test says.
-        val held = java.util.concurrent.LinkedBlockingQueue<Runnable>()
-        disk = object : kotlinx.coroutines.CoroutineDispatcher() {
-            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
-                held += block
-            }
-        }
+        holding = true
         // What an earlier run left: a file that is nobody's, and old.
         val stray = File(catalogue.dir, "stray.flac").also { it.writeBytes(ByteArray(9)); it.setLastModified(catalogue.opened - 60_000) }
         val engine = downloads()
@@ -319,10 +325,132 @@ class DownloadsTest {
         assertTrue(asked.isEmpty())
         assertTrue(stray.exists())
         // The sweep runs.
-        held.take().run()
+        holding = false
+        while (true) serial.execute(held.poll() ?: break)
         until("asked") { asking.isCompleted }
         assertFalse(stray.exists())
         until("downloaded") { catalogue.has("s1") }
         assertArrayEquals(files["s1"], catalogue.fileOf("s1")!!.readBytes())
+    }
+
+    // ---- Lists that share songs (offline review 4) -----------------------------------------
+
+    private fun list(key: String, songs: List<Song>) = DownloadedList(key, key, songs = songs.map { it.id })
+
+    @Test
+    fun removingOneOfTwoListsThatShareASongLeavesItForTheOther() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2, s3) = listOf(song("s1"), song("s2"), song("s3"))
+        run { engine.toggle(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) }
+        run { engine.toggle(list("playlist:p2", listOf(s2, s3)), listOf(s2, s3)) }
+        until("all three") { engine.state.value.downloaded.size == 3 && !engine.state.value.busy }
+        // The first playlist's button again: it is removed.
+        assertEquals(Downloads.Toggled.Removed, run { engine.toggle(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) })
+        until("s1 gone") { !catalogue.has("s1") }
+        repeat(20) { idle() }
+        // The song the other playlist holds stays, and that playlist is still downloaded whole.
+        assertTrue(catalogue.has("s2") && catalogue.has("s3"))
+        assertTrue(catalogue.fileOf("s2")!!.isFile)
+        assertEquals(listOf("playlist:p2"), engine.state.value.collections.map { it.key })
+        assertEquals(listOf("s2", "s3"), DownloadedViews.playlist(engine.state.value, "playlist:p2")!!.songs.map { it.id })
+        // And after the app is started again.
+        assertEquals(setOf("s2", "s3"), Catalogue(catalogue.dir).state.value.ids)
+    }
+
+    @Test
+    fun cancellingAListLeavesWhatAnotherListIsWaitingFor() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2, s3) = listOf(song("s1", size = 400_000), song("s2", size = 400_000), song("s3", size = 400_000))
+        run { engine.toggle(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) }
+        run { engine.toggle(list("playlist:p2", listOf(s2, s3)), listOf(s2, s3)) }
+        // With all of it still on its way, the first playlist's button: it is cancelled.
+        assertEquals(Downloads.Toggled.Cancelled, run { engine.toggle(list("playlist:p1", listOf(s1, s2)), listOf(s1, s2)) })
+        slow = false
+        until("the other list whole") { catalogue.has("s2") && catalogue.has("s3") && !engine.state.value.busy }
+        assertFalse(catalogue.has("s1"))
+        assertEquals(listOf("playlist:p2"), engine.state.value.collections.map { it.key })
+        // What the other list wanted was not stopped and started again for it.
+        assertEquals(1, asked.count { it.url.queryParameter("id") == "s2" })
+    }
+
+    @Test
+    fun aSongDownloadedByItselfOutlivesAListItIsIn() {
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val (s1, s2) = listOf(song("s1"), song("s2"))
+        run { engine.download(listOf(s1), own = true) }
+        run { engine.toggle(list("album:al-1", listOf(s1, s2)), listOf(s1, s2)) }
+        until("both") { engine.state.value.downloaded.size == 2 && !engine.state.value.busy }
+        assertEquals(Downloads.Toggled.Removed, run { engine.toggle(list("album:al-1", listOf(s1, s2)), listOf(s1, s2)) })
+        until("s2 gone") { !catalogue.has("s2") }
+        repeat(20) { idle() }
+        assertTrue(catalogue.has("s1"))
+        // Until it is itself removed, by hand.
+        engine.remove(listOf("s1"))
+        until("s1 gone") { !catalogue.has("s1") }
+        assertTrue(Catalogue(catalogue.dir).state.value.singles.isEmpty())
+    }
+
+    @Test
+    fun twoAlbumsAskedForTogetherCannotBothPassACheckThatOnlyOneFits() {
+        // Nothing arrives meanwhile, and there is room for one of them: each needs 300 MB,
+        // and all but 400 MB of what is free must be left spare.
+        slow = true
+        val each = 300L * 1024 * 1024
+        spare = catalogue.dir.usableSpace - 400L * 1024 * 1024
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val one = listOf(song("a1").copy(size = each))
+        val two = listOf(song("b1").copy(size = each))
+        val first = scope.async { engine.toggle(list("album:a", one), one) }
+        val second = scope.async { engine.toggle(list("album:b", two), two) }
+        until("both answered") { first.isCompleted && second.isCompleted }
+        @Suppress("OPT_IN_USAGE")
+        val answers = listOf(first.getCompleted(), second.getCompleted()).map { (it as Downloads.Toggled.Asked).asked }
+        assertEquals(1, answers.count { it is Asked.Started })
+        // The other is told what is needed in all, with what is already on its way.
+        assertEquals(2 * each, (answers.single { it is Asked.NoRoom } as Asked.NoRoom).needed)
+        engine.cancelAll()
+    }
+
+    @Test
+    fun askingAgainForWhatIsOnItsWayDoesNotStartItAgain() {
+        slow = true
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val one = song("s1", size = 400_000)
+        // Asked for twice in the same breath (two taps; a page's list and its top-up), before
+        // Media3 has so much as said the first is queued.
+        val answers = run { listOf(engine.download(listOf(one)), engine.download(listOf(one))) }
+        assertTrue(answers[0] is Asked.Started)
+        assertEquals(Asked.AlreadyDownloaded, answers[1])
+        until("arriving") { engine.state.value.active.any { it.state is SongState.Fetching } }
+        // And again while it arrives.
+        assertEquals(Asked.AlreadyDownloaded, run { engine.download(listOf(one)) })
+        slow = false
+        until("arrived") { catalogue.has("s1") && !engine.state.value.busy }
+        // It was fetched once, from its start: never stopped and begun again.
+        assertEquals(listOf<String?>(null), asked.filter { it.url.queryParameter("id") == "s1" }.map { it.headers["Range"] })
+    }
+
+    @Test
+    fun aFailureIsWrittenOffTheMainThreadAndAPhoneThatCantWriteCrashesNothing() {
+        // The list of failures can't be written (the phone is full; here, something is in
+        // its way).
+        File(File(catalogue.dir, Catalogue.FAILED_FILE), "in-the-way").apply { parentFile.mkdirs(); writeText("x") }
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        val gone = song("s1")
+        missing = setOf("s1")
+        run { engine.download(listOf(gone)) }
+        // Said to the person all the same, from memory...
+        until("failed") { engine.state.value.failed.isNotEmpty() && !engine.state.value.busy }
+        assertEquals("The server refused it (HTTP 404).", engine.state.value.failed.single().reason)
+        // ...and the write that couldn't be made was tried somewhere other than the main thread.
+        until("said") { notes.any { "failed.json couldn't be written" in it.first } }
+        assertTrue(notes.filter { "couldn't be written" in it.first }.none { it.second === Looper.getMainLooper().thread })
     }
 }

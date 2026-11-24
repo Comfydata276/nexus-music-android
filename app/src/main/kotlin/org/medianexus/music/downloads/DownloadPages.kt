@@ -48,7 +48,7 @@ object DownloadPages {
     /** Songs on their own (a song's menu). */
     suspend fun songs(context: Context, account: AccountGraph, songs: List<Song>): String? {
         val downloads = account.downloads ?: return null
-        return said(context, withContext(Dispatchers.Main.immediate) { downloads.download(songs) })
+        return said(context, withContext(Dispatchers.Main.immediate) { downloads.download(songs, own = true) })
     }
 
     /** Windows' words for what became of asking. */
