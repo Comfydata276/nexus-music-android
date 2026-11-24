@@ -135,11 +135,11 @@ fun PlaylistPage(route: Route.Playlist) {
     }
     val ui = LocalUi.current
     val playlists = ui.account?.playlists
-    // The server's copy, with the changes made here still waiting on top (never written into
-    // the kept page: see Playlists).
-    val waiting = (playlists?.waiting ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap()) }).collectAsStateWithLifecycle().value
+    // The server's copy, with the one change on its way (if any) shown as made (see Playlists).
+    val busyNow = (playlists?.busy ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptySet()) }).collectAsStateWithLifecycle().value
+    val busy = route.id in busyNow
     val kept = feed.value
-    val playlist = remember(kept, waiting) { kept?.let { playlists?.shown(it, waiting) ?: it } }
+    val playlist = remember(kept, busy) { kept?.let { playlists?.shown(it) ?: it } }
     // Gone from the server (its error 70, met by a change): the page goes.
     val gone = (playlists?.gone ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptySet()) }).collectAsStateWithLifecycle().value
     androidx.compose.runtime.LaunchedEffect(route.id in gone) { if (route.id in gone) ui.navigator.back() }
@@ -166,9 +166,10 @@ fun PlaylistPage(route: Route.Playlist) {
         downloadable = true,
         editable = playlist.takeIf { mine },
         draggable = online,
+        busy = busy,
         onMore = { page -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, kept, page = page)) },
         note = if (kept != null && !mine) stringResource(R.string.not_your_playlist, kept.owner) else null,
-        below = { if (mine && online && playlist != null) recommendations(playlist) },
+        below = { if (mine && online && playlist != null) recommendations(playlist, busy) },
     )
 }
 

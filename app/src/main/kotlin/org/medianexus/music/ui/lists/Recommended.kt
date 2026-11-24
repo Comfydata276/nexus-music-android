@@ -38,12 +38,12 @@ import org.medianexus.music.ui.theme.Theme
  * itself. Picked when the page opens, and not again while it stays open (so adding one doesn't
  * reshuffle the rest). Nothing at all offline, or when there is nothing to suggest.
  */
-fun LazyListScope.recommendations(playlist: Playlist) {
-    item(key = "recommended", contentType = "recommended") { Recommended(playlist) }
+fun LazyListScope.recommendations(playlist: Playlist, busy: Boolean = false) {
+    item(key = "recommended", contentType = "recommended") { Recommended(playlist, busy) }
 }
 
 @Composable
-private fun Recommended(playlist: Playlist) {
+private fun Recommended(playlist: Playlist, busy: Boolean) {
     val ui = LocalUi.current
     val library = ui.account?.library ?: return
     val offline = org.medianexus.music.ui.downloads.reachNow().offline
@@ -94,7 +94,8 @@ private fun Recommended(playlist: Playlist) {
                             if (!done) ui.addToPlaylist(playlist, listOf(song)) { added = added + song.id }
                         },
                         tint = if (done) Theme.colors.accentBright else Theme.colors.muted,
-                        enabled = true,
+                        // A change to the playlist on its way: dimmed, and nothing to do.
+                        enabled = !busy,
                     )
                 },
             )

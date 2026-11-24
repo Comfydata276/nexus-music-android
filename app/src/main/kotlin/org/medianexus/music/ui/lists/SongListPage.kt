@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -92,6 +93,8 @@ fun SongListPage(
     editable: org.medianexus.music.net.Playlist? = null,
     /** Whether its songs can be dragged now (the server there to take the change). */
     draggable: Boolean = true,
+    /** A change to it is on its way: its handles show it, and do nothing until it settles. */
+    busy: Boolean = false,
     /** The header's "…" (the page's own menu), if it has one: given what the page drew and
      *  its play button, for the menu to act on. */
     onMore: ((org.medianexus.music.ui.menu.FromPage) -> Unit)? = null,
@@ -285,7 +288,8 @@ fun SongListPage(
                                     showDuration = true,
                                     mark = marks.rowMark(song),
                                     handle = if (!canDrag) null else ({
-                                        DragHandle(song.title, Modifier.dragRows(drag, list, index) { from, to -> editable?.let { ui.movePlaylistSong(it, from, to) } ?: false })
+                                        // Busy: dimmed, and nothing to drag until the change on its way settles.
+                                        DragHandle(song.title, if (busy) Modifier.alpha(0.38f) else Modifier.dragRows(drag, list, index) { from, to -> editable?.let { ui.movePlaylistSong(it, from, to) } ?: false })
                                     }),
                                     actions = if (!canDrag) emptyList() else buildList {
                                         val playlist = editable ?: return@buildList

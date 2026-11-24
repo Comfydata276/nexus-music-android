@@ -30,11 +30,11 @@ import org.medianexus.music.store.PageCache
 import org.medianexus.music.store.PageSpec
 
 /**
- * Changing a playlist from two devices (M3b fixes, A). The phone is the app's own playlists
- * and kept pages; the other device is the test, changing the stand-in server directly at the
- * moments it chooses. Each of the phone's requests can be held at a gate after the server has
- * it and before it is carried out, made to fail, or have its answer lost after it was carried
- * out; every request is counted. Nothing here waits on time.
+ * Changing a playlist from two devices (M3b fixes 2, A: the strict rule). The phone is the
+ * app's own playlists and kept pages; the other device is the test, changing the stand-in
+ * server directly at the moments it chooses. Each of the phone's requests can be held at a
+ * gate after the server has it and before it is carried out, made to fail, or have its answer
+ * lost after it was carried out; every request is counted. Nothing here waits on time.
  */
 class PlaylistsTest {
     @get:Rule val folder = TemporaryFolder()
@@ -152,86 +152,216 @@ class PlaylistsTest {
     /** The phone opens the playlist: what it keeps, as the server sent it. */
     private suspend fun opened(id: String = "p1"): Playlist = pages.fresh(spec(id))
 
-    /** Waits until nothing is waiting to be sent. */
-    private suspend fun settled() = withTimeout(10_000) { playlists.waiting.first { it.isEmpty() } }
+    private suspend fun kept(id: String = "p1") = ids(pages.kept(spec(id)))
+
+    /** Makes a change and waits until the server has settled it: whether it was done. */
+    private suspend fun made(change: ((Boolean) -> Unit) -> Unavailable?): Boolean {
+        val done = CompletableDeferred<Boolean>()
+        assertNull(change { done.complete(it) })
+        return withTimeout(10_000) { done.await() }
+    }
 
     /** Listens for what is said of a change that failed, from now on. */
     private fun CoroutineScope.listen() = async(start = CoroutineStart.UNDISPATCHED) { withTimeout(10_000) { playlists.refused.first() } }
 
-    // ---- Two devices -------------------------------------------------------------------------
+    /** Every request that changes a playlist, so far. */
+    private fun writes() = server.asked.count { !it.startsWith("get ") }
+
+    // ---- A1: on the playlist exactly as it was drawn, or not at all ---------------------------
 
     @Test
-    fun aRemovalFromAPageThatIsOutOfDateRemovesTheSongMeant() = runBlocking<Unit> {
-        val page = opened()
-        server.elsewhere("p1", "e d c b a x")
-        assertNull(playlists.remove(page, listOf(1)))
-        settled()
-        assertEquals("e d c a x", server.now("p1"))
-        assertEquals(1, server.count("remove"))
+    fun onThePlaylistAsDrawnEachChangeIsMadeAndThePageIsWhatWasSent() = runBlocking<Unit> {
+        var page = opened()
+        assertTrue(made { playlists.remove(page, listOf(1), it) })
+        assertEquals("a c d e", server.now("p1"))
+        // A3: kept at once as sent; nothing read afterwards to learn it.
+        assertEquals("a c d e", kept())
+        assertEquals(2, server.count("get"))
+        page = pages.kept(spec("p1"))!!
+        assertTrue(made { playlists.move(page, 3, 0, it) })
+        assertEquals("e a c d", server.now("p1"))
+        assertEquals("e a c d", kept())
+        page = pages.kept(spec("p1"))!!
+        assertTrue(made { playlists.rename(page, "Road trip", it) })
+        assertEquals("Road trip", server.names["p1"])
+        assertEquals("Road trip", pages.kept(spec("p1"))!!.name)
+        page = pages.kept(spec("p1"))!!
+        assertTrue(made { playlists.delete(page, it) })
+        assertNull(server.now("p1"))
+        assertNull(pages.kept(spec("p1")))
     }
 
     @Test
-    fun theSameSongTwiceIsToldApart() = runBlocking<Unit> {
-        server.elsewhere("p1", "a b a c a")
-        val page = opened()
-        server.elsewhere("p1", "b a c a")
-        playlists.remove(page, listOf(2))
-        settled()
-        assertEquals("b a c", server.now("p1"))
+    fun changedElsewhereBeforeThePhonesReadNothingIsSentAndThePageShowsItSaidOnce() = runBlocking<Unit> {
+        for (case in listOf("remove", "move", "rename", "delete")) {
+            server.elsewhere("p1", "a b c d e")
+            val page = opened()
+            // The other device reorders it after the page was drawn.
+            server.elsewhere("p1", "e d c b a")
+            val said = listen()
+            val before = writes()
+            assertFalse(case, made { done ->
+                when (case) {
+                    "remove" -> playlists.remove(page, listOf(1), done)
+                    "move" -> playlists.move(page, 0, 2, done)
+                    "rename" -> playlists.rename(page, "Road trip", done)
+                    else -> playlists.delete(page, done)
+                }
+            })
+            assertEquals(case, Outcome.CHANGED, said.await().outcome)
+            assertEquals(case, before, writes())
+            assertEquals(case, "e d c b a", server.now("p1"))
+            assertEquals(case, "e d c b a", kept())
+        }
     }
 
     @Test
-    fun aMoveFollowsItsNeighbourAndSongsAddedElsewhereAreKept() = runBlocking<Unit> {
+    fun aRenameMadeElsewhereIsAChangeToo() = runBlocking<Unit> {
         val page = opened()
-        server.elsewhere("p1", "x a b c d e y")
-        playlists.move(page, 3, 1)
-        settled()
-        assertEquals("x a d b c e y", server.now("p1"))
+        server.names["p1"] = "Renamed elsewhere"
+        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertEquals(0, server.count("remove"))
+        assertEquals("Renamed elsewhere", pages.kept(spec("p1"))!!.name)
     }
 
-    /**
-     * **The known window** (docs/DESIGN.md, A5). Subsonic can't make a write conditional on
-     * the read before it, so a change another device makes between the phone's read of the
-     * playlist and its write is overwritten, or the write lands on the wrong song. Here the
-     * phone means to remove "b"; it reads "a b c d e" (b at 1); the other device reverses the
-     * playlist before the write; the write removes position 1, which is now "d". Accepted:
-     * Windows has the same window, and the read and the write are kept as close together as
-     * they can be (nothing between them but working out the positions).
-     */
     @Test
-    fun aChangeElsewhereBetweenThePhonesReadAndItsWriteIsTheKnownWindow() = runBlocking<Unit> {
+    fun songsAddedAtTheEndGoWhateverThePlaylistHolds() = runBlocking<Unit> {
         val page = opened()
-        val (reached, open) = server.hold("remove")
-        playlists.remove(page, listOf(1))
-        reached.await()
-        // The phone has read the playlist and worked out the position; the write is on its way.
         server.elsewhere("p1", "e d c b a")
+        assertTrue(made { playlists.add(page, songs("z"), it) })
+        assertEquals("e d c b a z", server.now("p1"))
+        assertEquals("e d c b a z", kept())
+    }
+
+    @Test
+    fun aCardsMenuSawOnlyTheNameSoOnlyTheNameMustBeTheSame() = runBlocking<Unit> {
+        // From the list of playlists: a name and a count, no songs.
+        val card = Playlist(id = "p1", name = "Mix", owner = "tester", songCount = 5)
+        server.elsewhere("p1", "e d c b a")
+        assertTrue(made { playlists.rename(card, "Road trip", it) })
+        assertEquals("Road trip", server.names["p1"])
+    }
+
+    @Test
+    fun aBulkSheetLeftOpenOverAReplacedListIsRefused() = runBlocking<Unit> {
+        // The selection's sheet holds the playlist as drawn when it opened; the list is then
+        // replaced (another device, and a refresh) while it is still open.
+        val drawn = opened()
+        server.elsewhere("p1", "a x b c d e")
+        opened()
+        assertFalse(made { playlists.remove(drawn, listOf(1, 2), it) })
+        assertEquals(0, server.count("remove"))
+        assertEquals("a x b c d e", server.now("p1"))
+    }
+
+    // ---- A2: one change at a time ------------------------------------------------------------
+
+    @Test
+    fun whileAChangeIsOnItsWayEveryOtherChangeToThatPlaylistDoesNothing() = runBlocking<Unit> {
+        val page = opened()
+        val (reached, open) = server.hold("remove")
+        val first = CompletableDeferred<Boolean>()
+        assertNull(playlists.remove(page, listOf(0)) { first.complete(it) })
+        reached.await()
+        assertEquals(setOf("p1"), playlists.busy.value)
+        // Shown as made while it is on its way.
+        assertEquals("b c d e", ids(playlists.shown(page)))
+        val before = writes()
+        assertEquals(Unavailable.BUSY, playlists.remove(page, listOf(1)))
+        assertEquals(Unavailable.BUSY, playlists.move(page, 0, 2))
+        assertEquals(Unavailable.BUSY, playlists.add(page, songs("z")))
+        assertEquals(Unavailable.BUSY, playlists.rename(page, "Road trip"))
+        assertEquals(Unavailable.BUSY, playlists.delete(page))
+        assertEquals(before, writes())
         open.complete(Unit)
-        settled()
-        assertEquals("the wrong song went: the window", "e c b a", server.now("p1"))
+        assertTrue(withTimeout(10_000) { first.await() })
+        assertEquals(emptySet<String>(), playlists.busy.value)
+        assertEquals("b c d e", server.now("p1"))
+        assertEquals(1, writes())
+    }
+
+    @Test
+    fun aFailureLeavesNothingBehindItAndThePageAsTheServerHasIt() = runBlocking<Unit> {
+        val page = opened()
+        server.trouble["remove"] = Trouble.REFUSE
+        val said = listen()
+        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertEquals(Outcome.REFUSED, said.await().outcome)
+        assertEquals("a b c d e", ids(playlists.shown(pages.kept(spec("p1"))!!)))
+        assertEquals(Unavailable.NOTHING_TO_UNDO, playlists.undoLast("p1"))
+    }
+
+    // ---- A4: Undo ----------------------------------------------------------------------------
+
+    @Test
+    fun undoIsTheReverseOfWhatTheServerSaidYesTo() = runBlocking<Unit> {
+        val page = opened()
+        val (reached, open) = server.hold("remove")
+        val done = CompletableDeferred<Boolean>()
+        playlists.remove(page, listOf(1, 3)) { done.complete(it) }
+        reached.await()
+        // Not offered before the server has said yes.
+        assertEquals(Unavailable.NOTHING_TO_UNDO, playlists.undoLast("p1"))
+        open.complete(Unit)
+        assertTrue(withTimeout(10_000) { done.await() })
+        assertTrue(made { playlists.undoLast("p1", it) })
+        assertEquals("a b c d e", server.now("p1"))
+        assertEquals("a b c d e", kept())
+        // Used up.
+        assertEquals(Unavailable.NOTHING_TO_UNDO, playlists.undoLast("p1"))
+    }
+
+    @Test
+    fun undoOfAPlaylistChangedSinceSendsNothingAndSaysSo() = runBlocking<Unit> {
+        val page = opened()
+        assertTrue(made { playlists.remove(page, listOf(1), it) })
+        // Another device has since taken out "d", which Undo would otherwise put back.
+        server.elsewhere("p1", "a c e")
+        val said = listen()
+        val before = writes()
+        assertFalse(made { playlists.undoLast("p1", it) })
+        assertEquals(Outcome.UNDO_CHANGED, said.await().outcome)
+        assertEquals(before, writes())
+        assertEquals("a c e", server.now("p1"))
+        assertEquals("a c e", kept())
+    }
+
+    @Test
+    fun undoWithTheServerOutOfReachSaysSoAndIsKept() = runBlocking<Unit> {
+        val page = opened()
+        assertTrue(made { playlists.move(page, 0, 4, it) })
+        reachable = false
+        assertEquals(Unavailable.OFFLINE, playlists.undoLast("p1"))
+        reachable = true
+        assertTrue(made { playlists.undoLast("p1", it) })
+        assertEquals("a b c d e", server.now("p1"))
+    }
+
+    // ---- How a change ends -------------------------------------------------------------------
+
+    @Test
+    fun aLostAnswerIsUnknownAndThePlaylistIsReadAgain() = runBlocking<Unit> {
+        val page = opened()
+        server.trouble["remove"] = Trouble.LOSE_ANSWER
+        val said = listen()
+        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertEquals(Outcome.UNCONFIRMED, said.await().outcome)
+        withTimeout(10_000) { while (kept() != "b c d e") kotlinx.coroutines.delay(5) }
         assertEquals(1, server.count("remove"))
     }
 
     @Test
-    fun twoQuickEditsGoOneAtATimeInTheOrderMade() = runBlocking<Unit> {
+    fun aReadThatFailsBeforeTheWriteMeansNothingWasSent() = runBlocking<Unit> {
         val page = opened()
-        val (reached, open) = server.hold("remove")
-        playlists.remove(page, listOf(0))
-        reached.await()
-        // Made from the page as it now shows: "b c d e", "e" to the top.
-        val shown = playlists.shown(pages.kept(spec("p1"))!!)
-        assertEquals("b c d e", ids(shown))
-        playlists.move(shown, 3, 0)
-        assertEquals(0, server.count("replace"))
-        open.complete(Unit)
-        settled()
-        assertEquals("e b c d", server.now("p1"))
+        server.trouble["get"] = Trouble.LOSE_ANSWER
+        val said = listen()
+        assertFalse(made { playlists.remove(page, listOf(0), it) })
+        assertEquals(Outcome.UNSENT, said.await().outcome)
+        assertEquals(0, writes())
     }
 
-    // ---- Only with the server there, never kept ---------------------------------------------
-
     @Test
-    fun withTheServerNotThereNothingCanBeChangedAndNothingIsKept() = runBlocking<Unit> {
+    fun withTheServerNotThereNothingCanBeChanged() = runBlocking<Unit> {
         val page = opened()
         reachable = false
         val asked = server.asked.size
@@ -239,219 +369,84 @@ class PlaylistsTest {
         assertEquals(Unavailable.OFFLINE, playlists.move(page, 0, 2))
         assertEquals(Unavailable.OFFLINE, playlists.add(page, songs("z")))
         assertEquals(Unavailable.OFFLINE, playlists.create("Road trip", songs("a")))
-        assertEquals(Unavailable.OFFLINE, playlists.rename(page, "New"))
+        assertEquals(Unavailable.OFFLINE, playlists.rename(page, "x"))
         assertEquals(Unavailable.OFFLINE, playlists.delete(page))
-        assertFalse(playlists.undoLast(page))
-        assertTrue(playlists.waiting.value.isEmpty())
-        // Back: nothing was kept to be sent.
-        reachable = true
         assertEquals(asked, server.asked.size)
-        assertEquals("a b c d e", server.now("p1"))
     }
 
     @Test
-    fun theKeptPageOnlyEverHoldsWhatTheServerSaid() = runBlocking<Unit> {
-        val page = opened()
-        val (reached, open) = server.hold("remove")
-        playlists.remove(page, listOf(1))
-        reached.await()
-        // Waiting: shown at once, but the kept page is the server's.
-        assertEquals("a b c d e", ids(pages.kept(spec("p1"))))
-        assertEquals("a c d e", ids(playlists.shown(pages.kept(spec("p1"))!!)))
-        open.complete(Unit)
-        settled()
-        assertEquals("a c d e", ids(pages.kept(spec("p1"))))
-        assertEquals("a c d e", ids(playlists.shown(pages.kept(spec("p1"))!!)))
-    }
-
-    /** What the page draws while a move is still on its way, which is what a tap on a row
-     *  hands the player (D2): the playlist as shown, with the move. */
-    @Test
-    fun aMoveStillOnItsWayIsInWhatThePageShows() = runBlocking<Unit> {
-        val page = opened()
-        val (reached, open) = server.hold("replace")
-        playlists.move(page, 4, 0)
-        reached.await()
-        assertEquals("e a b c d", ids(playlists.shown(pages.kept(spec("p1"))!!)))
-        open.complete(Unit)
-        settled()
-        assertEquals("e a b c d", ids(playlists.shown(pages.kept(spec("p1"))!!)))
-    }
-
-    @Test
-    fun aRefreshThatCrossesAnAddShowsTheSongOnce() = runBlocking<Unit> {
-        val page = opened()
-        // The add is on its way: the server has read the playlist for it and is about to add.
-        val (reached, open) = server.hold("add")
-        playlists.add(page, songs("z"))
-        reached.await()
-        // A refresh begins now, and waits for the change's turn.
-        val refresh = async(Dispatchers.IO) { opened() }
-        open.complete(Unit)
-        val fresh = refresh.await()
-        settled()
-        assertEquals("a b c d e z", ids(fresh))
-        assertEquals("a b c d e z", ids(playlists.shown(pages.kept(spec("p1"))!!)))
-    }
-
-    // ---- One attempt, and what follows a failure ----------------------------------------------
-
-    @Test
-    fun anUnansweredChangeIsNeverSentAgainAndThePersonIsAskedToCheck() = runBlocking<Unit> {
-        server.elsewhere("p1", "a b a")
-        val page = opened()
-        server.trouble["remove"] = Trouble.LOSE_ANSWER
-        val said = listen()
-        val readAgain = async(start = CoroutineStart.UNDISPATCHED) { withTimeout(10_000) { pages.changes.first { (key, value) -> key == "playlist:p1" && ids(value as Playlist) == "b a" } } }
-        playlists.remove(page, listOf(0))
-        assertEquals(Outcome.UNCONFIRMED, said.await().outcome)
-        settled()
-        // Done once, and only once: the other copy of "a" is still there.
-        assertEquals(1, server.count("remove"))
-        assertEquals("b a", server.now("p1"))
-        // The playlist was read again: what is shown is what the server has.
-        readAgain.await()
-    }
-
-    @Test
-    fun aRefusedChangeTakesTheOnesBehindItWithIt() = runBlocking<Unit> {
-        val page = opened()
-        val (reached, open) = server.hold("remove")
-        server.trouble["remove"] = Trouble.REFUSE
-        val said = listen()
-        playlists.remove(page, listOf(0))
-        reached.await()
-        // Two more made while the first is on its way, from the page as it shows.
-        val shown = playlists.shown(pages.kept(spec("p1"))!!)
-        playlists.move(shown, 0, 2)
-        playlists.add(shown, songs("z"))
-        open.complete(Unit)
-        val refusal = said.await()
-        assertEquals(Outcome.REFUSED, refusal.outcome)
-        settled()
-        // Neither of the others was sent.
-        assertEquals(0, server.count("replace"))
-        assertEquals(0, server.count("add"))
-        assertEquals("a b c d e", server.now("p1"))
-    }
-
-    @Test
-    fun undoOfAChangeThatDidNotHappenSendsNothing() = runBlocking<Unit> {
-        val page = opened()
-        server.trouble["remove"] = Trouble.REFUSE
-        val said = listen()
-        playlists.remove(page, listOf(1))
-        said.await()
-        // After saying so, the playlist is read again to catch up (the page's read, the
-        // change's own, then this one): waited for, so it can't land after the count below.
-        withTimeout(10_000) { while (server.count("get") < 3) kotlinx.coroutines.delay(5) }
-        settled()
-        // Only what changes a playlist is counted: nothing more may be sent.
-        val writes = { server.asked.count { !it.startsWith("get ") } }
-        val before = writes()
-        assertFalse(playlists.undoLast(page))
-        kotlinx.coroutines.delay(100)
-        assertEquals(before, writes())
-        assertEquals(1, server.count("remove"))
-    }
-
-    @Test
-    fun aChangeRefusedBeforeItsMakerHasReturnedLeavesNothingToUndo() = runBlocking<Unit> {
-        // The sending runs at once, on the caller's thread, and is refused before remove()
-        // has returned: the fastest a refusal can be. (Undo used to be remembered after the
-        // change was queued, so a refusal that fast was followed by an Undo for it.)
-        val now = Playlists(server, pages, ::listSpec, ::spec, reachable = { reachable }, username = "tester", scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined))
-        val page = opened()
-        server.trouble["remove"] = Trouble.REFUSE
-        now.remove(page, listOf(1))
-        assertEquals(1, server.count("remove"))
-        assertNull(now.undo.value)
-        assertFalse(now.undoLast(page))
-    }
-
-    @Test
-    fun undoWaitsBehindWhatItUndoesAndGoesWithItIfThatFails() = runBlocking<Unit> {
-        val page = opened()
-        val (reached, open) = server.hold("remove")
-        server.trouble["remove"] = Trouble.LOSE_ANSWER
-        val said = listen()
-        playlists.remove(page, listOf(1, 2))
-        reached.await()
-        // Undo pressed while the removal is still on its way: it waits behind it.
-        assertTrue(playlists.undoLast(page))
-        open.complete(Unit)
-        assertEquals(Outcome.UNCONFIRMED, said.await().outcome)
-        settled()
-        assertEquals("the undo was never sent", 0, server.count("replace"))
-    }
-
-    @Test
-    fun undoPutsRemovedSongsBackBesideTheirNeighboursAsThePlaylistNowIs() = runBlocking<Unit> {
-        val page = opened()
-        playlists.remove(page, listOf(1, 2))
-        settled()
-        assertEquals("a d e", server.now("p1"))
-        server.elsewhere("p1", "a x d e")
-        assertTrue(playlists.undoLast(page))
-        settled()
-        assertEquals("a b c x d e", server.now("p1"))
-    }
-
-    @Test
-    fun aPlaylistGoneFromTheServerGoesFromThePhone() = runBlocking<Unit> {
+    fun aNewPlaylistWhoseAnswerNeverCameHasTheListAskedForAgain() = runBlocking<Unit> {
         pages.fresh(listSpec())
-        val page = opened()
-        server.lists.remove("p1")
-        val said = listen()
-        playlists.remove(page, listOf(0))
-        assertEquals(70L, (said.await().error as ApiError.Server).code)
-        settled()
-        withTimeout(5_000) { playlists.gone.first { "p1" in it } }
-        assertNull(pages.kept(spec("p1")))
-        assertTrue(pages.kept(listSpec())!!.none { it.id == "p1" })
+        server.trouble["create"] = Trouble.LOSE_ANSWER
+        assertFalse(made { playlists.create("Road trip", songs("a b"), it) })
+        withTimeout(10_000) { while (pages.kept(listSpec())?.size != 2) kotlinx.coroutines.delay(5) }
+        // And one that is answered: made once.
+        assertTrue(made { playlists.create("Another", songs("c"), it) })
+        assertEquals(1, server.asked.count { it == "create Another" })
     }
 
-    // ---- Whose it is -------------------------------------------------------------------------
+    // ---- A6: whose it is ----------------------------------------------------------------------
 
     @Test
-    fun onlyAPlaylistKnownToBeTheAccountsOwnIsChangedCheckedAgainAsItIsSent() = runBlocking<Unit> {
-        assertTrue(playlists.canEdit(Playlist(id = "p1", owner = "tester")))
-        assertFalse(playlists.canEdit(Playlist(id = "p9", owner = "guest")))
-        assertFalse(playlists.canEdit(Playlist(id = "p1", owner = "tester", readonly = true)))
-        assertEquals(Unavailable.NOT_YOURS, playlists.remove(Playlist(id = "p9", owner = "guest", songs = songs("a")), listOf(0)))
-        // Made while it was the account's; given to someone else on the server before it was
-        // sent: refused as it is read, nothing written.
+    fun onlyAPlaylistTheServerSaysIsTheAccountsCanBeChanged() = runBlocking<Unit> {
+        assertTrue(playlists.canEdit(Playlist(id = "p", owner = "Tester")))
+        assertFalse("no owner given", playlists.canEdit(Playlist(id = "p", owner = "")))
+        assertFalse(playlists.canEdit(Playlist(id = "p", owner = "guest")))
+        assertFalse(playlists.canEdit(Playlist(id = "p", owner = "tester", readonly = true)))
+        assertEquals(Unavailable.NOT_YOURS, playlists.remove(Playlist(id = "p1", songs = songs("a b")), listOf(0)))
+        // Given away on the server since: refused on the fresh copy, nothing written.
         val page = opened()
         server.owners["p1"] = "guest"
         val said = listen()
-        playlists.remove(page, listOf(0))
+        assertFalse(made { playlists.remove(page, listOf(0), it) })
         assertEquals(Outcome.REFUSED, said.await().outcome)
-        settled()
-        assertEquals(0, server.count("remove"))
+        assertEquals(0, writes())
     }
 
-    @Test
-    fun theWarningBeforeAddingNamesTheSongsAlreadyThereAsTheServerHasThemNow() = runBlocking<Unit> {
-        opened()
-        server.elsewhere("p1", "a b c d e f")
-        assertEquals(setOf("f"), playlists.alreadyIn("p1", songs("f g")))
-        assertEquals(null, playlists.alreadyIn("p9", songs("g")))
-    }
+    // ---- A7: gone, wherever it is learnt -----------------------------------------------------
 
     @Test
-    fun aNewPlaylistAndARenameAndADeleteGoOnce() = runBlocking<Unit> {
-        val made = CompletableDeferred<Boolean>()
-        assertNull(playlists.create("Road trip", songs("a b")) { made.complete(it) })
-        assertTrue(made.await())
-        assertEquals("Road trip", server.names["p2"])
+    fun aPlaylistTheServerNoLongerHasGoesWhereverThatIsLearnt() = runBlocking<Unit> {
+        for (case in listOf("refresh", "before a write")) {
+            server.elsewhere("p1", "a b c d e")
+            playlists = Playlists(server, pages, ::listSpec, ::spec, reachable = { reachable }, username = "tester", scope = scope)
+            pages.fresh(listSpec())
+            val page = opened()
+            server.lists.remove("p1")
+            val said = listen()
+            if (case == "refresh") {
+                runCatching { pages.fresh(spec("p1")) }
+            } else {
+                assertFalse(made { playlists.remove(page, listOf(0), it) })
+            }
+            assertEquals(case, Outcome.GONE, said.await().outcome)
+            assertTrue(case, "p1" in playlists.gone.value)
+            assertNull(case, pages.kept(spec("p1")))
+            assertFalse(case, pages.kept(listSpec())!!.any { it.id == "p1" })
+        }
+    }
+
+    // ---- A8: the window that remains --------------------------------------------------------
+
+    /**
+     * **The known window** (docs/DESIGN.md). Subsonic can't make a write conditional on the
+     * read before it. The phone reads the playlist, finds it as drawn, and writes; a change
+     * another device makes between the two is overwritten, or the write lands on the wrong
+     * song. Here the phone means to remove "b" (row 1); the other device reverses the playlist
+     * after the phone's read; the write removes row 1, which is now "d". Accepted: nothing
+     * comes between the read and the write but comparing them.
+     */
+    @Test
+    fun aChangeElsewhereBetweenThePhonesReadAndItsWriteIsTheKnownWindow() = runBlocking<Unit> {
         val page = opened()
-        playlists.rename(page, "Morning")
-        settled()
-        assertEquals("Morning", server.names["p1"])
-        playlists.delete(page)
-        settled()
-        assertFalse("p1" in server.lists)
-        assertEquals(1, server.count("create"))
-        assertEquals(1, server.count("delete"))
+        val (reached, open) = server.hold("remove")
+        val done = CompletableDeferred<Boolean>()
+        playlists.remove(page, listOf(1)) { done.complete(it) }
+        reached.await()
+        server.elsewhere("p1", "e d c b a")
+        open.complete(Unit)
+        assertTrue(withTimeout(10_000) { done.await() })
+        assertEquals("the wrong song went: the window", "e c b a", server.now("p1"))
+        assertEquals(1, server.count("remove"))
     }
 }

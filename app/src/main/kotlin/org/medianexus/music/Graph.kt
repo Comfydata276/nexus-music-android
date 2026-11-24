@@ -290,8 +290,10 @@ class Graph(context: Context) {
                         when {
                             it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.UNCONFIRMED -> context.getString(R.string.playlist_unconfirmed)
                             it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.UNSENT -> context.getString(R.string.playlist_unsent)
-                            (it.error as? org.medianexus.music.net.ApiError.Server)?.code == 70L -> context.getString(R.string.playlist_gone)
-                            else -> context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim()
+                            it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.CHANGED -> context.getString(R.string.playlist_changed_elsewhere)
+                            it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.UNDO_CHANGED -> context.getString(R.string.playlist_undo_changed)
+                            it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.GONE -> context.getString(R.string.playlist_gone)
+                            else -> context.getString(R.string.didnt_save, it.error?.message.orEmpty()).trim()
                         }
                     },
                     account.ratings.refused.map { context.getString(R.string.couldnt_save_rating, it.error.message.orEmpty()).trim() },

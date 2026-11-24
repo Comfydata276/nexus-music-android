@@ -233,10 +233,13 @@ private fun PlaylistPicker(songs: List<Song>, choose: (() -> Unit) -> Unit) {
 /** Says why a playlist can't be changed now, if it can't; true if it can. */
 fun Ui.said(unavailable: org.medianexus.music.library.Playlists.Unavailable?): Boolean {
     unavailable ?: return true
-    toast(graph.resources.getString(when (unavailable) {
+    val words = when (unavailable) {
         org.medianexus.music.library.Playlists.Unavailable.OFFLINE -> R.string.playlists_need_server
         org.medianexus.music.library.Playlists.Unavailable.NOT_YOURS -> R.string.playlist_not_changeable
-    }))
+        org.medianexus.music.library.Playlists.Unavailable.BUSY -> R.string.playlist_busy
+        org.medianexus.music.library.Playlists.Unavailable.NOTHING_TO_UNDO -> null
+    }
+    words?.let { toast(graph.resources.getString(it)) }
     return false
 }
 
@@ -252,8 +255,9 @@ fun Ui.addToPlaylist(playlist: Playlist, songs: List<Song>, done: () -> Unit = {
     if (account.playlists.canEdit(playlist).not()) return run { said(org.medianexus.music.library.Playlists.Unavailable.NOT_YOURS) }
     graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
         if (!said(account.playlists.reachableNow())) return@launch
-        val there = account.playlists.alreadyIn(playlist.id, songs)
-        val fresh = if (there == null) songs else songs.filter { it.id !in there }
+        // Asked of the server's copy now; if it can't be read, nothing is added.
+        val there = account.playlists.alreadyIn(playlist.id, songs) ?: return@launch toast(res.getString(R.string.playlist_unsent))
+        val fresh = songs.filter { it.id !in there }
         val repeats = songs.size - fresh.size
         fun add(these: List<Song>) {
             said(account.playlists.add(playlist, these) { taken ->
@@ -313,30 +317,35 @@ fun Ui.askDelete(record: Playlist) {
     }
 }
 
-/** Takes rows of a playlist (as shown) out, with "Undo" on the toast (Windows'
- *  `remove_rows_from_playlist`). */
+/** Takes rows of a playlist (as drawn) out; once the server has, "Undo" on the toast
+ *  (Windows' `remove_rows_from_playlist`). */
 fun Ui.removeFromPlaylist(playlist: Playlist, rows: List<Int>) {
     val account = account ?: return
     val res = graph.resources
     val count = rows.distinct().count { it in playlist.songs.indices }
-    if (count == 0 || !said(account.playlists.remove(playlist, rows))) return
-    val words = if (count == 1) res.getString(R.string.removed_from_playlist) else res.getString(R.string.removed_many_from_playlist, count)
-    graph.toasts.show(words, res.getString(R.string.undo)) { undoPlaylist(playlist) }
+    if (count == 0) return
+    said(account.playlists.remove(playlist, rows) { taken ->
+        if (!taken) return@remove
+        val words = if (count == 1) res.getString(R.string.removed_from_playlist) else res.getString(R.string.removed_many_from_playlist, count)
+        graph.toasts.show(words, res.getString(R.string.undo)) { undoPlaylist(playlist.id) }
+    })
 }
 
-/** Moves a playlist's song from one row to another (the playlist in its own order), with
- *  "Undo" on the toast (Windows' `move_playlist_track`). False if it wasn't made (and said why). */
+/** Moves a playlist's song from one row to another (the playlist in its own order); once the
+ *  server has, "Undo" on the toast (Windows' `move_playlist_track`). False if it wasn't
+ *  begun (and said why). */
 fun Ui.movePlaylistSong(playlist: Playlist, from: Int, to: Int): Boolean {
     val account = account ?: return false
     val res = graph.resources
-    if (from == to || !said(account.playlists.move(playlist, from, to))) return false
-    graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(playlist) }
-    return true
+    if (from == to) return false
+    return said(account.playlists.move(playlist, from, to) { taken ->
+        if (taken) graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(playlist.id) }
+    })
 }
 
-/** Windows' `undo_last`: "Put back". */
-fun Ui.undoPlaylist(record: Playlist) {
-    if (account?.playlists?.undoLast(record) == true) toast(graph.resources.getString(R.string.put_back))
+/** Windows' `undo_last`: "Put back", once the server has. */
+fun Ui.undoPlaylist(id: String) {
+    said(account?.playlists?.undoLast(id) { taken -> if (taken) toast(graph.resources.getString(R.string.put_back)) })
 }
 
 /** "Save queue as playlist": the songs in the queue at the tap, in the order they play
