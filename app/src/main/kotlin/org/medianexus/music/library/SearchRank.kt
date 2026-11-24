@@ -12,51 +12,90 @@ import org.medianexus.music.net.Song
  * say the same about the same words. Plain Kotlin, so it can be tested on its own.
  */
 object SearchRank {
-    /** Lower-case, without accents or punctuation, so "Beyoncé" and "beyonce" are the same
-     *  (`fold`). */
+    /**
+     * Lower-case, without accents or punctuation, so "Beyoncé" and "beyonce" are the same
+     * (`fold`). Exactly as Rust does it there: a character (a code point, not a half of one)
+     * at a time, each lower-cased by itself (`char::to_lowercase`: Σ is σ wherever it stands,
+     * and İ is "i" and a dot), and kept if Rust calls it alphanumeric (a letter, or a number
+     * of any kind: ², ½, Ⅻ), else a space.
+     */
     fun fold(text: String): String {
         val out = StringBuilder(text.length)
-        for (c in text.lowercase()) {
-            when (c) {
-                'à', 'á', 'â', 'ã', 'ä', 'å', 'ā', 'ă', 'ą' -> out.append('a')
-                'ç', 'ć', 'č' -> out.append('c')
-                'ď', 'đ' -> out.append('d')
-                'è', 'é', 'ê', 'ë', 'ē', 'ė', 'ę', 'ě' -> out.append('e')
-                'ğ' -> out.append('g')
-                'ì', 'í', 'î', 'ï', 'ī', 'į', 'ı' -> out.append('i')
-                'ł' -> out.append('l')
-                'ñ', 'ń', 'ň' -> out.append('n')
-                'ò', 'ó', 'ô', 'õ', 'ö', 'ø', 'ō', 'ő' -> out.append('o')
-                'ř' -> out.append('r')
-                'ś', 'š', 'ş' -> out.append('s')
-                'ť', 'ţ' -> out.append('t')
-                'ù', 'ú', 'û', 'ü', 'ū', 'ů', 'ű', 'ų' -> out.append('u')
-                'ý', 'ÿ' -> out.append('y')
-                'ź', 'ż', 'ž' -> out.append('z')
-                'æ' -> out.append("ae")
-                'œ' -> out.append("oe")
-                'ß' -> out.append("ss")
-                // "don't" and "dont" are the same word.
-                '\'', '’', '‘', '`' -> {}
-                else -> out.append(if (c.isLetterOrDigit()) c else ' ')
+        var i = 0
+        while (i < text.length) {
+            val c = text.codePointAt(i)
+            i += Character.charCount(c)
+            if (c == CAPITAL_I_WITH_DOT) {
+                // Rust's one lower case of more than one character: "i" and a combining dot
+                // (which is no letter, so a space).
+                foldLower('i'.code, out)
+                foldLower(COMBINING_DOT, out)
+            } else {
+                foldLower(Character.toLowerCase(c), out)
             }
         }
         return out.toString()
     }
 
+    private const val CAPITAL_I_WITH_DOT = 0x130
+    private const val COMBINING_DOT = 0x307
+
+    /** One character, already lower-cased, folded onto the end of `out`. */
+    private fun foldLower(c: Int, out: StringBuilder) {
+        when (c) {
+            'à'.code, 'á'.code, 'â'.code, 'ã'.code, 'ä'.code, 'å'.code, 'ā'.code, 'ă'.code, 'ą'.code -> out.append('a')
+            'ç'.code, 'ć'.code, 'č'.code -> out.append('c')
+            'ď'.code, 'đ'.code -> out.append('d')
+            'è'.code, 'é'.code, 'ê'.code, 'ë'.code, 'ē'.code, 'ė'.code, 'ę'.code, 'ě'.code -> out.append('e')
+            'ğ'.code -> out.append('g')
+            'ì'.code, 'í'.code, 'î'.code, 'ï'.code, 'ī'.code, 'į'.code, 'ı'.code -> out.append('i')
+            'ł'.code -> out.append('l')
+            'ñ'.code, 'ń'.code, 'ň'.code -> out.append('n')
+            'ò'.code, 'ó'.code, 'ô'.code, 'õ'.code, 'ö'.code, 'ø'.code, 'ō'.code, 'ő'.code -> out.append('o')
+            'ř'.code -> out.append('r')
+            'ś'.code, 'š'.code, 'ş'.code -> out.append('s')
+            'ť'.code, 'ţ'.code -> out.append('t')
+            'ù'.code, 'ú'.code, 'û'.code, 'ü'.code, 'ū'.code, 'ů'.code, 'ű'.code, 'ų'.code -> out.append('u')
+            'ý'.code, 'ÿ'.code -> out.append('y')
+            'ź'.code, 'ż'.code, 'ž'.code -> out.append('z')
+            'æ'.code -> out.append("ae")
+            'œ'.code -> out.append("oe")
+            'ß'.code -> out.append("ss")
+            // "don't" and "dont" are the same word.
+            '\''.code, '’'.code, '‘'.code, '`'.code -> {}
+            else -> if (alphanumeric(c)) out.appendCodePoint(c) else out.append(' ')
+        }
+    }
+
+    /** Rust's `char::is_alphanumeric`: Unicode's Alphabetic property (letters, and the marks
+     *  that are part of a letter, such as a Devanagari vowel sign), or a number of any kind
+     *  (a digit, a letter-like number such as Ⅻ, or another such as ² or ½). */
+    fun alphanumeric(c: Int): Boolean {
+        if (Character.isAlphabetic(c)) return true
+        return when (Character.getType(c)) {
+            Character.DECIMAL_DIGIT_NUMBER.toInt(), Character.LETTER_NUMBER.toInt(), Character.OTHER_NUMBER.toInt() -> true
+            else -> false
+        }
+    }
+
     /** The words of a name, folded (`musicbrainz::words`). */
     fun words(text: String): List<String> = fold(text).split(' ').filter { it.isNotEmpty() }
 
+    /** A word's characters, as Rust has them (`Vec<char>`): code points, not halves of them. */
+    fun points(word: String): IntArray = word.codePoints().toArray()
+
     /** How many single-letter slips separate two words; over `limit` comes back as
      *  `limit + 1` (`slips`). `bLength` takes only the start of `b` (Windows' `&word[..n]`),
-     *  without making a string of it: this is asked of every word in the library at each
+     *  without making a copy of it: this is asked of every word in the library at each
      *  keystroke. */
-    fun slips(a: String, b: String, limit: Int, bLength: Int = b.length): Int {
-        if (kotlin.math.abs(a.length - bLength) > limit) return limit + 1
+    fun slips(a: String, b: String, limit: Int): Int = slips(points(a), points(b), limit)
+
+    fun slips(a: IntArray, b: IntArray, limit: Int, bLength: Int = b.size): Int {
+        if (kotlin.math.abs(a.size - bLength) > limit) return limit + 1
         var before = IntArray(bLength + 1)
         var previous = IntArray(bLength + 1) { it }
         var current = IntArray(bLength + 1)
-        for (i in 1..a.length) {
+        for (i in 1..a.size) {
             current[0] = i
             var least = current[0]
             for (j in 1..bLength) {
@@ -76,22 +115,26 @@ object SearchRank {
     }
 
     /** How well a typed word matches a word of a name, from 0 to 1 (`likeness`). */
-    fun likeness(typed: String, word: String): Float {
-        if (typed == word) return 1f
-        if (word.startsWith(typed)) return 0.85f + 0.1f * typed.length / word.length
-        val limit = when (typed.length) {
+    fun likeness(typed: String, word: String): Float = likeness(points(typed), points(word))
+
+    /** The same, of words as their characters ([points]): lengths are counted in characters,
+     *  as Rust counts them. */
+    fun likeness(typed: IntArray, word: IntArray): Float {
+        if (typed.contentEquals(word)) return 1f
+        if (startsWith(word, typed)) return 0.85f + 0.1f * typed.size / word.size
+        val limit = when (typed.size) {
             in 0..3 -> return 0f
             in 4..7 -> 1
             else -> 2
         }
         // A short word is only taken for a mistyping of one that starts the same way.
-        if (typed.length <= 5 && typed.firstOrNull() != word.firstOrNull()) return 0f
+        if (typed.size <= 5 && typed.firstOrNull() != word.firstOrNull()) return 0f
         val whole = slips(typed, word, limit)
         if (whole <= limit) return if (whole == 1) 0.75f else 0.6f
         // A mistyped start of a longer word: "masi" for "maisie".
         var best = limit + 1
-        val from = (typed.length - 1).coerceAtLeast(0)
-        val to = minOf(typed.length + 1, (word.length - 1).coerceAtLeast(0))
+        val from = (typed.size - 1).coerceAtLeast(0)
+        val to = minOf(typed.size + 1, (word.size - 1).coerceAtLeast(0))
         for (length in from..to) best = minOf(best, slips(typed, word, limit, length))
         return when {
             best == 1 -> 0.4f
@@ -100,13 +143,22 @@ object SearchRank {
         }
     }
 
+    private fun startsWith(word: IntArray, start: IntArray): Boolean {
+        if (start.size > word.size) return false
+        for (i in start.indices) if (word[i] != start[i]) return false
+        return true
+    }
+
     /** One thing's match: overall, and by its name alone (0 if a typed word isn't in it). */
     data class Match(val score: Float, val name: Float)
 
     /** Scores a name, and the other words it answers to with their weights, against the
      *  typed words (`rate`). Null if some typed word matches nothing. */
-    fun rate(typed: List<String>, name: List<String>, others: List<Pair<List<String>, Float>> = emptyList()): Match? {
-        if (typed.isEmpty()) return null
+    fun rate(typedWords: List<String>, nameWords: List<String>, others: List<Pair<List<String>, Float>> = emptyList()): Match? {
+        if (typedWords.isEmpty()) return null
+        val typed = typedWords.map(::points)
+        val name = nameWords.map(::points)
+        val othersPoints = others.map { (words, weight) -> words.map(::points) to weight }
         var total = 0f
         var nameTotal = 0f
         var inName = true
@@ -122,7 +174,7 @@ object SearchRank {
                 }
             }
             var best = bestName
-            for ((words, weight) in others) for (part in words) best = maxOf(best, likeness(word, part) * weight)
+            for ((words, weight) in othersPoints) for (part in words) best = maxOf(best, likeness(word, part) * weight)
             if (best <= 0f) return null
             total += best
             if (bestName > 0f) {
@@ -157,8 +209,14 @@ object SearchRank {
         return topArtist > 0f && topArtist >= topTitle
     }
 
+    /** Playlists as Windows lists them (its sidebar, which its search looks through in that
+     *  order: `show_playlists`): the pinned ones first, in the order they were pinned, then
+     *  the rest by name. */
+    fun playlistsInOrder(playlists: List<Playlist>, pinned: List<String>): List<Playlist> =
+        playlists.sortedWith(compareBy<Playlist> { pinned.indexOf(it.id).let { at -> if (at < 0) Int.MAX_VALUE else at } }.thenBy { it.name.lowercase() })
+
     /** The playlists whose name has every typed word, or the start of it
-     *  (`playlists_matching`). */
+     *  (`playlists_matching`), in the order given. */
     fun playlistsMatching(query: String, playlists: List<Playlist>): List<Playlist> {
         val typed = words(query)
         if (typed.isEmpty()) return emptyList()

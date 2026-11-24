@@ -13,8 +13,8 @@ package org.medianexus.music.library
  * artist) are kept once. Plain Kotlin, so it can be tested on its own.
  */
 class SearchIndex private constructor(
-    /** Every distinct word, folded. */
-    private val words: Array<String>,
+    /** Every distinct word, folded, as its characters (code points, as Rust's `Vec<char>`). */
+    private val words: Array<IntArray>,
     /** Each distinct name's words, as places in [words]: name `p` is
      *  `nameWords[nameAt[p] until nameAt[p + 1]]`. */
     private val nameAt: IntArray,
@@ -56,7 +56,7 @@ class SearchIndex private constructor(
         artistAllowed: ((Int) -> Boolean)? = null,
         cancelled: () -> Boolean = { false },
     ): Hits? {
-        val typed = SearchRank.words(query)
+        val typed = SearchRank.words(query).map(SearchRank::points)
         if (typed.isEmpty()) return Hits.NONE
         // Compare each typed word with each distinct word once, however many songs use it.
         val scores = Array(typed.size) { t -> FloatArray(words.size) { w -> SearchRank.likeness(typed[t], words[w]) } }
@@ -197,7 +197,7 @@ class SearchIndex private constructor(
      *  numbered. The words of a name many share are worked out once. */
     class Builder {
         private val wordIds = HashMap<String, Int>()
-        private val words = ArrayList<String>()
+        private val words = ArrayList<IntArray>()
         private val nameIds = HashMap<String, Int>()
         private var nameAt = IntArray(1024)
         private var names = 0
@@ -216,7 +216,7 @@ class SearchIndex private constructor(
             if (wordsUsed + folded.size > nameWords.size) nameWords = nameWords.copyOf(maxOf(nameWords.size * 2, wordsUsed + folded.size))
             nameAt[names] = wordsUsed
             for (word in folded) {
-                nameWords[wordsUsed++] = wordIds.getOrPut(word) { words += word; words.size - 1 }
+                nameWords[wordsUsed++] = wordIds.getOrPut(word) { words += SearchRank.points(word); words.size - 1 }
             }
             names++
             nameAt[names] = wordsUsed

@@ -165,10 +165,12 @@ data class SearchView(
          * Arranges what was found as Windows does (`search` and `search_view` in
          * src/pages.rs): under "All", the top few songs, then artists, albums and the
          * playlists whose names match, an artist who matches the words better than any song
-         * coming first; under any other chip, that kind in full.
+         * coming first; under any other chip, that kind in full. `pinned` are the playlists
+         * pinned, in the order they were pinned.
          */
-        fun of(query: String, found: Found, playlists: List<Playlist>, kind: SearchKind): SearchView {
-            val matching = SearchRank.playlistsMatching(query, playlists)
+        fun of(query: String, found: Found, playlists: List<Playlist>, kind: SearchKind, pinned: List<String> = emptyList()): SearchView {
+            // In Windows' order, not the server's: pinned first, then by name.
+            val matching = SearchRank.playlistsMatching(query, SearchRank.playlistsInOrder(playlists, pinned))
             return when (kind) {
                 SearchKind.ALL -> SearchView(
                     // As the phone's own search found it, over everything it rated; the

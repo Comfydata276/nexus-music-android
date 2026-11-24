@@ -149,8 +149,10 @@ fun SearchPage() {
         // Offline, the playlists are those downloaded whole.
         val downloadedLists by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.now.collections.mapTo(HashSet()) { it.key } } }
         val shownPlaylists = remember(playlists, offline, downloadedLists) { if (offline) playlists.filter { "playlist:${it.id}" in downloadedLists } else playlists }
-        val view = remember(results, shownPlaylists, kind) {
-            results?.let { SearchView.of(it.query, it.found, shownPlaylists, SearchKind.entries[kind]) }
+        val settings by graph.settings.state.collectAsStateWithLifecycle()
+        val pinned = settings.pinnedPlaylists
+        val view = remember(results, shownPlaylists, kind, pinned) {
+            results?.let { SearchView.of(it.query, it.found, shownPlaylists, SearchKind.entries[kind], pinned) }
         }
         val liked = likedSongs()
         val error = state.error?.takeIf { state.query == typed.trim() && !(offline && it is org.medianexus.music.net.ApiError.Network) }
