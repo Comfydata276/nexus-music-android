@@ -1328,8 +1328,10 @@ class PlaybackService : MediaLibraryService() {
                 // An internet radio station is somewhere else on the internet, not the music
                 // server: joined again a few times (see QueuePlayer.rejoinStation), then
                 // passed over, as Windows does. Nothing is asked of the server about it.
-                // Offline (switched on while it played): not joined again.
-                song.radioUrl.isNotEmpty() -> if (graph.watch.offline || !player.rejoinStation()) passOver()
+                // Offline (switched on while it played): not joined again. Paused (by the person
+                // or the sleep timer) before the failure arrived: left as it is, nothing joined
+                // again or passed over; Play tries it afresh.
+                song.radioUrl.isNotEmpty() -> if (exo.playWhenReady && (graph.watch.offline || !player.rejoinStation())) passOver()
                 // The copy the song was playing from has gone (its download removed or
                 // replaced), or a download has arrived while its stream failed: made ready
                 // again from where it is, by time, on whatever is best now. Nothing failed.

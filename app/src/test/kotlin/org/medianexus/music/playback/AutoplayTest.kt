@@ -208,6 +208,27 @@ class AutoplayTest {
     }
 
     @Test
+    fun aStationWhoseLoadFailsAfterThePauseIsNotJoinedAgain() {
+        val (exo, player) = realPlayer().let { it.exo to it.player }
+        try {
+            // A station buffering (its address answers nothing).
+            player.play(listOf(Song(id = "radio:1", title = "Test FM", radioUrl = "http://127.0.0.1:1/stream")), 0, "Radio")
+            idle()
+            assertTrue(exo.playWhenReady)
+            // The sleep timer pauses it; the load already on its way then fails, and the
+            // service, hearing of the failure, asks for the station to be joined again.
+            exo.pause()
+            idle()
+            assertFalse("asked for only while playing is wanted", player.rejoinStation())
+            idle(20_000)
+            assertFalse("joined again after the pause", exo.playWhenReady)
+        } finally {
+            player.release()
+            exo.release()
+        }
+    }
+
+    @Test
     fun theSleepTimersPauseOrTheSettingSwitchedOffWhileAutoplayLooksMeansNothingCarriesOn() {
         for (case in listOf("the player paused itself", "autoplay switched off")) {
             val (exo, player) = realPlayer().let { it.exo to it.player }

@@ -718,12 +718,15 @@ class QueuePlayer(
      * three minutes: then it is the station that is at fault, and it is passed over.
      */
     fun rejoinStation(): Boolean {
+        // Asked for only while playing is wanted: a load that fails after a pause (the
+        // person's, or the sleep timer's) isn't joined again; and checked again when it acts.
+        if (!exo.playWhenReady) return false
         val uid = queue.currentUid() ?: return false
         val wait = rejoins.next(uid, android.os.SystemClock.elapsedRealtime()) ?: return false
         val asked = intent
         later(wait) {
             // Nothing done since: no pause, no stop, no other choice.
-            if (queue.currentUid() != uid || intent != asked) return@later
+            if (queue.currentUid() != uid || intent != asked || !exo.playWhenReady) return@later
             exo.seekToDefaultPosition()
             startPlaying()
         }
