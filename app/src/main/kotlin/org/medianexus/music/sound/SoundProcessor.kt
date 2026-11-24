@@ -183,17 +183,19 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         val joined = streamMetadata.periodUid != period || period == null
         if (joined) whichSong(streamMetadata, s)
         val wasMember = member
+        // A new song's level is in place from its first sample (so a song after everything
+        // was switched off begins with nothing to ramp away, and out of the chain); a change
+        // made while one plays, or the processor coming in part-way through it, is ramped.
+        val fresh = joined || formatChanged
+        if (fresh) retarget(s, immediate = true)
         member = supported && (s.wanted || !settled())
+        lastSound = s
         if (!member) {
             // Out of the chain, everything is as if it weren't there.
             identity()
-            lastSound = s
             return
         }
-        lastSound = s
-        // A new song's level is in place from its first sample; a change made while it
-        // plays (or the processor coming in part-way through a song) is ramped.
-        retarget(s, immediate = joined || formatChanged)
+        if (!fresh) retarget(s, immediate = false)
         if (!wasMember || formatChanged) filters.clear()
     }
 

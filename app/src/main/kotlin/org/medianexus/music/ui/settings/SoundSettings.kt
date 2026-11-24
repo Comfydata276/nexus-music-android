@@ -202,24 +202,25 @@ private fun EqPanel(graph: Graph, settings: Settings, modifier: Modifier = Modif
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BasicText(stringResource(R.string.preset), style = Theme.type.body.copy(color = colors.muted))
             val said = stringResource(R.string.equaliser_preset, curveName)
-            Box(
-                Modifier
-                    .weight(1f, fill = false)
-                    .heightIn(min = Theme.dimens.touch)
-                    .clickable(role = Role.Button) { presets = true }
-                    .semantics(mergeDescendants = true) { contentDescription = said },
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                Row(
-                    Modifier.clip(RoundedCornerShape(16.dp)).background(colors.hover).padding(start = 14.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+            // The pill takes what the row has left after Reset, and no more than its words.
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                Box(
+                    Modifier
+                        .heightIn(min = Theme.dimens.touch)
+                        .clickable(role = Role.Button) { presets = true }
+                        .semantics(mergeDescendants = true) { contentDescription = said },
+                    contentAlignment = Alignment.CenterStart,
                 ) {
-                    BasicText(curveName, Modifier.weight(1f, fill = false), style = Theme.type.label.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Icon(R.drawable.ic_chevron_down, size = 16.dp, tint = colors.text)
+                    Row(
+                        Modifier.clip(RoundedCornerShape(16.dp)).background(colors.hover).padding(start = 14.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        BasicText(curveName, Modifier.weight(1f, fill = false), style = Theme.type.label.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(R.drawable.ic_chevron_down, size = 16.dp, tint = colors.text)
+                    }
                 }
             }
-            Box(Modifier.weight(1f, fill = true))
             TextButton(stringResource(R.string.reset), onClick = { graph.settings.update { it.copy(eqGains = List(6) { 0f }) } })
         }
         BasicText(stringResource(R.string.eq_top), Modifier.padding(top = 8.dp), style = Theme.type.caption.copy(color = colors.faint))
@@ -227,7 +228,9 @@ private fun EqPanel(graph: Graph, settings: Settings, modifier: Modifier = Modif
         BasicText(stringResource(R.string.eq_bottom), style = Theme.type.caption.copy(color = colors.faint))
         Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
             for (band in 0 until 6) {
-                BasicText(bandName(band), Modifier.weight(1f), style = Theme.type.caption.copy(color = colors.muted, textAlign = TextAlign.Center), maxLines = 1)
+                // In large type on a narrow phone the unit goes under the number rather than
+                // running into the next band's.
+                BasicText(bandName(band), Modifier.weight(1f).padding(horizontal = 3.dp), style = Theme.type.caption.copy(color = colors.muted, textAlign = TextAlign.Center), maxLines = 2)
             }
         }
     }

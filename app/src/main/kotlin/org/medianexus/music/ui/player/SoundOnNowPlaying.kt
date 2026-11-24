@@ -180,6 +180,12 @@ private fun Choice(text: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** Whether Now Playing shows the lyrics in the cover's place: remembered while the app runs,
+ *  as Windows' lyrics page stays where it was until left, not each time Now Playing opens. */
+object LyricsChoice {
+    var shown by mutableStateOf(false)
+}
+
 /**
  * The lyrics of the song playing, in the cover's place (Windows' `LyricsPage`, and its Now
  * Playing's lyrics beside the cover): what's kept at once, then the server's. Timed lyrics

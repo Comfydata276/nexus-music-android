@@ -110,10 +110,10 @@ Rules that hold everywhere:
   its own. ExoPlayer's playlist always holds the songs in exactly the order they will
   play, and its own shuffle stays off: shuffling means we reorder what is to come. That
   way "next", gapless joins, the car's queue and our queue screen can never disagree.
-- **Gapless** comes with ExoPlayer. **Crossfade** (which leaves an album alone), **volume
-  levelling** from ReplayGain tags, the **six-band equaliser** and **mono** are ported from
-  `src/audio/` as audio processors in a later milestone. Design the player set-up so they
-  slot in.
+- **Gapless** comes with ExoPlayer. **Volume levelling** from ReplayGain tags, the
+  **six-band equaliser** and **mono** are ported from `src/audio/` as one audio processor in
+  the player's sink (M4a: see "How it is built (M4a, sound and lyrics)"). **Crossfade** (which
+  leaves an album alone) needs two songs sounding at once and comes after it.
 - **Play reporting** as on Windows: "now playing" when a song starts; a play counts after
   half the song or four minutes, whichever comes first; offline plays are held and sent
   later.
@@ -1932,6 +1932,128 @@ How it is built (M3a, finding music):
   player. **Dates added** are kept in `playlist-added.json`, Windows' name (an `added.json`
   from before is moved there). The packed writer refuses what its reader would.
 
+How it is built (M4a, sound and lyrics):
+
+- **One audio processor of ours** (`sound/SoundProcessor`) does volume levelling, the
+  equaliser and mono, in that order, as Windows' chain has them (the gain in `feed`, then
+  `Effects::process`). It sits in Media3's own sink (`DefaultAudioSink`) as the first of the
+  processors the sink is given, which Media3 runs after its own trimming (the encoder delay and
+  padding that make joins gapless) and channel mapping, and before the debug builds' capture
+  (`DebugAudio`), so a capture is what reaches the output. Nothing else is ours: no renderer,
+  no second sink. One small wrapper of the sink (`SoundSink`, a `ForwardingAudioSink`) is
+  there for one thing, below.
+- **Off is out.** With levelling, the equaliser (or a flat curve with no preamp) and mono all
+  off, the processor says it is inactive and Media3 leaves it out of the chain: the sound is
+  exactly what it was in 0.3.0, sample for sample (`SoundProcessorTest`: never in the chain,
+  every sample as it went in). Media3 decides who is in the chain only when it flushes it;
+  so when the first setting is switched on, or the last switched off (once its ramp has run),
+  `SoundSink` tells the sink of a discontinuity before the next buffer. That is what Media3
+  itself does at every change of song: it drains everything in the chain to the output,
+  flushes it and decides again. Nothing is lost or played twice, and the position does not
+  move (the test feeds a song through on, off and on again and counts every frame).
+- **Which song, from Media3, and the gain at the join.** At each flush the sink hands its
+  processors the timeline and the period that comes next (Media3 1.11's `StreamMetadata`).
+  The processor reads the song from that period's media item (ours carry it,
+  `QueuePlayer.SongTag`) and the songs either side of it in ExoPlayer's playlist, which is the
+  queue in playing order, and works out the gain then (`Levelling`, Windows' `level_gain` and
+  `in_album_order` with their tests): decided as the song begins, as Windows decides it when a
+  song loads. At a join between two songs Media3 configures the sink for the second song
+  before its first buffer, and the sink drains the first song through the chain before it
+  flushes for the second; so the new gain begins on exactly the second song's first sample
+  (tested on the sink, and on ExoPlayer itself playing two files). Inside an album played in
+  order, in Auto or Album mode, both songs have the album's value: nothing changes at the join
+  and the equaliser's filters carry straight across (tested: the same samples as one song or as
+  two come out identical).
+- **Settings reach it as one value** (`Sound`): made on the main thread from Settings and
+  shuffle (Auto goes by song when shuffled), never changed, swapped in whole through one
+  volatile field. The audio thread notices a new one at the next buffer and ramps to it:
+  the gain, mono and the limiter over 50 ms; the equaliser's bands move to their new values
+  in steps (a full 24 dB swing in 50 ms) with the filters' coefficients worked out again each
+  32 frames while they move. A song beginning has everything as it should be from its first
+  sample. Nothing is made on the audio thread while it runs: filters and buffers are made when
+  the format changes, and the song is looked up once, at the flush that begins it.
+- **Clipping.** The gain is held to what the song's peak allows (Windows: Quiet and Normal
+  never push a peak past full scale, Loud by up to 3 dB). Above full scale Windows' soft
+  limiter rounds peaks off (`soft_clip`: untouched below 0.8 of full scale); it is applied
+  only while something can raise a peak (a gain above 1, or the equaliser on), and faded in
+  and out with them, so a song played untouched is never touched by it.
+- **Formats.** It takes 16-bit and float PCM at any sample rate and channel count, and hands
+  back the same. Media3's sink gives its processors 16-bit unless the player's float output is
+  switched on, which it isn't (it never was: 0.3.0 plays a 24-bit file as 16-bit), so nothing
+  is converted that wasn't; the sample rate is never changed. In 16 bits a sample is turned
+  into a float and back by exact powers of two: with nothing to do, it comes out exactly as it
+  went in. Mono mixes all the channels into each (stereo: left and right each the average).
+- **The gapless trimming and the position** are Media3's and untouched: the processor neither
+  adds nor drops a frame, and it reports no change of duration.
+- **Offload and the car.** Audio offload is not switched on anywhere (Media3's default), and
+  stays off: Media3 runs no processor on offloaded audio, so with it on levelling, the
+  equaliser and mono would silently do nothing. A car (Android Auto) is sent what the phone
+  plays, after the processor, so it hears the same; nothing of the settings goes to it.
+- **Levelling values** come from the server with each song (`replayGain`, in the library copy
+  and on every page) and are kept with a download (its `Downloaded.song`), so a download levels
+  offline. A song that came without them (one kept before they were) has them looked up in the
+  phone's copy of the library, all the songs the player holds at once, off the main thread
+  (`PlayerSound.songsHeld`); one whose values arrive after it has begun is levelled from its
+  next play.
+- **Cost.** On the Android 17 emulator, with levelling and the equaliser on, 6 to 8 ms of the
+  audio thread's time per second of sound, 0.6 to 0.8% (debug builds log it under `NexusSound`;
+  a phone's processor is faster); with everything off, none: it is not in the chain.
+
+- **Streaming quality changed while a song plays** (as before, Windows' `reload_current`): the
+  song is opened again at the new quality where it had been heard (the player stopped and
+  made ready again, which keeps the queue, the place and whether it plays); measured, 48 ms of
+  silence and the song carries on. A download, or a kept copy being played, is not fetched
+  again. **Not built: a second quality for mobile data** ("On Wi-Fi", "On mobile data"). It is
+  not small: what a song is streamed as is read in four places (where its bytes come from,
+  whether a kept copy plays offline, fetching ahead, the format line), and each would ask the
+  network as well, with the song playing kept to the form it began in. Left for the lead.
+- **The sleep timer** (`playback/SleepTimer`, held by the `Graph`, so it carries on with every
+  screen closed): Windows' choices (5, 10, 15, 30, 45 minutes, an hour, the end of this song,
+  off) from the moon on Now Playing, in Windows' menu ("Pause music after") and words. The
+  playback service pauses the player when the time is up, which keeps the queue and the place
+  as any pause does. "End of this song" asks ExoPlayer to pause at the end of each song while
+  it is set (`pauseAtEndOfMediaItems`): the player stops at the song's end by itself, at the
+  sample, whatever comes after it (a next song, songs autoplay has added), and the timer is
+  done. While it counts, the moon is lit with what is left beside it ("12 min", "After this
+  song").
+- **Lyrics** (`lyrics/LyricsBook`, a port of src/lyrics.rs and the lyrics parts of
+  src/playback.rs): from Navidrome only; synced where the server has them (and every line has
+  a time), plain otherwise, "No lyrics for this song" said plainly. What the server said is
+  kept per account (that it had none included), shown at once, and asked again in the
+  background when a song's lyrics are opened. The song playing and the next five have theirs
+  fetched ahead on Wi-Fi, the next one on mobile data, none with Data Saver on or offline
+  (as songs are). Kept in the account's cache folder, and for a downloaded song also in its
+  data folder, where Android doesn't clear them: fetched as the download arrives, and for
+  downloads already on the phone, when the server can next be asked (with Wi-Fi only on, on
+  Wi-Fi). Nothing of lyrics goes to the car. **On Now Playing** the lyrics button puts them in
+  the cover's place: the line being sung lit, those sung dimmed, the view following the music
+  a third of the way down; a tap on a line plays from it; scrolled by hand, it is left where it
+  was put for four seconds after the finger lifts. Only the line being sung is worked out from
+  the position (`derivedStateOf`), so the screen redraws when the line changes, not at every
+  tick. With no lyrics, what's up next is shown beneath, as Windows' Now Playing shows it.
+
+### What the design left open, and what was decided (M4a)
+
+- **Presets of one's own** are saved (the same name again replaces it) and deleted, as Windows
+  allows; Windows has no renaming, so neither has the phone (saving under a new name and
+  deleting the old does it).
+- **The equaliser's panel** keeps Windows' plot with a point per band; each band is a column a
+  sixth of the panel wide (48 dp at 360 dp) to drag in, or to tap where the point should go (the
+  alternative to dragging), in half-decibel steps as Windows; for TalkBack each is an adjustable
+  control ("60 Hz band", "+3 dB") with Raise and Lower a decibel at a time. Its scale labels
+  sit above and below the plot, not beside it, to leave the columns their width.
+- **The sleep timer and lyrics** are buttons on Now Playing beside the queue (Windows has them
+  in the player bar); lyrics take the cover's place rather than a page of their own.
+- **A setting changed while music plays is ramped** (Windows applies the equaliser at once and
+  starts the song again for a levelling change); a song beginning gets its settings at once.
+- **The limiter is one, after the equaliser** (Windows has one after the gain and one after
+  the equaliser); faded in and out rather than switched.
+- **No dither** when a processed sample is put back into 16 bits: rounding, as Media3's own
+  processors do; with nothing to do, the processor is out of the chain anyway.
+- **Offline, a song with no lyrics kept** says so in words of the app's own ("None are kept on
+  this phone, and your server can't be asked while you're offline"), not Windows' "Your music
+  server doesn't have any for it", which would not be known.
+
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed
 on release builds only.
@@ -1957,6 +2079,8 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
   multi-select. M3a (built): the library on the phone, the local search, the Songs page,
   finding and sorting in a list, Recently played, a song's details, "Go to" each artist.
 - **M4 Sound.** Quality switch, levelling, equaliser, mono, crossfade, sleep timer, lyrics.
+  M4a (built): levelling, the equaliser, mono, the quality switch, the sleep timer, lyrics.
+  M4b: crossfade.
 - **M5 In step with your other devices.** Saved queue and "Continue here", the sync
   playlist, "Your stats", "Made for you" and mixes of your own.
 - **M6 Jams and linked devices.**

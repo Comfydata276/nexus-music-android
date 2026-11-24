@@ -101,7 +101,7 @@ fun NowPlaying(onClose: () -> Unit) {
     val activity = androidx.activity.compose.LocalActivity.current
     var closing by remember { mutableStateOf(false) }
     // The lyrics in the cover's place (Windows' lyrics button), until turned off again.
-    var lyrics by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    var lyrics by LyricsChoice::shown
     PredictiveBackHandler(enabled = ui.nowPlaying && !ui.queueOpen) { progress ->
         try {
             progress.collect { backProgress = it.progress }

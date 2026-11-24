@@ -241,6 +241,25 @@ class SoundProcessorTest {
         for (i in 1 until out.size) assertTrue("step at $i", abs(out[i] - out[i - 1]) <= most)
     }
 
+    /** Switched off while paused, between songs: the next song never goes through it. */
+    @Test
+    fun switched_off_between_songs_the_next_song_is_left_out_from_its_first_sample() {
+        val processor = levelled()
+        val rig = Rig(processor)
+        val timeline = timelineOf(song("a", gain = ReplayGain(trackGain = -10f, trackPeak = 1f)), song("b", gain = ReplayGain(trackGain = -3f, trackPeak = 1f)))
+        rig.begin(timeline, 0)
+        rig.feed(steady(3000, 10_000))
+        processor.sound = Sound.OFF
+        val before = processor.framesProcessed
+        val second = sine(3000)
+        rig.begin(timeline, 1)
+        rig.feed(second)
+        rig.end()
+        assertEquals("not one frame of the second song through it", before, processor.framesProcessed)
+        assertFalse(processor.isActive())
+        assertTrue(second.contentEquals(rig.left().copyOfRange(3000, 6000)))
+    }
+
     @Test
     fun after_a_seek_the_first_sample_is_the_first_one_fed_at_the_songs_own_level() {
         val processor = levelled()

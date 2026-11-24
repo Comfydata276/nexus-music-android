@@ -1568,6 +1568,91 @@ on Android 12 and 17, `scripts/measure`, and TalkBack read aloud (the names are 
 `scripts/emu ui`: "Drag to move <title>", Move up and Move down, "Leave selection",
 "Add <title> to this playlist").
 
+## Sound and lyrics (M4a)
+
+**Songs of its own, on a server of its own.** The ordinary server keeps its hundred songs.
+The sound milestone's songs are added to a second instance:
+
+```sh
+NEXUS_TEST_PORT=4535 scripts/server --instance sound start   # the ordinary library, linked
+NEXUS_TEST_PORT=4535 scripts/server --instance sound sounds  # adds music/Sound Tests
+scripts/emu adb reverse tcp:4535 tcp:4535                    # the phone signs in at http://127.0.0.1:4535
+```
+
+`tools/library/sounds.py` makes two albums by "Test Signals" (FLAC, 44.1 kHz) and writes what
+it made, with each song's measured loudness, to `library-sound/sounds.json`:
+
+| Album | Song | Levelling values | Lyrics | What it is for |
+|---|---|---|---|---|
+| Level Tests | Loud Song | song and album | synced (`.lrc`) | a loud master, turned down |
+| | Quiet Song | song and album | plain, in the file | a quiet one, turned up as far as its peak allows |
+| | Peaks At Loud | song and album | none | sharp peaks: Normal is held back by them, Loud pushes them over (the limiter) |
+| | Song Value Only | the song's only | none | album mode falls back to the song's value |
+| | Nothing To Go By | none (the server sends an empty `replayGain`) | none | turned down by "Songs with nothing to go by" |
+| Tone Tests | Band Tones | none | none | a second each of 14 steady tones, 30 Hz to 15 kHz, at -12 dBFS |
+| | Long Lyrics | song | synced, a line every 1.5 s for 2½ minutes | a long lyrics view |
+
+The values are measured the way generate.py measures the library's (EBU R 128, ReplayGain 2's
+-18 LUFS), so a song levelled to a target should measure at it.
+
+**Measuring a capture** (`scripts/emu capture`, which taps the sound after the processor:
+see `PlayerSound.sink`):
+
+```sh
+NEXUS_TEST_PORT=4535 scripts/server --instance sound soundcheck eq <recording> 4 2 -2 -1 2 4 [preamp]
+NEXUS_TEST_PORT=4535 scripts/server --instance sound soundcheck level <recording> "Loud Song,Quiet Song,..." normal song
+```
+
+`eq` reads each tone's level in "Band Tones" against the response designed for the six gains
+(the cookbook's biquads in double precision, as `EqualiserTest` works it out); `level` cuts
+the recording into the songs played (gapless, so by their lengths from the first sound) and
+gives each one's integrated loudness beside what levelling should make of it.
+
+**What was measured** on the Android 17 emulator, debug builds of d3bd52b and after, with the recordings
+in `~/.cache/nexus-music-android/captures/` and the reports in
+`~/.cache/nexus-music-android/reports/m4a/`:
+
+| What | How | Result |
+|---|---|---|
+| The equaliser, Rock (4, 2, -2, -1, 2, 4 dB) | "Band Tones", `soundcheck eq` (`eqrock.wav`, `eq-rock.txt`) | every one of the 14 tones within 0.01 dB of the designed response (+3.84 dB at 30 Hz, -1.81 at 400 Hz, +2.02 at 15 kHz) |
+| Levelling, Normal, by song | "Level Tests" played through (`levelsong.wav`, `level-normal-song.txt`) | each song at its target: the four that can reach -14 LUFS measure -14.00; "Peaks At Loud" held back by its peak to -17.70 (expected -17.68), never over full scale; "Nothing To Go By" at -15.70 (6 dB down from Normal's +4) |
+| Levelling, Loud, Auto (the album in order) | the same album from its first song (`levelloud.wav`, `level-loud-auto.txt`) | every song on its album value (+2.9 dB), "Song Value Only" on its own (+6 dB), the untagged one left as it is; the loudest peaks pushed over full scale come out at 0.999: rounded by the limiter, not clipped |
+| A gapless album, levelled by album, with the equaliser on | "Continuous Sweep" played through, Normal, Auto, Rock (`sweepeq.wav`, `sweep-album-levelled-eq.txt`) | `sweepcheck`: no silence and no step at any of the seven joins (the one break it lists, at 160.000 s, is the album's end, where the capture runs on) |
+| Everything off | "Sweep 3 of 8" (`alloff.wav`, `all-off-bit-exact.txt`) | every one of its 1,764,000 samples exactly the file's; `joincheck` +0 at both ends |
+| Two quick changes of each control while music plays | mono on and off, the equaliser off and on, Level by twice, mono again, within four seconds (`quick.wav`, `quick-changes.txt`) | no change of level faster than 0.07 dB in a millisecond anywhere but at the album's own wrap-around join; `sweepcheck` finds nothing else |
+| A download, offline | "Loud Song" downloaded, offline mode on, the cache's lyrics deleted (as Android may) and the app started again (`offline2.wav`, `level-offline-download.txt`) | levelled to -14.00 LUFS as online; its lyrics shown from the download's own copy |
+| Streaming quality switched mid-song | Lossless to Low six seconds into "Sweep 1 of 8" (`quality.wav`, `quality-switch.txt`) | 48 ms of silence, then the song carries on from where it had been heard; in the capture, which taps the sound before Android's output buffer, the 0.6 s that buffer held is there twice (written, then thrown away at the switch), so a recording after the buffer would show only the 48 ms |
+| What the processor costs | debug build, `NexusSound` in the log | 6 to 8 ms per second of sound with levelling and the equaliser on (0.6 to 0.8%), about 3 ms with levelling alone |
+| The sleep timer | 5 minutes, with repeat on, the app's task removed (screens closed) | paused at 5:00 to the second, mid-song, queue and place kept; "End of this song" paused at the song's end with the album still to come, and Play carried on into the next |
+| Lyrics | synced, plain, none, a long synced song; tap a line | the line sung lit (line 4 at 0:14; line 15 at 0:23 in the long one, a third of the way down), a tap on line 2 seeked to 5.000 s; plain says it isn't timed; none says so with Up next beneath |
+
+**Tests on Media3's own classes** (`SoundProcessorTest`, Robolectric): the processor in a real
+`DefaultAudioSink` driven as Media3's renderer drives it (configured for each song with its
+timeline and period, then fed), with Media3's `TeeAudioProcessor` after it as the capture is:
+with everything off it is never in the chain and every sample comes out as it went in; a new
+song's gain begins on its first sample; an album played in order, levelled by album and with
+the equaliser on, comes out the same whether fed as one song or two (no step at the join);
+shuffled, the same two songs each take their own value exactly at the join; switched on and
+off mid-song, every frame comes out once, untouched before, settled at the gain within the
+song, untouched again after the ramp, and no step between samples larger than the sine's own;
+after a seek (the sink flushed), the first sample out is the first fed, at the song's level;
+mono from a song's first sample. And `ExoPlayer` itself, with Media3's own audio renderer,
+playing two WAV files: the second song's gain begins at exactly the frame the first song
+ends. `EqualiserTest` is Windows' tests of the filters plus every preset at every band
+against the designed response; `LevellingTest` Windows' tests of `level_gain` and
+`in_album_order` plus a peak that limits the gain at each target; `SleepTimerTest` and
+`LyricsTest` (which line is current before the first and after the last; what's kept, that a
+song has none included; fetching ahead once a run and again after a day; a download's lyrics
+where Android doesn't clear them; a download keeps its levelling values) the rest.
+
+**What only a real phone can say**: whether the phone's own sound effects (Samsung's Dolby
+Atmos, its equaliser, "Adapt sound") are on top of ours, and what a Bluetooth headset or the
+car does after the phone; whether the 6 to 8 ms a second the processor takes on the emulator
+is noticeable in battery on the phone (it is a small fraction of decoding); how a loud song
+levelled at Loud sounds where the limiter rounds its peaks (measured here: no sample over full
+scale); TalkBack reading the equaliser's bands aloud (`scripts/emu ui` shows each named with
+its frequency, its value and its actions).
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
@@ -1589,8 +1674,8 @@ on Android 12 and 17, `scripts/measure`, and TalkBack read aloud (the names are 
   short of it (see `docs/DESIGN.md`, "Whether it is heard").
 - **Speech**, the car's buttons, the cable, wireless, reconnection: only a car.
 - **Sound after the player.** `scripts/emu capture` records what the player sends to
-  Android (gapless joins can be measured; crossfade, levelling and the equaliser can be
-  when they arrive), but not what Android's mixer or the phone's hardware do with it.
+  Android (gapless joins, levelling and the equaliser are measured with it: see "Sound and
+  lyrics"), but not what Android's mixer, the phone's own effects or its hardware do with it.
 - **Samsung's system.** The emulator is Google's Android. One UI's battery rules and its
   habit of stopping background apps are not reproduced, and they matter to a music player.
 - **Real networks.** The server is one hop away with no delay. `scripts/emu adb emu
