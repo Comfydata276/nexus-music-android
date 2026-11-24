@@ -6,11 +6,11 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/emu [-d phone|phone36|phone28|car] <command> [arguments]
+usage: scripts/emu [-d phone|phone36|phone31|car] <command> [arguments]
 
   -d phone     the phone, Android 17 (default)        -d car   Android Automotive OS
   -d phone36   the phone on Android 16, what the first real phone runs
-  -d phone28   the phone on Android 9, the oldest version supported
+  -d phone31   the phone on Android 12, the oldest version supported
 
 Running it
   start [--wipe]            create if needed, start, wait until it is ready to use
@@ -90,7 +90,7 @@ create_avd() {
     # 1080 x 2340 at 450 dpi is 384dp wide: a Galaxy S Ultra at its default display
     # setting. The panel's full 1440 x 3120 would cost the software renderer nearly twice
     # the work per frame and tell us nothing more about layout.
-    phone|phone36|phone28) width=1080; height=2340; density=450 ;;
+    phone|phone36|phone31) width=1080; height=2340; density=450 ;;
     # The size of Google's reference landscape car screen.
     car) width=1408; height=792; density=160 ;;
   esac

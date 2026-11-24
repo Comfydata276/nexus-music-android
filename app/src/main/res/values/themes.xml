@@ -8,5 +8,7 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
+        <!-- The system's start-up screen: the app mark on the base colour. -->
+        <item name="android:windowSplashScreenBackground">@color/base</item>
     </style>
 </resources>

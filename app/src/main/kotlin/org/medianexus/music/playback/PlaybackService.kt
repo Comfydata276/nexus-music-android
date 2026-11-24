@@ -608,19 +608,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     internal var foreground: Foreground = object : Foreground {
-        override fun isIn(): Boolean =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                foregroundServiceType != ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(android.app.ActivityManager::class.java).getRunningServices(Int.MAX_VALUE)
-                    .any { it.service.className == this@PlaybackService.javaClass.name && it.foreground }
-            }
+        override fun isIn(): Boolean = foregroundServiceType != ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE
 
         override fun enter(notification: android.app.Notification) {
-            // Before Android 10 a foreground service has no type.
-            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
-            ServiceCompat.startForeground(this@PlaybackService, DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID, notification, type)
+            ServiceCompat.startForeground(this@PlaybackService, DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         }
 
         override fun leave() {
@@ -1942,7 +1933,7 @@ class PlaybackService : MediaLibraryService() {
         val own = controller.uid == android.os.Process.myUid()
         return Access.caller(
             // Media3's "trusted" is taken only from a caller whose name is its own: on
-            // Android 9 to 12 nobody has checked the name a platform controller gives, and
+            // Android 12 nobody has checked the name a platform controller gives, and
             // "trusted" can rest on that name alone (see Callers.namedTruly).
             trusted = controller.isTrusted && namedTruly(controller),
             // Asked of the system only for a caller that has no other standing: its package
@@ -2276,29 +2267,19 @@ class PlaybackService : MediaLibraryService() {
     private fun inCall(): Boolean {
         val mode = getSystemService(android.media.AudioManager::class.java)?.mode ?: return false
         return mode == android.media.AudioManager.MODE_IN_CALL || mode == android.media.AudioManager.MODE_IN_COMMUNICATION ||
-            mode == android.media.AudioManager.MODE_RINGTONE || (Build.VERSION.SDK_INT >= 30 && mode == android.media.AudioManager.MODE_CALL_SCREENING) ||
+            mode == android.media.AudioManager.MODE_RINGTONE || mode == android.media.AudioManager.MODE_CALL_SCREENING ||
             (Build.VERSION.SDK_INT >= 33 && mode == android.media.AudioManager.MODE_CALL_REDIRECT) || (Build.VERSION.SDK_INT >= 33 && mode == android.media.AudioManager.MODE_COMMUNICATION_REDIRECT)
     }
 
     private fun waitForCall() {
         waitingForCall = true
-        if (Build.VERSION.SDK_INT < 31) main.postDelayed(callCheck, CALL_CHECK_MILLIS)
     }
 
-    /** Before Android 12 there is no word when the audio mode changes: looked at every two
-     *  seconds while a Play waits for a call to end. */
-    private val callCheck = object : Runnable {
-        override fun run() {
-            if (!waitingForCall) return
-            if (inCall()) main.postDelayed(this, CALL_CHECK_MILLIS) else callEnded()
-        }
-    }
-
+    /** Android says when the audio mode changes: that is when a Play waiting for a call to
+     *  end is looked at again. */
     private fun listenForCalls() {
-        if (Build.VERSION.SDK_INT >= 31) {
-            runCatching {
-                getSystemService(android.media.AudioManager::class.java)?.addOnModeChangedListener(androidx.core.content.ContextCompat.getMainExecutor(this)) { if (waitingForCall && !inCall()) callEnded() }
-            }
+        runCatching {
+            getSystemService(android.media.AudioManager::class.java)?.addOnModeChangedListener(androidx.core.content.ContextCompat.getMainExecutor(this)) { if (waitingForCall && !inCall()) callEnded() }
         }
     }
 
@@ -2393,8 +2374,6 @@ class PlaybackService : MediaLibraryService() {
         /** A pause for want of audio focus this soon after Play was the sound being refused,
          *  not another app starting up. */
         private const val FOCUS_REFUSED_MILLIS = 2_000L
-
-        private const val CALL_CHECK_MILLIS = 2_000L
 
         /** The song id in a kept-song key ("song:<id>:<rate>": see `cacheKey`). */
         fun songIdOfKey(key: String): String = key.removePrefix("song:").substringBeforeLast(':')

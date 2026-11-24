@@ -29,9 +29,9 @@ scripts/dx ./gradlew --no-daemon :app:lintDebug            # lint
 scripts/dx ./gradlew --no-daemon :app:assembleRelease      # shrunk build: the one to measure
 ```
 
-The machine has 12 GB of memory, no swap, and is shared with other agents and an emulator.
-Run one Gradle build at a time, always with `--no-daemon`, and do not raise the memory
-settings in `gradle.properties`.
+The machine has 12 GB of memory and 8 GB of swap, and is shared with other agents and their
+emulators. Gradle builds take turns by themselves (`scripts/dx`); always `--no-daemon`, and
+do not raise the memory settings in `gradle.properties`.
 
 ## Finishing a piece of work
 

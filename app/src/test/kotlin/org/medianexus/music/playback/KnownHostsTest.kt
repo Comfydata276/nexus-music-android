@@ -192,7 +192,7 @@ class KnownHostsTest {
         val callers = Callers(phone, listed)
         // The system checked the name against the caller (Android 13 and later do).
         assertTrue(callers.namedTruly("com.example.watch", 10_400, checkedBySystem = true))
-        // It didn't (Android 9 to 12, on the platform's own transport): the name is the
+        // It didn't (Android 12, on the platform's own transport): the name is the
         // caller's only if the system says that uid is that package.
         assertTrue(callers.namedTruly("com.example.watch", 10_300, checkedBySystem = false))
         assertFalse("another app's name was taken on its say-so", callers.namedTruly("com.example.watch", 10_400, checkedBySystem = false))

@@ -4,7 +4,6 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.os.Build
 
 /**
  * What the app can find out for itself about whether it is being heard, in words for
@@ -33,8 +32,7 @@ object Audible {
         parts += "In the foreground: ${if (inForeground) "yes" else "no"}"
         parts += try {
             val media = audio.activePlaybackConfigurations.filter { it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA }
-            // (Where each is going is told from Android 12.)
-            val going = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) media.mapNotNull { it.audioDeviceInfo?.type }.distinct().map(::kind) else emptyList()
+            val going = media.mapNotNull { it.audioDeviceInfo?.type }.distinct().map(::kind)
             "Android lists ${listed(media.size)} sounding" + if (going.isEmpty()) "" else ", going to ${going.joinToString(" and ")}"
         } catch (_: RuntimeException) {
             "what Android lists as sounding could not be read"

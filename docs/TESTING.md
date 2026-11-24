@@ -42,7 +42,7 @@ In the app, the server's address is **`http://127.0.0.1:4533`** (see "Two addres
 Each prints its own help when run with no arguments or `--help`.
 
 **Memory.** The machine has 12 GB and is shared. The phone emulator holds about 3 GB, the
-car emulator about 3.4 GB, the Android 16 phone about 2.9 GB, the Android 9 phone about
+car emulator about 3.4 GB, the Android 16 phone about 2.9 GB, the Android 12 phone about
 2.6 GB, the server under 50 MB. Run
 one emulator at a time; `scripts/emu start` refuses when too little memory is free. The
 rig's own Gradle build (the tools under `tools/`) waits for any other Gradle build to
@@ -156,7 +156,7 @@ file for that reason.
 ```sh
 scripts/emu start                 # the phone: Android 17, 1080 x 2340, 384dp wide
 scripts/emu -d phone36 start      # the phone on Android 16, what the first real phone runs
-scripts/emu -d phone28 start      # the phone on Android 9, the oldest version supported
+scripts/emu -d phone31 start      # the phone on Android 12, the oldest version supported
 scripts/emu -d car start          # a car's own system: Android Automotive OS (Android 15)
 scripts/emu stop                  # (-d the same way)
 scripts/emu start --wipe          # factory reset
@@ -349,7 +349,7 @@ connection is exercised. The app also has to install and run on Android 15, whic
 image is.
 
 `scripts/carcheck` runs on the car emulator too (`NEXUS_DEVICE=car scripts/carcheck ...`),
-and on the other phones the same way (`NEXUS_DEVICE=phone36`, `phone28`).
+and on the other phones the same way (`NEXUS_DEVICE=phone36`, `phone31`).
 
 **After the third round of hardening**, on the release build: the whole check on Android
 16, Android 17 and the car emulator, 52 passed and none failed on each (one standing
@@ -733,15 +733,6 @@ org.medianexus.music`, send the button, and see PLAYING and `isForeground=true` 
 connected, as a parked car does) and was run on Android 16 and 17 after the third round:
 `foreground: entered at once to play` in Diagnostics, `long_pause.resume` and
 `long_pause.foreground` passing.
-
-**Android 9.** A Play button with the app not running never reaches the app there (see
-`docs/DESIGN.md`, "Starting playback"): `MediaSessionService: Sending KeyEvent … to the
-restored intent ComponentInfo{…PlaybackService}` in the log, and nothing after it. What can
-be checked on Android 9 is the service's own start: `am start-foreground-service -n
-org.medianexus.music/.playback.PlaybackService -a android.intent.action.MEDIA_BUTTON`
-(adb cannot attach the key, so there is nothing to do): in the foreground within a second,
-out of it and stopped seven seconds later, nothing in the log about a foreground service
-that did not start.
 
 **Swiped away.** Play something, swipe the app out of the recent-apps list, and look ten
 seconds later: `dumpsys media_session` says PLAYING and `dumpsys activity services

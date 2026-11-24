@@ -39,7 +39,8 @@ memory, check it against the version in the catalogue: these libraries have move
 Adding a dependency needs a reason written in the commit message; "it's convenient" is not
 one. Ask the lead before adding anything large.
 
-Lowest Android version supported: 9 (API 28). Built against the newest platform.
+Lowest Android version supported: 12 (API 31): the phone the app is for runs the newest
+Android, and the last few versions are supported. Built against the newest platform.
 
 ## Shape of the code
 
@@ -220,7 +221,7 @@ How it is built (M1a):
   one that has the mark, drops one that hasn't, and passes none on, so a start intent never
   becomes anyone's custom command. (Like, shuffle and repeat as custom commands under that
   controller's name stay allowed: that is how Media3 reports the system's own media
-  controls.) On Android 9 to 12 the platform's transport hands the app the package name its
+  controls.) On Android 12 the platform's transport hands the app the package name its
   caller wrote, unchecked, and Media3's "trusted" can rest on that name alone: there it is
   taken only from a caller the system says really is that package (`Callers.namedTruly`).
   What was worked out about a known host is forgotten when the system says that app was
@@ -489,7 +490,6 @@ rules are, by Google's documentation (read 24 November 2026) and Android's sourc
 
 | Android | The rule |
 |---|---|
-| 9 to 11 (API 28–30) | A service started with `startForegroundService` must enter the foreground within a few seconds or the app is killed. No limit on starting one from the background. |
 | 12, 13 (31–33) | An app in the background may not start a foreground service, with exceptions. The ones that matter here: the person acted on the app's notification; and, by the source rather than the documentation, a few seconds after the system has delivered the app a media button, or a media-session command from an app that could itself start one. |
 | 14 (34) | The service's kind must be declared, with its permission (`FOREGROUND_SERVICE_MEDIA_PLAYBACK`). Declared. |
 | 15, 16 (35–36) | An app targeting 15 is given audio focus only while it is the app in front or is running a foreground service. So the service must be in the foreground before the player asks. |
@@ -497,16 +497,16 @@ rules are, by Google's documentation (read 24 November 2026) and Android's sourc
 
 And each way playback can start, against them:
 
-| Playback is started by | 9–11 | 12–14 | 15–16 | 17 | Checked here |
-|---|---|---|---|---|---|
-| The app's own screens | allowed | allowed (the app is in front) | allowed | allowed | emulator, 17 |
-| The notification or lock screen | allowed | allowed (acting on a notification) | allowed; the service enters the foreground first | allowed (a notification tap is named) | not run: needs the ten-minute wait and a tap on the system's screen |
-| A headset or car button, the service running | allowed | allowed for a few seconds after the button | allowed; the service enters the foreground first | allowed (a media key is named) | emulator, 17: the car's Play after eleven minutes paused (below); a button then finds the service gone and starts it as in the next row |
-| The same, the app not running | **Android 9: the button never arrives** (below). 10, 11: allowed, by the source | allowed; in the foreground 0.1 s after the service is made | allowed | allowed (a media key is named) | emulator, 9, 16 and 17, each way of ending the app |
-| The car (Android Auto) choosing a song, asking for one aloud, or pressing Play | allowed | allowed for a few seconds after the command, if Android Auto could itself start one | the same; the service enters the foreground as the request arrives, before anything is looked up | **not known**: Google's page doesn't say whether a command from Android Auto counts as something the person did | the rig's probe, 9, 15 (car), 16 and 17, and on 16 and 17 after eleven minutes paused with the probe still connected (`--mode long_pause`), on 17 with the hardening forced on; the probe is not Android Auto |
-| The system's resume control | allowed | allowed (the system asks) | allowed; foreground first | **not known**, as the car | not run here |
-| The Assistant, on the phone | allowed | allowed (it opens the app: `VoiceActivity`) | allowed | allowed (the app is visible) | the activity, by adb, in the first round; never the Assistant |
-| The Assistant, in the car | allowed | as the car | as the car | **not known**, as the car | the request, by the probe; not the Assistant |
+| Playback is started by | 12–14 | 15–16 | 17 | Checked here |
+|---|---|---|---|---|
+| The app's own screens | allowed (the app is in front) | allowed | allowed | emulator, 17 |
+| The notification or lock screen | allowed (acting on a notification) | allowed; the service enters the foreground first | allowed (a notification tap is named) | not run: needs the ten-minute wait and a tap on the system's screen |
+| A headset or car button, the service running | allowed for a few seconds after the button | allowed; the service enters the foreground first | allowed (a media key is named) | emulator, 17: the car's Play after eleven minutes paused (below); a button then finds the service gone and starts it as in the next row |
+| The same, the app not running | allowed; in the foreground 0.1 s after the service is made | allowed | allowed (a media key is named) | emulator, 16 and 17, each way of ending the app |
+| The car (Android Auto) choosing a song, asking for one aloud, or pressing Play | allowed for a few seconds after the command, if Android Auto could itself start one | the same; the service enters the foreground as the request arrives, before anything is looked up | **not known**: Google's page doesn't say whether a command from Android Auto counts as something the person did | the rig's probe, 15 (car), 16 and 17, and on 16 and 17 after eleven minutes paused with the probe still connected (`--mode long_pause`), on 17 with the hardening forced on; the probe is not Android Auto |
+| The system's resume control | allowed (the system asks) | allowed; foreground first | **not known**, as the car | not run here |
+| The Assistant, on the phone | allowed (it opens the app: `VoiceActivity`) | allowed | allowed (the app is visible) | the activity, by adb, in the first round; never the Assistant |
+| The Assistant, in the car | as the car | as the car | **not known**, as the car | the request, by the probe; not the Assistant |
 
 **A song chosen in the car, step by step** (a spoken request and a bare Play differ only
 in what is looked up):
@@ -556,15 +556,6 @@ happened and what Android said. If Android 17 does refuse a Play that comes from
 there is nothing more the app can do from inside the service: it is already in the
 foreground before it asks for the sound, which is all Android lets it arrange. What to do
 then would be decided from what the Diagnostics page says happened.
-
-**Android 9 and a button with the app not running: a known limit.** Android 9 sends a
-button, when no session is live, as a broadcast to the component the app's session last
-named; Media3 1.11.1 names the playback service on Android 11 and below, and a service is
-not a broadcast receiver, so the button goes nowhere. Seen on the Android 9 emulator; not
-fixable from the app without a change inside Media3 (or replacing its session), and left
-as it is. Android 10 and 11 start a named service properly by
-their source, and were not run here. The car's own controls (the probe's) work on Android 9;
-whether a headset button reaches a session that is live there was not checked.
 
 ### Android Auto
 
@@ -993,7 +984,6 @@ documentation (read 24 November 2026) and Media3 1.11.1's source:
 
 | Android | What an app may do | What the app does (`DownloadKeeper`) |
 |---|---|---|
-| 9 to 11 (API 28–30) | A foreground service may be started from anywhere, and runs as long as it likes. A job runs for up to ten minutes at a time | A data-sync foreground service (`DownloadsService`) holds the app up while downloads arrive, with the progress notification. A persisted job, on the network allowed, stands behind it for after a restart, and starts the service again |
 | 12, 13 (31–33) | No foreground service may be started from the background (with exceptions none of which is "a job"). Jobs as before | The service, started from the app on screen. After a restart, or if it was stopped, the job does the downloading itself, a few minutes at a time, and is run again until it is done |
 | 14 (34) | **User-initiated data transfer jobs**: asked for while the app is on screen, with a network required and a notification of their own, they run until done, unheld by the app's standby bucket and quotas, and Android stops and runs them again as the network comes and goes. Foreground services must say their kind | A user-initiated job when the person asks from the app; an ordinary one when the app isn't on screen (a downloaded playlist topping itself up), upgraded the next time the app is opened. No foreground service |
 | 15, 16 (35–36) | A data-sync foreground service gets six hours a day, and none may be started from `BOOT_COMPLETED`. 16: an ordinary job that started while the app was in front, or beside a foreground service, now counts against its quota | As 14: user-initiated jobs aren't in either limit |

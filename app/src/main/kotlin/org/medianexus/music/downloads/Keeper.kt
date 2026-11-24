@@ -30,7 +30,7 @@ import org.medianexus.music.graph
 /**
  * What keeps the app running while downloads are under way, and brings it back to finish
  * them after it has been stopped, killed, or the phone restarted, on every version of Android
- * from 9. (The downloading itself is [Downloads]'.) Android has tightened what an app may do
+ * from 12. (The downloading itself is [Downloads]'.) Android has tightened what an app may do
  * in the background with nearly every version, so this is two things:
  *
  * - **A job** ([DownloadsJob]), kept by Android's job scheduler through a restart of the phone,
@@ -42,12 +42,11 @@ import org.medianexus.music.graph
  *   while the app isn't on screen (a downloaded playlist topping itself up), Android allows
  *   only an ordinary job, which runs for minutes at a time and is run again until the work is
  *   done.
- * - **Before Android 14**, which has no such jobs, a **foreground service** of the data-sync
- *   kind ([DownloadsService]), started from the app when the person asks (an app on screen may
- *   start one on every version), holds the app up for as long as downloads are arriving. The
- *   job stands behind it, for after a restart: from Android 9 to 11 it starts the service
- *   again, and on 12 and 13, which don't let an app in the background start one, the job does
- *   the downloading itself, a few minutes at a time.
+ * - **On Android 12 and 13**, which have no such jobs, a **foreground service** of the
+ *   data-sync kind ([DownloadsService]), started from the app when the person asks (an app on
+ *   screen may start one), holds the app up for as long as downloads are arriving. The job
+ *   stands behind it, for after a restart: an app in the background may not start a
+ *   foreground service there, so the job does the downloading itself, a few minutes at a time.
  *
  * Media3's own download service was the obvious frame, and was not used: in 1.11.1 it asks
  * for no restart at all on Android 12 and later (`DownloadService.onCreate`: a scheduler only
@@ -230,11 +229,9 @@ class DownloadsJob : JobService() {
         if (Build.VERSION.SDK_INT >= 34 && params.isUserInitiatedJob) {
             // Asked of a user-initiated job straight away; shown when notifications are allowed.
             setNotification(params, DownloadKeeper.NOTIFICATION_ID, DownloadKeeper.notification(this, org.medianexus.music.downloads.DownloadsState()), JOB_END_NOTIFICATION_POLICY_REMOVE)
-        } else if (Build.VERSION.SDK_INT < 31) {
-            // Android 9 to 11 let a job start a foreground service, which outlasts a job's
-            // few minutes. Android 12 and 13 don't: the job carries on itself.
-            DownloadsService.start(this, fromJob = true)
         }
+        // (Android 12 and 13 don't let a job start a foreground service: there the job carries
+        // the downloads on itself, a few minutes at a time.)
         work = scope.launch {
             graph.accounts.restored()
             // Whoever is signed in, as that changes: a job must not go on holding the
@@ -291,7 +288,7 @@ class DownloadsJob : JobService() {
     override fun onStopJob(params: JobParameters): Boolean {
         DownloadKeeper.running = false
         work?.cancel()
-        val reason = if (Build.VERSION.SDK_INT >= 31) params.stopReason else -1
+        val reason = params.stopReason
         val graph = applicationContext.graph
         val downloads = graph.accounts.state.value?.downloads
         downloads?.stoppedByAndroid(true)
@@ -308,7 +305,7 @@ class DownloadsJob : JobService() {
 }
 
 /**
- * Before Android 14: a foreground service of the data-sync kind, holding the app up while
+ * Android 12 and 13: a foreground service of the data-sync kind, holding the app up while
  * downloads arrive, with the progress notification (see [DownloadKeeper]). Stops itself when
  * there's nothing left to do, or when Android says its time is up (Android 15's six hours a
  * day for data-sync services; not met here, as 15 and later use the job).
@@ -322,7 +319,7 @@ class DownloadsService : Service() {
         val graph = applicationContext.graph
         val first = DownloadKeeper.notification(this, graph.accounts.state.value?.downloads?.state?.value ?: DownloadsState())
         try {
-            ServiceCompat.startForeground(this, DownloadKeeper.NOTIFICATION_ID, first, if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0)
+            ServiceCompat.startForeground(this, DownloadKeeper.NOTIFICATION_ID, first, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } catch (e: RuntimeException) {
             // Not allowed from here (the background, on Android 12 and 13): the job does it.
             graph.diagnostics.note("downloads: Android would not let the service into the foreground (${e.javaClass.simpleName})")
@@ -369,9 +366,9 @@ class DownloadsService : Service() {
     companion object {
         @Volatile private var started = false
 
-        fun start(context: Context, fromJob: Boolean = false) {
+        fun start(context: Context) {
             if (Build.VERSION.SDK_INT >= 34) return
-            if (started && !fromJob) return
+            if (started) return
             try {
                 androidx.core.content.ContextCompat.startForegroundService(context, Intent(context, DownloadsService::class.java))
                 started = true

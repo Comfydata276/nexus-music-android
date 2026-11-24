@@ -1,7 +1,6 @@
 package org.medianexus.music
 
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -39,10 +38,8 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // No grey wash over the three-button bar: the bottom bar is under it.
-            window.isNavigationBarContrastEnforced = false
-        }
+        // No grey wash over the three-button bar: the bottom bar is under it.
+        window.isNavigationBarContrastEnforced = false
         val graph = graph
         setContent { Root(graph) }
         // The screens talk to the player only while they can be seen, and only once someone

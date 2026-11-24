@@ -35,9 +35,8 @@ class PlayButtonReceiver : MediaButtonReceiver() {
         return worth
     }
 
-    /** Android would not let the player be started from here (Android 12 and later). Media3
-     *  catches it; it is noted, for Settings' Diagnostics, and nothing is started. */
-    @androidx.annotation.RequiresApi(31)
+    /** Android would not let the player be started from here. Media3 catches it; it is
+     *  noted, for Settings' Diagnostics, and nothing is started. */
     override fun onForegroundServiceStartNotAllowedException(context: Context, intent: Intent, e: android.app.ForegroundServiceStartNotAllowedException) {
         runCatching { context.graph.diagnostics.note("a media button with the player not running: Android would not let it be started from the background", now = true) }
     }

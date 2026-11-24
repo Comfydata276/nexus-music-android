@@ -46,7 +46,7 @@ container_running() {
 
 # --- which emulator a command talks to -------------------------------------------------
 # The devices: the phone (default, Android 17), the same on Android 16 (phone36) and on
-# Android 9 (phone28), and the car (Android Automotive OS).
+# Android 12 (phone31), and the car (Android Automotive OS).
 # Choose with `-d car` on scripts/emu, or NEXUS_DEVICE=car for the other scripts.
 device_setup() {
   device="${1:-${NEXUS_DEVICE:-phone}}"
@@ -66,10 +66,10 @@ device_setup() {
       image="system-images/android-36.1/google_apis/x86_64"
       ram="${NEXUS_PHONE_RAM:-2048}"
       ;;
-    phone28)
-      # Android 9, the oldest version the app supports. Not downloaded until first used.
-      avd=nexus-phone28; port=5558
-      image="system-images/android-28/google_apis/x86_64"
+    phone31)
+      # Android 12, the oldest version the app supports. Not downloaded until first used.
+      avd=nexus-phone31; port=5558
+      image="system-images/android-31/google_apis/x86_64"
       ram="${NEXUS_PHONE_RAM:-1536}"
       ;;
     car)
@@ -79,7 +79,7 @@ device_setup() {
       image="${NEXUS_CAR_IMAGE:-system-images/android-35-ext15/android-automotive/x86_64}"
       ram="${NEXUS_CAR_RAM:-2560}"
       ;;
-    *) die "unknown device '$device' (use phone, phone36, phone28 or car)" ;;
+    *) die "unknown device '$device' (use phone, phone36, phone31 or car)" ;;
   esac
   container="nexus-emu-$device"
   serial="emulator-$port"

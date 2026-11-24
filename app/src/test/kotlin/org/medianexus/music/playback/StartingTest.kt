@@ -294,7 +294,7 @@ class StartingTest {
 
     @Test
     fun onAnOlderPhoneACallerIsNotTrustedUnderANameThatIsNotItsOwn() {
-        // Android 9 to 12, the platform's own transport: the name comes from the caller and
+        // Android 12, the platform's own transport: the name comes from the caller and
         // nobody has checked it, and Media3's "trusted" includes "an app with notification
         // access", which it looks up by that name alone. So an app that gives the name of
         // one that has it (the system's own, a watch's companion) arrives as trusted.

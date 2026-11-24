@@ -196,7 +196,7 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
     /**
      * Whether the package name a caller gave is its own. On Android 13 and later the system
      * has checked it against the calling uid before the app is told (`checkedBySystem`). On
-     * Android 9 to 12, over the platform's own media-session transport, it has not: the name
+     * Android 12, over the platform's own media-session transport, it has not: the name
      * is whatever the caller wrote, and Media3's "trusted" then looks that name up among the
      * apps with notification access, by name alone. So there the name is only taken if the
      * system says the calling uid is that package: the same binding the browser path gets
