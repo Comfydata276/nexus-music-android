@@ -61,9 +61,11 @@ class AccountGraph(
     val api: Subsonic,
     io: CoroutineDispatcher = Dispatchers.IO,
     wiring: AccountWiring? = null,
+    /** Where its work runs (a test holds it at a gate). */
+    work: CoroutineDispatcher = Dispatchers.Default,
 ) {
     /** Work for this account; cancelled when it signs out. */
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val scope = CoroutineScope(SupervisorJob() + work)
 
     private val settings: StateFlow<Settings> = wiring?.settings ?: MutableStateFlow(Settings())
     private val reach: StateFlow<Reach> = wiring?.reach ?: MutableStateFlow(Reach())
@@ -411,7 +413,28 @@ class AccountGraph(
         }
     }
 
+    /** Taken by [played] and [close]: the account's going can't come between a play's two
+     *  halves. */
+    private val going = Any()
+    private var gone = false
+
+    /**
+     * A play counted (decided by `PlayReporter`): noted in the log of plays, and, if plays are
+     * reported (`report`), the server's held change made, **from here, one straight after the
+     * other**, so that the account going (signing out) can't come between them: both happen,
+     * or, once it has gone, neither. The log's line is written by the log (its closing writes
+     * what it holds); the change is put on the disk by the one sender, a write that is not
+     * cancelled once begun. (What a kill of the process between the two leaves is accepted:
+     * see DESIGN, "The log of plays".) `atMillis` is when it counted.
+     */
+    fun played(songId: String, atMillis: Long, from: String, report: Boolean) = synchronized(going) {
+        if (gone || songId.isEmpty()) return@synchronized
+        playLog.add(songId, atMillis / 1000, from)
+        if (report) scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { runCatching { submit(Pending.Played(songId, atMillis)) } }
+    }
+
     fun close() {
+        synchronized(going) { gone = true }
         downloads?.release()
         // Everything it holds written, then the file let go for whoever opens it next.
         playLog.close()

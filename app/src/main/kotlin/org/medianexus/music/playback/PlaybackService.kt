@@ -1690,10 +1690,8 @@ class PlaybackService : MediaLibraryService() {
     private fun counted(songId: String, from: String) {
         val graph = account ?: return
         if (songId.isEmpty()) return
-        val at = System.currentTimeMillis()
-        graph.playLog.add(songId, at / 1000, from)
-        if (!this.graph.settings.value.scrobble) return
-        graph.scope.launch { runCatching { graph.submit(org.medianexus.music.store.Pending.Played(songId, at)) } }
+        // Both from one place, one after the other (see AccountGraph.played).
+        graph.played(songId, System.currentTimeMillis(), from, report = this.graph.settings.value.scrobble)
     }
 
     // ---- The session's callback: the car, the notification, the app's screens ----------------
