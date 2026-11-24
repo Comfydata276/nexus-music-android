@@ -1661,6 +1661,15 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
   on its button, or the keyboard's tick, while it closes does nothing. Every way a playlist is
   made goes through the name sheet, so one "Create" is one playlist; the same holds for
   "Delete" and every other sheet's button.
+- **A confirmation is for what was on the screen when it was opened.** Every change takes the
+  copy the screen was drawing at the moment its menu or sheet opened: a song's menu and the
+  selection's sheet did already; the header's "…" on a playlist's page now takes the copy the
+  page draws (with a removal on its way, the playlist without that song), not the kept server
+  copy, so a Delete confirmed after that removal failed is refused rather than made on a copy
+  the person never saw. While a change to the playlist is on its way, the header's Rename and
+  Delete say "Still saving the last change to this playlist." and do nothing, like every other
+  change. A drag takes its copy when the finger goes down (and, as before, a redraw with other
+  songs stops it).
 
 ## Working with the Windows app
 

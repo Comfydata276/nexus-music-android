@@ -32,7 +32,8 @@ import org.medianexus.music.ui.theme.Theme
  * finger is down the rows are shown in the order being made (each still named by its place in
  * the playlist as shown, so nothing else is disturbed), and only the drop is a change: the song
  * at one place moved to another, which goes to the playlist's owner as a move by the song and
- * the one it now follows (see `Playlists.move`). A drag that is cancelled changes nothing.
+ * the one it now follows (see `Playlists.move`), made on the playlist as drawn when the finger
+ * went down. A drag that is cancelled changes nothing.
  * Only the rows are reordered; nothing on a page of five thousand songs is rebuilt or copied
  * for it, and a row crossed costs the same however long the playlist.
  */
@@ -152,6 +153,9 @@ fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, moved
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             down.consume()
+            // The drop is a move on the playlist as it was drawn when the finger went down,
+            // whatever has been drawn since.
+            val dropped = onMoved
             drag.start(place)
             var finished = false
             try {
@@ -169,7 +173,7 @@ fun Modifier.dragRows(drag: PlaylistDrag, list: LazyListState, place: Int, moved
             } finally {
                 // A move that isn't made lets the rows go back: what is drawn is always what a tap
                 // would play (the playlist as shown, with the move once it is made).
-                if (finished) drag.drop()?.let { (from, to) -> if (!onMoved(from, to)) drag.reset() } else drag.reset()
+                if (finished) drag.drop()?.let { (from, to) -> if (!dropped(from, to)) drag.reset() } else drag.reset()
             }
         }
     }

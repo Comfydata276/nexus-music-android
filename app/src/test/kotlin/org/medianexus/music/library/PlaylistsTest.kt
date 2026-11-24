@@ -465,6 +465,27 @@ class PlaylistsTest {
     }
 
     @Test
+    fun aDeleteConfirmedOnTheCopyShownDuringARemovalThatFailedSendsNothing() = runBlocking<Unit> {
+        // The header's menu takes the copy the page is drawing: with a removal on its way, the
+        // playlist without that song.
+        val page = opened()
+        val (reached, open) = server.hold("remove")
+        server.trouble["remove"] = Trouble.REFUSE
+        val removed = CompletableDeferred<Boolean>()
+        assertNull(playlists.remove(page, listOf(0)) { removed.complete(it != null) })
+        reached.await()
+        val drawn = playlists.shown(pages.kept(spec("p1"))!!)
+        assertEquals("b c d e", ids(drawn))
+        assertEquals(Unavailable.BUSY, playlists.delete(drawn))
+        open.complete(Unit)
+        assertFalse(withTimeout(10_000) { removed.await() })
+        // Confirmed after the removal failed: not the playlist the person saw.
+        assertFalse(made { playlists.delete(drawn, it) })
+        assertEquals(0, server.count("delete"))
+        assertEquals("a b c d e", server.now("p1"))
+    }
+
+    @Test
     fun aFailureLeavesNothingBehindItAndThePageAsTheServerHasIt() = runBlocking<Unit> {
         val page = opened()
         server.trouble["remove"] = Trouble.REFUSE

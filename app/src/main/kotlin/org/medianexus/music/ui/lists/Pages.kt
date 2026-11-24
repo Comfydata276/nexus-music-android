@@ -170,7 +170,8 @@ fun PlaylistPage(route: Route.Playlist) {
         editable = playlist.takeIf { mine },
         draggable = online,
         busy = busy || missing,
-        onMore = { page -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, kept, page = page)) },
+        // (The copy the page is drawing as the menu opens: what its Rename and Delete are for.)
+        onMore = { page -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, playlist, page = page)) },
         note = when {
             kept != null && !mine -> stringResource(R.string.not_your_playlist, kept.owner)
             mine && missing -> stringResource(R.string.playlist_missing_songs)
