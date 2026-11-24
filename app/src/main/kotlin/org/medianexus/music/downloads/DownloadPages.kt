@@ -41,6 +41,7 @@ object DownloadPages {
         return when (val done = withContext(Dispatchers.Main.immediate) { downloads.toggle(list, songs) }) {
             Downloads.Toggled.Cancelled -> context.getString(R.string.download_cancelled)
             Downloads.Toggled.Removed -> context.getString(R.string.removed_from_downloads)
+            Downloads.Toggled.HeldElsewhere -> context.getString(R.string.still_downloaded_elsewhere)
             is Downloads.Toggled.Asked -> said(context, done.asked)
         }
     }

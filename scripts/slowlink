@@ -8,6 +8,9 @@
 #   scripts/slowlink cut     the server gone: every connection dropped, new ones refused
 #                            (start again to bring it back). Removing adb's reverse rule
 #                            is not enough: connections already open carry on through it.
+#   scripts/slowlink hole    a black hole: connections are taken and nothing is ever
+#                            answered, as on a signal that is there and carries nothing. A
+#                            request made into it hangs until the app gives it up.
 #
 # Uses the phone emulator; NEXUS_DEVICE=phone36 (and so on) for another.
 set -euo pipefail
@@ -30,10 +33,19 @@ case "${1:-}" in
     "$root/scripts/emu" adb reverse "tcp:$port" "tcp:$relay" >/dev/null
     say "the server is out of reach of the emulator (scripts/slowlink start to bring it back)"
     ;;
+  hole)
+    # A black hole: the emulator's connections are taken and never answered.
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    need_rig_image
+    docker run -d --rm --name "$name" --network host -v "$root/tools/library":/tools:ro "$rig_image" \
+      python3 /tools/slowlink.py "$relay" "$port" -1 >/dev/null
+    "$root/scripts/emu" adb reverse "tcp:$port" "tcp:$relay" >/dev/null
+    say "the emulator's link to the server swallows everything and answers nothing (scripts/slowlink stop to undo)"
+    ;;
   stop)
     "$root/scripts/emu" adb reverse "tcp:$port" "tcp:$port" >/dev/null || true
     docker rm -f "$name" >/dev/null 2>&1 || true
     say "the emulator reaches the server directly again"
     ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

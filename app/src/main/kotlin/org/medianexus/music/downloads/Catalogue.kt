@@ -383,8 +383,17 @@ class Catalogue(
             val whole = wholeLength(log)
             log.seek(whole)
             try {
-                log.write((json.encodeToString(Change.serializer(), change) + "\n").toByteArray())
+                val line = (json.encodeToString(Change.serializer(), change) + "\n").toByteArray()
+                if (CrashPoints.at != null) {
+                    // (The rig's kill tests: the line in two halves, to be stopped between.)
+                    log.write(line, 0, line.size / 2)
+                    CrashPoints.reached("append-half")
+                    log.write(line, line.size / 2, line.size - line.size / 2)
+                } else {
+                    log.write(line)
+                }
                 log.fd.sync()
+                CrashPoints.reached("appended")
             } catch (e: IOException) {
                 // Part of the line may have gone in: taken out again.
                 runCatching {

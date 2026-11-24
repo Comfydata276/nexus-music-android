@@ -157,6 +157,7 @@ class SongFetch(
             }
             if (arrived != null) return finish(song, form, part, meta, target, name, arrived)
             if (from == null) throw DownloadFailure("The server didn't send the whole song.", again = true)
+            CrashPoints.say { "${song.id}: what the server sent doesn't fit its part: the part is thrown away, and it is fetched from nothing" }
             discard(part, meta)
             from = null
         }
@@ -232,6 +233,7 @@ class SongFetch(
                     // Part of the file. Taken only if it was asked for, and is exactly the
                     // rest of the copy the part is part of.
                     if (from == null || !fits(response, from, length)) return null
+                    CrashPoints.say { "${song.id}: carried on from byte ${from.have} of ${from.of.total} (the server's copy is the same one)" }
                     said = from.of.total
                     record = from.of
                     arrived = from.have
@@ -241,6 +243,7 @@ class SongFetch(
                     // changed, or it takes no ranges): whatever was here goes.
                     said = length
                     arrived = 0
+                    if (from != null) CrashPoints.say { "${song.id}: asked to carry on from byte ${from.have}, and sent the whole file: its part is thrown away" }
                     discard(part, meta)
                     val of = PartOf(strongTag(response), response.header("Last-Modified").orEmpty().trim(), length, 0)
                     // Its record first, on the disk, and only then its first byte. (Nothing
@@ -284,6 +287,7 @@ class SongFetch(
                         }
                         if (arrived - synced >= SYNC_EVERY) mark()
                     }
+                    CrashPoints.reached("last-write")
                     out.fd.sync()
                 } catch (e: IOException) {
                     // Stopped, or the connection went: what did arrive is kept to carry on
@@ -318,22 +322,28 @@ class SongFetch(
     /** Verifies what arrived, and if it is the song, whole, puts it in place and enters it. */
     private fun finish(song: Song, form: SavedForm, part: File, meta: File, target: File, name: String, arrived: Arrived): Downloaded {
         if (cancelled) throw Cancelled()
+        CrashPoints.reached("arrived")
         val verified = try {
             verify(song, form, part, arrived)
         } catch (e: DownloadFailure) {
             // Not the song, whole: nothing of it is kept to be carried on from.
+            CrashPoints.say { "${song.id}: failed its checks (${e.reason})" }
             discard(part, meta)
             throw e
         }
         if (cancelled) throw Cancelled()
+        CrashPoints.reached("verified")
         try {
             Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             meta.delete()
+            CrashPoints.reached("renamed")
             // Its name must be on the disk before the mark that vouches for it.
             syncDir(catalogue.dir)
         } catch (e: IOException) {
             throw failure(e)
         }
+        CrashPoints.reached("placed")
+        CrashPoints.say { "${song.id}: verified and in place, ${arrived.bytes} bytes" }
         val entry = Downloaded(verified.copy(queued = false), name, arrived.bytes, clock(), form.suffix, form.bitrate, target.lastModified())
         try {
             // The mark: only now is it a download.

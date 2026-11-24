@@ -254,6 +254,8 @@ class Graph(context: Context) {
 
     init {
         quietMedia3(BuildConfig.DEBUG)
+        // A debug build logs what each download did (by song id; never an address).
+        if (BuildConfig.DEBUG) org.medianexus.music.downloads.CrashPoints.log = { android.util.Log.d("NexusDownloads", it) }
         DebugHosts.load(context)
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }
         // Said once when writing starts to fail, and taken back once a write succeeds.

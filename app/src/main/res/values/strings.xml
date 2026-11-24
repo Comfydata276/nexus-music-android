@@ -242,6 +242,7 @@
     <string name="download_cancelled">Download cancelled</string>
     <string name="downloads_cancelled">Downloads cancelled</string>
     <string name="removed_from_downloads">Removed from downloads</string>
+    <string name="still_downloaded_elsewhere">Its songs stay downloaded: something else you\'ve downloaded has them</string>
     <string name="download_removed">Download removed</string>
     <string name="downloads_removed">Downloads removed</string>
     <string name="no_room">Not enough room: that needs about %1$s, and this phone has %2$s free. (Half a gigabyte is always left spare.)</string>

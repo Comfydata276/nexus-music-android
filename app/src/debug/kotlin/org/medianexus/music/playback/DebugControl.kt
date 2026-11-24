@@ -57,6 +57,19 @@ import androidx.media3.session.SessionToken
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es downloads "remove <id>,<id>"
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es spare 999999
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es offline on|off
+ *
+ * The offline engine's hard cases (docs/TESTING.md, "Hardening"): die, by SIGKILL, at a named
+ * moment of a download's last steps (`CrashPoints` lists them; `never` to stop that); like or
+ * unlike a song by id, as its heart does. (What each download did is logged by every debug
+ * build, tag NexusDownloads.)
+ *
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es killat append-half
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es like <song id>
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es unlike <song id>
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es toggle "playlist:<id>"
+ *
+ * (`toggle` is a list's download button pressed: it downloads the list, cancels it, or, all
+ * of it being downloaded, removes it.)
  */
 class DebugControl : BroadcastReceiver() {
     private companion object {
@@ -83,9 +96,40 @@ class DebugControl : BroadcastReceiver() {
             return
         }
         val graph = (context.applicationContext as org.medianexus.music.App).graph
+        // Die (SIGKILL) at a named moment of a download's last steps: see CrashPoints.
+        intent.getStringExtra("killat")?.let { point ->
+            org.medianexus.music.downloads.CrashPoints.at = if (point.isEmpty() || point == "never") null else { reached ->
+                if (reached == point) {
+                    android.util.Log.d("NexusDownloads", "killed at $point, as asked")
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                }
+            }
+            resultData = "killed at: $point"
+            return
+        }
+        // A like or an unlike of a song, as its heart makes one.
+        (intent.getStringExtra("like") ?: intent.getStringExtra("unlike"))?.let { id ->
+            val liked = intent.hasExtra("like")
+            graph.accounts.state.value?.likes?.set(org.medianexus.music.net.Song(id = id, title = id), liked)
+            resultData = if (liked) "liked $id" else "unliked $id"
+            return
+        }
         intent.getStringExtra("offline")?.let { on ->
             graph.settings.update { it.copy(offline = on == "on") }
             resultData = "offline mode ${if (on == "on") "on" else "off"}"
+            return
+        }
+        // A list's download button, pressed: downloads it, cancels it, or removes it.
+        intent.getStringExtra("toggle")?.let { key ->
+            val done = goAsync()
+            graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                try {
+                    val account = graph.accounts.restored()
+                    done.resultData = account?.let { org.medianexus.music.downloads.DownloadPages.toggle(context, it, key) } ?: "nobody signed in"
+                } finally {
+                    done.finish()
+                }
+            }
             return
         }
         val download = intent.getStringExtra("download")

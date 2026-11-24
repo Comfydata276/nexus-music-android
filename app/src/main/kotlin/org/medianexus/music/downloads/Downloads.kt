@@ -199,25 +199,6 @@ class Downloads(
     private var ticking: Job? = null
     private var initialized = false
 
-    init {
-        onMain {
-            if (released) return@onMain
-            val index = DefaultDownloadIndex(database, accountKey)
-            manager = DownloadManager(context, index, Factory()).apply {
-                maxParallelDownloads = AT_ONCE
-                minRetryCount = RETRIES
-                // Media3 is asked for no network of its own: it would wait for one Android
-                // has "validated" as reaching the internet, which a server on a home Wi-Fi
-                // with no internet beyond it never is, and it reads "metered" in a way that
-                // can miss a change on the same network. Whether downloads may run now is
-                // decided here (see [gate]).
-                requirements = Requirements(0)
-                addListener(Listener())
-            }
-            follow()
-        }
-    }
-
     private fun onMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
@@ -294,7 +275,9 @@ class Downloads(
      * The network Android gave the job the downloads run under, or null when there is none
      * (no job; or it has ended): transfers started from now on go out on it, not on whatever
      * the phone's default route is (a job asked for an unmetered network must not download
-     * over mobile data because that is the default at that moment).
+     * over mobile data because that is the default at that moment). If a transfer on it can't
+     * reach the server at all, the phone's own route is gone back to (see `SongDownloader`):
+     * a network that is "the job's" and has no way to the server must not stop every download.
      */
     fun useNetwork(given: android.net.Network?) {
         route = if (given == null) http else http.newBuilder()
@@ -399,7 +382,7 @@ class Downloads(
         when {
             waiting.isNotEmpty() && kept -> {
                 val others = onDisk {
-                    catalogue.forget(list.key)
+                    forgetList(list.key)
                     catalogue.wantedBesides(list.key)
                 }
                 stop(waiting.filter { it !in others })
@@ -407,11 +390,13 @@ class Downloads(
             }
             waiting.isEmpty() && songs.isNotEmpty() && songs.all { catalogue.has(it.id) } -> {
                 val others = onDisk {
-                    catalogue.forget(list.key)
+                    forgetList(list.key)
                     catalogue.wantedBesides(list.key)
                 }
-                drop(songs.map { it.id }.filter { it !in others })
-                Toggled.Removed
+                val going = songs.map { it.id }.filter { it !in others }
+                drop(going)
+                // Nothing of it went: every song of it is held by something else downloaded.
+                if (going.isEmpty()) Toggled.HeldElsewhere else Toggled.Removed
             }
             else -> Toggled.Asked(ask(songs, list.copy(songs = songs.map { it.id }), own = false))
         }
@@ -420,6 +405,9 @@ class Downloads(
     sealed interface Toggled {
         data object Cancelled : Toggled
         data object Removed : Toggled
+
+        /** Asked to be removed, and all of its songs stay: other downloads hold them. */
+        data object HeldElsewhere : Toggled
         data class Asked(val asked: org.medianexus.music.downloads.Asked) : Toggled
     }
 
@@ -460,7 +448,7 @@ class Downloads(
     fun remove(ids: Collection<String>) = onMain {
         val asked = ids.toSet()
         later {
-            for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) catalogue.forget(list.key)
+            for (list in catalogue.state.value.collections) if (list.songs.any { it in asked }) forgetList(list.key)
             catalogue.unsingle(ids)
         }
         drop(ids)
@@ -475,6 +463,7 @@ class Downloads(
             val gone = ids.mapNotNull { catalogue.entry(it)?.song?.coverArt }
             catalogue.remove(ids)
             unpin(gone)
+            main.post { measure() }
         }
         publish()
     }
@@ -483,7 +472,7 @@ class Downloads(
     fun removeAll() = onMain {
         val ids = catalogue.state.value.songs.keys + asks.keys + now.value.active.map { it.song.id }
         later {
-            catalogue.state.value.collections.forEach { catalogue.forget(it.key) }
+            catalogue.state.value.collections.forEach { forgetList(it.key) }
             catalogue.unsingle(catalogue.state.value.singles)
         }
         drop(ids.toList())
@@ -521,6 +510,15 @@ class Downloads(
 
     // ---- Covers -----------------------------------------------------------------------------
 
+    /** A list is no longer downloaded whole: forgotten, and its own cover (kept with the
+     *  downloads when it was asked for) let go if nothing downloaded still uses it. (Off the
+     *  main thread.) */
+    private fun forgetList(key: String) {
+        val cover = catalogue.collection(key)?.coverArt
+        catalogue.forget(key)
+        if (!cover.isNullOrEmpty()) unpin(listOf(cover))
+    }
+
     /** Lets go of the covers nothing downloaded uses any more. (Off the main thread.) */
     private fun unpin(coverIds: List<String>) {
         val still = HashSet<String>()
@@ -552,7 +550,7 @@ class Downloads(
                     // the last one's fetches are still unwinding (Media3 interrupts its tasks
                     // on release and doesn't wait for them), and the two would write the same
                     // part files. The old one's are waited for.
-                    InFlight.awaitNone(catalogue.dir)
+                    if (!InFlight.awaitNone(catalogue.dir)) note("downloads: an earlier fetch had not let go of the folder after half a minute; carried on without waiting longer")
                     catalogue.sweep(busy)
                 } finally {
                     ready.complete(Unit)
@@ -601,9 +599,14 @@ class Downloads(
         override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
             asks.remove(download.request.id)
             publish()
+            // (What had arrived of it has gone with it.)
+            measure()
         }
 
-        override fun onIdle(downloadManager: DownloadManager) = publish()
+        override fun onIdle(downloadManager: DownloadManager) {
+            publish()
+            measure()
+        }
 
 
         override fun onDownloadsPausedChanged(downloadManager: DownloadManager, downloadsPaused: Boolean) = publish()
@@ -751,6 +754,14 @@ class Downloads(
                     // the server is asked whether it is there at all (which pauses everything if
                     // it isn't).
                     if (e.network) {
+                        // On the network the job was given, and it didn't get there: the next
+                        // try (Media3's, in a moment) goes by the phone's own route instead.
+                        // Which network that is, and whether it may be used (unmetered, for
+                        // Wi-Fi only), is still [gate]'s to say.
+                        if (route !== http) {
+                            route = http
+                            note("downloads: the network Android gave the job didn't reach the server; the phone's own route is used")
+                        }
                         reachedFailed()
                         throw e
                     }
@@ -800,6 +811,29 @@ class Downloads(
     /** Told when a download couldn't reach the server (see [SongDownloader]). */
     @Volatile var reachedFailed: () -> Unit = {}
 
+    // Last in the class, and it must stay so: when the engine is made on the main thread this
+    // runs at once, inside the constructor, and everything declared above must already have
+    // its starting value. (Placed before the fields it uses, it found "not yet open" false,
+    // and let Media3 start downloads before the folder had been swept.)
+    init {
+        onMain {
+            if (released) return@onMain
+            val index = DefaultDownloadIndex(database, accountKey)
+            manager = DownloadManager(context, index, Factory()).apply {
+                maxParallelDownloads = AT_ONCE
+                minRetryCount = RETRIES
+                // Media3 is asked for no network of its own: it would wait for one Android
+                // has "validated" as reaching the internet, which a server on a home Wi-Fi
+                // with no internet beyond it never is, and it reads "metered" in a way that
+                // can miss a change on the same network. Whether downloads may run now is
+                // decided here (see [gate]).
+                requirements = Requirements(0)
+                addListener(Listener())
+            }
+            follow()
+        }
+    }
+
     companion object {
         /** Songs fetched at a time. */
         const val AT_ONCE = 2
@@ -841,6 +875,9 @@ internal object InFlight {
     fun enter(dir: File) = synchronized(lock) {
         counts[dir.path] = (counts[dir.path] ?: 0) + 1
     }
+
+    /** How many fetches are under way into `dir` now. */
+    fun count(dir: File): Int = synchronized(lock) { counts[dir.path] ?: 0 }
 
     fun leave(dir: File) = synchronized(lock) {
         val left = (counts[dir.path] ?: 1) - 1

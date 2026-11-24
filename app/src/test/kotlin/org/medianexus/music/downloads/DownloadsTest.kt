@@ -148,6 +148,9 @@ class DownloadsTest {
      *  would say it changed). */
     private var network: kotlinx.coroutines.flow.MutableStateFlow<org.medianexus.music.net.NetworkNow> = MutableStateFlow(org.medianexus.music.net.NetworkNow())
 
+    /** What the engines had to say for Diagnostics. */
+    private val engineNotes: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
     /** What says a file is the song (see above): a test may make it slow to answer. */
     private var check = AudioCheck { _, _ -> Inspected("flac", true, -1) }
 
@@ -156,7 +159,7 @@ class DownloadsTest {
         val covers = CoverStore(folder.newFolder(), scope, Dispatchers.IO, fetch = { _, _ -> throw ApiError.Network("none") })
         return Downloads(context, catalogue, api, OkHttpClient(), database, "acct", settings, reach, covers, { busy, wifi -> kept += busy to wifi }, scope, spare = { spare },
             // The songs here are not audio (what is and isn't a song is WholeDownloadTest's).
-            check = check, disk = disk, network = network)
+            check = check, disk = disk, network = network, note = { engineNotes += it })
             .also { made += it }
             .also { idle() }
     }
@@ -363,6 +366,11 @@ class DownloadsTest {
         assertEquals(listOf("s2", "s3"), DownloadedViews.playlist(engine.state.value, "playlist:p2")!!.songs.map { it.id })
         // And after the app is started again.
         assertEquals(setOf("s2", "s3"), Catalogue(catalogue.dir).state.value.ids)
+        // A list that was never asked for itself, every song of which another download
+        // holds: its button can remove nothing, and says so rather than "Removed".
+        assertEquals(Downloads.Toggled.HeldElsewhere, run { engine.toggle(list("playlist:p3", listOf(s2)), listOf(s2)) })
+        assertTrue(catalogue.has("s2"))
+        assertEquals(listOf("playlist:p2"), engine.state.value.collections.map { it.key })
     }
 
     @Test
@@ -399,6 +407,11 @@ class DownloadsTest {
         engine.remove(listOf("s1"))
         until("s1 gone") { !catalogue.has("s1") }
         assertTrue(Catalogue(catalogue.dir).state.value.singles.isEmpty())
+        // With nothing left downloaded, what the downloads are said to take is what is
+        // really left in their folder (their own small lists), not what was there before.
+        val left = catalogue.dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        until("measured again") { engine.state.value.occupied == catalogue.dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+        assertTrue("$left bytes are left", left < 10_000)
     }
 
     @Test
@@ -555,7 +568,8 @@ class DownloadsTest {
         val first = downloads()
         until("ready") { first.state.value.settled }
         run { first.download(listOf(song("s1"))) }
-        assertTrue(checking.await(30, TimeUnit.SECONDS))
+        assertTrue("the first engine's fetch never got as far as its check", checking.await(120, TimeUnit.SECONDS))
+        assertEquals(1, InFlight.count(catalogue.dir))
         // Signed out and straight back in to the same account: the old engine is released
         // (Media3 interrupts its tasks and doesn't wait for them), and a new one made on the
         // same folder and the same list of downloads.
@@ -567,8 +581,11 @@ class DownloadsTest {
         until("read") { second.state.value.settled }
         // It has the song to fetch, and doesn't begin: the old fetch still has the part file.
         repeat(200) { idle() }
-        assertEquals(1, asked.count { it.url.queryParameter("id") == "s1" })
-        assertTrue(second.state.value.active.none { it.state is SongState.Fetching })
+        assertEquals("the new engine asked the server for it while the old fetch still had its files", 1, asked.count { it.url.queryParameter("id") == "s1" })
+        assertTrue(
+            "the new engine is fetching, with ${InFlight.count(catalogue.dir)} of the old one's fetches still in the folder (notes: $engineNotes)",
+            second.state.value.active.none { it.state is SongState.Fetching },
+        )
         // The old one lets go.
         letGo.countDown()
         until("downloaded by the new one") { catalogue.has("s1") && !second.state.value.busy }

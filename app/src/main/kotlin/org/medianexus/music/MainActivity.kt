@@ -53,16 +53,10 @@ class MainActivity : ComponentActivity() {
                 graph.accounts.state.collect { account -> if (account != null) graph.player.connect() else graph.player.release() }
             }
         }
-        // While in front, a server that couldn't be reached is looked for now and then, so
-        // what failed comes back by itself when it's there again.
-        lifecycleScope.launch {
-            repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
-                while (true) {
-                    kotlinx.coroutines.delay(15_000)
-                    graph.checkIfDown()
-                }
-            }
-        }
+        // (While in front, a server that couldn't be reached is looked for now and then, so
+        // what failed comes back by itself when it's there again: ServerWatch does that
+        // itself, the app being in front being one of its reasons to know, and asks at once
+        // when the screens come to the front: see onStart.)
     }
 
     override fun onStart() {
@@ -70,7 +64,14 @@ class MainActivity : ComponentActivity() {
         // On screen: downloads waiting may now be carried on the way Android allows only an
         // app on screen to ask for (see DownloadKeeper).
         org.medianexus.music.downloads.DownloadKeeper.visible = true
-        graph.accounts.state.value?.downloads?.refresh()
+        // In front: a server out of reach is asked after now, not at its next turn; and
+        // downloads Android paused with a job it stopped may run again (an app on screen may
+        // download, and is asked for a job of the kind only it may have).
+        graph.checkIfDown()
+        graph.accounts.state.value?.downloads?.let { downloads ->
+            downloads.stoppedByAndroid(false)
+            downloads.refresh()
+        }
     }
 
     override fun onStop() {
