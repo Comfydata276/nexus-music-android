@@ -44,7 +44,8 @@ class OwnPlayer(private val app: Context, private val graph: Graph) : HostPlayer
     override fun skip() = connection.next()
     override fun previous() = connection.previous()
     override fun setPlaying(on: Boolean) {
-        if (on != connection.playing.value) connection.ownPlayPause()
+        // As a tap on Play or Pause here: a choice, with its place in the order of choices.
+        if (on != connection.playing.value) connection.playPause()
     }
     override fun seek(seconds: Double) = connection.seek((seconds * 1000).toLong())
     override fun jump(uid: Long) = connection.jump(uid)

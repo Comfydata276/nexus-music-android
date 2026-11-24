@@ -817,6 +817,9 @@ class Jams(
     fun playHere() {
         val session = joined ?: return
         if (session.friend) return
+        // A choice, at the tap: what comes back plays only if nothing has taken a later place
+        // by then (order of choices).
+        val choice = place.host()?.takePlace() ?: return
         request("queue", JsonObject(emptyMap())) { answer ->
             val queue = (answer as? Asked.Done)?.data
             if (queue == null || queue.at("playing").bool() != true) return@request leave()
@@ -826,7 +829,6 @@ class Jams(
             leaveSaying("pause" to JsonObject(emptyMap()))
             val position = ((queue.at("position").f64() ?: 0.0) * 1000).toLong()
             val context = shownText(queue.at("context").str())
-            val choice = host.takePlace()
             scope.launch(main) {
                 host.load(songs, index, position, true, context, choice)?.let(place::toast)
             }
