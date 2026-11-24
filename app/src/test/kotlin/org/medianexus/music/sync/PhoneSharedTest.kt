@@ -68,7 +68,11 @@ class PhoneSharedTest {
         fun close() = runBlocking { log.close().join() }
 
         fun record() = runBlocking { shared.record() }
-        fun take(theirs: Shared) = runBlocking { shared.take(theirs) }
+        /** As an exchange does it: kept (the plays, on the disk), then taken in. */
+        fun take(theirs: Shared) = runBlocking {
+            shared.keep(theirs)
+            shared.take(theirs)
+        }
     }
 
     private val pc = Shared(

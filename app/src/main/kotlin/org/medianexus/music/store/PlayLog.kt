@@ -150,6 +150,9 @@ class PlayLog(
      *  it is to be written whole, whatever it holds. */
     private var written = 0L
     private var rewrite = false
+    /** How many times a play already in the log has been given a source ([absorb]): a whole
+     *  write that began before the latest of them has not written it. */
+    private var sourcedTimes = 0L
     /** Lines in the file (Windows' `lines`): when the oldest are taken out. */
     private var lines = 0
     /** The file is there but couldn't be read: it is never written over. */
@@ -291,31 +294,55 @@ class PlayLog(
      * a play offered twice when another play of the same second sorts between them). A play
      * older than everything the log still holds (taken out at its limit) is not known, and is
      * taken in again if offered again, as on Windows. `sources` says which playlists some of
-     * them were made from (the first it gives for a play). Returns how many were new. Waits for
-     * the file to have been read.
+     * them were made from (the first it gives for a play); a play already here with none noted
+     * is given the one told now, without being counted again. Returns how many were new. Waits
+     * for the file to have been read.
      */
     suspend fun absorb(plays: List<Pair<String, Long>>, sources: List<Triple<String, Long, String>>): Int {
         ready.await()
+        var changed = false
         val new = synchronized(this) {
             if (closed || !holding) return 0
+            val sourceOf = HashMap<Pair<String, Long>, String>()
+            for ((song, at, from) in sources) sourceOf.putIfAbsent(song to at, from)
             // What the log holds of the seconds offered (only those can be the same play).
-            val offered = plays.mapTo(HashSet()) { it.second }
+            val offered = plays.mapTo(HashSet()) { it.second } + sources.map { it.second }
             val known = HashSet<Pair<String, Long>>()
-            for (i in 0 until size) if (ats[i] in offered) known += names[songs[i]]!! to ats[i]
+            // A play already here with no playlist noted, whose playlist is told now (the
+            // device that made it shared the play before it shared where from, or an older
+            // version passed the play on without): it is given that source, and is not a new
+            // play. (In arrays of their own: what has been handed out keeps the old ones.)
+            var sourced = false
+            for (i in 0 until size) {
+                if (ats[i] !in offered) continue
+                val play = names[songs[i]]!! to ats[i]
+                known += play
+                val from = if (froms[i] < 0) sourceOf[play].orEmpty() else ""
+                if (from.isNotEmpty()) {
+                    if (!sourced) froms = froms.copyOf()
+                    froms[i] = ref(from)
+                    sourced = true
+                }
+            }
+            // (Its line in the file has no source: the file is written whole, and by a write
+            // that began after this, not one already under way with the play as it was.)
+            if (sourced) {
+                rewrite = true
+                sourcedTimes++
+            }
             // Oldest first (Rust's stable sort), each play once.
             val kept = ArrayList<Pair<String, Long>>()
             for (play in plays.sortedBy { it.second }) if (known.add(play)) kept += play
-            val sourceOf = HashMap<Pair<String, Long>, String>()
-            for ((song, at, from) in sources) sourceOf.putIfAbsent(song to at, from)
             for ((song, at) in kept) {
                 put(song, at, sourceOf[song to at].orEmpty())
                 lines++
                 trim()
             }
-            if (kept.isNotEmpty()) publish()
+            if (kept.isNotEmpty() || sourced) publish()
+            if (sourced) changed = true
             kept.size
         }
-        if (new > 0) persist()
+        if (new > 0 || changed) persist()
         return new
     }
 
@@ -435,9 +462,11 @@ class PlayLog(
         val plays: Plays
         val from: Int
         val upTo: Long
+        val sourcedThen: Long
         synchronized(this) {
             if (unreadable || !holding) return false
             plays = current.value
+            sourcedThen = sourcedTimes
             whole = rewrite
             upTo = base + plays.size
             if (!whole && written >= upTo) return true
@@ -466,7 +495,7 @@ class PlayLog(
             return false
         }
         synchronized(this) {
-            if (whole) rewrite = false
+            if (whole && sourcedTimes == sourcedThen) rewrite = false
             if (upTo > written) written = upTo
         }
         return true

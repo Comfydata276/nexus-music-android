@@ -208,6 +208,56 @@ class StaleBaseTest {
     }
 
     @Test
+    fun playsThePhoneCouldNotWriteDownAreNotCountedAsTakenIn() = runBlocking {
+        val record = pc.copy(plays = listOf(Play("s2", 1_700_000_500), Play("s1", 1_700_000_400)), playSources = listOf(PlayFrom("s1", 1_700_000_400, "playlist:x")))
+        val server = PretendServer().apply { put("r", text(record)) }
+        val root = folder.newFolder()
+        val phone = phone(root)
+        phone.does { Changes.pin(it, "C", on = true) }
+        // The phone's storage won't take the log's lines.
+        phone.log.appendBytes = { _, _ -> throw java.io.IOException("No space left on device") }
+        val step = phone.step(server)
+        assertEquals(InStep.Outcome.FAILED, step.exchange())
+        assertTrue(server.writes.isEmpty())
+        // Again. The plays are in the log's memory by now, so nothing about this exchange is
+        // "new": it used to be taken for done, the record written, and the plays left
+        // unwritten until some later play happened to be noted (or lost, if none was).
+        assertEquals(InStep.Outcome.FAILED, step.exchange())
+        assertTrue(server.writes.isEmpty())
+        assertEquals(listOf(Waiting(Changes.PIN, "C")), phone.settings.value.waiting)
+        // The storage takes it: done, and the plays are on the disk.
+        phone.log.appendBytes = { raf, bytes -> raf.write(bytes) }
+        assertEquals(InStep.Outcome.DONE, step.exchange())
+        assertEquals(1, server.writes.size)
+        phone.stop()
+        val again = phone(root)
+        assertEquals(listOf("s1" to 1_700_000_400L, "s2" to 1_700_000_500L), again.log.shared())
+        assertEquals(listOf(Triple("s1", 1_700_000_400L, "playlist:x")), again.log.sources())
+    }
+
+    @Test
+    fun aPlayAlreadyHereIsGivenTheSourceThatArrivesLater() = runBlocking {
+        val root = folder.newFolder()
+        val phone = phone(root)
+        // Heard of from a device (or a version) that didn't say where it was played from.
+        assertEquals(2, phone.log.absorb(listOf("s1" to 400L, "s2" to 500L), emptyList()))
+        phone.log.add("mine", 600, "playlist:own")
+        val before = phone.log.state.value
+        // Now the record says which playlist: the play is given it, and is not a new play.
+        assertEquals(0, phone.log.absorb(listOf("s1" to 400L, "s2" to 500L), listOf(Triple("s1", 400L, "playlist:x"), Triple("mine", 600L, "playlist:other"), Triple("gone", 1L, "playlist:y"))))
+        assertEquals(listOf("s1" to 400L, "s2" to 500L, "mine" to 600L), phone.log.shared())
+        // (A play that has its source keeps it; a source for a play that isn't here is nothing.)
+        assertEquals(listOf(Triple("s1", 400L, "playlist:x"), Triple("mine", 600L, "playlist:own")), phone.log.sources())
+        // What had been handed out before is as it was.
+        assertEquals("", before.from(0))
+        // On the disk too, after a restart.
+        phone.log.flushed()
+        assertEquals("[\"s1\",400,\"playlist:x\"]\n[\"s2\",500]\n[\"mine\",600,\"playlist:own\"]\n", java.io.File(root, "accounts/a/plays.log").readText())
+        phone.stop()
+        assertEquals(listOf(Triple("s1", 400L, "playlist:x"), Triple("mine", 600L, "playlist:own")), phone(root).log.sources())
+    }
+
+    @Test
     fun theLastWordOnOneThingIsTheOneThatWaits() {
         var s = org.medianexus.music.store.Settings()
         s = Changes.pin(s, "A", on = true)

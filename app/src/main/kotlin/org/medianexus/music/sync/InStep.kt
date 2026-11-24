@@ -48,6 +48,15 @@ interface StepPhone {
      */
     fun withChanges(merged: Shared, now: Long): Changed
 
+    /**
+     * Keeps what other devices have told that must not be lost between here and the next
+     * exchange: the plays of `theirs`, in the log, **on the disk**, with everything else the
+     * log holds in memory (whether or not this exchange added any). Throws `IOException` if
+     * the phone couldn't: then the exchange has failed as a whole, nothing is written to the
+     * server on the strength of it, and the same plays are offered again next time.
+     */
+    suspend fun keep(theirs: Shared)
+
     /** Takes in what came back from the server, where it's newer than what's here (Windows'
      *  `take_shared`), and forgets the changes that were `applied` to it. Throws
      *  `IOException` if the phone couldn't keep it. */
@@ -167,8 +176,9 @@ class InStep(
         } catch (_: ApiError) {
             return Outcome.FAILED
         } catch (_: java.io.IOException) {
-            // The phone couldn't keep what it was given: not taken in, and asked for again.
-            note("in step: what other devices shared couldn't be kept on the phone; it will be asked for again")
+            // The phone couldn't keep what it was given: nothing was written to the server on
+            // the strength of it, and it is offered again at the next exchange.
+            note("in step: what other devices shared couldn't be kept on the phone; nothing was written, and it will be asked for again")
             return Outcome.FAILED
         } finally {
             turn.unlock()
@@ -212,13 +222,13 @@ class InStep(
                 // Written by a newer version of the app, or holding more than this one could
                 // write back: read what's understood, change nothing.
                 if (!settled.laterLayout) note("in step: the shared record holds more than this version knows; it is read and not written")
-                SharedText.read(settled.text)?.let { phone.take(it) }
+                SharedText.read(settled.text)?.let { phone.keep(it); phone.take(it) }
                 if (settled.laterLayout) Outcome.NEWER_LAYOUT else Outcome.MORE_THAN_KNOWN
             }
             is Settled.Merged -> {
                 if (wrong) {
                     // What the server has is taken in; nothing of this phone's is written.
-                    if (comment.isNotEmpty()) SharedText.read(comment)?.let { phone.take(it) }
+                    if (comment.isNotEmpty()) SharedText.read(comment)?.let { phone.keep(it); phone.take(it) }
                     return Outcome.CLOCK_WRONG
                 }
                 val merged = SharedText.read(settled.text) ?: return Outcome.FAILED
@@ -226,6 +236,9 @@ class InStep(
                 // now, on top of what the server has: never to what the phone happened to hold.
                 val changed = phone.withChanges(merged, now)
                 val record = changed.record
+                // Before anything is written back: the plays in it are kept on the phone, or
+                // the exchange stops here.
+                phone.keep(record)
                 // A record is made on the server, or an empty one filled, only when the phone
                 // has something of the person's to put in it: a phone with nothing to say
                 // writes nothing.

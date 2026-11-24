@@ -44,6 +44,15 @@ class InStepTest {
 
         override fun withChanges(merged: Shared, now: Long) = Changed(merged, emptyList())
 
+        /** Whether the phone can keep what it is given (its log can be written). */
+        var keeps = true
+        val kept = ArrayList<Shared>()
+
+        override suspend fun keep(theirs: Shared) {
+            if (!keeps) throw java.io.IOException("No space left on device")
+            kept += theirs
+        }
+
         override suspend fun take(theirs: Shared, applied: List<org.medianexus.music.store.Waiting>) {
             meanwhile()
             took += theirs
@@ -336,6 +345,26 @@ class InStepTest {
         assertEquals(1, server.writes.size)
         assertEquals(after, server.comment("a"))
         assertEquals(pc, SharedText.read(after!!))
+    }
+
+    @Test
+    fun nothingIsWrittenBackUntilWhatCameIsKept() = runBlocking {
+        val server = PretendServer().apply { put("a", text(pc)) }
+        // A phone with something to write (history of its own), which can't keep anything.
+        val device = Device(holds = Shared(layout = 1, history = listOf(Play("here", NOW - 3)))).apply { keeps = false }
+        val notes = ArrayList<String>()
+        val step = step(server, device, notes = notes)
+        assertEquals(InStep.Outcome.FAILED, step.exchange())
+        assertTrue(server.writes.isEmpty() && device.took.isEmpty())
+        assertEquals(1, notes.size)
+        // It can now: kept first, then written, then taken in.
+        device.keeps = true
+        assertEquals(InStep.Outcome.DONE, step.exchange())
+        assertEquals(1, server.writes.size)
+        assertEquals(device.kept.single(), device.took.single())
+        // Kept at every exchange, one with nothing new included.
+        assertEquals(InStep.Outcome.DONE, step.exchange())
+        assertEquals(2, device.kept.size)
     }
 
     // ---- rule 6: one at a time, nothing lost, nothing stale ------------------------------------------

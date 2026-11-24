@@ -176,6 +176,17 @@ class PhoneShared(
     @Volatile var settled: List<Waiting> = emptyList()
         private set
 
+    override suspend fun keep(theirs: Shared) {
+        if (!Belongs.ready(settings.value, account)) return
+        // Plays counted on other devices go into this one's log, so the stats cover them all.
+        log.absorb(theirs.plays.map { it.song to it.at }, theirs.playSources.map { Triple(it.song, it.at, it.from) })
+        // On the disk, with everything else the log holds in memory, or this throws: every
+        // time, whether or not anything was new. (Asked only when something was new, a write
+        // that failed left the plays in memory; the next exchange then found them "already
+        // here", asked nothing, and they were never written.)
+        log.flushed()
+    }
+
     override fun withChanges(merged: Shared, now: Long): Changed {
         val waiting = settings.value.let { if (Belongs.ready(it, account)) it.waiting else emptyList() }
         return Changed(Changes.onto(merged, waiting, now), waiting)
@@ -191,11 +202,6 @@ class PhoneShared(
         }
         if (!Belongs.ready(settings.value, account)) return
         if (added.merge(Sharing.added(theirs.added))) datesChanged()
-        // Plays counted on other devices go into this one's log, so the stats cover them all.
-        // What is taken in must be kept: if the phone won't write it, the exchange has failed
-        // as a whole (this throws), and is made again later, when the same plays are offered
-        // again. Nothing is counted as taken in that the phone could not keep.
-        if (log.absorb(theirs.plays.map { it.song to it.at }, theirs.playSources.map { Triple(it.song, it.at, it.from) }) > 0) log.flushed()
         // Recently played: both devices' plays, in order.
         history.take(theirs.history, songs)
     }
