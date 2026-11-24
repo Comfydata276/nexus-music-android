@@ -134,7 +134,7 @@ class WifiOnlyTest {
             when {
                 "ping" in request.path -> GatedServer.Answer(200, mapOf("Content-Type" to "application/json"), OK.toByteArray(), holdAfter = if (pingHeldVia != null && request.headers["x-via"] == pingHeldVia) 0 else -1, gate = pingGate)
                 "getSong" in request.path -> {
-                    songWordHeld.await(30, TimeUnit.SECONDS)
+                    songWordHeld.await(HELD_MINUTES, TimeUnit.MINUTES)
                     GatedServer.song("s1", "flac", bytes.size.toLong(), 10)
                 }
                 // The first request for the song is held with 200 KB sent; later ones are not.
@@ -160,7 +160,7 @@ class WifiOnlyTest {
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
     private fun until(what: String, ok: () -> Boolean) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+        val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(WAIT_MINUTES)
         while (true) {
             idle()
             if (ok()) return
@@ -278,8 +278,7 @@ class WifiOnlyTest {
         // The Wi-Fi goes. The cover's request is cancelled with it. (It was never told: it
         // went on to its end on whatever that connection had become.)
         routes.now.value = null
-        idle()
-        assertTrue("the cover's request was not cancelled", coverCancelled.await(30, TimeUnit.SECONDS))
+        until("the cover's request cancelled") { coverCancelled.count == 0L }
         assertFalse(File(catalogue.dir, "covers").walkTopDown().any { it.isFile && it.length() > 0 })
     }
 
@@ -298,7 +297,7 @@ class WifiOnlyTest {
         // cancelled, and nothing lands in the folder afterwards. (The cover used to arrive
         // after the folder had been emptied, and stay there.)
         assertTrue(run { engine.removeAll() })
-        assertTrue("the cover's request was not cancelled", coverCancelled.await(30, TimeUnit.SECONDS))
+        until("the cover's request cancelled") { coverCancelled.count == 0L }
         coverGate.letThrough()
         run { engine.download(emptyList()) }
         repeat(30) { idle() }
@@ -403,6 +402,15 @@ class WifiOnlyTest {
 
     private companion object {
         const val MONDAY = "Mon, 23 Nov 2026 07:57:08 GMT"
+
+        /** How long another thread is given to do what a test waits for before it is taken
+         *  never to happen: nothing here is ordered by time, so this only ends a test that
+         *  has already failed. */
+        const val WAIT_MINUTES = 2L
+
+        /** How long the library's word on the song is held when a test holds it (each test
+         *  lets it go as it ends). */
+        const val HELD_MINUTES = 10L
         const val OK = """{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.58.0"}}"""
     }
 }
