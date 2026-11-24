@@ -205,9 +205,15 @@ class InStep(
         if (read != null && !(read.value.id == id && read.value.name == PLAYLIST_NAME && isOurs(read.value))) {
             return if (read.value.owner == null) notStated("whose the playlist is") else Outcome.FAILED
         }
-        // A comment that isn't in the answer is not known: read as empty, it would be a
-        // record with nothing in it, and the phone's own would be written over everything.
-        val comment = if (read == null) "" else read.value.comment ?: return notStated("what the playlist's comment is")
+        // A comment that isn't in the answer. Navidrome leaves an *empty* comment out of
+        // every answer, so that alone says nothing; what tells the two apart is the owner.
+        // An answer that doesn't state the comment because the server was told to say little
+        // to this client leaves the owner out with it, and has stopped already, just above:
+        // read as empty there, the comment would be a record with nothing in it, and the
+        // phone's own would be written over everything. In an answer that does state whose
+        // the playlist is, a comment left out is an empty one (a playlist just made, by this
+        // phone or another device, and not yet written to).
+        val comment = read?.value?.comment.orEmpty()
         // The server's clock, by the answer just read (a server that gives none can't be
         // compared with, and is taken to agree).
         val wrong = (read?.serverTime ?: listed.serverTime)?.let { kotlin.math.abs(now - it) > CLOCK_SLACK_SECONDS } ?: false

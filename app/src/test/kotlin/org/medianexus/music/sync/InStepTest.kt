@@ -239,24 +239,27 @@ class InStepTest {
     // ---- what the server did not say is not "empty" ---------------------------------------------
 
     @Test
-    fun aServerThatLeavesOutTheOwnerOrTheCommentIsNotTakenToHaveNone() = runBlocking {
+    fun aServerThatLeavesOutTheOwnerIsNotTakenToMeanThePlaylistIsOursAndEmpty() = runBlocking {
         // Navidrome leaves a playlist's owner and comment out of its answers for clients it
         // has been told to treat as minimal. The PC's record is there all the while.
         for (phone in listOf(nothing, pc.copy(pins = listOf("mine"), pinsAt = NOW - 5))) {
-            // Neither stated.
+            // Neither stated: read as "ours, and empty", the phone's own record would be
+            // written over everything the PCs had put there.
             val neither = PretendServer().apply { put("a", comment = null, by = null) }
             val notes = ArrayList<String>()
-            assertEquals(InStep.Outcome.NOT_STATED, step(neither, Device(holds = phone), notes = notes).exchange())
-            // Nothing written into it, and no second one made beside it.
-            assertTrue(neither.writes.isEmpty() && neither.made.isEmpty())
-            assertEquals(1, notes.size)
-            // The owner stated, the comment left out: read as empty, the phone's own record
-            // would be written over everything the PCs had put there.
-            val noComment = PretendServer().apply { put("a", comment = null) }
             val device = Device(holds = phone)
-            assertEquals(InStep.Outcome.NOT_STATED, step(noComment, device).exchange())
-            assertTrue(noComment.writes.isEmpty() && noComment.made.isEmpty())
+            assertEquals(InStep.Outcome.NOT_STATED, step(neither, device, notes = notes).exchange())
+            // Nothing written into it, no second one made beside it, nothing read out of it.
+            assertTrue(neither.writes.isEmpty() && neither.made.isEmpty())
             assertTrue(device.took.isEmpty())
+            assertEquals(1, notes.size)
+            // The list says it is ours, and the answer for the playlist itself doesn't: the
+            // same.
+            val later = object : StepServer by neither {
+                override suspend fun playlists() = Timed(listOf(StatedPlaylist("a", PLAYLIST_NAME, "tester", null)), PRETEND_NOW)
+            }
+            assertEquals(InStep.Outcome.NOT_STATED, InStep(later, Device(holds = phone), username = "Tester", account = "acct-${System.nanoTime()}", may = { true }, scope = scope, clock = { NOW }, pause = {}).exchange())
+            assertTrue(neither.writes.isEmpty() && neither.made.isEmpty())
             // The comment stated, the owner left out: not known to be ours.
             val noOwner = PretendServer().apply { put("a", comment = text(pc), by = null) }
             assertEquals(InStep.Outcome.NOT_STATED, step(noOwner, Device(holds = phone)).exchange())
@@ -266,6 +269,22 @@ class InStepTest {
             assertEquals(InStep.Outcome.DONE, step(both, Device(holds = nothing)).exchange())
             assertTrue(both.writes.isEmpty() && both.made.isEmpty())
         }
+    }
+
+    @Test
+    fun anEmptyCommentTheServerLeavesOutOfItsAnswerIsAnEmptyOne() = runBlocking {
+        // Navidrome leaves a comment out of every answer when it is empty: a sync playlist
+        // just made (by this phone, whose write of the record then failed; by another
+        // device) comes back with its owner and no comment. Taken for "not said", it could
+        // never be filled, and this phone would never share anything again.
+        val made = PretendServer().apply { put("a", comment = null) }
+        // A phone with nothing to say leaves it as it is...
+        assertEquals(InStep.Outcome.DONE, step(made, Device(holds = nothing)).exchange())
+        assertTrue(made.writes.isEmpty() && made.made.isEmpty())
+        // ...and one with something of the person's fills it, in that playlist.
+        assertEquals(InStep.Outcome.DONE, step(made, Device(holds = pc)).exchange())
+        assertEquals(listOf("a" to text(pc)), made.writes)
+        assertTrue(made.made.isEmpty())
     }
 
     @Test
