@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -63,7 +64,7 @@ class CoverAddressTest {
     @Test
     fun anAddressIsForOneAccountAndNoGoodUnderAnother() {
         server.signIn(app, "tester")
-        val first = account().account.key
+        val first = account().artwork
         keep("al-1", firstPicture)
         // What the car is given for the first account's album, and keeps.
         val kept = CarMedia.metadata(Song(id = "s1", coverArt = "al-1"), first).artworkUri!!
@@ -71,7 +72,7 @@ class CoverAddressTest {
         // Someone else signs in, whose server also has an "al-1", already on the phone.
         signOut()
         server.signIn(app, "guest")
-        assertNotEquals(first, account().account.key)
+        assertNotEquals(first, account().artwork)
         keep("al-1", secondPicture)
         // The address the car kept names only... it used to name only the cover, so it showed
         // the second account's picture where the first's album had been, straight from the
@@ -83,15 +84,47 @@ class CoverAddressTest {
             // No such cover, as far as anyone holding that address is concerned.
         }
         // The same cover id, addressed to the account signed in, is theirs.
-        val theirs = CarMedia.metadata(Song(id = "s1", coverArt = "al-1"), account().account.key).artworkUri!!
+        val theirs = CarMedia.metadata(Song(id = "s1", coverArt = "al-1"), account().artwork).artworkUri!!
         assertNotEquals(kept, theirs)
         assertArrayEquals(secondPicture, read(theirs))
     }
 
     @Test
+    fun anAddressNamesTheAccountByAnIdentifierOfItsOwnNotItsStorageKey() {
+        server.signIn(app, "tester")
+        val signedIn = account()
+        keep("al-1", firstPicture)
+        val address = CarMedia.metadata(Song(id = "s1", coverArt = "al-1"), signedIn.artwork).artworkUri!!
+        assertArrayEquals(firstPicture, read(address))
+        // The storage key is a plain hash of the server and the username, the same on every
+        // phone: any app let in could match it between phones, or hash a guess and confirm
+        // it. It must not be in what the car (and the system's media controls) are given.
+        assertFalse("the storage key is in a cover's address", address.toString().contains(signedIn.account.key))
+        // An address made with the storage key is no address at all.
+        try {
+            read(CoverProvider.uriFor(signedIn.account.key, "al-1")!!)
+            fail("a cover was handed out for the storage key")
+        } catch (_: FileNotFoundException) {
+        }
+        // Made once and kept with the account: signed in again, the car's kept addresses
+        // still work.
+        val first = signedIn.artwork
+        signOut()
+        server.signIn(app, "tester")
+        assertEquals(first, account().artwork)
+        assertArrayEquals(firstPicture, read(address))
+        // The same account on another phone (its data made afresh) is given another.
+        val data = account().account.dirs.data
+        signOut()
+        data.deleteRecursively()
+        server.signIn(app, "tester")
+        assertNotEquals(first, account().artwork)
+    }
+
+    @Test
     fun aCoverNotYetOnThePhoneIsNotFetchedForAnotherAccountsAddress() {
         server.signIn(app, "tester")
-        val kept = CoverProvider.uriFor(account().account.key, "al-9")!!
+        val kept = CoverProvider.uriFor(account().artwork, "al-9")!!
         signOut()
         server.signIn(app, "guest")
         server.asked.clear()
@@ -133,7 +166,7 @@ class CoverAddressTest {
         try {
             // A cover there is none of: the server has no such picture.
             try {
-                read(CoverProvider.uriFor(account().account.key, "al-nothing")!!)
+                read(CoverProvider.uriFor(account().artwork, "al-nothing")!!)
                 fail("handed a cover that does not exist")
             } catch (_: FileNotFoundException) {
             }
@@ -141,7 +174,7 @@ class CoverAddressTest {
             // been looked for: a drive's worth of "given" beside a car with no pictures.
             assertEquals(listOf("covers asked for by com.android.systemui: not given (no such cover). Android trusts it: yes; known host: no"), noted())
             // One that is on the phone.
-            assertArrayEquals(firstPicture, read(CoverProvider.uriFor(account().account.key, "al-1")!!))
+            assertArrayEquals(firstPicture, read(CoverProvider.uriFor(account().artwork, "al-1")!!))
             assertTrue(noted().any { it.startsWith("covers asked for by com.android.systemui: given.") })
         } finally {
             org.robolectric.shadows.ShadowBinder.reset()

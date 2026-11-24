@@ -16,7 +16,7 @@ import org.medianexus.music.store.CoverProvider
 @OptIn(UnstableApi::class)
 object CarMedia {
     /** The details of a song as the notification, the lock screen and the car show them.
-     *  `account` is the opaque key of the account the song is from (`Account.key`): its
+     *  `account` is the artwork id of the account the song is from (`AccountGraph.artwork`): its
      *  cover's address names it, so the address is no good to anyone once another account
      *  is signed in (see [CoverProvider]). Empty for no account, and then no cover. */
     fun metadata(song: Song, account: String): MediaMetadata = MediaMetadata.Builder()

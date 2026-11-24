@@ -14,15 +14,16 @@ import org.medianexus.music.graph
 /**
  * Hands cover art to other apps: the car and the system's media controls can't fetch
  * pictures from the server, they can only open content addresses. Each address names one
- * cover of one account (`content://<app>.covers/<the account's key>/<cover id>`); the
+ * cover of one account (`content://<app>.covers/<the account's artwork id>/<cover id>`); the
  * picture comes from that account's cover store, fetched first if it isn't kept yet, within
  * limits: see `openFile`.
  *
  * The account is in the address because a cover id is only its server's to give: two
  * servers can use the same id for two pictures, and a car keeps the addresses it was sent.
  * An address made for an account that is not the one signed in is "no such cover", whether
- * or not the phone has a picture by that id, and nothing is fetched for it. The key is the
- * account's folder name: it gives away neither the server nor the username.
+ * or not the phone has a picture by that id, and nothing is fetched for it. The account is
+ * named by an identifier made at random for its covers alone (`artworkIdOf`), never by its
+ * storage key, which is a hash of the server and username and the same on every phone.
  *
  * It gives away nothing but covers: it is read-only, answers no queries, and an address
  * names a cover id, never a file, so nothing else on the phone can be reached through it
@@ -67,7 +68,7 @@ class CoverProvider : ContentProvider() {
         if (known != null) {
             // Someone is signed in, and it is not who this address was made for: no such
             // cover. At once, with nothing fetched and nothing waited for.
-            if (known.account.key != key) throw FileNotFoundException("it is another account's")
+            if (known.artwork != key) throw FileNotFoundException("it is another account's")
             // A cover already on the phone, for the account signed in: no waiting at all.
             // Handed over only if that account is still the one signed in, as below.
             val file = known.covers.kept(id)
@@ -89,7 +90,7 @@ class CoverProvider : ContentProvider() {
                     // car must not be shown the last person's album.
                     forWhoeverIsSignedIn(graph.accounts::restored, { graph.accounts.state.value }) { account ->
                         // (Asked of the account the address names, or of nobody.)
-                        if (account.account.key != key) null else account.covers.kept(id) ?: account.covers.forOutside(id, MISS_WAIT_MILLIS)
+                        if (account.artwork != key) null else account.covers.kept(id) ?: account.covers.forOutside(id, MISS_WAIT_MILLIS)
                     }
                 }
             }
@@ -192,22 +193,22 @@ class CoverProvider : ContentProvider() {
             return if (current() === theirs) found else null
         }
 
-        /** How long an account's key is (`accountKey`: sixteen bytes, in hex). */
+        /** How long an account's artwork id is (`artworkIdOf`: sixteen bytes, in hex). */
         const val KEY_CHARS = 32
 
         /**
-         * The address of a cover of the account with this key (`Account.key`, which gives away
-         * neither the server nor the username), for a media item; null for no cover, or no
+         * The address of a cover of the account with this artwork id (`AccountGraph.artwork`,
+         * which says nothing about the account), for a media item; null for no cover, or no
          * account.
          */
-        fun uriFor(accountKey: String, coverId: String): Uri? =
-            if (CoverStore.fileName(coverId) == null || !isKey(accountKey)) null
-            else Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(accountKey).appendPath(coverId).build()
+        fun uriFor(artwork: String, coverId: String): Uri? =
+            if (CoverStore.fileName(coverId) == null || !isKey(artwork)) null
+            else Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(artwork).appendPath(coverId).build()
 
-        /** Whether this could be an account's key: hex digits, of the right number. */
+        /** Whether this could be an account's artwork id: hex digits, of the right number. */
         internal fun isKey(key: String): Boolean = key.length == KEY_CHARS && key.all { it in '0'..'9' || it in 'a'..'f' }
 
-        /** The account's key and the cover's id that an address names; null if it isn't one. */
+        /** The account's artwork id and the cover's id that an address names; null if it isn't one. */
         internal fun partsOf(uri: Uri): Pair<String, String>? =
             if (uri.scheme == "content" && uri.authority == AUTHORITY && uri.pathSegments.size == 2) uri.pathSegments[0] to uri.pathSegments[1] else null
 

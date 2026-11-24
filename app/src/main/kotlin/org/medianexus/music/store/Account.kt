@@ -9,7 +9,8 @@ data class Account(
     val server: String,
     val username: String,
     /** A name for the account that can be part of a file's name. It gives away neither the
-     *  server nor the username (see `accountKey`). */
+     *  server nor the username (see `accountKey`), but it is the same for them on every
+     *  phone: it never leaves the app (a cover's address has `artworkIdOf` instead). */
     val key: String,
     val dirs: AccountDirs,
 )
@@ -32,6 +33,35 @@ fun accountKey(server: String, username: String): String =
         .digest("$server\n$username".toByteArray(Charsets.UTF_8))
         .take(16)
         .joinToString("") { "%02x".format(it) }
+
+/**
+ * The account's name in the addresses of its covers (`content://…covers/<this>/<cover id>`),
+ * which every app let in to the player is given (a car, the system's media controls). Made
+ * at random the first time it is wanted, and kept with the account's data, so the addresses
+ * a car keeps go on working; never derived from the account. Not [accountKey]: that is an
+ * unkeyed hash of the server and username, the same on every phone, which an app that sees
+ * it could match between phones, or hash a guess and confirm it. This says nothing but
+ * "the same account as before, on this phone".
+ */
+fun artworkIdOf(dataDir: File): String {
+    val file = File(dataDir, ARTWORK_ID_FILE)
+    val kept = try {
+        file.readText().trim()
+    } catch (_: IOException) {
+        ""
+    }
+    if (kept.length == 32 && kept.all { it in '0'..'9' || it in 'a'..'f' }) return kept
+    val made = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+    try {
+        dataDir.mkdirs()
+        writeAtomically(file, made.toByteArray(Charsets.UTF_8))
+    } catch (_: IOException) {
+        // Not kept: this run's addresses still work, and the next run's are new ones.
+    }
+    return made
+}
+
+private const val ARTWORK_ID_FILE = "artwork-id"
 
 fun accountDirs(filesRoot: File, cacheRoot: File, key: String) =
     AccountDirs(data = File(filesRoot, "accounts/$key"), cache = File(cacheRoot, "accounts/$key"))

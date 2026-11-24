@@ -178,7 +178,7 @@ object CarFolders {
     private val URI_CLASS_NAME = utf16Chars(25)
 
     private fun artChars(entry: CarEntry): Int = when {
-        // (With the account's key in it: see CoverProvider.uriFor.)
+        // (With the account's artwork id in it: see CoverProvider.uriFor.)
         CoverStore.fileName(entry.cover) != null -> "content://".length + CoverProvider.AUTHORITY.length + 1 + CoverProvider.KEY_CHARS + 1 + entry.cover.length
         entry.icon != 0 -> "android.resource://".length + BuildConfig.APPLICATION_ID.length + 1 + 10
         else -> 0

@@ -58,6 +58,9 @@ class AccountGraph(
     private val reach: StateFlow<Reach> = wiring?.reach ?: MutableStateFlow(Reach())
     private val suspect: () -> Unit = wiring?.suspect ?: {}
 
+    /** The account's name in its covers' addresses (see [artworkIdOf]). */
+    val artwork: String = org.medianexus.music.store.artworkIdOf(account.dirs.data)
+
     val pages = PageCache(File(account.dirs.cache, "pages"), scope, io)
 
     /** Where downloads live: the account's own data, which the system never clears. */

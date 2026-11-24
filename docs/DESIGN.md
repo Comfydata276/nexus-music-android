@@ -235,7 +235,7 @@ How it is built (M1a):
   generation, and so does everything learnt about its server's songs by id (what a
   conversion was found to be, which songs need converting): two servers can use the same
   ids. A data source belongs to the generation it was made in and is refused under
-  another; a cover's address names the account it is for (its opaque key), is "no such cover"
+  another; a cover's address names the account it is for (its artwork id), is "no such cover"
   under any other, and a cover is handed over, from the phone's copy or fetched, only if its
   account is still the one signed in; the kept-songs cache is released only when its last
   reader has closed. A question overtaken by a change of account every time it is asked is
@@ -663,8 +663,11 @@ How it is built (M1a):
   down locally, 300 MB at most per account; Now Playing alone asks for a second, 1200 px
   copy, as its cover is nearly the phone's width, and shows the 640 px one until it
   arrives. Coil and the car's content provider
-  (`content://org.medianexus.music.covers/<the account's key>/<cover id>`: the key is the
-  account's folder name, which gives away neither server nor username) both read from it: Coil through a
+  (`content://org.medianexus.music.covers/<the account's artwork id>/<cover id>`: an
+  identifier made at random for each account the first time it is wanted and kept with its
+  data, `artwork-id`, used in cover addresses and nowhere else; never the account's storage
+  key, a hash of server and username that is the same on every phone and so could be matched
+  between phones or confirm a guess) both read from it: Coil through a
   fetcher of our own (`CoverImages.kt`), with its own disk cache off, so no picture is kept
   twice; it decodes at the size shown (and keys what it holds by that width, so a large
   picture isn't kept for a small place) and holds recent ones in memory: 24 MB at most, or

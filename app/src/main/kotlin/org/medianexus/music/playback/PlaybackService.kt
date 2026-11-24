@@ -129,7 +129,8 @@ class PlaybackService : MediaLibraryService() {
         val restoring = CompletableDeferred<Unit>()
 
         /** The account's opaque key: what its covers' addresses carry. */
-        val key: String get() = account.account.key
+        /** The account's name in its covers' addresses (never its storage key). */
+        val key: String get() = account.artwork
     }
 
     /** The account signed in, on the main thread. */
