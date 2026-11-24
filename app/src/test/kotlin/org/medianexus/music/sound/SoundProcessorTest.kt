@@ -553,4 +553,109 @@ class SoundProcessorTest {
         for (i in 0 until frames) assertEquals(ga, out[i].toFloat(), 1f)
         for (i in frames until 2 * frames) assertEquals(gb, out[i].toFloat(), 1f)
     }
+
+    // ---- The second round of fixes, item 1: a setting's ramp eases the setting ------------
+
+    /** A is turned well down at Loud, B up: Loud's gains for them are 0.25 and 1.41. */
+    private val loudA = ReplayGain(trackGain = -19f, trackPeak = 0.5f)
+    private val loudB = ReplayGain(trackGain = -4f, trackPeak = 0.5f)
+    private val loud = Sound.of(Settings(normalize = true, volumeLevel = 2, levelMode = 1), false)
+    private val bGain = 10f.pow(3f / 20f)
+
+    /**
+     * A change made [before] frames before the end of song A, then 3,000 frames of song B
+     * (a steady 0.2, in `format`): the gain each of B's frames was given.
+     */
+    private fun gainsAcrossAJoin(from: Sound, to: Sound, before: Int, format: Format = pcm): FloatArray {
+        val rig = Rig(SoundProcessor().also { it.sound = from })
+        val timeline = timelineOf(song("a", gain = loudA), song("b", gain = loudB))
+        rig.begin(timeline, 0)
+        rig.feed(steady(4000 - before, 6554))
+        rig.processor.sound = to
+        rig.feed(steady(before, 6554))
+        rig.begin(timeline, 1, format)
+        rig.feed(steady(3000, 6554))
+        rig.end()
+        val out = rig.left()
+        return FloatArray(3000) { out[4000 + it] / 6554f }
+    }
+
+    /** How far the ramp has got after `frames` of it. */
+    private fun share(frames: Int, rate: Int = this.rate) = frames / (rate * 0.05f)
+
+    /**
+     * Loud switched on 10 ms before the end of a song Loud turns down (0.25), the next one
+     * Loud turns up (1.41): B never gets more than its own gain at Loud, and it eases on from
+     * where the ramp had got to. (It got about 4.8 times: what A's ramp still had to undo,
+     * put on top of B's gain.)
+     */
+    @Test
+    fun a_levelling_change_just_before_a_join_never_takes_the_next_song_past_its_own_gain() {
+        val gains = gainsAcrossAJoin(Sound.OFF, loud, before = 441)
+        val most = gains.max()
+        assertTrue("B never above its own gain at Loud ($most against $bGain)", most <= bGain + 0.001f)
+        val expected = 1f + share(441) * (bGain - 1f)
+        assertEquals("B begins where the ramp had got to", expected, gains[0], 0.003f)
+        assertEquals("and is at its gain once the ramp is done", bGain, gains[2000], 0.001f)
+        assertTrue("rising all the way", (1 until 3000).all { gains[it] >= gains[it - 1] - 0.0002f })
+    }
+
+    /** The processor driven as the sink drives it at a join into a new format (it drains
+     *  the first song, then configures and flushes for the second; Robolectric's sink can't
+     *  open a second track). */
+    private fun SoundProcessor.run(frames: Int, value: Short): ShortArray {
+        val out = ArrayList<Short>()
+        var left = frames
+        while (left > 0) {
+            val n = minOf(1000, left)
+            val buffer = ByteBuffer.allocateDirect(n * 4).order(ByteOrder.nativeOrder())
+            repeat(n) { buffer.putShort(value).putShort(value) }
+            buffer.flip()
+            queueInput(buffer)
+            val got = output.order(ByteOrder.nativeOrder())
+            while (got.hasRemaining()) {
+                out += got.short
+                got.short
+            }
+            left -= n
+        }
+        return out.toShortArray()
+    }
+
+    private fun SoundProcessor.start(timeline: Timeline, index: Int, sampleRate: Int) {
+        configure(AudioProcessor.AudioFormat(sampleRate, 2, C.ENCODING_PCM_16BIT))
+        flush(AudioProcessor.StreamMetadata.Builder().setTimeline(timeline).setPeriodUid(timeline.getUidOfPeriod(index)).build())
+    }
+
+    /** The same with B in another format (48 kHz): the ramp carries on across the change of
+     *  format rather than everything being put in place at once. */
+    @Test
+    fun a_levelling_change_just_before_a_join_eases_on_across_a_change_of_format() {
+        val processor = SoundProcessor()
+        val timeline = timelineOf(song("a", gain = loudA), song("b", gain = loudB))
+        processor.start(timeline, 0, rate)
+        processor.run(4000 - 441, 6554)
+        processor.sound = loud
+        processor.run(441, 6554)
+        processor.queueEndOfStream()
+        processor.start(timeline, 1, 48_000)
+        val out = processor.run(3000, 6554)
+        val gains = FloatArray(3000) { out[it] / 6554f }
+        assertTrue("B never above its own gain at Loud (${gains.max()})", gains.max() <= bGain + 0.001f)
+        assertEquals("B begins where the ramp had got to", 1f + share(441) * (bGain - 1f), gains[0], 0.003f)
+        assertEquals("and gets there over the rest of the ramp, at B's rate", bGain, gains[2400], 0.001f)
+        assertTrue("not before", gains[1500] < bGain - 0.05f)
+    }
+
+    /** Downwards: Loud switched off 10 ms before the join. B begins between its gain at Loud
+     *  and none, where the ramp had got to, and eases down to none: never below either. (It
+     *  began at 0.4: A's ramp up from 0.25, carried over.) */
+    @Test
+    fun levelling_switched_off_just_before_a_join_eases_the_next_song_down_from_where_it_was() {
+        val gains = gainsAcrossAJoin(loud, Sound.OFF, before = 441)
+        assertTrue("B never below untouched (${gains.min()})", gains.min() >= 1f - 0.001f)
+        assertTrue("nor above its gain at Loud", gains.max() <= bGain + 0.001f)
+        assertEquals("B begins where the ramp had got to", bGain + share(441) * (1f - bGain), gains[0], 0.003f)
+        assertEquals("and is untouched once it is done", 1f, gains[2000], 0.0002f)
+    }
 }

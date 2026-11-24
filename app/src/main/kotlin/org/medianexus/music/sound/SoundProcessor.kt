@@ -88,8 +88,11 @@ fun interface SongTags {
  *   songs the sink has drained the first through the chain before it flushes for the second,
  *   so the new gain begins on exactly the second song's first sample. Inside an album played
  *   in order both have the album's gain, and nothing changes at all.
- * - **No clicks.** A change while music plays is ramped over 50 ms (the gain, mono), and
- *   the equaliser's bands move to their new values in small steps.
+ * - **No clicks.** A change while music plays is ramped over 50 ms, and what eases is the
+ *   setting itself, never one song's gain against another's: levelling as a share of each
+ *   setting it is moving between, mono, the preamp and each band. The gain for the song
+ *   sounding is worked out from them at that moment, so at a join the song changes and the
+ *   settings carry on easing from where they were (and across a change of format).
  * - **No clipping.** Whenever a sample may have been pushed past where it was (a gain above
  *   1, or the equaliser running), it goes through Windows' soft limiter, whole, whatever is
  *   ramping: never faded in or out, never blended. Otherwise nothing can go over full scale,
@@ -120,22 +123,31 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
      *  gapless join), so what comes next follows on from it. */
     private var drained = false
 
-    /** The song being processed: its levelling values, and whether it plays as part of its
-     *  album (decided as it begins, as Windows decides when a song loads). */
+    /** The song being processed: its levelling values, and whether it is among its album's
+     *  songs in order (decided as it begins, as Windows decides when a song loads; Auto then
+     *  levels by album unless the queue is shuffled). */
     private var hasSong = false
     private var songTags: ReplayGain? = null
-    private var albumRun = false
+    private var inOrder = false
 
-    /** The gain for the song sounding, under the settings in force: it changes, as a step,
-     *  where the song does. */
-    private var songGain = 1f
+    /**
+     * Levelling as the person set it, easing. The gain heard is a mix of what each of the
+     * last few settings gives the song sounding: the newest ([levels] 0) coming in, its share
+     * ([toward]) rising to 1 over the ramp, and the ones before it ([shares], as they stood
+     * when it came) giving way in proportion. The shares mean the same for every song: at a
+     * join each setting's gain is worked out again for the new song and the shares carry on.
+     */
+    private val levels = arrayOfNulls<Sound>(MIX).also { it[0] = Sound.OFF }
+    private val shares = FloatArray(MIX)
+    private var held = 1
+    private var toward = 1f
+    private var towardStep = 0f
 
-    /** A change the person made, easing in: the gain heard is [songGain] times this, which
-     *  moves to 1 over the ramp. A change of song doesn't touch it. */
-    private var ease = 1f
-    private var easeStep = 0f
+    /** What the settings easing give the song sounding: the older ones' mix, and the newest. */
+    private var from = 1f
+    private var to = 1f
 
-    /** Nothing has sounded since a reset or a new format: the next start is in place at once. */
+    /** Nothing has sounded since a reset: the next start is in place at once. */
     private var fresh = true
     private var mono = 0f
     private var monoTarget = 0f
@@ -183,25 +195,25 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
             channels = format.channelCount
             encoding = format.encoding
             rampFrames = maxOf(1f, rate * RAMP_SECONDS)
+            towardStep = 1f / rampFrames
             // The bands move a full swing (24 dB) in one ramp, a block at a time.
             eqStepDb = 2 * Eq.RANGE * BLOCK / rampFrames
             if (frame.size < channels) frame = FloatArray(channels)
+            // New coefficients for the new rate, at the bands as they are: whatever is easing
+            // carries on.
             filters.format(rate, channels)
-            fresh = true
+            for (band in 0 until 6) filters.set(band, bands[band])
         }
-        // The settings the sound is under; a newer value is eased in at the next buffer.
-        val settings = if (fresh) s else lastSound ?: s
         // Looked up at every start of a stream: played again, a song takes what is known of
-        // it by then.
-        whichSong(streamMetadata, settings)
-        // A new song's level is in place from its first sample, as a step; whatever the
-        // person changed is still easing in, and carries on.
-        songGain = songGainFor(settings)
+        // it by then. Its level under each setting easing is in place from its first sample;
+        // a newer value of the settings is taken in at the next buffer.
+        whichSong(streamMetadata)
         if (fresh) {
-            arrive(settings)
+            arrive(s)
             fresh = false
+        } else {
+            songChanged()
         }
-        lastSound = settings
         // The equaliser remembers what has passed only across sound that really is one: the
         // sink drained everything before this flush (a gapless join). Any other flush (a seek,
         // another song chosen, a new queue, a reset) is a break, and nothing rings over it.
@@ -223,7 +235,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         lastSound = null
         // Whatever comes next begins with nothing before it (see arrive).
         fresh = true
-        songGain = 1f
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
@@ -258,8 +269,15 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
                 blockLeft = BLOCK
                 stepEq()
             }
-            if (ease != 1f) ease = approach(ease, 1f, easeStep)
-            val gain = songGain * ease
+            if (held > 1) {
+                toward += towardStep
+                if (toward >= 1f) {
+                    toward = 1f
+                    held = 1
+                    from = to
+                }
+            }
+            val gain = if (held > 1) from + toward * (to - from) else to
             if (mono != monoTarget) mono = approach(mono, monoTarget, 1f / rampFrames)
             var sum = 0f
             for (ch in 0 until channels) {
@@ -302,11 +320,11 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     /** Reads the song a period stands for from the timeline the sink was given, with the songs
      *  either side of it in playing order (ExoPlayer's playlist is the queue in the order it
      *  plays). Something that isn't one of our songs (none, or a station) is left as it is. */
-    private fun whichSong(meta: AudioProcessor.StreamMetadata, s: Sound) {
+    private fun whichSong(meta: AudioProcessor.StreamMetadata) {
         val uid = meta.periodUid
         hasSong = false
         songTags = null
-        albumRun = false
+        inOrder = false
         val timeline = meta.timeline
         if (uid == null || timeline.isEmpty) return
         val index = timeline.getIndexOfPeriod(uid)
@@ -318,21 +336,41 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         val after = if (w < timeline.windowCount - 1) songAt(timeline, w + 1) else null
         hasSong = true
         songTags = tags.of(song)
-        albumRun = Levelling.inAlbumOrder(song, before, after, s.shuffled)
+        inOrder = Levelling.inAlbumOrder(song, before, after, shuffled = false)
     }
 
     private fun songAt(timeline: Timeline, index: Int): Song? =
         (timeline.getWindow(index, window).mediaItem.localConfiguration?.tag as? QueuePlayer.SongTag)?.song
 
-    private fun songGainFor(s: Sound): Float = if (hasSong) Levelling.gain(s, songTags, albumRun) else 1f
+    private fun songGainFor(s: Sound): Float = if (hasSong) Levelling.gain(s, songTags, inOrder && !s.shuffled) else 1f
+
+    /** A new song, or new settings: what each setting easing gives the song sounding. */
+    private fun songChanged() {
+        to = songGainFor(levels[0]!!)
+        if (held == 1) {
+            from = to
+            return
+        }
+        from = 0f
+        for (i in 1 until held) from += shares[i] * songGainFor(levels[i]!!)
+    }
 
     /** The person changed something: each part eases towards what `s` asks for, from where it
-     *  is now (the gain heard doesn't jump). */
+     *  is now. For levelling, `s` comes in beside the settings still easing: the newest keeps
+     *  the share it had got to and the older ones what is left of theirs. (More than [MIX] at
+     *  once, within one ramp, and the oldest two are taken as one.) */
     private fun retarget(s: Sound) {
-        val target = songGainFor(s)
-        ease = songGain * ease / target
-        easeStep = abs(ease - 1f) / rampFrames
-        songGain = target
+        val n = minOf(held + 1, MIX)
+        val dropped = if (held == MIX) shares[MIX - 1] * (1f - toward) else 0f
+        for (i in n - 1 downTo 1) {
+            levels[i] = levels[i - 1]
+            shares[i] = if (i == 1) toward else shares[i - 1] * (1f - toward)
+        }
+        shares[n - 1] += dropped
+        levels[0] = s
+        held = n
+        toward = 0f
+        songChanged()
         monoTarget = if (s.mono) 1f else 0f
         for (band in 0 until 6) bandTargets[band] = if (s.eqOn) s.gain(band) else 0f
         preampTarget = if (s.eqOn) s.preampDb else 0f
@@ -341,8 +379,12 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
     /** Sound begins with nothing before it (after a reset, or in a new format): everything is
      *  as `s` asks from the first sample. */
     private fun arrive(s: Sound) {
+        lastSound = s
+        held = 0
         retarget(s)
-        ease = 1f
+        held = 1
+        toward = 1f
+        from = to
         mono = monoTarget
         preampDb = preampTarget
         preamp = 10f.pow(preampDb / 20f)
@@ -385,7 +427,7 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
 
     /** Nothing to do, and nothing still ramping. */
     private fun settled(): Boolean =
-        songGain == 1f && ease == 1f && mono == 0f && monoTarget == 0f &&
+        held == 1 && to == 1f && mono == 0f && monoTarget == 0f &&
             !eqRunning && preampDb == 0f && bands.all { it == 0f } && bandTargets.all { it == 0f } && preampTarget == 0f
 
     private fun approach(now: Float, target: Float, step: Float): Float =
@@ -397,5 +439,8 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
 
         /** How many frames the equaliser's bands hold still between steps. */
         const val BLOCK = 32
+
+        /** How many settings of levelling can be easing at once (changes within one ramp). */
+        const val MIX = 4
     }
 }
