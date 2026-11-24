@@ -191,6 +191,8 @@ fun ActionBar(
     inline: Boolean = false,
     /** The list's download button (an album, a playlist, Liked songs), if it has one. */
     download: DownloadButton? = null,
+    /** The page's own menu (Windows' "…" on an album's or playlist's header), if it has one. */
+    onMore: (() -> Unit)? = null,
 ) {
     val colors = Theme.colors
     Row(
@@ -227,6 +229,7 @@ fun ActionBar(
             )
         }
         if (download != null) DownloadButtonView(download)
+        if (onMore != null) IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for_named, title), onMore, iconSize = 24.dp)
         Spacer(Modifier.width(0.dp))
     }
 }

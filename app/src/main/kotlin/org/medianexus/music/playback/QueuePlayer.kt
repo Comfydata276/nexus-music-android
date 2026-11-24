@@ -133,6 +133,8 @@ class QueuePlayer(
     }
 
     init {
+        // What "Save queue as playlist" saves, for the app's screens in this process.
+        QueueNow.player = java.lang.ref.WeakReference(this)
         exo.shuffleModeEnabled = false
         applyRepeat()
         exo.addListener(object : Player.Listener {
@@ -659,6 +661,10 @@ class QueuePlayer(
             sync()
         }
     }
+
+    /** What is playing and everything after it, in the order it will play (what Windows'
+     *  "Save queue as playlist" saves). On the main thread. */
+    fun fromNowOn(): List<Song> = if (queue.isEmpty) emptyList() else List(queue.order.size - queue.cursor) { queue.songs[queue.order[queue.cursor + it]] }
 
     // ---- Internet radio ---------------------------------------------------------------------
 

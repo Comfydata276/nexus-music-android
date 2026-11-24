@@ -1,5 +1,6 @@
 package org.medianexus.music.ui.player
 
+import org.medianexus.music.ui.menu.saveQueueAsPlaylist
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -165,11 +166,17 @@ private fun QueueList() {
     val removeWord = stringResource(R.string.remove_from_queue)
     LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
         item(key = "title", contentType = "title") {
-            BasicText(
-                stringResource(R.string.queue),
-                Modifier.padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp).semantics { heading() },
-                style = Theme.type.heading.copy(color = colors.text),
-            )
+            androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                BasicText(
+                    stringResource(R.string.queue),
+                    Modifier.weight(1f).padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp).semantics { heading() },
+                    style = Theme.type.heading.copy(color = colors.text),
+                )
+                // Windows' "Save queue as playlist": what is playing and everything after it.
+                if (song != null) org.medianexus.music.ui.parts.IconButton(R.drawable.ic_list_plus, stringResource(R.string.save_queue_as_playlist), {
+                    ui.saveQueueAsPlaylist(org.medianexus.music.playback.QueueNow.fromNowOn())
+                })
+            }
         }
         val now = song
         if (now == null) {

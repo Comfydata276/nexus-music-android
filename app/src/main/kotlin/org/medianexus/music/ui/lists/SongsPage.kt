@@ -103,6 +103,8 @@ fun SongsContent() {
     val table = now?.list?.songs
     val context = stringResource(R.string.songs)
     val sideways = org.medianexus.music.ui.shell.sidewaysPhone()
+    // Dropped when the copy is another (its places mean other songs).
+    val selection = rememberSelection(now?.list)
 
     // The place of a song (by its place in the table) in the newest-first list: what the
     // service is told, and what marks the row playing. Made off the main thread, with the
@@ -121,7 +123,12 @@ fun SongsContent() {
             val offline = org.medianexus.music.ui.downloads.reachNow().offline
             PageStatus(PageState.Empty(stringResource(if (offline && fetching == null) R.string.songs_offline_empty else R.string.songs_empty), icon = R.drawable.ic_music))
         }
-        else -> Box(Modifier.fillMaxSize()) {
+        else -> Column(Modifier.fillMaxSize()) {
+          // Several songs chosen together (a long press starts it): by their places in the copy.
+          if (selection.active && table != null) {
+              SelectionBar(selection, { selection.places.sortedBy { ownPlace.getOrElse(it) { 0 } }.map { table.song(it) } }, top = false)
+          }
+          Box(Modifier.fillMaxSize()) {
             // In large type, titles that share a long beginning are told apart by a second line.
             val titleLines = if (androidx.compose.ui.platform.LocalDensity.current.fontScale >= LARGE_TYPE) 2 else 1
             val today = stringResource(R.string.added_today)
@@ -193,9 +200,10 @@ fun SongsContent() {
                         }
                         val current = from.isRow(key, ownPlace.getOrElse(t) { -1 }, song.id)
                         TrackRow(
-                            base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
-                            onClick = { play(row) },
+                            base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused, selected = t in selection.places),
+                            onClick = { if (selection.active) selection.toggle(t) else play(row) },
                             onMore = { ui.menu = SongMenu(song) },
+                            onLongClick = { selection.toggle(t) },
                             showDuration = true,
                             mark = marks.rowMark(song),
                             titleLines = titleLines,
@@ -218,6 +226,7 @@ fun SongsContent() {
                     }
                 }
             }
+          }
         }
     }
 }
@@ -304,8 +313,11 @@ fun RecentlyPlayedPage() {
         val hidden = if (playing != null && played.firstOrNull()?.song?.id == playing?.id) 1 else 0
         played.drop(hidden)
     }
+    val selection = rememberSelection(Unit)
+    androidx.compose.runtime.LaunchedEffect(songs) { selection.keepWithin(songs.size) }
     Column(Modifier.fillMaxSize()) {
-        TitleBar(stringResource(R.string.recently_played), onBack = ui.navigator::back)
+        if (selection.active) SelectionBar(selection, { selection.places.sorted().mapNotNull { songs.getOrNull(it)?.song } })
+        else TitleBar(stringResource(R.string.recently_played), onBack = ui.navigator::back)
         if (songs.isEmpty()) {
             PageStatus(PageState.Empty(stringResource(R.string.recently_played_empty), icon = R.drawable.ic_history))
             return@Column
@@ -318,13 +330,61 @@ fun RecentlyPlayedPage() {
                     TrackRowData(song.id, song.title, detail, song.coverArt, duration = clock(song.duration))
                 }
                 TrackRow(
-                    base.copy(liked = song.id in likedSet),
+                    base.copy(liked = song.id in likedSet, selected = row in selection.places),
                     // By itself, as if it had been picked on its own (Windows' `play_history`).
-                    onClick = { ui.play(listOf(song), 0, "") },
+                    onClick = { if (selection.active) selection.toggle(row) else ui.play(listOf(song), 0, "") },
                     onMore = { ui.menu = SongMenu(song) },
+                    onLongClick = { selection.toggle(row) },
                     showDuration = true,
                     mark = marks.rowMark(song),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Radio: the internet radio stations set up on the server (Windows' Radio page, its words),
+ * each played through the same player, its announced title shown where the artist goes. They
+ * stream live from the internet, so offline there is nothing to play, and that is said.
+ */
+@Composable
+fun RadioPage() {
+    val ui = LocalUi.current
+    val res = LocalResources.current
+    val feed = org.medianexus.music.ui.shell.rememberPageFeed("radio") { it.stations() }
+    val offline = org.medianexus.music.ui.downloads.reachNow().offline
+    val playing by ui.player.song.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize()) {
+        TitleBar(stringResource(R.string.radio), onBack = ui.navigator::back)
+        val stations = feed.value
+        when {
+            offline -> PageStatus(PageState.Empty(stringResource(R.string.radio_offline), icon = R.drawable.ic_radio))
+            stations == null && feed.page.error != null -> PageStatus(PageState.Error(feed.page.error?.message.orEmpty()), onRetry = feed::refresh)
+            stations == null -> SkeletonRows()
+            stations.isEmpty() -> PageStatus(PageState.Empty(stringResource(R.string.radio_empty), icon = R.drawable.ic_radio))
+            else -> org.medianexus.music.ui.parts.Refreshable(feed.refreshing, feed::refresh) {
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                    item(key = "head", contentType = "head") {
+                        BasicText(
+                            if (stations.size == 1) res.getString(R.string.stations_count_one) else res.getString(R.string.stations_count, stations.size),
+                            Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
+                            style = Theme.type.rowDetail.copy(color = Theme.colors.muted),
+                        )
+                    }
+                    items(stations.size, key = { stations[it].id }, contentType = { "station" }) { row ->
+                        val station = stations[row]
+                        val current = playing?.id == station.id
+                        TrackRow(
+                            TrackRowData(station.id, station.title, station.artistLabel, number = (row + 1).toString(), current = current),
+                            // The stations as a list, from this one (Windows plays its page).
+                            onClick = { ui.play(stations, row, res.getString(R.string.radio), org.medianexus.music.playback.RADIO_STATIONS) },
+                            onMore = { ui.menu = SongMenu(station) },
+                            showCover = false,
+                            showNumber = true,
+                        )
+                    }
+                }
             }
         }
     }

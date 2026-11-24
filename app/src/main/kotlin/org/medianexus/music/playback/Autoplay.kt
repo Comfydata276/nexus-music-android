@@ -153,3 +153,12 @@ class Rejoins {
         const val WINDOW_MILLIS = 3 * 60_000L
     }
 }
+
+/** The player of the playback service, for what the app's screens in the same process ask of
+ *  the whole queue (they are shown only the part the player holds). On the main thread. */
+object QueueNow {
+    @Volatile internal var player: java.lang.ref.WeakReference<QueuePlayer>? = null
+
+    /** What is playing and everything after it, in the order it will play. */
+    fun fromNowOn(): List<org.medianexus.music.net.Song> = player?.get()?.fromNowOn().orEmpty()
+}

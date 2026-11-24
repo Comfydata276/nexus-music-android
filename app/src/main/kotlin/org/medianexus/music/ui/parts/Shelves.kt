@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -145,42 +147,62 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
  * still showing. Screen readers read it out.
  */
 @Composable
-fun ToastHost(toasts: SharedFlow<String>, modifier: Modifier = Modifier) {
-    var text by remember { mutableStateOf("") }
+fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier) {
+    var toast by remember { mutableStateOf(org.medianexus.music.Toasts.Toast("")) }
     var shown by remember { mutableStateOf(false) }
     var said by remember { mutableIntStateOf(0) }
     LaunchedEffect(toasts) {
         toasts.collect {
-            text = it
+            toast = it
             shown = true
             said++
         }
     }
     LaunchedEffect(said) {
         if (said == 0) return@LaunchedEffect
-        delay(3_200)
+        // One with a button stays long enough to press it (Windows' eight seconds).
+        delay(if (toast.action != null) 8_000 else 3_200)
         shown = false
     }
     val colors = Theme.colors
     Box(modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
         AnimatedVisibility(shown, enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 }) {
-            Box(
+            Row(
                 Modifier
                     .padding(horizontal = 24.dp, vertical = 12.dp)
                     .widthIn(max = 560.dp)
                     .shadow(12.dp, RoundedCornerShape(22.dp))
                     .background(colors.text, RoundedCornerShape(22.dp))
                     .heightIn(min = 44.dp)
-                    .padding(horizontal = 20.dp, vertical = 11.dp)
+                    .padding(start = 20.dp, end = if (toast.action != null) 6.dp else 20.dp)
                     .semantics { liveRegion = LiveRegionMode.Polite },
-                contentAlignment = Alignment.Center,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 BasicText(
-                    text,
+                    toast.text,
+                    Modifier.padding(vertical = 11.dp).then(if (toast.action != null) Modifier.weight(1f, fill = false) else Modifier),
                     style = Theme.type.button.copy(color = colors.base, textAlign = TextAlign.Center),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
+                val action = toast.action
+                val onAction = toast.onAction
+                if (action != null && onAction != null) {
+                    Box(
+                        Modifier
+                            .padding(start = 8.dp)
+                            .heightIn(min = Theme.dimens.touch)
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClickLabel = action) {
+                                shown = false
+                                onAction()
+                            }
+                            .padding(horizontal = 14.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BasicText(action, style = Theme.type.button.copy(color = colors.accent))
+                    }
+                }
             }
         }
     }

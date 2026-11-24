@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import org.medianexus.music.R
+import org.medianexus.music.ui.menu.startRadio
 import org.medianexus.music.library.SearchLimits
 import org.medianexus.music.net.Found
 import org.medianexus.music.ui.lists.CardGrid
@@ -162,6 +163,12 @@ fun SearchPage() {
         val shownPlaylists = remember(playlists, offline, downloadedLists) { if (offline) playlists.filter { "playlist:${it.id}" in downloadedLists } else playlists }
         val settings by graph.settings.state.collectAsStateWithLifecycle()
         val pinned = settings.pinnedPlaylists
+        // Several of the songs found chosen together (a long press starts it): for the words
+        // that found them, by their place among the songs found.
+        val selection = org.medianexus.music.ui.lists.rememberSelection(results?.query)
+        if (selection.active && results != null) {
+            org.medianexus.music.ui.lists.SelectionBar(selection, { selection.places.sorted().mapNotNull { results.found.songs.getOrNull(it) } }, top = false)
+        }
         val view = remember(results, shownPlaylists, kind, pinned) {
             results?.let { SearchView.of(it.query, it.found, shownPlaylists, SearchKind.entries[kind], pinned) }
         }
@@ -201,9 +208,11 @@ fun SearchPage() {
                     itemsIndexed(view.songs, key = { index, song -> "song/$index/${song.id}" }, contentType = { _, _ -> "song" }) { index, song ->
                         TrackRow(
                             remember(song) { TrackRowData(song.id, song.title, song.artistLabel + if (song.album.isNotEmpty()) " • ${song.album}" else "", song.coverArt, duration = clock(song.duration)) }
-                                .copy(liked = song.id in liked),
-                            // What "All" shows is the first few of what was found, so the place is the same.
-                            onClick = { results?.takeIf { it.query == box.text.toString().trim() }?.let { ui.play(it.found.songs, index, "“${it.query}”") } },
+                                .copy(liked = song.id in liked, selected = index in selection.places),
+                            onLongClick = { selection.toggle(index) },
+                            // As on Windows: a song chosen from search starts its radio (that song,
+                            // then others like it), rather than playing the results.
+                            onClick = { if (selection.active) selection.toggle(index) else results?.takeIf { it.query == box.text.toString().trim() }?.let { ui.startRadio(song) } },
                             onMore = { ui.menu = SongMenu(song) },
                             mark = marks.rowMark(song),
                         )

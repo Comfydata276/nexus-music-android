@@ -46,6 +46,8 @@ sealed interface Route {
     @Serializable data object Songs : Route
     /** The last hundred songs played (from Home and Library). */
     @Serializable data object RecentlyPlayed : Route
+    /** The internet radio stations set up on the server (Library). */
+    @Serializable data object Radio : Route
 
     /** The key the Windows app files the page under ("album:<id>"): where its list's
      *  choices are remembered, and what a queue started from it is said to come from. */

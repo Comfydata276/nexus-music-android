@@ -1,5 +1,7 @@
 package org.medianexus.music.ui.library
 
+import org.medianexus.music.ui.menu.askNewPlaylist
+import org.medianexus.music.ui.menu.openMenu
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -176,6 +178,25 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                     ) { Icon(R.drawable.ic_history, size = 24.dp, tint = Theme.colors.muted) }
                 }
             }
+            // The internet radio stations (Windows' Radio, in its sidebar): they stream live
+            // from the internet, so not offline.
+            if (phone == null) item(key = "radio", contentType = "row") {
+                ListRow(stringResource(R.string.radio), stringResource(R.string.live_streams), onClick = { ui.open(Route.Radio) }) {
+                    Box(
+                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(R.drawable.ic_radio, size = 24.dp, tint = Theme.colors.muted) }
+                }
+            }
+            // A new playlist (Windows' "+" beside Playlists), with nothing in it yet.
+            item(key = "new", contentType = "row") {
+                ListRow(stringResource(R.string.new_playlist), "", onClick = { ui.askNewPlaylist(emptyList()) }) {
+                    Box(
+                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(R.drawable.ic_plus, size = 24.dp, tint = Theme.colors.muted) }
+                }
+            }
             when {
                 // (Offline with no playlist on the phone: Liked songs and Recently played
                 // above are the list.)
@@ -191,6 +212,7 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                         songCount(res, playlist.songCount),
                         pinned = playlist.id in pinned,
                         onClick = { ui.open(Route.Playlist(playlist.id, playlist.name, playlist.coverArt)) },
+                        onMore = if (phone != null) null else ({ ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(playlist.id, playlist.name, playlist)) }),
                     ) {
                         Cover(playlist.coverArt, Modifier.size(56.dp), CoverShape.ROW, R.drawable.ic_list_music)
                     }
@@ -202,7 +224,7 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
 
 /** A playlist (or Liked songs) in Library's list: its picture, name and count. */
 @Composable
-private fun ListRow(title: String, detail: String, onClick: () -> Unit, pinned: Boolean = false, picture: @Composable () -> Unit) {
+private fun ListRow(title: String, detail: String, onClick: () -> Unit, pinned: Boolean = false, onMore: (() -> Unit)? = null, picture: @Composable () -> Unit) {
     val colors = Theme.colors
     Row(
         Modifier
@@ -219,9 +241,10 @@ private fun ListRow(title: String, detail: String, onClick: () -> Unit, pinned: 
             BasicText(title, style = Theme.type.rowTitle.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (pinned) Icon(R.drawable.ic_pin, size = 13.dp, tint = colors.accentBright, contentDescription = stringResource(R.string.pinned))
-                BasicText(detail, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
+                if (detail.isNotEmpty()) BasicText(detail, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
             }
         }
+        if (onMore != null) org.medianexus.music.ui.parts.IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for_named, title), onMore, iconSize = 20.dp)
     }
 }
 

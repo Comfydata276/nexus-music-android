@@ -45,6 +45,11 @@ import org.medianexus.music.ui.downloads.ListDownload
 import org.medianexus.music.ui.downloads.rememberDownloadMarks
 import org.medianexus.music.ui.downloads.rowMark
 import kotlinx.coroutines.launch
+import org.medianexus.music.ui.menu.movePlaylistSong
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.graphicsLayer
 
 /** How a list's songs are drawn. */
 @Immutable
@@ -82,6 +87,15 @@ fun SongListPage(
     /** What the download button does instead of downloading the list as its page has it
      *  (a list shown from the downloads: only removing). */
     onDownload: ((ListDownload) -> Unit)? = null,
+    /** The playlist these songs are, where the account may change it: its songs can be
+     *  dragged into another order (in its own order) and taken out. */
+    editable: org.medianexus.music.net.Playlist? = null,
+    /** The header's "…" (the page's own menu), if it has one. */
+    onMore: (() -> Unit)? = null,
+    /** Said under the header (a playlist that is someone else's). */
+    note: String? = null,
+    /** A heading over the songs (an artist's "Popular"). */
+    songsTitle: String? = null,
 ) {
     val ui = LocalUi.current
     val android = androidx.compose.ui.platform.LocalContext.current
@@ -125,6 +139,13 @@ fun SongListPage(
     }
     val list = rememberLazyListState()
     val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
+    // Several songs chosen together (a long press starts it): by their places in the list.
+    val selection = rememberSelection(key)
+    androidx.compose.runtime.LaunchedEffect(songs) { selection.keepWithin(songs?.size ?: 0) }
+    // A playlist's songs in its own order can be dragged by their handles (see PlaylistDrag).
+    val drag = remember(key) { PlaylistDrag() }
+    androidx.compose.runtime.LaunchedEffect(songs) { drag.reset() }
+    val canDrag = editable != null && view.isDefault && !selection.active
     // As the queue has it if this is the list playing, else as the list remembers it.
     val shuffle = if (key == from.source) queueShuffle else settings.lists[key]?.shuffle ?: false
     val playingHere = from.isList(key) && !from.paused
@@ -133,7 +154,11 @@ fun SongListPage(
         // The name goes up into the bar once the header has scrolled away, or when there's
         // no header to show (nothing kept, and the server out of reach).
         val bare = songs == null && feed.page.error != null
-        TitleBar(if (scrolled || bare) hero.title else "", onBack = ui.navigator::back)
+        if (selection.active && songs != null) {
+            SelectionBar(selection, { selection.places.sorted().mapNotNull { songs.getOrNull(it) } }, inPlaylist = editable)
+        } else {
+            TitleBar(if (scrolled || bare) hero.title else "", onBack = ui.navigator::back)
+        }
         Refreshable(feed.refreshing, feed::refresh) {
             // Offline, a failure to reach the server is what offline is: the pill in the title
             // bar says so, once, rather than a strip on every page.
@@ -168,6 +193,7 @@ fun SongListPage(
                     liked = liked,
                     onLike = onLike,
                     inline = inline,
+                    onMore = onMore,
                     download = if (!downloadable || songs.isNullOrEmpty()) null else {
                         val now = listDownload
                         org.medianexus.music.ui.parts.DownloadButton(
@@ -201,6 +227,9 @@ fun SongListPage(
                     if (error != null && songs != null) {
                         item(key = "failed", contentType = "failed") { FailedStrip(error.message.orEmpty(), feed::refresh) }
                     }
+                    if (note != null) item(key = "note", contentType = "note") {
+                        androidx.compose.foundation.text.BasicText(note, androidx.compose.ui.Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 4.dp), style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+                    }
                     if (findable && !songs.isNullOrEmpty()) item(key = "find", contentType = "find") {
                         FindAndSort(box, view, playlist = key.startsWith("playlist:"), onSort = { choice ->
                             val next = view.sortedBy(choice)
@@ -209,6 +238,7 @@ fun SongListPage(
                             ui.rememberSort(key, next)
                         })
                     }
+                    if (songsTitle != null && !songs.isNullOrEmpty()) item(key = "songs-title", contentType = "title") { org.medianexus.music.ui.parts.SectionTitle(songsTitle) }
                     when {
                         songs == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
                         songs.isEmpty() -> if (empty.isNotEmpty()) item(key = "empty", contentType = "empty") {
@@ -218,9 +248,10 @@ fun SongListPage(
                         shown.isEmpty() -> item(key = "nothing", contentType = "empty") {
                             Box(Modifier.fillMaxWidth().heightIn(min = 160.dp)) { PageStatus(PageState.Empty(stringResource(org.medianexus.music.R.string.nothing_matches_here, view.filter.trim()))) }
                         }
-                        else -> items(shown.size, key = { row -> "${shown[row]}/${songs[shown[row]].id}" }, contentType = { "song" }) { row ->
+                        else -> items(shown.size, key = { row -> drag.at(shown, row).let { "$it/${songs[it].id}" } }, contentType = { "song" }) { row ->
                             // Its place in the list itself: what plays, and what marks it playing.
-                            val index = shown[row]
+                            // (While a song is dragged, the rows as they are being moved.)
+                            val index = drag.at(shown, row)
                             val song = songs[index]
                             val heading = if (discs && view.isDefault && (index == 0 || songs[index - 1].discNumber != song.discNumber)) "$discWord ${song.discNumber.coerceAtLeast(1)}" else null
                             val base = remember(song, row, look, added) {
@@ -229,14 +260,27 @@ fun SongListPage(
                             Column {
                                 heading?.let { ListHeading(it) }
                                 val current = from.isRow(key, index, song.id)
+                                val lifted = drag.lifted == index
+                                val moveUp = stringResource(org.medianexus.music.R.string.move_up)
+                                val moveDown = stringResource(org.medianexus.music.R.string.move_down)
                                 TrackRow(
-                                    base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused),
-                                    onClick = { play(index, anyStart = false) },
-                                    onMore = { ui.menu = SongMenu(song) },
+                                    base.copy(liked = song.id in likedSet, current = current, paused = current && from.paused, selected = index in selection.places),
+                                    onClick = { if (selection.active) selection.toggle(index) else play(index, anyStart = false) },
+                                    onMore = { ui.menu = SongMenu(song, inPlaylist = editable?.let { org.medianexus.music.ui.shell.InPlaylist(it, index) }) },
+                                    onLongClick = { selection.toggle(index) },
+                                    modifier = if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = drag.offset }.background(Theme.colors.overlay) else Modifier,
                                     showCover = !look.album,
                                     showNumber = look.album,
                                     showDuration = true,
                                     mark = marks.rowMark(song),
+                                    handle = if (!canDrag) null else ({
+                                        DragHandle(song.title, Modifier.dragRows(drag, list, index, songs.size) { from, to -> editable?.let { ui.movePlaylistSong(it, from, to) } })
+                                    }),
+                                    actions = if (!canDrag) emptyList() else buildList {
+                                        val playlist = editable ?: return@buildList
+                                        if (index > 0) add(androidx.compose.ui.semantics.CustomAccessibilityAction(moveUp) { ui.movePlaylistSong(playlist, index, index - 1); true })
+                                        if (index < songs.lastIndex) add(androidx.compose.ui.semantics.CustomAccessibilityAction(moveDown) { ui.movePlaylistSong(playlist, index, index + 1); true })
+                                    },
                                 )
                             }
                         }

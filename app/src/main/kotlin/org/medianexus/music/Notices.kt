@@ -46,11 +46,24 @@ class Notices {
  * the Windows app's toast. Unlike a notice, nothing waits to be dismissed.
  */
 class Toasts {
-    private val said = MutableSharedFlow<String>(extraBufferCapacity = 8)
-    val shown: SharedFlow<String> = said.asSharedFlow()
+    /** One toast: its words, and what its one button says and does, if it has one (Windows'
+     *  "Undo"). */
+    data class Toast(val text: String, val action: String? = null, val onAction: (() -> Unit)? = null)
+
+    private val said = MutableSharedFlow<Toast>(extraBufferCapacity = 8)
+    val all: SharedFlow<Toast> = said.asSharedFlow()
+
+    /** The words of each toast, as they are shown. */
+    val shown: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flow { said.collect { emit(it.text) } }
 
     fun show(text: String) {
-        said.tryEmit(text)
+        said.tryEmit(Toast(text))
+    }
+
+    /** A toast with a button (shown for longer, so there's time to press it: Windows'
+     *  `toast_with_undo`). */
+    fun show(text: String, action: String, onAction: () -> Unit) {
+        said.tryEmit(Toast(text, action, onAction))
     }
 }
 

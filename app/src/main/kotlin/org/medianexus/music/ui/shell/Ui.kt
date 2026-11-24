@@ -22,7 +22,11 @@ import org.medianexus.music.store.PageSpec
  *  own number when it was opened from the queue (it can then be taken out, and that entry,
  *  not whatever is in its place by the time the menu is used, is what goes). `remove` is the
  *  queue sheet's own way to take it out, so the sheet shows it gone at once. */
-data class SongMenu(val song: Song, val upcoming: Long? = null, val remove: (() -> Unit)? = null)
+data class SongMenu(val song: Song, val upcoming: Long? = null, val remove: (() -> Unit)? = null, val inPlaylist: InPlaylist? = null)
+
+/** A song's row in a playlist the account can change: the playlist as shown, and the row's
+ *  place in it (what "Remove from this playlist" takes out, by the song and which copy). */
+data class InPlaylist(val playlist: org.medianexus.music.net.Playlist, val index: Int)
 
 /**
  * What every screen shares while someone is signed in: the app's objects, the account's,

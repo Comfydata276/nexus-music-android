@@ -63,6 +63,11 @@ sealed interface Sheet {
 
     /** Everything known about a song (Windows' "Song details"). */
     data class SongDetails(val song: org.medianexus.music.net.Song) : Sheet
+
+    /** A sheet whose content is drawn by whoever opened it (the menus of albums, artists and
+     *  playlists, the playlist picker, the rating picker, a question): `content` is given the
+     *  way to close the sheet and then do something. */
+    class Drawn(val content: @Composable (choose: (() -> Unit) -> Unit) -> Unit) : Sheet
 }
 
 /** The sheet [Ui.sheet] names, over everything, in the colours of the song's menu. */
@@ -150,6 +155,7 @@ fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
                         TextButton(stringResource(R.string.close), onClick = { choose {} })
                     }
                 }
+                is Sheet.Drawn -> sheet.content { action -> choose(action) }
                 is Sheet.Confirm -> {
                     Words(sheet.title, sheet.detail)
                     // (A button too wide to sit beside the other, with large type on a narrow

@@ -41,6 +41,10 @@ data class CardData(
     val cover: String = "",
 )
 
+/** What a long press on a card opens (its menu: Play, Play next, Add to queue, …), given by the
+ *  shell; none elsewhere. */
+val LocalCardMenu = androidx.compose.runtime.staticCompositionLocalOf<((CardData) -> Unit)?> { null }
+
 /**
  * An album, artist, playlist or mix in a grid or shelf: the cover, then its name and a line
  * under it. A genre is a tile with its name on it instead. The width comes from `modifier`.
@@ -59,6 +63,10 @@ fun MediaCard(
 ) {
     val colors = Theme.colors
     val shape = RoundedCornerShape(Theme.dimens.radius)
+    // A long press opens the card's menu (Windows' right-click on a card), where the shell
+    // gives one.
+    val cardMenu = LocalCardMenu.current
+    val onLongClick = onLongClick ?: cardMenu?.let { menu -> { menu(card) } }.takeIf { card.kind != CardKind.GENRE }
     if (card.kind == CardKind.GENRE) {
         Box(
             modifier

@@ -30,6 +30,9 @@ import org.medianexus.music.store.accountDirs
 class Graph(context: Context) {
     private val app: Context = context.applicationContext
 
+    /** The app's words, for what is said from outside a screen (a toast after a question). */
+    val resources: android.content.res.Resources get() = app.resources
+
     /** Work that outlives any screen. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -276,10 +279,16 @@ class Graph(context: Context) {
                 if (failed) notices.post(Notice.SettingsNotSaved) else notices.dismiss(Notice.SettingsNotSaved)
             }
         }
-        // A like or unlike the server turned down has already been put back; say so.
+        // A like or unlike, a change to a playlist or a rating the server turned down has
+        // already been put back; say so.
         scope.launch {
             accounts.state.collectLatest { account ->
-                account?.likes?.refused?.collect { toasts.show(context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim()) }
+                if (account == null) return@collectLatest
+                kotlinx.coroutines.flow.merge(
+                    account.likes.refused.map { context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim() },
+                    account.playlists.refused.map { context.getString(R.string.didnt_save, it.error.message.orEmpty()).trim() },
+                    account.ratings.refused.map { context.getString(R.string.couldnt_save_rating, it.error.message.orEmpty()).trim() },
+                ).collect { toasts.show(it) }
             }
         }
         // Whether the server answers, from every request the account's client makes.

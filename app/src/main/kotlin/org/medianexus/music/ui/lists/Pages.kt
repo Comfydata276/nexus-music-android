@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import org.medianexus.music.R
 import org.medianexus.music.net.Album
@@ -58,6 +59,7 @@ import org.medianexus.music.ui.shell.likedAlbums
 import org.medianexus.music.ui.shell.likedSongs
 import org.medianexus.music.ui.shell.rememberPageFeed
 import org.medianexus.music.ui.shell.open
+import org.medianexus.music.ui.menu.openMenu
 
 @Composable
 fun AlbumPage(route: Route.Album) {
@@ -97,6 +99,7 @@ fun AlbumPage(route: Route.Album) {
         downloadable = true,
         onSubtitle = album?.takeIf { it.artistId.isNotEmpty() }?.let { { ui.open(Route.Artist(it.artistId, it.artistLabel)) } },
         liked = if (album == null) null else liked,
+        onMore = { ui.openMenu(org.medianexus.music.ui.menu.Collection.Album(route.id, album?.name ?: route.title)) },
         onLike = {
             val shown = album ?: return@SongListPage
             // On the likes as they stand, not as last drawn: two quick taps are two changes.
@@ -138,14 +141,22 @@ fun PlaylistPage(route: Route.Playlist) {
         val facts = remember(playlist, res) { listFacts(res, playlist.songs) }
         HeroData(stringResource(R.string.kind_playlist), playlist.name, playlist.owner, facts, playlist.coverArt, playlist = true)
     }
+    val ui = LocalUi.current
+    // Changed only if it is the account's own: someone else's plays, and says why it can't
+    // be changed (Navidrome would refuse).
+    val mine = playlist != null && ui.account?.playlists?.canEdit(playlist) == true
     SongListPage(
         key = route.key,
         hero = hero,
         songs = playlist?.songs,
         context = playlist?.name ?: route.name,
         feed = feed,
-        empty = stringResource(R.string.playlist_empty),
+        empty = stringResource(if (mine) R.string.playlist_empty_editable else R.string.playlist_empty),
         downloadable = true,
+        editable = playlist.takeIf { mine },
+        onMore = { ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, playlist)) },
+        note = if (playlist != null && !mine) stringResource(R.string.not_your_playlist, playlist.owner) else null,
+        below = { if (mine && playlist != null) recommendations(playlist) },
     )
 }
 
@@ -220,12 +231,28 @@ fun ArtistPage(route: Route.Artist) {
     )
     val groups = remember(artist) { artist?.let(::grouped).orEmpty() }
     val scope = rememberCoroutineScope()
+    // "Popular" and "Fans also like", when the server can say (it asks Last.fm): nothing in
+    // their place when it can't, or offline. Asked once the artist's name is known.
+    val name = artist?.name.orEmpty()
+    val extras by androidx.compose.runtime.produceState<Pair<List<org.medianexus.music.net.Song>, List<Artist>>?>(null, route.id, name, phone == null) {
+        val library = ui.account?.library ?: return@produceState
+        if (phone != null || name.isEmpty()) return@produceState
+        value = kotlinx.coroutines.coroutineScope {
+            val top = async { runCatching { library.topSongs(name, 5) }.getOrDefault(emptyList()) }
+            val info = async { runCatching { library.artistInfo(route.id) }.getOrNull() }
+            top.await() to info.await()?.similar.orEmpty().filter { it.id.isNotEmpty() && !it.id.startsWith('-') }
+        }
+    }
     ArtistLayout(
         key = route.key,
         hero = hero,
         artist = artist,
         feed = feed,
-        groups = remember(groups, res) { groups.map { (titleRes, albums) -> res.getString(titleRes) to albums.map { it.card(albumByYear(res, it)) } } },
+        groups = remember(groups, res, extras) {
+            groups.map { (titleRes, albums) -> res.getString(titleRes) to albums.map { it.card(albumByYear(res, it)) } } +
+                listOfNotNull(extras?.second?.takeIf { it.isNotEmpty() }?.let { res.getString(R.string.fans_also_like) to it.map { a -> CardData(org.medianexus.music.ui.parts.CardKind.ARTIST, a.id, a.name, res.getString(R.string.kind_artist), a.coverArt) } })
+        },
+        popular = extras?.first.orEmpty(),
         onPlay = { shuffle ->
             val library = ui.account?.library ?: return@ArtistLayout
             val name = artist?.name.orEmpty()
@@ -282,16 +309,20 @@ private fun ArtistLayout(
     groups: List<Pair<String, List<CardData>>>,
     onPlay: (shuffle: Boolean?) -> Unit,
     res: android.content.res.Resources,
+    popular: List<org.medianexus.music.net.Song> = emptyList(),
 ) {
     val ui = LocalUi.current
     SongListPage(
         key = key,
         hero = hero,
-        // The header's play button plays the albums; the page lists no songs of its own.
-        songs = if (artist == null) null else emptyList(),
+        // The header's play button plays the albums; the songs listed are their most popular,
+        // when the server can say (Windows' "Popular").
+        songs = if (artist == null) null else popular,
+        songsTitle = stringResource(R.string.popular),
         context = hero.title,
         feed = feed,
         empty = if (artist != null && artist.albums.isEmpty()) stringResource(R.string.artist_empty) else "",
+        onMore = if (artist == null) null else ({ ui.openMenu(org.medianexus.music.ui.menu.Collection.Artist(artist.id.ifEmpty { key.removePrefix("artist:") }, artist.name)) }),
         playOverride = if (artist?.albums.isNullOrEmpty()) null else ({ onPlay(null) }),
         below = { columns ->
             for ((title, cards) in groups) gridSection(title, cards, { ui.open(it) }, columns)

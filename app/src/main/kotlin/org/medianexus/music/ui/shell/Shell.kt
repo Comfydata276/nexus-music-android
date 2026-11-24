@@ -113,7 +113,10 @@ fun Shell(graph: Graph) {
     val reported by graph.player.reported.collectAsStateWithLifecycle()
     LaunchedEffect(song == null, reported) { if (song == null && reported) ui.nowPlaying = false }
 
-    androidx.compose.runtime.CompositionLocalProvider(LocalUi provides ui) {
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalUi provides ui,
+        org.medianexus.music.ui.parts.LocalCardMenu provides { card -> org.medianexus.music.ui.menu.openCardMenu(ui, card) },
+    ) {
       ui.askToDownload = org.medianexus.music.ui.downloads.rememberDownloadAsk()
       WithOfflinePill {
         Box(Modifier.fillMaxSize().background(colors.base)) {
@@ -156,7 +159,7 @@ fun Shell(graph: Graph) {
                 NowPlaying(onClose = { ui.nowPlaying = false })
             }
             ToastHost(
-                graph.toasts.shown,
+                graph.toasts.all,
                 Modifier
                     .align(Alignment.BottomCenter)
                     // Above the keyboard too, when it's up (searching).
@@ -228,6 +231,7 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         Route.Downloads -> org.medianexus.music.ui.downloads.DownloadsPage()
         Route.Songs -> org.medianexus.music.ui.lists.SongsPage()
         Route.RecentlyPlayed -> org.medianexus.music.ui.lists.RecentlyPlayedPage()
+        Route.Radio -> org.medianexus.music.ui.lists.RadioPage()
         is Route.Downloaded -> org.medianexus.music.ui.downloads.DownloadedListPage(route)
         Route.Licences -> org.medianexus.music.ui.settings.LicencesPage(onBack = navigator::back)
     }

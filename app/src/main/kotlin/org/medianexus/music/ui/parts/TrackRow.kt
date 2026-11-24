@@ -28,6 +28,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.selected
@@ -88,6 +89,11 @@ fun TrackRow(
      *  apart in large type (the Songs page); the row grows to fit. */
     titleLines: Int = 1,
     trailing: (@Composable () -> Unit)? = null,
+    /** After the "…": something to drag the row by (a playlist's songs, in its own order). */
+    handle: (@Composable () -> Unit)? = null,
+    /** For screen readers, what can be done to the row besides playing it (Move up, Move
+     *  down: the way to do without the drag). */
+    actions: List<androidx.compose.ui.semantics.CustomAccessibilityAction> = emptyList(),
 ) {
     val colors = Theme.colors
     val unavailable = mark.unavailable
@@ -121,6 +127,7 @@ fun TrackRow(
             .semantics(mergeDescendants = true) {
                 selected = track.selected
                 if (status != null) stateDescription = status
+                if (actions.isNotEmpty()) customActions = actions
             }
             .padding(start = Theme.dimens.pagePad, end = 4.dp)
             // A title over two lines is kept clear of the rows above and below.
@@ -177,6 +184,7 @@ fun TrackRow(
             BasicText(track.duration, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
         }
         if (trailing != null) trailing() else IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, track.title), onMore, iconSize = 20.dp)
+        handle?.invoke()
     }
 }
 

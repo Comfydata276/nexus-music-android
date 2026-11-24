@@ -20,7 +20,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
@@ -42,13 +45,12 @@ import org.medianexus.music.ui.shell.likedSongs
 import org.medianexus.music.ui.theme.Theme
 
 /**
- * A song's menu, as a sheet from the foot of the screen (the Windows right-click menu,
- * `song_menu` in src/actions.rs), with what works so far: play next, add to queue, like or
- * unlike, download it (or cancel or remove its download, as it stands), go to its album or
- * to each artist credited on it, its details, and take it out of the queue when opened from
- * there. The rest of Windows' menu
- * (playlists, ratings, radio) arrives with the milestones that build them; nothing is shown
- * that does nothing yet.
+ * A song's menu, as a sheet from the foot of the screen: the Windows right-click menu
+ * (`song_menu` in src/actions.rs), in its order and words. Play next, Add to queue; Add to
+ * playlist, like or unlike, Rate, download (or cancel or remove its download, as it stands);
+ * Go to album, Go to each artist credited, Song details, Start radio; and Remove from this
+ * playlist (from a playlist the account can change) or Remove from queue (from the queue).
+ * A radio station isn't a song in the library: only playing it applies.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,11 +94,19 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
                 choose { ui.player.addToQueue(listOf(song)); ui.toast(res.getString(R.string.added_to_queue)) }
             }
             Rule()
-            Entry(if (liked) R.drawable.ic_heart_fill else R.drawable.ic_heart, stringResource(if (liked) R.string.remove_from_liked else R.string.add_to_liked)) {
-                choose {
-                    ui.account?.likes?.toggle(song)
-                    ui.toast(res.getString(if (liked) R.string.removed_from_liked else R.string.added_to_liked))
+            val library = song.radioUrl.isEmpty() && song.id.isNotEmpty()
+            if (library) {
+                Entry(R.drawable.ic_list_plus, stringResource(R.string.add_to_playlist)) { choose { ui.pickPlaylist(listOf(song)) } }
+                Entry(if (liked) R.drawable.ic_heart_fill else R.drawable.ic_heart, stringResource(if (liked) R.string.remove_from_liked else R.string.add_to_liked)) {
+                    choose {
+                        ui.account?.likes?.toggle(song)
+                        ui.toast(res.getString(if (liked) R.string.removed_from_liked else R.string.added_to_liked))
+                    }
                 }
+                // What the menu says of the rating is the newest the app knows.
+                val seen by (ui.account?.freshest?.version ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsStateWithLifecycle()
+                val rating = remember(song, seen) { ui.account?.ratings?.of(song) ?: song.userRating }
+                Entry(R.drawable.ic_star, ratingLabel(rating)) { choose { ui.pickRating(song) } }
             }
             // Download, or what can be done about one under way or done (Windows' song menu:
             // its words, its icons). Asking for the notifications permission at the first
@@ -105,7 +115,6 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
             val downloadState = org.medianexus.music.ui.downloads.downloadsNow().stateOf(song.id)
             val context = androidx.compose.ui.platform.LocalContext.current
             if (song.radioUrl.isEmpty() && ui.account?.downloads != null) {
-                Rule()
                 when (downloadState) {
                     org.medianexus.music.downloads.SongState.Done -> Entry(R.drawable.ic_circle_arrow_down, stringResource(R.string.remove_download)) {
                         choose { ui.account?.downloads?.remove(listOf(song.id)) { done -> ui.toast(res.getString(if (done) R.string.download_removed else R.string.couldnt_change_downloads)) } }
@@ -140,10 +149,15 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
                     choose { ui.open(Route.Artist(song.artistId, song.artist)) }
                 }
             }
-            if (song.radioUrl.isEmpty()) {
+            if (library) {
                 Entry(R.drawable.ic_info, stringResource(R.string.song_details)) {
                     choose { ui.sheet = org.medianexus.music.ui.shell.Sheet.SongDetails(song) }
                 }
+                Entry(R.drawable.ic_radio, stringResource(R.string.start_radio)) { choose { ui.startRadio(song) } }
+            }
+            menu.inPlaylist?.let { row ->
+                Rule()
+                Entry(R.drawable.ic_trash_2, stringResource(R.string.remove_from_playlist)) { choose { ui.removeFromPlaylist(row.playlist, listOf(row.index)) } }
             }
             menu.upcoming?.let { uid ->
                 Rule()
@@ -151,25 +165,4 @@ fun SongMenuSheet(menu: SongMenu, onClose: () -> Unit) {
             }
         }
     }
-}
-
-@Composable
-private fun Entry(@DrawableRes icon: Int, text: String, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = Theme.dimens.pagePad),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Icon(icon, size = 20.dp, tint = Theme.colors.muted)
-        BasicText(text, style = Theme.type.body.copy(color = Theme.colors.text, fontSize = Theme.type.rowTitle.fontSize), maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-@Composable
-private fun Rule() {
-    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(Theme.colors.line))
 }
