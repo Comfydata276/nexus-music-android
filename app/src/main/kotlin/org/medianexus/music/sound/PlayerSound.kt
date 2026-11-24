@@ -44,34 +44,11 @@ class PlayerSound(private val scope: CoroutineScope) {
      * reaches the output.
      */
     fun sink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean, after: Array<AudioProcessor>): AudioSink =
-        SoundSink(
-            DefaultAudioSink.Builder(context)
-                .setEnableFloatOutput(enableFloatOutput)
-                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                .setAudioProcessors(arrayOf<AudioProcessor>(processor) + after)
-                .build(),
-            processor,
-        )
-
-    init {
-        // Debug builds say what the processor costs, as a share of the time the sound it
-        // processed lasts (TESTING.md, "Measurements").
-        if (org.medianexus.music.BuildConfig.DEBUG) scope.launch {
-            var frames = 0L
-            var busy = 0L
-            while (true) {
-                kotlinx.coroutines.delay(30_000)
-                val f = processor.framesProcessed
-                val b = processor.busyNanos
-                if (f > frames) {
-                    val seconds = (f - frames) / 44_100.0
-                    android.util.Log.d("NexusSound", "processed %.1f s of sound in %.1f ms: %.3f%% of the time".format(seconds, (b - busy) / 1e6, (b - busy) / 1e7 / seconds))
-                }
-                frames = f
-                busy = b
-            }
-        }
-    }
+        DefaultAudioSink.Builder(context)
+            .setEnableFloatOutput(enableFloatOutput)
+            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+            .setAudioProcessors(arrayOf<AudioProcessor>(processor) + after)
+            .build()
 
     /** The settings or shuffle may have changed: a new value for the processor if they have. */
     fun update(settings: Settings, shuffled: Boolean) {

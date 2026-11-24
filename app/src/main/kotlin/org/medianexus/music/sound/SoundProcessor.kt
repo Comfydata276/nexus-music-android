@@ -7,8 +7,6 @@ import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.AudioProcessor.AudioFormat
 import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.audio.ForwardingAudioSink
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -44,8 +42,8 @@ class Sound private constructor(
      *  (Windows' `active`.) */
     val eqOn: Boolean = equaliser && (gains.any { abs(it) > 0.05f } || preampDb < -0.01f)
 
-    /** Anything at all is to be done to the sound. With nothing, the processor leaves the
-     *  player's chain. */
+    /** Anything at all is to be done to the sound. With nothing (and nothing ramping), the
+     *  processor hands every sample on as it came. */
     val wanted: Boolean = levelling || eqOn || mono
 
     companion object {
@@ -77,11 +75,12 @@ fun interface SongTags {
  * Media3's sink after the trimming that makes joins gapless and before the debug builds'
  * tap (see `PlaybackService.renderers`).
  *
- * - **Out of the chain when there is nothing to do.** With levelling, the equaliser and mono
- *   all off it says it is inactive, and Media3 leaves it out: the sound is exactly what it
- *   would be without it. A change that brings it in, or lets it go, takes effect at the next
- *   buffer: [SoundSink] asks the sink to drain and flush its chain there, which is how the
- *   sink decides again who is in it (see [wantsFlush]).
+ * - **Always in the chain.** It is installed from the start and stays: with levelling, the
+ *   equaliser and mono all off and nothing ramping, it hands on exactly the samples it was
+ *   given (one copy of each buffer). A setting switched on or off takes effect at once, with
+ *   its ramp; nothing is ever signalled to the sink. (It used to leave the chain when off,
+ *   and to come back it had the sink drain mid-song, which let a gapless song's padding out
+ *   of the trimmer and could move the player's clock.)
  * - **Which song, from Media3.** At every flush the sink says which period of the timeline
  *   comes next; the song is read from that period's media item (ours carry it), and its
  *   gain worked out then, with the songs either side of it for Auto. At a join between two
@@ -106,8 +105,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
 
     // ---- What the audio thread holds (only the playback thread touches these) ----
 
-    private var member = false
-    private var supported = false
     private var rate = 0
     private var channels = 0
     private var encoding = C.ENCODING_INVALID
@@ -160,16 +157,11 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         return if (ok) inputAudioFormat else AudioFormat.NOT_SET
     }
 
-    /** In the chain: there is something to do (or a change still ramping away), decided at
-     *  each flush. */
-    override fun isActive(): Boolean = super.isActive() && member
-
     override fun onFlush(streamMetadata: AudioProcessor.StreamMetadata) {
         val s = sound
         val format = inputAudioFormat
-        supported = super.isActive()
         val formatChanged = format.sampleRate != rate || format.channelCount != channels || format.encoding != encoding
-        if (formatChanged && supported) {
+        if (formatChanged && isActive) {
             rate = format.sampleRate
             channels = format.channelCount
             encoding = format.encoding
@@ -182,26 +174,14 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         }
         val joined = streamMetadata.periodUid != period || period == null
         if (joined) whichSong(streamMetadata, s)
-        val wasMember = member
-        // A new song's level is in place from its first sample (so a song after everything
-        // was switched off begins with nothing to ramp away, and out of the chain); a change
-        // made while one plays, or the processor coming in part-way through it, is ramped.
-        val fresh = joined || formatChanged
-        if (fresh) retarget(s, immediate = true)
-        member = supported && (s.wanted || !settled())
+        // A new song's level is in place from its first sample; a change made while one
+        // plays is ramped.
+        retarget(s, immediate = joined || formatChanged)
         lastSound = s
-        if (!member) {
-            // Out of the chain, everything is as if it weren't there.
-            identity()
-            return
-        }
-        if (!fresh) retarget(s, immediate = false)
-        if (!wasMember || formatChanged) filters.clear()
+        if (formatChanged) filters.clear()
     }
 
     override fun onReset() {
-        member = false
-        supported = false
         period = null
         hasSong = false
         songTags = null
@@ -225,6 +205,15 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         val frames = inputBuffer.remaining() / frameBytes
         if (frames == 0) {
             inputBuffer.position(inputBuffer.limit())
+            return
+        }
+        if (settled()) {
+            // Nothing to do: every sample handed on exactly as it came.
+            val out = replaceOutputBuffer(frames * frameBytes)
+            inputBuffer.limit(inputBuffer.position() + frames * frameBytes)
+            out.put(inputBuffer)
+            out.flip()
+            framesProcessed += frames
             return
         }
         val input = inputBuffer.order(ByteOrder.nativeOrder())
@@ -267,17 +256,6 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
         out.flip()
         framesProcessed += frames
         busyNanos += System.nanoTime() - began
-    }
-
-    /**
-     * Whether the sink should drain and flush its chain at the next buffer, so that this
-     * processor joins it or leaves it: something to do and it isn't in it; or nothing to do,
-     * every change ramped away, and it is still in it. Asked on the playback thread.
-     */
-    fun wantsFlush(): Boolean {
-        if (!supported) return false
-        val s = sound
-        return if (member) !s.wanted && lastSound === s && settled() else s.wanted
     }
 
     // ---- Inside ---------------------------------------------------------------------------
@@ -390,21 +368,5 @@ class SoundProcessor(private val tags: SongTags = SongTags { it.replayGain }) : 
 
         /** How many frames the equaliser's bands hold still between steps. */
         const val BLOCK = 32
-    }
-}
-
-/**
- * Media3's sink, with one thing added: when the sound processor wants to join or leave the
- * chain (see [SoundProcessor.wantsFlush]), the sink is told of a discontinuity before the
- * next buffer. That is what Media3 does at every change of song: it drains everything in
- * the chain to the output, flushes the chain, and decides again which processors are in it.
- * Nothing is lost or repeated, and the position does not move (the drained audio is all
- * there).
- */
-@OptIn(UnstableApi::class)
-class SoundSink(sink: AudioSink, private val processor: SoundProcessor) : ForwardingAudioSink(sink) {
-    override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
-        if (processor.wantsFlush()) handleDiscontinuity()
-        return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
     }
 }

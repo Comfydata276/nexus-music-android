@@ -77,10 +77,7 @@ class SoundProcessorTest {
     /** The sink as the service builds it, with the tap after the processor. */
     private class Rig(val processor: SoundProcessor) {
         val tap = Tap()
-        val sink: AudioSink = SoundSink(
-            DefaultAudioSink.Builder(RuntimeEnvironment.getApplication()).setAudioProcessors(arrayOf(processor, TeeAudioProcessor(tap))).build(),
-            processor,
-        )
+        val sink: AudioSink = DefaultAudioSink.Builder(RuntimeEnvironment.getApplication()).setAudioProcessors(arrayOf(processor, TeeAudioProcessor(tap))).build()
         var pts = 0L
         init {
             sink.play()
@@ -126,23 +123,65 @@ class SoundProcessorTest {
 
     private fun levelled(settings: Settings = Settings(normalize = true, levelMode = 1)) = SoundProcessor().also { it.sound = Sound.of(settings, false) }
 
+    /** Rule 1 of the fixes: the processor is in the chain from the start and for good, and
+     *  with everything off it hands on exactly what it was given, full-scale samples too (the
+     *  limiter is not applied to sound it hasn't changed). */
     @Test
-    fun with_everything_off_it_is_left_out_and_the_sound_is_untouched() {
+    fun with_everything_off_it_is_in_the_chain_and_hands_on_every_sample_exactly() {
         val processor = SoundProcessor() // Sound.OFF
         val rig = Rig(processor)
         val a = song("a", gain = ReplayGain(trackGain = -9f, trackPeak = 1f))
         val b = song("b", gain = ReplayGain(trackGain = -3f, trackPeak = 1f))
         val timeline = timelineOf(a, b)
-        val first = sine(5000)
+        val loud = ShortArray(3000) { if (it % 2 == 0) 32767 else -32768 }
+        val first = sine(5000, level = 0.99) + loud
         val second = sine(7000, from = 5000)
         rig.begin(timeline, 0)
         rig.feed(first)
         rig.begin(timeline, 1)
         rig.feed(second)
         rig.end()
-        assertFalse(processor.isActive())
-        assertEquals("never in the chain", 0L, processor.framesProcessed)
+        assertTrue("in the chain", processor.isActive())
+        assertEquals("every frame went through it", (first.size + second.size).toLong(), processor.framesProcessed)
         assertTrue("every sample as it went in", (first + second).contentEquals(rig.left()))
+    }
+
+    /**
+     * Rule 1: switching a setting on just before a padded song's last, short buffer is a
+     * setting changing and nothing else. Nothing is signalled to the sink, so its trimmer holds
+     * back the song's padding to the end and drops it there: none of it is heard, and the next
+     * song begins straight after the last real frame. (A discontinuity there drained the
+     * trimmer mid-song, and the padding it was holding back came out.)
+     */
+    @Test
+    fun a_setting_switched_on_before_a_padded_songs_last_buffer_lets_none_of_its_padding_out() {
+        val processor = SoundProcessor()
+        val rig = Rig(processor)
+        val delay = 300
+        val padding = 700
+        val padded = pcm.buildUpon().setEncoderDelay(delay).setEncoderPadding(padding).build()
+        val timeline = timelineOf(song("a", gain = ReplayGain(trackGain = -6f, trackPeak = 1f)), song("b", gain = ReplayGain(trackGain = -6f, trackPeak = 1f)))
+        // Real sound is positive; the encoder's delay and padding are negative, so anything
+        // of them that comes out shows.
+        fun track(frames: Int) = ShortArray(frames) { if (it < delay || it >= frames - padding) -8000 else 8000 }
+        val a = track(5200)
+        val b = track(4000)
+        rig.begin(timeline, 0, padded)
+        rig.feed(a.copyOfRange(0, 5000))
+        // Levelling on, then the last 200 frames (fewer than the padding).
+        processor.sound = Sound.of(Settings(normalize = true), false)
+        rig.feed(a.copyOfRange(5000, 5200))
+        rig.begin(timeline, 1, padded)
+        rig.feed(b)
+        rig.end()
+        val out = rig.left()
+        // (At the very end of all playback Media3's trimmer hands out what it was holding back,
+        // the last song's padding, which in a real file is silence: that is Media3's, at the
+        // end, and is counted here. Nothing of the first song's.)
+        val realA = 5200 - delay - padding
+        val realB = 4000 - delay - padding
+        assertEquals("the two songs' real frames, then the last one's padding", realA + realB + padding, out.size)
+        assertTrue("none of the first song's padding, nor the second's delay", out.copyOfRange(0, realA + realB).all { it > 0 })
     }
 
     @Test
@@ -220,10 +259,10 @@ class SoundProcessorTest {
         val input = sine(44_100, hz = 300.0)
         rig.begin(timeline, 0)
         rig.feed(input.copyOfRange(0, 10_000))
-        // Levelling on: the processor joins the chain at the next buffer and ramps down.
+        // Levelling on: it ramps down at once.
         processor.sound = Sound.of(Settings(normalize = true), false)
         rig.feed(input.copyOfRange(10_000, 30_000))
-        // And off again: it ramps back up, then leaves.
+        // And off again: it ramps back up, then hands every sample on as it came.
         processor.sound = Sound.OFF
         rig.feed(input.copyOfRange(30_000, 44_100))
         rig.end()
@@ -233,30 +272,27 @@ class SoundProcessorTest {
         // Settled at -6 dB well inside the second part.
         val g = 10f.pow(-6f / 20f)
         for (i in 20_000 until 30_000) assertEquals(input[i] * g, out[i].toFloat(), 1f)
-        // Untouched again once the ramp back has run (50 ms), and out of the chain.
+        // Untouched again once the ramp back has run (50 ms).
         for (i in 33_000 until 44_100) assertEquals("untouched after: $i", input[i], out[i])
-        assertFalse(processor.isActive())
         // No click: from one sample to the next it never moves more than the sine itself can.
         val most = (2 * PI * 300 / rate * 0.5 * 32767).toInt() + 10
         for (i in 1 until out.size) assertTrue("step at $i", abs(out[i] - out[i - 1]) <= most)
     }
 
-    /** Switched off while paused, between songs: the next song never goes through it. */
+    /** Switched off while paused, between songs: the next song is handed on exactly, from its
+     *  first sample (it begins with nothing to ramp away). */
     @Test
-    fun switched_off_between_songs_the_next_song_is_left_out_from_its_first_sample() {
+    fun switched_off_between_songs_the_next_song_is_untouched_from_its_first_sample() {
         val processor = levelled()
         val rig = Rig(processor)
         val timeline = timelineOf(song("a", gain = ReplayGain(trackGain = -10f, trackPeak = 1f)), song("b", gain = ReplayGain(trackGain = -3f, trackPeak = 1f)))
         rig.begin(timeline, 0)
         rig.feed(steady(3000, 10_000))
         processor.sound = Sound.OFF
-        val before = processor.framesProcessed
         val second = sine(3000)
         rig.begin(timeline, 1)
         rig.feed(second)
         rig.end()
-        assertEquals("not one frame of the second song through it", before, processor.framesProcessed)
-        assertFalse(processor.isActive())
         assertTrue(second.contentEquals(rig.left().copyOfRange(3000, 6000)))
     }
 
@@ -318,10 +354,7 @@ class SoundProcessorTest {
     fun in_the_player_the_gain_changes_exactly_at_the_join() {
         val processor = levelled()
         val tap = Tap()
-        val sink = SoundSink(
-            DefaultAudioSink.Builder(RuntimeEnvironment.getApplication()).setAudioProcessors(arrayOf(processor, TeeAudioProcessor(tap))).build(),
-            processor,
-        )
+        val sink = DefaultAudioSink.Builder(RuntimeEnvironment.getApplication()).setAudioProcessors(arrayOf(processor, TeeAudioProcessor(tap))).build()
         val renderers = RenderersFactory { handler, _, audio, _, _ ->
             arrayOf<Renderer>(MediaCodecAudioRenderer(RuntimeEnvironment.getApplication(), MediaCodecSelector.DEFAULT, handler, audio, sink))
         }
