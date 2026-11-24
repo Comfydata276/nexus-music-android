@@ -1,14 +1,8 @@
 package org.medianexus.music.library
 
-import java.io.BufferedInputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.File
-import java.io.FileInputStream
 import java.io.IOException
 import java.util.zip.CRC32
-import java.util.zip.CheckedInputStream
-import java.util.zip.CheckedOutputStream
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,7 +14,9 @@ import org.medianexus.music.net.Album
 import org.medianexus.music.net.Artist
 import org.medianexus.music.net.Found
 import org.medianexus.music.net.ScanStatus
+import org.medianexus.music.store.Packer
 import org.medianexus.music.store.SongTable
+import org.medianexus.music.store.Unpacker
 import org.medianexus.music.store.writeAtomically
 
 /** What the server said of its library when a copy was fetched, and when that was (seconds
@@ -352,10 +348,10 @@ internal object CopyFile {
 
     fun writePage(file: File, stamp: CopyStamp, part: LibraryCopy.Part) = writeChecked(file, PAGE) { out ->
         writeStamp(out, stamp)
-        out.writeInt(part.page)
-        out.writeInt(part.asked.artists)
-        out.writeInt(part.asked.albums)
-        out.writeInt(part.asked.songs)
+        out.int(part.page)
+        out.int(part.asked.artists)
+        out.int(part.asked.albums)
+        out.int(part.asked.songs)
         val songs = SongTable.Builder().apply { part.found.songs.forEach { add(it) } }.build()
         songs.write(out)
         writeAlbums(out, part.found.albums)
@@ -364,7 +360,7 @@ internal object CopyFile {
 
     fun readPage(file: File): LibraryCopy.Part? = readChecked(file, PAGE) { input ->
         readStamp(input)
-        val page = input.readInt()
+        val page = input.int()
         val asked = LibraryCopy.Asked(SongTable.count(input), SongTable.count(input), SongTable.count(input))
         val table = SongTable.read(input)
         val songs = List(table.size) { table.song(it) }
@@ -375,88 +371,89 @@ internal object CopyFile {
 
     fun writeBegan(file: File, stamp: CopyStamp, pageSize: Int) = writeChecked(file, BEGAN) { out ->
         writeStamp(out, stamp)
-        out.writeInt(pageSize)
+        out.int(pageSize)
     }
 
-    fun readBegan(file: File): Pair<CopyStamp, Int>? = readChecked(file, BEGAN) { input -> readStamp(input) to input.readInt() }
+    fun readBegan(file: File): Pair<CopyStamp, Int>? = readChecked(file, BEGAN) { input -> readStamp(input) to input.int() }
 
-    private fun writeChecked(file: File, kind: Int, body: (DataOutputStream) -> Unit) {
-        writeAtomically(file) { raw ->
-            val crc = CRC32()
-            val out = DataOutputStream(CheckedOutputStream(raw, crc))
-            out.writeInt(MAGIC)
-            out.writeInt(VERSION)
-            out.writeInt(kind)
-            body(out)
-            out.flush()
-            DataOutputStream(raw).writeInt(crc.value.toInt())
-        }
+    private fun writeChecked(file: File, kind: Int, body: (Packer) -> Unit) {
+        val out = Packer()
+        out.int(MAGIC)
+        out.int(VERSION)
+        out.int(kind)
+        body(out)
+        val crc = CRC32().apply { update(out.bytes, 0, out.size) }
+        out.int(crc.value.toInt())
+        writeAtomically(file) { raw -> raw.write(out.bytes, 0, out.size) }
     }
 
-    private fun <T> readChecked(file: File, kind: Int, body: (DataInputStream) -> T): T? {
+    /** Read whole (the copy is a few megabytes), checked once, then taken apart in memory. */
+    private fun <T> readChecked(file: File, kind: Int, body: (Unpacker) -> T): T? {
         if (!file.isFile) return null
         return try {
-            BufferedInputStream(FileInputStream(file), 64 * 1024).use { raw ->
-                val crc = CRC32()
-                val input = DataInputStream(CheckedInputStream(raw, crc))
-                if (input.readInt() != MAGIC || input.readInt() != VERSION || input.readInt() != kind) return null
-                val value = body(input)
-                val sum = crc.value.toInt()
-                val stored = DataInputStream(raw).readInt()
-                if (stored != sum || raw.read() != -1) null else value
-            }
+            val bytes = file.readBytes()
+            if (bytes.size < 16) return null
+            val end = bytes.size - 4
+            val sum = CRC32().apply { update(bytes, 0, end) }.value.toInt()
+            if (Unpacker(bytes, end).int() != sum) return null
+            val input = Unpacker(bytes, 0, end)
+            if (input.int() != MAGIC || input.int() != VERSION || input.int() != kind) return null
+            val value = body(input)
+            if (input.done) value else null
         } catch (_: IOException) {
             null
         } catch (_: RuntimeException) {
             // Something in it that no file written here could hold: as good as not there.
             null
+        } catch (_: OutOfMemoryError) {
+            null
         }
     }
 
-    private fun writeStamp(out: DataOutputStream, stamp: CopyStamp) {
-        out.writeLong(stamp.count)
+    private fun writeStamp(out: Packer, stamp: CopyStamp) {
+        out.long(stamp.count)
         SongTable.writeText(out, stamp.lastScan)
-        out.writeLong(stamp.fetched)
+        out.long(stamp.fetched)
     }
 
-    private fun readStamp(input: DataInputStream) = CopyStamp(input.readLong(), SongTable.readText(input), input.readLong())
+    private fun readStamp(input: Unpacker) = CopyStamp(input.long(), SongTable.readText(input), input.long())
 
-    private fun writeAlbums(out: DataOutputStream, albums: List<Album>) {
-        out.writeInt(albums.size)
+    private fun writeAlbums(out: Packer, albums: List<Album>) {
+        out.int(albums.size)
         for (a in albums) {
             for (text in listOf(a.id, a.name, a.artist, a.artistId, a.displayArtist, a.coverArt, a.genre, a.starred.orEmpty(), a.played)) SongTable.writeText(out, text)
-            out.writeBoolean(a.starred != null)
-            out.writeInt(a.songCount)
-            out.writeInt(a.duration)
-            out.writeInt(a.year)
-            out.writeInt(a.releaseTypes.size)
+            out.bool(a.starred != null)
+            out.int(a.songCount)
+            out.int(a.duration)
+            out.int(a.year)
+            out.int(a.releaseTypes.size)
             for (type in a.releaseTypes) SongTable.writeText(out, type)
         }
     }
 
-    private fun readAlbums(input: DataInputStream): List<Album> = List(SongTable.count(input)) {
+    private fun readAlbums(input: Unpacker): List<Album> = List(SongTable.count(input)) {
         val t = List(9) { SongTable.readText(input) }
-        val starred = input.readBoolean()
+        val starred = input.bool()
         Album(
             id = t[0], name = t[1], artist = t[2], artistId = t[3], displayArtist = t[4], coverArt = t[5], genre = t[6],
             starred = if (starred) t[7] else null, played = t[8],
-            songCount = input.readInt(), duration = input.readInt(), year = input.readInt(),
+            songCount = input.int(), duration = input.int(), year = input.int(),
             releaseTypes = List(SongTable.count(input)) { SongTable.readText(input) },
         )
     }
 
-    private fun writeArtists(out: DataOutputStream, artists: List<Artist>) {
-        out.writeInt(artists.size)
+    private fun writeArtists(out: Packer, artists: List<Artist>) {
+        out.int(artists.size)
         for (a in artists) {
             for (text in listOf(a.id, a.name, a.coverArt, a.starred.orEmpty())) SongTable.writeText(out, text)
-            out.writeBoolean(a.starred != null)
-            out.writeInt(a.albumCount)
+            out.bool(a.starred != null)
+            out.int(a.albumCount)
         }
     }
 
-    private fun readArtists(input: DataInputStream): List<Artist> = List(SongTable.count(input)) {
+    private fun readArtists(input: Unpacker): List<Artist> = List(SongTable.count(input)) {
         val t = List(4) { SongTable.readText(input) }
-        val starred = input.readBoolean()
-        Artist(id = t[0], name = t[1], coverArt = t[2], starred = if (starred) t[3] else null, albumCount = input.readInt())
+        val starred = input.bool()
+        Artist(id = t[0], name = t[1], coverArt = t[2], starred = if (starred) t[3] else null, albumCount = input.int())
     }
 }

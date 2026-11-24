@@ -296,8 +296,8 @@ class LibraryCopyTest {
         // A time that isn't one is kept as it was.
         assertEquals("yesterday", table.song(2).created)
         // Written and read back: the same.
-        val bytes = java.io.ByteArrayOutputStream().also { table.write(java.io.DataOutputStream(it)) }.toByteArray()
-        val back = SongTable.read(java.io.DataInputStream(bytes.inputStream()))
+        val packed = org.medianexus.music.store.Packer().also { table.write(it) }
+        val back = SongTable.read(org.medianexus.music.store.Unpacker(packed.bytes, 0, packed.size))
         assertEquals((0 until 3).map { table.song(it) }, (0 until 3).map { back.song(it) })
         // Shared text is kept once: two songs of one album name it once.
         assertEquals("First Light", back.album(0))

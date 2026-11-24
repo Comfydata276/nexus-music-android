@@ -1,0 +1,100 @@
+package org.medianexus.music.store
+
+import java.io.IOException
+
+/**
+ * Numbers and text put one after another into memory, for a file that is written whole
+ * (big-endian, as Java's data streams write them). A stream that writes a number at a time
+ * through a buffer costs several calls a number; the copy of a library of 50,000 songs is a
+ * few million numbers.
+ */
+class Packer(initial: Int = 64 * 1024) {
+    var bytes = ByteArray(initial)
+        private set
+    var size = 0
+        private set
+
+    private fun room(n: Int) {
+        if (size + n <= bytes.size) return
+        bytes = bytes.copyOf(maxOf(bytes.size * 2, size + n))
+    }
+
+    fun int(value: Int) {
+        room(4)
+        bytes[size] = (value ushr 24).toByte()
+        bytes[size + 1] = (value ushr 16).toByte()
+        bytes[size + 2] = (value ushr 8).toByte()
+        bytes[size + 3] = value.toByte()
+        size += 4
+    }
+
+    fun long(value: Long) {
+        int((value ushr 32).toInt())
+        int(value.toInt())
+    }
+
+    fun float(value: Float) = int(java.lang.Float.floatToRawIntBits(value))
+
+    fun bool(value: Boolean) {
+        room(1)
+        bytes[size++] = if (value) 1 else 0
+    }
+
+    /** Text as its length in bytes and then its UTF-8. */
+    fun text(value: String) {
+        val utf8 = value.toByteArray(Charsets.UTF_8)
+        int(utf8.size)
+        room(utf8.size)
+        System.arraycopy(utf8, 0, bytes, size, utf8.size)
+        size += utf8.size
+    }
+}
+
+/**
+ * Reads back what a [Packer] wrote, from `bytes[from until end]`, never past the end: a file
+ * cut short is an [IOException], not a song made of whatever follows.
+ */
+class Unpacker(private val bytes: ByteArray, from: Int = 0, private val end: Int = bytes.size) {
+    private var at = from
+
+    /** Everything has been read. */
+    val done: Boolean get() = at == end
+
+    private fun need(n: Int) {
+        if (n < 0 || end - at < n) throw IOException("damaged: it ends part-way")
+    }
+
+    fun int(): Int {
+        need(4)
+        val value = ((bytes[at].toInt() and 0xFF) shl 24) or ((bytes[at + 1].toInt() and 0xFF) shl 16) or
+            ((bytes[at + 2].toInt() and 0xFF) shl 8) or (bytes[at + 3].toInt() and 0xFF)
+        at += 4
+        return value
+    }
+
+    fun long(): Long = (int().toLong() shl 32) or (int().toLong() and 0xFFFFFFFFL)
+
+    fun float(): Float = java.lang.Float.intBitsToFloat(int())
+
+    fun bool(): Boolean {
+        need(1)
+        return when (bytes[at++].toInt()) {
+            0 -> false
+            1 -> true
+            else -> throw IOException("damaged: neither yes nor no")
+        }
+    }
+
+    fun text(most: Int = MOST_TEXT): String {
+        val n = int()
+        if (n !in 0..most) throw IOException("damaged: text of $n bytes")
+        need(n)
+        val value = String(bytes, at, n, Charsets.UTF_8)
+        at += n
+        return value
+    }
+
+    private companion object {
+        const val MOST_TEXT = 1 shl 20
+    }
+}

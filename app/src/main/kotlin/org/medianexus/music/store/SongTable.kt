@@ -1,7 +1,5 @@
 package org.medianexus.music.store
 
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.IOException
 import org.medianexus.music.net.Credit
 import org.medianexus.music.net.ReplayGain
@@ -100,13 +98,13 @@ class SongTable private constructor(
 
     /** Writes the table (see [read]). */
     @Throws(IOException::class)
-    fun write(out: DataOutputStream) {
-        out.writeInt(size)
-        out.writeInt(texts.size)
+    fun write(out: Packer) {
+        out.int(size)
+        out.int(texts.size)
         for (text in texts) writeText(out, text)
-        out.writeInt(credits.size)
+        out.int(credits.size)
         for (list in credits) {
-            out.writeInt(list.size)
+            out.int(list.size)
             for (credit in list) {
                 writeText(out, credit.id)
                 writeText(out, credit.name)
@@ -116,13 +114,13 @@ class SongTable private constructor(
             writeText(out, ids[i])
             writeText(out, titles[i])
         }
-        for (i in 0 until size * TEXTS) out.writeInt(textRefs[i])
-        for (i in 0 until size * NUMBERS) out.writeInt(numbers[i])
-        for (i in 0 until size * TIMES) out.writeLong(times[i])
-        for (i in 0 until size * 4) out.writeFloat(gains[i])
-        out.writeInt(oddTimes.size)
+        for (i in 0 until size * TEXTS) out.int(textRefs[i])
+        for (i in 0 until size * NUMBERS) out.int(numbers[i])
+        for (i in 0 until size * TIMES) out.long(times[i])
+        for (i in 0 until size * 4) out.float(gains[i])
+        out.int(oddTimes.size)
         for ((key, text) in oddTimes) {
-            out.writeLong(key)
+            out.long(key)
             writeText(out, text)
         }
     }
@@ -283,7 +281,7 @@ class SongTable private constructor(
          * damaged in a way its checksum missed is still never more than refused.
          */
         @Throws(IOException::class)
-        fun read(input: DataInputStream): SongTable {
+        fun read(input: Unpacker): SongTable {
             val size = count(input)
             val texts = Array(count(input)) { readText(input) }
             val credits = Array(count(input)) {
@@ -295,45 +293,33 @@ class SongTable private constructor(
                 ids[i] = readText(input)
                 titles[i] = readText(input)
             }
-            val textRefs = IntArray(size * TEXTS) { input.readInt() }
+            val textRefs = IntArray(size * TEXTS) { input.int() }
             for (i in textRefs.indices) {
                 val limit = if (i % TEXTS == CREDITS) credits.size else texts.size
                 if (textRefs[i] !in 0 until limit) throw IOException("damaged: a song names text that isn't there")
             }
-            val numbers = IntArray(size * NUMBERS) { input.readInt() }
-            val times = LongArray(size * TIMES) { input.readLong() }
-            val gains = FloatArray(size * 4) { input.readFloat() }
+            val numbers = IntArray(size * NUMBERS) { input.int() }
+            val times = LongArray(size * TIMES) { input.long() }
+            val gains = FloatArray(size * 4) { input.float() }
             val odd = HashMap<Long, String>()
-            repeat(count(input)) { odd[input.readLong()] = readText(input) }
+            repeat(count(input)) { odd[input.long()] = readText(input) }
             return SongTable(size, ids.requireNoNulls(), titles.requireNoNulls(), texts, credits, textRefs, numbers, times, gains, odd)
         }
 
         /** How many of something follow, refusing a number no library comes near. */
         @Throws(IOException::class)
-        internal fun count(input: DataInputStream): Int {
-            val n = input.readInt()
+        internal fun count(input: Unpacker): Int {
+            val n = input.int()
             if (n !in 0..MOST) throw IOException("damaged: $n of something")
             return n
         }
 
         private const val MOST = 5_000_000
 
-        @Throws(IOException::class)
-        internal fun writeText(out: DataOutputStream, text: String) {
-            val bytes = text.toByteArray(Charsets.UTF_8)
-            out.writeInt(bytes.size)
-            out.write(bytes)
-        }
+        internal fun writeText(out: Packer, text: String) = out.text(text)
 
         @Throws(IOException::class)
-        internal fun readText(input: DataInputStream): String {
-            val n = input.readInt()
-            if (n !in 0..MOST_TEXT) throw IOException("damaged: text of $n bytes")
-            val bytes = ByteArray(n)
-            input.readFully(bytes)
-            return String(bytes, Charsets.UTF_8)
-        }
+        internal fun readText(input: Unpacker): String = input.text()
 
-        private const val MOST_TEXT = 1 shl 20
     }
 }
