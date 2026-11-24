@@ -177,7 +177,7 @@ class LibraryCopy(
                 }
                 // A first fetch cut short: what it got so far.
                 val began = CopyFile.readBegan(beganFile) ?: return@run null
-                val parts = readPages(began.second)
+                val parts = readPages(began.second, began.first)
                 if (parts.isEmpty()) null else assemble(parts, began.first, complete = false)
             }
         }
@@ -187,20 +187,73 @@ class LibraryCopy(
 
     /**
      * Asks the server how its library stands and, if the copy is out of date (or there is
-     * none), fetches it. Returns whether a copy was fetched. Throws what asking the server
-     * threw; whatever pages had arrived stay on the phone for the next try.
+     * none), fetches it. Returns whether a new copy was published. Throws what asking the
+     * server threw; whatever pages had arrived stay on the phone for the next try.
+     *
+     * A fetch is trusted only if the server's library stood still while it was read: asked
+     * again once the last page is in, the server must say what it said before the first
+     * (a song deleted or added between two pages moves every song after it, and one falls
+     * between two pages or comes round twice). And the copy must hold as many songs as the
+     * server says it has. A fetch that fails either is thrown away and made again, a few
+     * times; then the copy in use stays (the last good one, or none) and the next check tries
+     * again.
      */
     suspend fun check(): Boolean = lock.withLock {
         openLocked()
-        val status = server.scanStatus()
+        rewriteIfCleared()
+        var status = server.scanStatus()
         val have = current.value
         val stale = if (have == null || !have.complete) !status.scanning else isStale(have.stamp, status, now(), unmetered())
         if (!stale) return@withLock false
-        fetch(status, first = have == null || !have.complete)
-        true
+        val first = have == null || !have.complete
+        repeat(ATTEMPTS) { attempt ->
+            when (val got = fetch(status, first)) {
+                is Fetched.Whole -> {
+                    current.value = got.copy
+                    // Ready for the first search, made now rather than at the first keystroke.
+                    withContext(kotlinx.coroutines.Dispatchers.Default) { got.copy.index }
+                    return@withLock true
+                }
+                is Fetched.Moved -> {
+                    note("library copy: the server's library changed while it was being fetched (${got.why}); fetched again from the start")
+                    status = got.now
+                    // A scan under way: half a library is no use. The next check carries on.
+                    if (status.scanning) return@withLock false
+                }
+                is Fetched.Short -> note("library copy: not whole (${got.songs} songs where the server says ${got.count}); fetched again from the start")
+            }
+            if (attempt == ATTEMPTS - 1) note("library copy: no whole copy after $ATTEMPTS tries; the one in use stays, and it is tried again later")
+        }
+        false
     }
 
-    private suspend fun fetch(status: ScanStatus, first: Boolean) {
+    /** What a fetch came to. */
+    private sealed interface Fetched {
+        /** Whole, and written to the phone. */
+        class Whole(val copy: LibrarySnapshot) : Fetched
+
+        /** The server's library changed while it was read (`now` is how it stands now). */
+        class Moved(val now: ScanStatus, val why: String) : Fetched
+
+        /** Fewer songs (or more) than the server says it has. */
+        class Short(val songs: Int, val count: Long) : Fetched
+    }
+
+    /**
+     * The copy in use is whole but its file has gone (Android clears an app's cache folder
+     * when short of room): written again from what is in memory, rather than fetched.
+     */
+    private suspend fun rewriteIfCleared() {
+        val have = current.value?.takeIf { it.complete } ?: return
+        if (withContext(io) { copyFile.isFile }) return
+        withContext(io) {
+            dir.mkdirs()
+            CopyFile.write(copyFile, have)
+        }
+        note("library copy: its file had been cleared from the phone; written again from memory")
+    }
+
+    private suspend fun fetch(status: ScanStatus, first: Boolean): Fetched {
         val started = System.nanoTime()
         // Carried on from where an earlier fetch stopped, if the library is as it was then.
         val began = withContext(io) { CopyFile.readBegan(beganFile) }
@@ -209,7 +262,8 @@ class LibraryCopy(
         val parts = ArrayList<Part>()
         withContext(io) {
             if (same) {
-                parts += readPages(pageSize)
+                // Only pages kept under this very note: one left from another fetch is not.
+                parts += readPages(pageSize, stamp)
             } else {
                 pagesDir.deleteRecursively()
                 CopyFile.writeBegan(beganFile, stamp, pageSize)
@@ -236,21 +290,31 @@ class LibraryCopy(
                     lastShown = System.nanoTime()
                 }
             }
-            val whole = withContext(io) {
-                val copy = assemble(parts, stamp, complete = true)
-                CopyFile.write(copyFile, copy)
-                pagesDir.deleteRecursively()
-                copy
+            // Did the library stand still while it was read? Asked again now every page is in:
+            // a scan since the first page (or one under way) may have moved songs between pages.
+            val after = server.scanStatus()
+            if (after.scanning || after.count != stamp.count || after.lastScan != stamp.lastScan) {
+                withContext(io) { pagesDir.deleteRecursively() }
+                return Fetched.Moved(after, if (after.scanning) "a scan is under way" else "it was scanned again")
             }
-            current.value = whole
+            val whole = withContext(io) { assemble(parts, stamp, complete = true) }
+            // As many songs as the server says it has (Navidrome's count is its songs; a server
+            // that gives no count says 0, and isn't counted against).
+            if (stamp.count > 0 && whole.songs.size.toLong() != stamp.count) {
+                withContext(io) { pagesDir.deleteRecursively() }
+                return Fetched.Short(whole.songs.size, stamp.count)
+            }
+            withContext(io) {
+                CopyFile.write(copyFile, whole)
+                pagesDir.deleteRecursively()
+            }
             val seconds = (System.nanoTime() - started) / 1_000_000_000.0
             note(
                 "library copy: ${whole.songs.size} songs, ${whole.albums.size} albums, ${whole.artists.size} artists in ${"%.1f".format(seconds)} s" +
                     (if (carriedOn > 0) ", carrying on after $carriedOn pages kept from before" else "") +
                     ", ${copyFile.length() / 1024} KB on the phone",
             )
-            // Ready for the first search, made now rather than at the first keystroke.
-            withContext(kotlinx.coroutines.Dispatchers.Default) { whole.index }
+            return Fetched.Whole(whole)
         } finally {
             fetchingNow.value = null
         }
@@ -258,13 +322,14 @@ class LibraryCopy(
 
     private fun pageFile(page: Int) = File(pagesDir, "page-%05d.bin".format(page))
 
-    /** The pages of a fetch kept so far, in order, up to the first that's missing or can't be
-     *  read; that one and any after it are cleared away. */
-    private fun readPages(size: Int): List<Part> {
+    /** The pages of a fetch kept so far, in order, up to the first that's missing, can't be
+     *  read, or was kept under another note than `stamp` (another fetch's, of another scan);
+     *  that one and any after it are cleared away. */
+    private fun readPages(size: Int, stamp: CopyStamp): List<Part> {
         val parts = ArrayList<Part>()
         while (true) {
-            val part = CopyFile.readPage(pageFile(parts.size)) ?: break
-            if (part.page != parts.size || part.asked.largest > size) break
+            val (kept, part) = CopyFile.readPage(pageFile(parts.size)) ?: break
+            if (kept != stamp || part.page != parts.size || part.asked.largest > size) break
             parts += part
         }
         pagesDir.listFiles()?.forEach { file ->
@@ -315,6 +380,9 @@ class LibraryCopy(
         const val REFRESH_AFTER = 24 * 3600L
 
         private const val SHOW_EVERY_NANOS = 1_000_000_000L
+
+        /** Fetches made in one check before the copy in use is left as it is until the next. */
+        const val ATTEMPTS = 3
 
         /**
          * Whether the server's library has changed since this copy was fetched (Windows'
@@ -370,15 +438,16 @@ internal object CopyFile {
         writeArtists(out, part.found.artists)
     }
 
-    fun readPage(file: File): LibraryCopy.Part? = readChecked(file, PAGE) { input ->
-        readStamp(input)
+    /** A page, with the note of the fetch it was kept under. */
+    fun readPage(file: File): Pair<CopyStamp, LibraryCopy.Part>? = readChecked(file, PAGE) { input ->
+        val stamp = readStamp(input)
         val page = input.int()
         val asked = LibraryCopy.Asked(SongTable.count(input), SongTable.count(input), SongTable.count(input))
         val table = SongTable.read(input)
         val songs = List(table.size) { table.song(it) }
         // In the order written: albums, then artists.
         val albums = readAlbums(input)
-        LibraryCopy.Part(page, asked, Found(artists = readArtists(input), albums = albums, songs = songs))
+        stamp to LibraryCopy.Part(page, asked, Found(artists = readArtists(input), albums = albums, songs = songs))
     }
 
     fun writeBegan(file: File, stamp: CopyStamp, pageSize: Int) = writeChecked(file, BEGAN) { out ->

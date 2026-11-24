@@ -233,10 +233,10 @@ class LibraryCopyTest {
 
     @Test
     fun theSameSongTwiceIsKeptOnce() = runBlocking {
-        // The server's library moved while it was read a page at a time: a song came round on
-        // two pages.
+        // A song came round on two pages (a server that lists one twice): it is one song, and
+        // the copy is as many songs as the server says it has.
         val server = object : LibraryServer {
-            override suspend fun scanStatus() = ScanStatus(count = 3)
+            override suspend fun scanStatus() = ScanStatus(count = 2)
             override suspend fun page(artists: Int, albums: Int, songs: Int, offset: Int) = when (offset) {
                 0 -> Found(songs = listOf(Song(id = "a"), Song(id = "b")))
                 else -> Found(songs = listOf(Song(id = "b")))
@@ -255,7 +255,8 @@ class LibraryCopyTest {
         }
         val copy = LibraryCopy(folder.root, server, Dispatchers.IO)
         copy.check()
-        assertNotNull(copy.state.value)
+        // Nothing where the server says it has 400 songs: not a whole copy.
+        assertFalse(copy.state.value?.complete ?: false)
         assertNull(copy.ready)
     }
 
@@ -308,7 +309,7 @@ class LibraryCopyTest {
     @Test
     fun theSongsPageOrderIsNewestFirst() = runBlocking {
         val server = object : LibraryServer {
-            override suspend fun scanStatus() = ScanStatus(count = 4)
+            override suspend fun scanStatus() = ScanStatus(count = 5)
             override suspend fun page(artists: Int, albums: Int, songs: Int, offset: Int) = Found(
                 songs = listOf(
                     Song(id = "old", album = "A", created = "2020-01-01T00:00:00Z"),
