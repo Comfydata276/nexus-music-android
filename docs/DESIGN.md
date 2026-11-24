@@ -625,8 +625,9 @@ How it is built (M1a):
   playlist, song, genre. An artist plays their albums' songs shuffled; a genre 100 random
   songs of it; a song plays its album from that song. Nothing named: the queue as it is,
   else the saved queue, else Liked songs shuffled (that last only for a spoken request: a
-  Play button resumes or does nothing). No match: "Couldn't find “X” in your
-  library". The phone's own Assistant reaches the same code through `VoiceActivity`.
+  Play button resumes or does nothing). No match: "Couldn't find that in your library", a
+  fixed sentence: the words said are the person's, and the session's error is read by every
+  app with a controller. So is a playback error: "Couldn't play this song", never its name. The phone's own Assistant reaches the same code through `VoiceActivity`.
 - **Buttons**: like, shuffle and repeat as Media3 command buttons (the notification shows the
   first two); shuffle and repeat are also the standard actions.
 

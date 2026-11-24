@@ -351,4 +351,43 @@ class StartingTest {
             server.stop()
         }
     }
+
+    // ---- What goes on the session, which every app with a controller reads ------------------
+
+    @Test
+    fun aSpokenRequestThatFindsNothingDoesNotPutTheWordsOnTheSession() {
+        val server = StandInServer().also { it.start() }
+        try {
+            server.signIn(app)
+            settle()
+            // What was said can be anything a person says: a name, an address.
+            val said = "Ring Dr Okafor at 14 Mill Lane"
+            val words = MediaItem.Builder().setRequestMetadata(MediaItem.RequestMetadata.Builder().setSearchQuery(said).build()).build()
+            val asked = inside.callback.onSetMediaItems(inside.session, car, listOf(words), C.INDEX_UNSET, C.TIME_UNSET)
+            val failure = try {
+                await(asked)
+                null
+            } catch (e: java.util.concurrent.ExecutionException) {
+                e.cause
+            }
+            // Turned down, in a sentence of the app's own: it went into the session's error
+            // (what the car shows, and any app with a controller reads) with the words in it.
+            val message = failure?.message.orEmpty()
+            assertTrue("not turned down: $failure", message.isNotEmpty())
+            assertFalse("the words said are on the session: $message", message.contains("Okafor") || message.contains("Mill Lane"))
+            assertEquals(app.getString(R.string.couldnt_find_that), message)
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun aPlaybackFailureDoesNotPutTheSongsNameOnTheSession() {
+        val song = Song(id = "s1", title = "Letter to Margaret Hale")
+        val said = service.explain(androidx.media3.common.PlaybackException("gone", null, androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND), song)
+        // The song's name goes to the car and the notification as what is playing, and
+        // nowhere else of those: not into the error every app with a controller can read.
+        assertFalse("the song's name is in the session's error: ${said?.message}", said?.message.orEmpty().contains("Margaret"))
+        assertEquals(app.getString(R.string.couldnt_play_song), said?.message)
+    }
 }

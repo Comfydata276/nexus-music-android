@@ -1305,7 +1305,8 @@ class PlaybackService : MediaLibraryService() {
     private fun offline(error: PlaybackException) = (error.cause as? StreamFailure)?.offline == true
 
     /** The words the car, the notification and the app show for a playback error. */
-    private fun explain(error: PlaybackException, song: Song?): PlaybackException? = when {
+    @androidx.annotation.VisibleForTesting
+    internal fun explain(error: PlaybackException, song: Song?): PlaybackException? = when {
         // Android 17, a server on the home network, and no permission to reach it: waiting
         // for it to come back would be waiting for ever. Say what will put it right.
         // The player's own error is not passed on as the cause: a playback error goes to
@@ -1318,7 +1319,9 @@ class PlaybackService : MediaLibraryService() {
         // Given up on after ten minutes: it will not carry on by itself any more.
         network(error) && gaveUp -> PlaybackException(getString(R.string.car_unreachable), null, error.errorCode)
         network(error) -> PlaybackException(getString(R.string.lost_connection_short), null, error.errorCode, Bundle().apply { putBoolean(EXTRA_LOST, true) })
-        song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play, song.title), null, error.errorCode)
+        // A fixed sentence: the song's name goes to the car and the notification as what is
+        // playing, not into the error every app with a controller can read.
+        song != null && !undecodable(error) -> PlaybackException(getString(R.string.couldnt_play_song), null, error.errorCode)
         // (A file the phone can't decode is about to be asked for again, converted.)
         else -> PlaybackException(null, null, error.errorCode)
     }
@@ -1601,7 +1604,7 @@ class PlaybackService : MediaLibraryService() {
                         // "Shuffle", at the top of a list: the whole list, shuffled.
                         is CarNode.Shuffle -> fromTree(era) { it.shuffled(chosen.list) }
                         else -> throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
-                    } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play, asked.mediaMetadata.title ?: "")))
+                    } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play_song)))
                     staged(mine, era, list)
                 } catch (e: ApiError) {
                     throw refuse(controller, trouble(controller, e))
@@ -2009,7 +2012,10 @@ class PlaybackService : MediaLibraryService() {
         )
         if (request.unnamed) return resume(mine, era, controller)
         val list = withContext(Dispatchers.Default) { tree.forVoice(request) }
-            ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find, request.searchWords())))
+            // A fixed sentence: what was asked for is the person's words, and the session's
+            // error is read by every app with a controller (as a server's refusal is never put
+            // there either).
+            ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find_that)))
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "voice: $request -> ${list.context} (${list.songs.size} songs)")
         return staged(mine, era, list)
     }
