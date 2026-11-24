@@ -215,8 +215,10 @@ class HeldChanges(
     /** The queue has gained or lost a change (under the lock). */
     private fun changed() {
         val queue = shared.queue ?: return
-        shared.count.value = queue.size
+        // What is held first, then how many: whoever waits for the count to change finds the
+        // list already as it says (what is shown is worked out from the list).
         shared.queued.value = queue.map { it.change }
+        shared.count.value = queue.size
     }
 
     private fun read(): List<Pending> {
