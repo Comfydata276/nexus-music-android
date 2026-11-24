@@ -196,6 +196,10 @@ private fun BoxScope.Handle(at: Float, moving: Boolean, count: Int, scrollTo: su
 
 private val THUMB = 48.dp
 private val TOUCH = 32.dp
+
+/** How far in from the list's edge the handle takes touches while it shows: what a row's own
+ *  controls at that edge keep clear of (a playlist's drag handles). */
+val FAST_SCROLL_EDGE = TOUCH
 private const val HIDE_AFTER_MILLIS = 1_500L
 
 /** The letter a name is filed under in a list's bubble: its first letter or digit, as search

@@ -274,7 +274,10 @@ fun SongListPage(
                                     onClick = { if (selection.active) selection.toggle(index) else play(index, anyStart = false) },
                                     onMore = { ui.menu = SongMenu(song, inPlaylist = editable?.let { org.medianexus.music.ui.shell.InPlaylist(it, index) }) },
                                     onLongClick = { selection.toggle(index) },
-                                    modifier = if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = drag.offset }.background(Theme.colors.overlay) else Modifier,
+                                    modifier = (if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = drag.offset }.background(Theme.colors.overlay) else Modifier)
+                                        // A list long enough for the fast-scroll handle: the drag
+                                        // handles keep clear of the edge it takes touches in.
+                                        .then(if (canDrag && shown.size >= org.medianexus.music.ui.parts.FAST_SCROLL_FROM) Modifier.padding(end = org.medianexus.music.ui.parts.FAST_SCROLL_EDGE) else Modifier),
                                     showCover = !look.album,
                                     showNumber = look.album,
                                     showDuration = true,
