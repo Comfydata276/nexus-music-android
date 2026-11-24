@@ -88,11 +88,28 @@ class Subsonic private constructor(
      * The same sign-in, for requests that must never be sent twice (a change to a playlist:
      * a removal sent again takes out another copy of the song, an add adds again). OkHttp
      * sends a request again by itself when a pooled connection turns out dead, which can be
-     * after the server had it: that is switched off. Nothing else in the app's client sends a
-     * request again (no authenticator, redirects followed only as the server asks, nothing
-     * retried by `Subsonic` itself). Still told to [onReached].
+     * after the server had it, and in answer to some replies (a redirect, 408, 421, 503 with
+     * "Retry-After: 0"). Here none of that: no retry, no redirect followed, and any reply but
+     * a plain success ends the call where it is ([AnswerOnce]), as "nobody knows whether it was
+     * done" (a Subsonic answer, "ok" or the server's own error, always comes as a success).
+     * Still told to [onReached].
      */
-    fun once(): Subsonic = Subsonic(server, username, salt, token, http.newBuilder().retryOnConnectionFailure(false).build(), offline, io).also { it.onReached = onReached }
+    fun once(): Subsonic = Subsonic(
+        server, username, salt, token,
+        http.newBuilder().retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).addNetworkInterceptor(AnswerOnce).build(),
+        offline, io,
+    ).also { it.onReached = onReached }
+
+    /** Ends a call at the first reply that isn't a success, so that OkHttp has nothing to
+     *  follow up with another request: thrown as a failure after the request was sent. */
+    private object AnswerOnce : okhttp3.Interceptor {
+        override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+            val response = chain.proceed(chain.request())
+            if (response.isSuccessful) return response
+            response.close()
+            throw java.io.IOException("HTTP status ${response.code}: not followed")
+        }
+    }
 
     /** In offline mode nothing is sent: requests fail straight away. */
     fun setOffline(on: Boolean) {

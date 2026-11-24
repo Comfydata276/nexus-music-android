@@ -79,4 +79,49 @@ class OnceTest {
             assertTrue(e.unsent)
         }
     }
+
+    /**
+     * A stand-in that carries out a removal from a playlist holding two copies of a song each
+     * time the request reaches it, then answers with `answer` (M3b fixes 2, A5): the first
+     * time only; after that, "ok".
+     */
+    private fun removalAnsweredWith(answer: MockResponse): MutableList<String> {
+        val playlist = java.util.Collections.synchronizedList(mutableListOf("a", "a"))
+        var first = true
+        server.dispatcher = object : mockwebserver3.Dispatcher() {
+            override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+                synchronized(playlist) { if (playlist.isNotEmpty()) playlist.removeAt(0) }
+                if (first) {
+                    first = false
+                    return answer
+                }
+                return MockResponse.Builder().body(ok).build()
+            }
+        }
+        return playlist
+    }
+
+    @Test
+    fun aRemovalAnswered503WithRetryAfterZeroIsSentOnce() = runBlocking {
+        val playlist = removalAnsweredWith(MockResponse.Builder().code(503).addHeader("Retry-After", "0").build())
+        try {
+            api().once().removeManyFromPlaylist("p1", listOf(0))
+            fail("not the server's ok")
+        } catch (_: ApiError) {
+        }
+        assertEquals("one request", 1, server.requestCount)
+        assertEquals("the other copy of the song still there", listOf("a"), playlist.toList())
+    }
+
+    @Test
+    fun aRemovalAnsweredWithARedirectIsSentOnce() = runBlocking {
+        val playlist = removalAnsweredWith(MockResponse.Builder().code(307).addHeader("Location", server.url("/rest/updatePlaylist.view").toString()).build())
+        try {
+            api().once().removeManyFromPlaylist("p1", listOf(0))
+            fail("not the server's ok")
+        } catch (_: ApiError) {
+        }
+        assertEquals("one request", 1, server.requestCount)
+        assertEquals("the other copy of the song still there", listOf("a"), playlist.toList())
+    }
 }
