@@ -195,4 +195,23 @@ class OrderOfChoicesTest {
         settle()
         assertEquals(true, inside.exo.playWhenReady)
     }
+
+    @Test
+    fun aRetryOfAFailedSongIsDroppedByAStopMeanwhile() {
+        val inside = service.inside()
+        val songs = List(3) { Song(id = "r$it", title = "R $it") }
+        app.graph.player.play(songs, 0, "A list")
+        until("the list played") { inside.player.queue.current()?.id == "r0" }
+        // The song failed for want of the server, and a try is due later.
+        service.failedNow = { true }
+        service.retryLater(50)
+        // Stop, before it is due ("play when ready" is left as it was: the stop is what counts).
+        controller.stop()
+        settle()
+        val stopped = inside.exo.playbackState
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200))
+        settle()
+        assertEquals("the song was made ready again after a Stop", androidx.media3.common.Player.STATE_IDLE, inside.exo.playbackState)
+        assertEquals(androidx.media3.common.Player.STATE_IDLE, stopped)
+    }
 }

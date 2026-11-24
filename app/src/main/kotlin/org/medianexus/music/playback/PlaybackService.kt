@@ -1558,10 +1558,14 @@ class PlaybackService : MediaLibraryService() {
      * error brings this round again. The try belongs to this account's turn and this entry
      * of the queue: if either has changed by the time it is due, it is dropped.
      */
-    private fun retryLater(delayMs: Long) {
+    @androidx.annotation.VisibleForTesting
+    internal fun retryLater(delayMs: Long) {
         val era = era ?: return
         val uid = player.queue.currentUid() ?: return
         val wanted = Recovery.Retry(era.number, uid)
+        // Nobody chose this try: anything that takes a place in the order of choices before it
+        // is due (a Pause, a Stop, which leaves "play when ready" as it was) stops it.
+        val asked = Choices.latest
         retry?.cancel()
         waitingFor = wanted
         retry = era.scope.launch {
@@ -1570,7 +1574,7 @@ class PlaybackService : MediaLibraryService() {
             waitingFor = null
             // Paused or stopped meanwhile: no try; Play tries again (Media3 prepares the
             // player when it is pressed).
-            if (!exo.playWhenReady) return@launch
+            if (!exo.playWhenReady || !Choices.stands(asked)) return@launch
             if (!wanted.stillStands(this@PlaybackService.era?.number, player.queue.currentUid(), failedNow())) return@launch
             // The player is to play again with nobody having asked it to just now, and after a
             // long outage Media3 may have let the foreground go with the player idle: in the
