@@ -156,6 +156,9 @@ fun PlaylistPage(route: Route.Playlist) {
     // so without it the menus' changes say why, and there is nothing to drag.
     val mine = kept != null && playlists?.canEdit(kept) == true
     val online = !org.medianexus.music.ui.downloads.reachNow().let { it.offline || !it.sure }
+    // Holding songs missing from the library: nothing is taken out or moved (its handles dimmed,
+    // and it says why); songs can still be added.
+    val missing = kept?.hidesSongs == true
     SongListPage(
         key = route.key,
         hero = hero,
@@ -166,9 +169,13 @@ fun PlaylistPage(route: Route.Playlist) {
         downloadable = true,
         editable = playlist.takeIf { mine },
         draggable = online,
-        busy = busy,
+        busy = busy || missing,
         onMore = { page -> ui.openMenu(org.medianexus.music.ui.menu.Collection.Playlist(route.id, playlist?.name ?: route.name, kept, page = page)) },
-        note = if (kept != null && !mine) stringResource(R.string.not_your_playlist, kept.owner) else null,
+        note = when {
+            kept != null && !mine -> stringResource(R.string.not_your_playlist, kept.owner)
+            mine && missing -> stringResource(R.string.playlist_missing_songs)
+            else -> null
+        },
         below = { if (mine && online && playlist != null) recommendations(playlist, busy) },
     )
 }

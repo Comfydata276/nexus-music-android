@@ -1617,6 +1617,22 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
   under the keyboard (the bottom sheet's window doesn't make room for it): left open, with the
   keyboard's tick as the way to confirm.
 
+### What the third round of M3b fixes decided
+
+- **A playlist holding songs missing from the library is not changed by position**
+  (`Playlist.hidesSongs`). Navidrome keeps the entry of a song gone from the library, leaves it
+  out of the playlist's answer (and out of that answer's own count and length), but counts it
+  in the list of playlists, in "remove at index" and in nothing it keeps when the list is
+  replaced: removing the second row shown can take out the first, and a move or an Undo throws
+  the hidden songs away for good (tried on 0.64.2: docs/TESTING.md). Every read of a playlist
+  asks for the list too, at once (`Subsonic.playlistCounted`), and keeps the list's count with
+  the page. Where it differs from the songs listed, the page dims the handles and says "Some
+  songs in this playlist are missing from your library, so it can't be changed from here.",
+  and a removal, a move or an Undo says it and sends nothing, checked on the page as drawn and
+  again on the fresh read. Adding at the end, renaming and deleting go as before. A playlist
+  the list doesn't have is taken to hide songs. *The Windows app removes and moves the same
+  way and is exposed to the same fault.*
+
 ## Working with the Windows app
 
 The phone is one more device on the same account. These must match the Windows app byte

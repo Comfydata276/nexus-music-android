@@ -45,6 +45,8 @@ data class PlaylistRefused(val playlist: String, val name: String, val outcome: 
         UNDO_CHANGED,
         /** The server no longer has it (its error 70). */
         GONE,
+        /** The server holds songs it doesn't list ([Playlist.hidesSongs]): nothing was sent. */
+        MISSING_SONGS,
     }
 }
 
@@ -75,6 +77,11 @@ data class PlaylistUndo(val playlist: String, val leftAs: Playlist, val before: 
  * - **Only the account's own** ([canEdit]): checked as a change is made and on the fresh copy.
  * - **Gone** (the server's error 70, on any read of a playlist): its page and its row in Library
  *   go, and the person is told ([fetched]).
+ * - **Songs missing from the library** ([Playlist.hidesSongs]): Navidrome counts them in its
+ *   positions but leaves them out of what it lists, so on such a playlist nothing is removed,
+ *   moved or undone (each by position, or by replacing the list, which throws them away).
+ *   Adding at the end leaves them be, and goes. Checked as the change is made and on the fresh
+ *   copy.
  */
 class Playlists(
     private val server: PlaylistServer,
@@ -100,6 +107,9 @@ class Playlists(
         BUSY,
         /** There is nothing (any more) to undo. */
         NOTHING_TO_UNDO,
+        /** It holds songs missing from the library, so it can't be removed from or reordered
+         *  by the rows shown ([Playlist.hidesSongs]). */
+        MISSING_SONGS,
     }
 
     /** What is changed: rows taken out, or the whole order (a move, or an Undo). */
@@ -225,6 +235,7 @@ class Playlists(
     private fun begin(id: String, drawn: Playlist?, change: Change, done: (Boolean) -> Unit, undo: Boolean = false): Unavailable? {
         if (!reachable()) return Unavailable.OFFLINE
         if (change !is Change.Create && (drawn == null || !canEdit(drawn))) return Unavailable.NOT_YOURS
+        if (byPosition(change) && drawn?.hidesSongs == true) return Unavailable.MISSING_SONGS
         val flight = Flight(drawn, change, undo)
         synchronized(lock) {
             if (id in flights) return Unavailable.BUSY
@@ -270,6 +281,10 @@ class Playlists(
         try {
             val now = if (change is Change.Create) null else reading(id) { server.playlist(id) }
             if (now != null && !canEdit(now)) throw failed(PlaylistRefused.Outcome.REFUSED, ApiError.Server(50, ""))
+            if (now != null && byPosition(change) && now.hidesSongs) {
+                pages.put(playlistSpec(id), now)
+                throw failed(PlaylistRefused.Outcome.MISSING_SONGS)
+            }
             val drawn = flight.drawn
             if (now != null && change !is Change.Append && drawn != null && !same(now, drawn)) {
                 pages.put(playlistSpec(id), now)
@@ -357,7 +372,14 @@ class Playlists(
         Change.Delete, is Change.Create -> p
     }
 
-    private fun withSongs(p: Playlist, songs: List<Song>) = p.copy(songs = songs, songCount = songs.size, duration = songs.sumOf { it.duration })
+    /** A change made by the playlist's positions, or by replacing its songs. */
+    private fun byPosition(change: Change) = change is Change.Remove || change is Change.Order
+
+    // (The count the server holds moves with the songs; on one that hides some, those stay.)
+    private fun withSongs(p: Playlist, songs: List<Song>) = p.copy(
+        songs = songs, songCount = songs.size, duration = songs.sumOf { it.duration },
+        held = p.held?.let { if (p.hidesSongs) it + songs.size - p.songs.size else songs.size },
+    )
 
     companion object {
         /** How long after a removal or move it can be taken back (Windows' minute). */

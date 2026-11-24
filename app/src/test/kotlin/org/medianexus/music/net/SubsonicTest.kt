@@ -207,6 +207,38 @@ class SubsonicTest {
         assertEquals(listOf("Ash", "Birch"), client().artists().map { it.name })
     }
 
+    /**
+     * A playlist holding a song gone from the library, answered as Navidrome 0.64.2 answered it
+     * (docs/TESTING.md, "Songs missing from the library"): its own answer lists three songs and
+     * counts three; the list of playlists counts the four it holds. Only the two together say
+     * that a song is hidden.
+     */
+    @Test
+    fun aPlaylistsHiddenSongsAreToldByTheListsCount() = runBlocking {
+        fun ok(fields: String) = MockResponse.Builder().code(200).setHeader("Content-Type", "application/json")
+            .body("""{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.64.2",$fields}}""").build()
+        val listed = mutableMapOf("pl-1" to 4, "pl-2" to 2)
+        server.dispatcher = object : mockwebserver3.Dispatcher() {
+            override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse = when (request.url.encodedPath) {
+                "/rest/getPlaylists" -> ok(""""playlists":{"playlist":[${listed.entries.joinToString(",") { (id, n) -> """{"id":"$id","name":"$id","songCount":$n,"duration":215,"owner":"tester"}""" }}]}""")
+                else -> {
+                    val id = request.url.queryParameter("id")
+                    if (id == "pl-1") ok(""""playlist":{"id":"pl-1","name":"pl-1","songCount":3,"duration":155,"owner":"tester","entry":[{"id":"a"},{"id":"b"},{"id":"c"}]}""")
+                    else ok(""""playlist":{"id":"$id","name":"$id","songCount":2,"duration":100,"owner":"tester","entry":[{"id":"a"},{"id":"b"}]}""")
+                }
+            }
+        }
+        val hiding = client().playlistCounted("pl-1")
+        assertEquals(3, hiding.songs.size)
+        assertEquals(4, hiding.held)
+        assertTrue(hiding.hidesSongs)
+        assertFalse(client().playlistCounted("pl-2").hidesSongs)
+        // Not in the list at all: it can't be told, so it is taken to hide some.
+        assertTrue(client().playlistCounted("pl-3").hidesSongs)
+        // Read only by itself, nothing is known (and nothing is claimed).
+        assertFalse(client().playlist("pl-1").hidesSongs)
+    }
+
     @Test
     fun theSavedQueueCurrentSongMayBeANumber() = runBlocking {
         ok(""""playQueue":{"entry":[{"id":"7"}],"current":7,"position":81234,"changedBy":"NexusMusic"}""")

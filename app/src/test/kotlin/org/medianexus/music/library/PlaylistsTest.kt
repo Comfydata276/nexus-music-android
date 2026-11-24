@@ -55,6 +55,11 @@ class PlaylistsTest {
         val gates = Collections.synchronizedMap(HashMap<String, Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>>())
         val trouble = Collections.synchronizedMap(HashMap<String, Trouble>())
 
+        /** Songs gone from the library: as Navidrome 0.64.2 does (docs/TESTING.md), a playlist
+         *  keeps their entries, counts them in its positions and in the list's count, and
+         *  leaves them out of what it lists. */
+        val missing: MutableSet<String> = Collections.synchronizedSet(HashSet())
+
         fun hold(request: String): Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>> =
             (CompletableDeferred<Unit>() to CompletableDeferred<Unit>()).also { gates[request] = it }
 
@@ -87,8 +92,12 @@ class PlaylistsTest {
 
         fun count(kind: String) = asked.count { it.startsWith("$kind ") }
 
+        // (With the count the list gives, as the app's own reads are made: Subsonic.playlistCounted.)
         override suspend fun playlist(id: String) = at("get $id") {
-            synchronized(lists) { Playlist(id = id, name = names[id] ?: "Mix", owner = owners[id] ?: "tester", songs = of(id).toList()) }
+            synchronized(lists) {
+                val held = of(id)
+                Playlist(id = id, name = names[id] ?: "Mix", owner = owners[id] ?: "tester", songs = held.filter { it.id !in missing }, held = held.size)
+            }
         }
 
         override suspend fun createPlaylist(name: String, songIds: List<String>) = at("create $name") {
@@ -252,6 +261,56 @@ class PlaylistsTest {
         assertFalse(made { playlists.remove(drawn, listOf(1, 2), it) })
         assertEquals(0, server.count("remove"))
         assertEquals("a x b c d e", server.now("p1"))
+    }
+
+    // ---- Songs missing from the library (M3b fixes 3, part 1) ------------------------------
+
+    @Test
+    fun aPlaylistHoldingSongsMissingFromTheLibraryIsNotChangedByPosition() = runBlocking<Unit> {
+        // Stored as "x a b c"; "x" is gone from the library, so the phone is shown "a b c". On
+        // the real server, removing row 1 ("b") would take out "a", and a move would throw "x"
+        // away for good.
+        server.elsewhere("p1", "x a b c")
+        server.missing += "x"
+        val page = opened()
+        assertEquals("a b c", ids(page))
+        assertTrue(page.hidesSongs)
+        assertEquals(Unavailable.MISSING_SONGS, playlists.remove(page, listOf(1)))
+        assertEquals(Unavailable.MISSING_SONGS, playlists.move(page, 2, 0))
+        assertEquals(0, writes())
+        // Adding at the end leaves the hidden entry be, so it goes.
+        assertTrue(made { playlists.add(page, songs("z"), it) })
+        assertEquals("x a b c z", server.now("p1"))
+    }
+
+    @Test
+    fun aSongThatGoesMissingAfterThePageWasDrawnIsFoundOnTheFreshCopy() = runBlocking<Unit> {
+        for (case in listOf("remove", "move", "undo")) {
+            server.elsewhere("p1", "x a b c")
+            server.missing.clear()
+            var page = opened()
+            if (case == "undo") {
+                assertTrue(made { playlists.remove(page, listOf(2), it) })
+                page = pages.kept(spec("p1"))!!
+            }
+            // The disk holding "x" goes offline and the server scans.
+            server.missing += "x"
+            val held = server.now("p1")
+            val said = listen()
+            val before = writes()
+            assertFalse(case, made { done ->
+                when (case) {
+                    "remove" -> playlists.remove(page, listOf(1), done)
+                    "move" -> playlists.move(page, 3, 0, done)
+                    else -> playlists.undoLast("p1", done)
+                }
+            })
+            assertEquals(case, Outcome.MISSING_SONGS, said.await().outcome)
+            assertEquals(case, before, writes())
+            assertEquals(case, held, server.now("p1"))
+            // The page is the fresh copy, which says why its handles are dimmed.
+            assertTrue(case, pages.kept(spec("p1"))!!.hidesSongs)
+        }
     }
 
     // ---- A2: one change at a time ------------------------------------------------------------

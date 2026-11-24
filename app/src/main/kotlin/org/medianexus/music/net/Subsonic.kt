@@ -12,6 +12,7 @@ import java.security.cert.CertificateException
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLPeerUnverifiedException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -381,6 +382,14 @@ class Subsonic private constructor(
         call("getPlaylists", emptyList(), "playlists", PlaylistsWrap.serializer(), ::PlaylistsWrap).playlist
 
     suspend fun playlist(id: String): Playlist = call("getPlaylist", listOf("id" to id), "playlist", Playlist.serializer(), ::Playlist)
+
+    /** A playlist with the count of entries the server holds for it ([Playlist.held]), from
+     *  the list of playlists asked for alongside. */
+    suspend fun playlistCounted(id: String): Playlist = coroutineScope {
+        val listed = async { playlists() }
+        val playlist = playlist(id)
+        playlist.copy(held = listed.await().firstOrNull { it.id == id }?.songCount ?: -1)
+    }
 
     suspend fun createPlaylist(name: String, songIds: List<String>): Playlist {
         val params = listOf("name" to name) + songIds.map { "songId" to it }

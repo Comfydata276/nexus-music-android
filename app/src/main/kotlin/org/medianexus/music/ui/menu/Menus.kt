@@ -242,6 +242,7 @@ fun Ui.said(unavailable: org.medianexus.music.library.Playlists.Unavailable?): B
         org.medianexus.music.library.Playlists.Unavailable.NOT_YOURS -> R.string.playlist_not_changeable
         org.medianexus.music.library.Playlists.Unavailable.BUSY -> R.string.playlist_busy
         org.medianexus.music.library.Playlists.Unavailable.NOTHING_TO_UNDO -> null
+        org.medianexus.music.library.Playlists.Unavailable.MISSING_SONGS -> R.string.playlist_missing_songs
     }
     words?.let { toast(graph.resources.getString(it)) }
     return false

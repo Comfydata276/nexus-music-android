@@ -1770,6 +1770,53 @@ rejoin is asked for only while playing is wanted and checked again when it acts:
   top edges show): the bottom sheet's own window does not give room for the keyboard, and
   padding its content for the keyboard changed nothing. The keyboard's tick still creates.
 
+## The third round of M3b fixes: what was checked
+
+### Songs missing from the library (Navidrome 0.64.2)
+
+A reviewer reading Navidrome's source said that a playlist entry whose song has gone from the
+library is left out of the playlist's answer but still counted by "remove at index". It was
+tried on a server of its own (`NEXUS_TEST_PORT=4537 scripts/server --instance edit start`,
+Navidrome **0.64.2 (10114574)**, the rig's `deluan/navidrome:latest` on 2026-11-25). Four copies
+of the playlist [X, A, B, C] were made (X "Side A", A "Side B", B "Rust Thunder", C "Under
+Engine", all of *Long Player*; D "Runout Groove" for adding). X was made missing by deleting
+its file from `library-edit/music` (a hard link: the ordinary library keeps its own) and a full
+scan (`startScan fullScan=true`, then `getScanStatus` until it stops); put back by linking it
+again and another full scan. What the server stores was read from its database
+(`navidrome-edit/navidrome.db`: `playlist_tracks` joined to `media_file.missing`, and
+`playlist.song_count`). The scripts and what they printed are kept with the pictures
+(`~/.cache/nexus-music-android/shots/m3b/fix3-missing*`).
+
+| Step | Call (as the phone makes it) | What came back, or what the server then held |
+|---|---|---|
+| 1. X missing: the playlist | `getPlaylist id=…` | entries **A, B, C**; `songCount` **3**, `duration` 155 (the playlist's own count and length leave X out too); nothing else marks it. Stored: X (missing), A, B, C; `song_count` 4 |
+| 1. the list of playlists | `getPlaylists` | its row: `songCount` **4**, `duration` 215 (what is stored, X included) |
+| 2. remove B as shown (row 1) | `updatePlaylist playlistId=… songIndexToRemove=1` | **A was removed**, not B. Stored after: X (missing), B, C. Shown: B, C |
+| 3. a move (C to the top), as the phone sends it | `createPlaylist playlistId=… songId=C songId=A songId=B` | stored after: C, A, B: **X thrown away**. After X's file came back and a scan: still C, A, B (X is not in it again) |
+| 4. add D, as the phone does | `updatePlaylist playlistId=… songIdToAdd=D` | stored after: X (missing), A, B, C, D: the hidden entry kept, D at the end. After X came back: X, A, B, C, D |
+| (5.) an administrator removes the missing files | Navidrome's own `DELETE /api/missing?id=…` | the entry goes from the playlist, and both counts agree again (2 and 2): the list's count is not left stale |
+| (also) Navidrome's own API | `GET /api/playlist/{id}/tracks` | lists X with `"missing": true` (not used: it is not Subsonic) |
+
+**So the phone can tell, but only from two answers together:** the playlist's own answer hides
+the entry and counts without it; the list of playlists counts it. A playlist whose list count
+differs from the entries its answer lists holds songs it doesn't show. The phone now reads both
+for every read of a playlist (`Subsonic.playlistCounted`, the two asked at once) and keeps the
+list's count with the page (`Playlist.held`). On such a playlist nothing is removed, moved or
+undone (the handles dimmed, the page and the change saying "Some songs in this playlist are
+missing from your library, so it can't be changed from here."); adding still goes, as step 4
+showed it harmless. The check is made on the page as drawn and again on the fresh read before
+the write. Read in either order, a change by another device between the two reads either
+changes the songs listed (and the change is refused as made elsewhere) or comes after the
+playlist's read, which is the known window. A playlist not in the list at all is taken to hide
+songs. The **Windows app is exposed** in the same way: `edit_playlist` (src/controller.rs)
+reads `getPlaylist`, removes by positions in what it listed (`remove_many_from_playlist`) and
+moves by replacing the list (`replace_playlist`).
+
+Tests: `PlaylistsTest.aPlaylistHoldingSongsMissingFromTheLibraryIsNotChangedByPosition` and
+`…aSongThatGoesMissingAfterThePageWasDrawnIsFoundOnTheFreshCopy` (a stand-in that stores,
+counts and removes as the server did; both fail with the two checks taken out);
+`SubsonicTest.aPlaylistsHiddenSongsAreToldByTheListsCount` (the two answers as recorded).
+
 ## Sound and lyrics (M4a)
 
 **Songs of its own, on a server of its own.** The ordinary server keeps its hundred songs.

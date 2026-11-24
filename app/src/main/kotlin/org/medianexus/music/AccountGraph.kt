@@ -186,7 +186,7 @@ class AccountGraph(
         // Reads by the ordinary way; every change by the way that never sends one twice.
         api.once().let { once ->
             object : org.medianexus.music.library.PlaylistServer {
-                override suspend fun playlist(id: String) = api.playlist(id)
+                override suspend fun playlist(id: String) = api.playlistCounted(id)
                 override suspend fun createPlaylist(name: String, songIds: List<String>) = once.createPlaylist(name, songIds)
                 override suspend fun renamePlaylist(id: String, name: String) = once.renamePlaylist(id, name)
                 override suspend fun addToPlaylist(id: String, songIds: List<String>) = once.addToPlaylist(id, songIds)

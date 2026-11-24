@@ -60,7 +60,7 @@ class Library(
     /** One playlist with its songs. The one that holds the shared record is "not found",
      *  asked for by its id from anywhere: it is never shown, played, downloaded or changed. */
     fun playlist(id: String) = PageSpec("playlist:$id", Opened) {
-        playlistShown(id) { api.playlist(id).also { if (it.name == org.medianexus.music.sync.PLAYLIST_NAME) throw org.medianexus.music.net.ApiError.Server(70, "") } }
+        playlistShown(id) { api.playlistCounted(id).also { if (it.name == org.medianexus.music.sync.PLAYLIST_NAME) throw org.medianexus.music.net.ApiError.Server(70, "") } }
     }
 
     /** A list of playlists as kept on the phone, read without the sync playlist. */

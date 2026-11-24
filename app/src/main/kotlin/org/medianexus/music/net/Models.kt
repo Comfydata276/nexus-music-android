@@ -129,7 +129,20 @@ data class Playlist(
     /** The server's word that this account may not change it (Navidrome sends it). */
     val readonly: Boolean = false,
     @SerialName("entry") val songs: List<Song> = emptyList(),
-)
+    /**
+     * How many entries the server holds for it, as its list of playlists counts them: set by
+     * the phone when it reads a playlist ([Subsonic.playlistCounted]); -1 if the list doesn't
+     * have it, null where it wasn't asked. Navidrome keeps an entry whose song has gone from
+     * the library, leaves it out of the playlist's own answer (whose `songCount` and `duration`
+     * leave it out too), but counts it in the list, and its "remove at index" and "replace the
+     * songs" count it or throw it away: docs/TESTING.md, "Songs missing from the library".
+     */
+    @SerialName("nexusHeld") val held: Int? = null,
+) {
+    /** The server holds entries it didn't list here (or can't say): its positions are not the
+     *  rows shown, so nothing may be removed or moved by them. */
+    val hidesSongs: Boolean get() = held != null && held != songs.size
+}
 
 @Serializable
 data class ScanStatus(

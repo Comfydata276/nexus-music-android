@@ -93,7 +93,8 @@ fun SongListPage(
     editable: org.medianexus.music.net.Playlist? = null,
     /** Whether its songs can be dragged now (the server there to take the change). */
     draggable: Boolean = true,
-    /** A change to it is on its way: its handles show it, and do nothing until it settles. */
+    /** Its songs can't be moved now (a change to it on its way, or it holds songs missing from
+     *  the library): its handles show it, and do nothing. */
     busy: Boolean = false,
     /** The header's "…" (the page's own menu), if it has one: given what the page drew and
      *  its play button, for the menu to act on. */

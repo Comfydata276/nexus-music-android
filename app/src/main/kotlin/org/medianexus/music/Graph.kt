@@ -305,6 +305,7 @@ class Graph(context: Context) {
                             it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.CHANGED -> context.getString(R.string.playlist_changed_elsewhere)
                             it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.UNDO_CHANGED -> context.getString(R.string.playlist_undo_changed)
                             it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.GONE -> context.getString(R.string.playlist_gone)
+                            it.outcome == org.medianexus.music.library.PlaylistRefused.Outcome.MISSING_SONGS -> context.getString(R.string.playlist_missing_songs)
                             else -> context.getString(R.string.didnt_save, it.error?.message.orEmpty()).trim()
                         }
                     },

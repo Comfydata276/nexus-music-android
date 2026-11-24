@@ -585,6 +585,7 @@
     <string name="playlist_changed_elsewhere">This playlist was changed somewhere else. Nothing was changed here.</string>
     <string name="playlist_undo_changed">Can\'t undo: the playlist has changed since.</string>
     <string name="playlist_busy">Still saving the last change to this playlist.</string>
+    <string name="playlist_missing_songs">Some songs in this playlist are missing from your library, so it can\'t be changed from here.</string>
     <string name="save_queue_as_playlist">Save queue as playlist</string>
     <string name="there_are_no_songs">There are no songs in that.</string>
     <string name="playlist_empty_editable">This playlist is empty. Use a song\'s menu and choose Add to playlist.</string>
