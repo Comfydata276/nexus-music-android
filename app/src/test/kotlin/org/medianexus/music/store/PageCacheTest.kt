@@ -5,6 +5,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
@@ -312,5 +313,41 @@ class PageCacheTest {
         cache.put(spec { emptyList() }, listOf("a"))
         withTimeout(5_000) { while (stray.exists()) kotlinx.coroutines.delay(5) }
         assertTrue(!stray.exists())
+    }
+
+    @Test
+    fun aLivePageThatMissesAValueBeforeItIsLetGoOfReadsItAgain() = runBlocking {
+        // Room in memory for very little.
+        val cache = PageCache(folder.root, scope, Dispatchers.IO, clock = { now }, budget = 10)
+        val page = spec("a") { listOf("a") }
+        cache.fresh(page)
+        // The screen follows the page on a thread of its own, which the test can keep busy.
+        val screen = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val seen = kotlinx.coroutines.channels.Channel<Page<List<String>>>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val watching = scope.launch(screen.asCoroutineDispatcher()) { cache.live(page, freshFor = Long.MAX_VALUE).collect { seen.send(it) } }
+        try {
+            assertEquals(listOf("a"), withTimeout(5_000) { seen.receive() }.value)
+            // The screen's thread is busy for a moment...
+            val busy = java.util.concurrent.CountDownLatch(1)
+            val holding = java.util.concurrent.CountDownLatch(1)
+            screen.execute {
+                holding.countDown()
+                busy.await()
+            }
+            holding.await()
+            // ...while the page changes (a like), and is then let go of from memory because
+            // another, bigger page is kept.
+            cache.update(page) { it + "b" }
+            cache.fresh(spec("big") { List(20) { "x$it" } })
+            assertEquals("the page was not let go of", 21L, cache.heldWeight())
+            busy.countDown()
+            // What the screen next sees is the page as it now is. It used to go from the old
+            // value straight to the mark that the new one had been let go of, and so show the
+            // old one for good.
+            assertEquals(listOf("a", "b"), withTimeout(5_000) { seen.receive() }.value)
+        } finally {
+            watching.cancel()
+            screen.shutdown()
+        }
     }
 }

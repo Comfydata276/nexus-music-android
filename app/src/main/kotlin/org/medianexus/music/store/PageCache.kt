@@ -269,10 +269,19 @@ class PageCache(
         combine(slot.current, check) { now, how -> now to how }.collect { (now, how) ->
             // Nothing to say until the kept copy has been looked for.
             if (how == Check.Reading) return@collect
-            // Let go of from memory: still the same page, as last seen.
-            if (!now.held && now.version == lastVersion && how == lastCheck) return@collect
+            // Let go of from memory, or held again as it was: still the same page, as last seen.
+            if (now.version == lastVersion && how == lastCheck && (!now.held || now.value === lastValue)) return@collect
             @Suppress("UNCHECKED_CAST")
-            val value = if (now.held) now.value as T else if (now.version == lastVersion) lastValue else null
+            val value = when {
+                now.held -> now.value as T
+                now.version == lastVersion -> lastValue
+                // A change this collector never saw, already let go of from memory (a
+                // collector can go from one value straight to the mark that the next has been
+                // let go of). The page as it now stands is read again: from disk, where its
+                // newest change is before it is let go of. It used to be shown as nothing,
+                // which leaves a screen on the value before, for good.
+                else -> kept(spec)
+            }
             lastVersion = now.version
             lastValue = value
             lastCheck = how

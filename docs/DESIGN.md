@@ -651,7 +651,9 @@ How it is built (M1a):
   published out of order or dropped. A refresh or a read from disk begun before a change made
   here (an unlike) is dropped when it finishes; a failed refresh is said beside the page as
   it now stands. Writes of one page take turns, and a page stays in memory until its newest
-  change is on disk, so a read from disk never brings back an older value. Every atomic
+  change is on disk, so a read from disk never brings back an older value; a page on screen
+  that misses a change because it was let go of from memory before it was seen reads the page
+  again, rather than keeping the value before. Every atomic
   write in the app goes through a temporary file of its own, named for the run that made
   it; an earlier run's are swept away when an account's pages are opened.
 - **Answers from the server** are decoded from the stream straight into the models, never
