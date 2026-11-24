@@ -81,6 +81,7 @@ import androidx.media3.session.SessionToken
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library memory
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library search --es queries "masie|lantern"
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library forget
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library mixes
  */
 class DebugControl : BroadcastReceiver() {
     private companion object {
@@ -148,6 +149,8 @@ class DebugControl : BroadcastReceiver() {
                                 ?: listOf("amber", "lantren", "silver harbour", "zoe brandstrom", "the velvet engines", "midnight station tonight", "mi"),
                         )
                         "forget" -> org.medianexus.music.library.DebugLibrary.forget(account)
+                        // What the mixes and Your stats cost to work out (DebugMixes).
+                        "mixes" -> org.medianexus.music.library.DebugMixes.run(account)
                         else -> org.medianexus.music.library.DebugLibrary.say(account)
                     }
                 }.getOrElse { "failed: $it" }
