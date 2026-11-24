@@ -972,7 +972,12 @@ How it is built (M1a):
   goes; a proxy's error page in the server's place counts as "try again", and later changes
   to the same song wait behind it while the rest go on; no answer, or a sign-in it won't
   take, keeps the lot. The app no longer being offline starts the sender, however that came
-  about. **Plays are not exactly-once**: the Subsonic interface has no way to make a
+  about. **And what is kept that way is tried again in half a minute**, as well as the
+  server being asked whether it is there: if the server is there after all (one request
+  lost as the phone went from Wi-Fi to mobile data), the app was never offline and nothing
+  "comes back" to start the sender. Windows goes out of reach on the first such failure and
+  catches up at its next check, fifteen seconds on; the phone, which asks first, used to
+  leave the change held until another was made, or the app was next started. **Plays are not exactly-once**: the Subsonic interface has no way to make a
   submission safe to repeat, so an app killed in the instant between the server accepting a
   play and the phone recording that (one small write, begun as the answer arrives) sends it
   again and it is counted twice. "Now playing" reports aren't held: they are of the moment.

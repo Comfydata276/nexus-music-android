@@ -76,6 +76,10 @@ class HeldOrderTest {
         /** A like that arrives while this is set is not answered until it is opened. */
         @Volatile var gate: Gate? = null
 
+        /** How many of the next changes are answered by something in the server's place (a
+         *  proxy's error page), and not done. */
+        val pagesInItsPlace = java.util.concurrent.atomic.AtomicInteger()
+
         override fun dispatch(request: RecordedRequest): MockResponse {
             val endpoint = request.url.encodedPath.substringAfterLast('/').removeSuffix(".view")
             val id = request.url.queryParameter("id").orEmpty()
@@ -88,10 +92,13 @@ class HeldOrderTest {
                         it.reached.complete(Unit)
                         it.open.await()
                     }
+                    if (pagesInItsPlace.getAndUpdate { maxOf(it - 1, 0) } > 0) {
+                        return MockResponse.Builder().code(502).setHeader("Content-Type", "text/html").body("<html><body>502 Bad Gateway</body></html>").build()
+                    }
                     if (endpoint == "star") liked += id else liked -= id
                 }
                 "getStarred2" -> {
-                    val songs = synchronized(liked) { liked.joinToString(",") { """{"id":"$it","title":"One","starred":"2026-01-01T00:00:00Z"}""" } }
+                    val songs = synchronized(liked) { liked.joinToString(",") { """{"id":"$it","title":"A song","starred":"2026-01-01T00:00:00Z"}""" } }
                     body = ""","starred2":{"song":[$songs]}"""
                 }
             }
@@ -108,6 +115,7 @@ class HeldOrderTest {
     private val web = MockWebServer()
     private val server = Server()
     private val song = Song(id = "s1", title = "One")
+    private val another = Song(id = "s2", title = "Two")
 
     /** Offline mode, as the app's client has it: while on, nothing is sent at all. */
     private val switch = OfflineSwitch(initially = true)
@@ -126,6 +134,9 @@ class HeldOrderTest {
         signInGone = {},
     )
 
+    /** The account's clock for trying again: each wait asked for, for the test to end. */
+    private val pauses = Channel<Pair<Long, CompletableDeferred<Unit>>>(Channel.UNLIMITED)
+
     private lateinit var account: AccountGraph
 
     @Before
@@ -138,7 +149,14 @@ class HeldOrderTest {
         val api = Subsonic(web.url("/").toString(), "tester", "pass", OkHttpClient(), switch)
         account = AccountGraph(
             Account(api.server, api.username, "key", AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))), api, Dispatchers.IO,
-            AccountWiring(kotlinx.coroutines.flow.MutableStateFlow(Settings()), watch.state, suspect = { watch.check() }),
+            AccountWiring(
+                kotlinx.coroutines.flow.MutableStateFlow(Settings()), watch.state, suspect = { watch.check() },
+                pause = { millis ->
+                    val over = CompletableDeferred<Unit>()
+                    pauses.send(millis to over)
+                    over.await()
+                },
+            ),
         )
     }
 
@@ -158,7 +176,7 @@ class HeldOrderTest {
      * of Liked songs gains or loses the song. Listening for that begins before the change is
      * made.
      */
-    private suspend fun setAndBeAcknowledged(liked: Boolean) = coroutineScope {
+    private suspend fun setAndBeAcknowledged(liked: Boolean, song: Song = this.song) = coroutineScope {
         val acknowledged = async(start = CoroutineStart.UNDISPATCHED) {
             account.pages.changes.first { (key, value) -> key == "liked" && (value as Found).songs.any { it.id == song.id } == liked }
         }
@@ -239,5 +257,39 @@ class HeldOrderTest {
         // makes another change, asks for a round, or waits for a timer.
         check.complete(Unit)
         assertSentInOrderAndNothingLeft()
+    }
+
+    @Test
+    fun aChangeTheServerCouldNotBeAskedForIsTriedAgainWithNothingElseHappening() = runBlocking {
+        // Online, and nothing waiting: a like held in offline mode has gone, and the pass
+        // that the app coming back online starts is over.
+        likedInOfflineMode()
+        offlineModeOff().complete(Unit)
+        assertEquals("star s1", server.changes.receive())
+        account.held.waiting.first { it == 0 }
+        account.flush()
+        // Another song is liked, and something answers that one request in the server's
+        // place (as a phone moving from Wi-Fi to mobile data loses the request it was in the
+        // middle of): the like is held.
+        server.pagesInItsPlace.set(1)
+        setAndBeAcknowledged(true, another)
+        assertEquals("star s2", server.changes.receive())
+        assertEquals(listOf<Pending>(Pending.Star("song", "s2", true)), account.held.all())
+        // Having lost touch, the app asks the server whether it is there. It is: the app was
+        // never offline, and so there is no coming back online to send what is held.
+        checks.receive().complete(Unit)
+        assertFalse(watch.state.value.offline)
+        // Nothing else happens: no other change is made, no network comes or goes. The
+        // sender waits half a minute, by the account's clock, and sends it again.
+        val (millis, over) = pauses.receive()
+        assertEquals(30_000L, millis)
+        assertEquals(listOf("star s1", "star s2"), server.asked.toList())
+        over.complete(Unit)
+        assertEquals("star s2", server.changes.receive())
+        account.held.waiting.first { it == 0 }
+        account.flush()
+        assertEquals("[]", heldFile.readText())
+        assertEquals(listOf("star s1", "star s2", "star s2"), server.asked.toList())
+        assertTrue(account.likes.isLiked("s2"))
     }
 }

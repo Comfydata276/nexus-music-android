@@ -46,6 +46,8 @@ class AccountWiring(
     /** Whether anyone is using the app now (its screens in front, or something playing): the
      *  copy of the library is checked against the server only then. */
     val inUse: () -> Boolean = { true },
+    /** Waits this many milliseconds before something is tried again (a test's own clock). */
+    val pause: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
 )
 
 /**
@@ -67,6 +69,7 @@ class AccountGraph(
     private val reach: StateFlow<Reach> = wiring?.reach ?: MutableStateFlow(Reach())
     private val suspect: () -> Unit = wiring?.suspect ?: {}
     private val inUse: () -> Boolean = wiring?.inUse ?: { true }
+    private val pause: suspend (Long) -> Unit = wiring?.pause ?: { kotlinx.coroutines.delay(it) }
 
     /** The account's name in its covers' addresses (see [artworkIdOf]). */
     val artwork: String = org.medianexus.music.store.artworkIdOf(account.dirs.data)
@@ -111,8 +114,15 @@ class AccountGraph(
         send = { send(it) },
         offline = { reach.value.offline },
         // It stopped answering part-way, or something answered in its place: worth asking
-        // whether it is there at all.
-        lostTouch = { suspect() },
+        // whether it is there at all. If it has gone, its coming back sends what is held. If
+        // it is there after all (one request lost as the phone changed network, a proxy's
+        // page for one answer) the app was never offline and nothing comes back: so what is
+        // held is also tried again in a while, whatever the answer. (It used to wait for the
+        // next change to be made, or the next time the server was lost and found.)
+        lostTouch = {
+            suspect()
+            heldAgainLater()
+        },
         note = wiring?.note ?: {},
         // The phone wouldn't take a write the sender depends on: tried again in a while.
         tryLater = { heldAgainLater() },
@@ -120,11 +130,12 @@ class AccountGraph(
 
     private var heldRetry: kotlinx.coroutines.Job? = null
 
+    /** Sends what is held again in half a minute (once, however many ask meanwhile). */
     private fun heldAgainLater() {
         synchronized(this) {
             if (heldRetry?.isActive == true) return
             heldRetry = scope.launch {
-                kotlinx.coroutines.delay(HELD_RETRY_MILLIS)
+                pause(HELD_RETRY_MILLIS)
                 synchronized(this@AccountGraph) { heldRetry = null }
                 flush()
             }
@@ -298,7 +309,9 @@ class AccountGraph(
          *  in use (Windows' five minutes). */
         const val COPY_CHECK_MILLIS = 5 * 60 * 1000L
 
-        /** How long after the phone refused a write to the held changes they are tried again. */
+        /** How long after the phone refused a write to the held changes, or the server
+         *  couldn't be asked for one of them while it was taken to be there, they are tried
+         *  again. */
         const val HELD_RETRY_MILLIS = 30_000L
     }
 }
