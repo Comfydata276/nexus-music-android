@@ -1,10 +1,10 @@
 package org.medianexus.music.store
 
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -107,17 +107,22 @@ class Plays internal constructor(
  * **Written safely.** Off the main thread, in the order the plays were noted: whatever write
  * runs next writes everything not yet in the file (each play has a number, and the file is
  * known to hold up to a number), so two writes can never put one play in twice or leave one
- * out. Lines are synced as they are added. A line cut short (the app killed as it was being
- * written) is passed over when the file is read, as on Windows, and cut off before the next
- * line is added (Windows would join the next play to it, and lose both). The whole file is
- * written atomically when it is written whole. A file that exists but can't be read is never
+ * out. Lines are synced as they are added. **The log knows how long the file is up to its last
+ * record known to be written**, and every write first cuts the file back to that length: a
+ * write that failed part-way (the disk full), or whose sync failed, is taken back before the
+ * next try, rather than written again after itself. A record is a whole line; a last line with
+ * no newline is a record if it reads as one (as Windows' reading takes it), and it is then given
+ * its newline before the next line is added; one that doesn't read is cut off. The whole file
+ * is written atomically when it is written whole. A file that exists but can't be read is never
  * written over: the plays of this run are kept in memory only, and said in Diagnostics.
+ * [flushed] says when a write failed.
  *
- * **One writer per file for the process**, as for held changes: signing out and straight
- * back in to the same account makes a second log for the file while the first may still be
- * writing, and the second reads the file only once the first has finished with it. Writes
- * carry on after the account has gone (they are of plays it made). What is in memory goes
- * with the account (this object belongs to its `AccountGraph`).
+ * **One owner of the file at a time.** A log holds its file from [open] to [close]: the lock
+ * its writes are made under is taken as it opens and let go only once it has closed, with
+ * everything it held written. So a log opened for the same file (signing out and straight back
+ * in to the same account) reads it only after the one before has closed, and sees its last
+ * play; and a closed log never writes again. The account closes its log as it is let go
+ * (`AccountGraph.close`). What is in memory goes with the account.
  */
 class PlayLog(
     private val file: File,
@@ -151,45 +156,113 @@ class PlayLog(
     private var opened = false
     private val ready = CompletableDeferred<Unit>()
 
+    /** The file's lock: held by this log from [open] to [close] (see the class's note). */
+    private val owner = lockFor(file)
+    /** This log's writes, one at a time. */
+    private val writing = Mutex()
+    private var started = false
+    /** It holds the file (it has opened, and not yet closed). */
+    private var holding = false
+    private var closed = false
+    /** [open] has finished, one way or another. */
+    private val settled = CompletableDeferred<Unit>()
+    /** Whether the last write, at closing, put everything in the file. */
+    private var closing: kotlinx.coroutines.Deferred<Boolean>? = null
+    /** The file's length up to the end of its last record known to be written; and whether
+     *  that record is a last line still wanting its newline. (Under [writing].) */
+    private var good = 0L
+    private var newlineWanted = false
+
+    /** For tests: a write waits here, holding [writing], before it is made. */
+    internal var beforeWrite: suspend () -> Unit = {}
+    /** For tests: how new lines go onto the end of the file. */
+    internal var appendBytes: (RandomAccessFile, ByteArray) -> Unit = { raf, bytes ->
+        raf.write(bytes)
+        raf.fd.sync()
+    }
+
     /**
      * Reads the log (off the main thread). With no file, it is started from `recent`, what
      * Recently played remembers (song and seconds, in any order), and written. Plays noted
      * before it had been read are kept after what is read.
      */
     suspend fun open(recent: suspend () -> List<Pair<String, Long>> = { emptyList() }) {
-        if (ready.isCompleted) return
-        val lock = lockFor(file)
-        val read = lock.withLock {
-            withContext(io) {
-                try {
-                    if (!file.exists()) null else parseAll(file.readBytes().decodeToString())
-                } catch (_: IOException) {
-                    unreadable = true
-                    note("plays: the log on the phone couldn't be read; this run's plays are kept in memory only")
-                    emptyList()
+        synchronized(this) {
+            if (started || closed) {
+                if (closed) {
+                    settled.complete(Unit)
+                    ready.complete(Unit)
                 }
+                return
+            }
+            started = true
+        }
+        try {
+            // Not until the log before this one for the file (if any) has closed.
+            owner.lock()
+            try {
+                val read = withContext(io) {
+                    try {
+                        readLog(file)
+                    } catch (_: IOException) {
+                        unreadable = true
+                        note("plays: the log on the phone couldn't be read; this run's plays are kept in memory only")
+                        Found(emptyList(), 0, false)
+                    }
+                }
+                val afresh = if (read == null) recent().sortedBy { it.second }.map { Triple(it.first, it.second, "") } else null
+                synchronized(this) {
+                    // What was noted before the file had been read goes after what is in it.
+                    val early = List(size) { Triple(names[songs[it]]!!, ats[it], froms[it].let { f -> if (f < 0) "" else names[f]!! }) }
+                    size = 0
+                    base = 0
+                    for ((song, at, from) in read?.plays ?: afresh!!) put(song, at, from)
+                    lines = size
+                    written = size.toLong()
+                    // A log started afresh is written whole.
+                    rewrite = read == null
+                    good = read?.good ?: 0
+                    newlineWanted = read?.newline ?: false
+                    for ((song, at, from) in early) put(song, at, from)
+                    lines = size
+                    opened = true
+                    holding = true
+                    trim()
+                    publish()
+                }
+            } finally {
+                if (!holding) owner.unlock()
+            }
+        } finally {
+            settled.complete(Unit)
+            ready.complete(Unit)
+        }
+        persist()
+    }
+
+    /**
+     * Closes the log: no play is taken from now on, everything it holds is written, and then
+     * the file is let go for the next log (see the class's note). Returns at once; what it
+     * gives completes when the file has been let go.
+     */
+    fun close(): kotlinx.coroutines.Job {
+        val wasStarted: Boolean
+        synchronized(this) {
+            closing?.let { return it }
+            closed = true
+            wasStarted = started
+        }
+        val job = writer.async {
+            if (wasStarted) settled.await()
+            if (!holding) return@async true
+            try {
+                writing.withLock { writeDue() }
+            } finally {
+                owner.unlock()
             }
         }
-        val started = if (read == null) recent().sortedBy { it.second }.map { Triple(it.first, it.second, "") } else null
-        synchronized(this) {
-            if (opened) return@synchronized
-            // What was noted before the file had been read goes after what is in it.
-            val early = List(size) { Triple(names[songs[it]]!!, ats[it], froms[it].let { f -> if (f < 0) "" else names[f]!! }) }
-            size = 0
-            base = 0
-            for ((song, at, from) in read ?: started!!) put(song, at, from)
-            lines = size
-            written = size.toLong()
-            // A log started afresh is written whole; so is one with plays from before it was read.
-            rewrite = read == null
-            for ((song, at, from) in early) put(song, at, from)
-            lines = size
-            opened = true
-            trim()
-            publish()
-        }
-        ready.complete(Unit)
-        persist()
+        synchronized(this) { closing = job }
+        return job
     }
 
     /** A play that counted, now (seconds since 1970), and the playlist it was made from (its
@@ -198,6 +271,7 @@ class PlayLog(
     fun add(song: String, at: Long, from: String = "") {
         if (song.isEmpty()) return
         synchronized(this) {
+            if (closed) return
             put(song, at, from)
             if (opened) {
                 lines++
@@ -216,6 +290,7 @@ class PlayLog(
     suspend fun absorb(plays: List<Pair<String, Long>>, sources: List<Triple<String, Long, String>>): Int {
         ready.await()
         val new = synchronized(this) {
+            if (closed || !holding) return 0
             // Anything another device has to tell is recent, so the newest part is enough to
             // compare with.
             val known = HashSet<Pair<String, Long>>()
@@ -301,63 +376,88 @@ class PlayLog(
     private fun persist() {
         if (!ready.isCompleted) return
         writer.launch {
-            lockFor(file).withLock { writeDue() }
+            writing.withLock {
+                beforeWrite()
+                // (A closed log's last write was made by closing it.)
+                if (!synchronized(this@PlayLog) { closed }) writeDue()
+            }
         }
     }
 
-    /** Returns once everything noted so far is in the file (for tests, and whatever must
-     *  know). */
+    /** Returns once everything noted so far is in the file; throws if it couldn't be
+     *  written (the log keeps it, and tries again at the next play), or can't be (a file
+     *  that couldn't be read, or a log that never opened). */
+    @Throws(IOException::class)
     suspend fun flushed() {
         ready.await()
-        writer.launch { lockFor(file).withLock { writeDue() } }.join()
+        val done = synchronized(this) { closing }
+        val ok = done?.await() ?: writing.withLock { withContext(io) { writeDue() } }
+        if (!ok) throw IOException("The plays couldn't all be written to the log on the phone")
     }
 
-    private fun writeDue() {
+    /** Writes what is due. False if something is due that couldn't be written. (Under
+     *  [writing].) */
+    private fun writeDue(): Boolean {
         // What is due, read under the lock; written outside it.
         val whole: Boolean
         val plays: Plays
         val from: Int
         val upTo: Long
         synchronized(this) {
-            if (unreadable) return
+            if (unreadable || !holding) return false
             plays = current.value
             whole = rewrite
             upTo = base + plays.size
-            if (!whole && written >= upTo) return
+            if (!whole && written >= upTo) return true
             from = if (whole) 0 else (written - base).toInt()
         }
         try {
             if (whole) {
+                var length = 0L
                 writeAtomically(file, durable = true) { out ->
-                    for (i in 0 until plays.size) out.write(line(plays.song(i), plays.at(i), plays.from(i)).toByteArray())
+                    for (i in 0 until plays.size) {
+                        val bytes = line(plays.song(i), plays.at(i), plays.from(i)).toByteArray()
+                        out.write(bytes)
+                        length += bytes.size
+                    }
                 }
+                good = length
+                newlineWanted = false
             } else {
                 append(plays, from)
             }
         } catch (_: IOException) {
-            // Kept in memory; the next play tries again from where the file stopped.
+            // Kept in memory; the next write cuts the file back to its last good record and
+            // tries again from there.
             if (!failedSaid) note("plays: a play couldn't be written to the log on the phone")
             failedSaid = true
-            return
+            return false
         }
         synchronized(this) {
             if (whole) rewrite = false
             if (upTo > written) written = upTo
         }
+        return true
     }
 
     @Volatile private var failedSaid = false
 
+    /** Adds the plays from `from` on to the end of the file's last good record. */
     private fun append(plays: Plays, from: Int) {
         val fresh = !file.exists()
-        if (!fresh) cutShort(file)
-        FileOutputStream(file, true).use { out ->
-            val text = StringBuilder()
-            for (i in from until plays.size) text.append(line(plays.song(i), plays.at(i), plays.from(i)))
-            out.write(text.toString().toByteArray())
-            out.fd.sync()
+        val text = StringBuilder()
+        if (newlineWanted) text.append('\n')
+        for (i in from until plays.size) text.append(line(plays.song(i), plays.at(i), plays.from(i)))
+        val bytes = text.toString().toByteArray()
+        RandomAccessFile(file, "rw").use { raf ->
+            // Whatever a write that failed left after the last good record goes first.
+            if (raf.length() != good) raf.setLength(good)
+            raf.seek(good)
+            appendBytes(raf, bytes)
         }
         if (fresh) file.parentFile?.let { syncDir(it) }
+        good += bytes.size
+        newlineWanted = false
     }
 
     companion object {
@@ -370,7 +470,7 @@ class PlayLog(
         private const val INITIAL = 256
 
         /** Where the log's writes are done: the process's, not the account's, so a play
-         *  noted as the account goes is still written. */
+         *  noted as the account goes is still written, and its closing finished. */
         private val writer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         private val locks = HashMap<String, Mutex>()
@@ -400,33 +500,27 @@ class PlayLog(
             return Triple(song, at, from)
         }
 
-        private fun parseAll(text: String): List<Triple<String, Long, String>> = text.lineSequence().mapNotNull { parse(it.removeSuffix("\r")) }.toList()
+        /** What [readLog] found: the plays, and where the last good record ends. */
+        private class Found(val plays: List<Triple<String, Long, String>>, val good: Long, val newline: Boolean)
 
-        /** Cuts off a last line that was never finished, so the next line doesn't join it. */
-        private fun cutShort(file: File) {
-            RandomAccessFile(file, "rw").use { raf ->
-                val length = raf.length()
-                if (length == 0L) return
-                raf.seek(length - 1)
-                if (raf.read() == '\n'.code) return
-                // Back to the end of the last whole line.
-                var at = length - 1
-                val chunk = ByteArray(4096)
-                while (at > 0) {
-                    val start = maxOf(0L, at - chunk.size)
-                    val n = (at - start).toInt()
-                    raf.seek(start)
-                    raf.readFully(chunk, 0, n)
-                    for (k in n - 1 downTo 0) {
-                        if (chunk[k] == '\n'.code.toByte()) {
-                            raf.setLength(start + k + 1)
-                            return
-                        }
-                    }
-                    at = start
-                }
-                raf.setLength(0)
+        /**
+         * Reads the file: its records, and the length up to the end of the last of them. A
+         * record is a line that reads as one; a last line with no newline is one if it reads
+         * as one (it is then still to have its newline), and otherwise is no record and not
+         * counted in the length. Null when there is no file.
+         */
+        private fun readLog(file: File): Found? {
+            if (!file.exists()) return null
+            val bytes = file.readBytes()
+            var end = bytes.size
+            while (end > 0 && bytes[end - 1] != '\n'.code.toByte()) end--
+            val plays = String(bytes, 0, end, Charsets.UTF_8).lineSequence().mapNotNull { parse(it.removeSuffix("\r")) }.toMutableList()
+            val rest = parse(String(bytes, end, bytes.size - end, Charsets.UTF_8).removeSuffix("\r"))
+            if (end < bytes.size && rest != null) {
+                plays += rest
+                return Found(plays, bytes.size.toLong(), newline = true)
             }
+            return Found(plays, end.toLong(), newline = false)
         }
     }
 }

@@ -413,6 +413,8 @@ class AccountGraph(
 
     fun close() {
         downloads?.release()
+        // Everything it holds written, then the file let go for whoever opens it next.
+        playLog.close()
         scope.cancel()
     }
 

@@ -2,6 +2,7 @@ package org.medianexus.music.store
 
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,7 +16,14 @@ class PlayLogTest {
 
     private val io = Dispatchers.IO
 
-    private fun log(file: File, recent: List<Pair<String, Long>> = emptyList()): PlayLog = PlayLog(file, io).also { runBlocking { it.open { recent } } }
+    /** The log open now: closed before another is opened for its file, as an account's is
+     *  when it is let go. */
+    private var last: PlayLog? = null
+
+    private fun log(file: File, recent: List<Pair<String, Long>> = emptyList()): PlayLog {
+        last?.let { runBlocking { it.close().join() } }
+        return PlayLog(file, io).also { runBlocking { it.open { recent } } }.also { last = it }
+    }
 
     private fun PlayLog.settle() = runBlocking { flushed() }
 
@@ -76,7 +84,7 @@ class PlayLogTest {
     fun playsNotedBeforeTheFileIsReadComeAfterIt() {
         val path = File(folder.root, "plays.log")
         path.writeText("[\"a\",100]\n")
-        val log = PlayLog(path, io)
+        val log = PlayLog(path, io).also { last = it }
         log.add("early", 150, "playlist:p")
         // Nothing is written before the file has been read: it would be written over.
         assertEquals("[\"a\",100]\n", path.readText())
@@ -117,7 +125,8 @@ class PlayLogTest {
         val log = PlayLog(path, io) { notes += it }
         runBlocking { log.open { listOf("x" to 1L) } }
         log.add("a", 100)
-        log.settle()
+        // Said, not hidden.
+        assertTrue(runCatching { log.settle() }.exceptionOrNull() is java.io.IOException)
         assertTrue(path.isDirectory)
         assertEquals(listOf("a" to 100L), log.shared())
         assertFalse(notes.isEmpty())
@@ -135,5 +144,88 @@ class PlayLogTest {
         assertEquals(null, PlayLog.parse("[\"a\",100,\"p\",\"q\"]"))
         assertEquals(null, PlayLog.parse("[\"a\",4"))
         assertEquals(null, PlayLog.parse(""))
+    }
+
+    // ---- the M5b fixes, items 1 and 2 ---------------------------------------------------------
+
+    /** Signing out and straight back in to the same account: the new log reads the file only
+     *  once the old one has closed, with its last play written; and a closed log never writes
+     *  again. (It used to read the file as it was, and the last of the two to write threw the
+     *  other's play away.) */
+    @Test
+    fun oneOwnerOfTheFileAtATime() = runBlocking {
+        val path = File(folder.root, "plays.log")
+        val old = PlayLog(path, io)
+        old.open()
+        // The old log's write of its last play is held at a gate.
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val atGate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        old.beforeWrite = { atGate.complete(Unit); gate.await() }
+        old.add("a1", 100)
+        atGate.await()
+        val closed = old.close()
+        // The account comes straight back: its new log opens while the old write waits.
+        val new = PlayLog(path, io)
+        val opening = kotlinx.coroutines.CoroutineScope(Dispatchers.IO).async { new.open() }
+        kotlinx.coroutines.delay(300)
+        assertFalse("opened before the old log let the file go", opening.isCompleted)
+        gate.complete(Unit)
+        closed.join()
+        opening.await()
+        assertEquals(listOf("a1" to 100L), new.shared())
+        // The old log is closed: nothing it is told now is kept or written.
+        old.add("late", 150)
+        new.add("b1", 200)
+        new.flushed()
+        assertEquals("[\"a1\",100]\n[\"b1\",200]\n", path.readText())
+        new.close().join()
+        assertEquals(listOf("a1" to 100L, "b1" to 200L), log(path).shared())
+    }
+
+    /** A write that failed part-way (the disk full) is taken back before the next: no play is
+     *  in the file twice. (It used to be appended again after what it had left.) And the
+     *  failure is said by `flushed`. */
+    @Test
+    fun aFailedWriteIsTakenBackBeforeTheNext() = runBlocking {
+        val path = File(folder.root, "plays.log")
+        path.writeText("[\"a\",100]\n")
+        val log = log(path)
+        // Half the line goes in, then the disk is full.
+        log.appendBytes = { raf, bytes ->
+            raf.write(bytes, 0, bytes.size / 2)
+            throw java.io.IOException("No space left on device")
+        }
+        log.add("b", 200)
+        assertTrue(runCatching { log.flushed() }.exceptionOrNull() is java.io.IOException)
+        // The whole line written, and then its sync fails.
+        log.appendBytes = { raf, bytes ->
+            raf.write(bytes)
+            throw java.io.IOException("sync failed")
+        }
+        assertTrue(runCatching { log.flushed() }.exceptionOrNull() is java.io.IOException)
+        log.appendBytes = { raf, bytes -> raf.write(bytes) }
+        log.add("c", 300)
+        log.flushed()
+        assertEquals("[\"a\",100]\n[\"b\",200]\n[\"c\",300]\n", path.readText())
+        assertEquals(listOf("a" to 100L, "b" to 200L, "c" to 300L), log(path).shared())
+    }
+
+    /** Opening and appending agree on where the last record ends: a last line with no newline
+     *  that reads as a play is one (as Windows reads it), and is given its newline before the
+     *  next; one that doesn't read is cut off. */
+    @Test
+    fun theLastRecordEndsInOnePlaceForReadingAndWriting() = runBlocking {
+        val path = File(folder.root, "plays.log")
+        path.writeText("[\"a\",100]\n[\"b\",200]")
+        var log = log(path)
+        assertEquals(listOf("a" to 100L, "b" to 200L), log.shared())
+        log.add("c", 300)
+        log.flushed()
+        assertEquals("[\"a\",100]\n[\"b\",200]\n[\"c\",300]\n", path.readText())
+        path.appendText("[\"d\",4")
+        log = log(path)
+        log.add("e", 500)
+        log.flushed()
+        assertEquals("[\"a\",100]\n[\"b\",200]\n[\"c\",300]\n[\"e\",500]\n", path.readText())
     }
 }
