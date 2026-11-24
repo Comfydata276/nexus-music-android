@@ -2209,22 +2209,33 @@ How it is built (M5b, the log of plays, Your stats and the mixes):
   playlist's route key as a third field for a play made from one). **One place decides "this
   was a play"**: `PlayReporter` (half the song or four minutes; an internet radio station
   never, as Windows' `radio_url.is_empty()`: it used to be reported to the server after four
-  minutes). What it reports goes to the log always and to the server if plays are reported,
-  at the same moment (`PlaybackService.counted`). Where a play was made from is taken as its
+  minutes; nor is it told to the server as "now playing", though it stays in Recently
+  played). What it reports goes to the log always and to the server if plays are reported,
+  from one place, one straight after the other (`AccountGraph.played`, under a lock the
+  account's `close` takes too): signing out can't come between them. Where a play was made from is taken as its
   queue entry begins: the queue's source if it is a playlist and the song is one of that
   list's, not queued by hand (Windows' `tick`). With no file it starts from Recently played,
   as Windows does. Bounded as Windows bounds it (200,000; past 205,000 the oldest go and the
-  file is written whole). **Its interface** is Windows': `add`, `absorb` (plays from other
-  devices, each once, compared with the newest 5,000 here), `shared`, `sources`, and `state`,
-  the same as one value that shares the log's arrays (`Plays`) for whatever reads every play.
+  file is written whole, and the names only the oldest used go with them). **Its interface**
+  is Windows': `add`, `absorb` (plays from other devices: a play is a song and a second, taken
+  in at most once, whether offered twice or already held anywhere in the log), `shared`,
+  `sources` (one per song and second, the last noted, as Windows' map keeps them),
+  `sharedWithSources` (the two from one moment, for syncing), `state` (the same as one value
+  that shares the log's arrays, `Plays`, for whatever reads every play), and `close`.
 - **Written safely.** Appended off the main thread, in order: each play has a number, the file
   is known to hold up to a number, and whatever write runs next writes what is missing, so
-  none is written twice or skipped. Lines are synced. A line cut short is passed over when
-  read (as Windows) and cut off before the next is added (Windows would join the next play to
-  it and lose both). A file that is there but can't be read is never written over: that run's
-  plays are kept in memory and Diagnostics says so. One writer per file for the process, as for
-  held changes; writes carry on after the account goes. What is in memory goes with the
-  account (`AccountGraph.playLog`).
+  none is written twice or skipped. Lines are synced. **The log knows the file's length up to
+  its last record known to be written, and every append first cuts the file back to it**: a
+  write that failed part-way (a full disk) or whose sync failed is taken back, not written again
+  after itself, and `flushed()` says that it failed. A record is a whole line; a last line with
+  no newline is one if it reads as one (Windows' reading takes it) and gets its newline before
+  the next line, and one that doesn't read is cut off; opening and appending go by the same
+  rule. A file that is there but can't be read is never written over: that run's plays are kept
+  in memory and Diagnostics says so. **One owner of the file at a time**: a log holds the file's
+  lock from opening to closing, and closing writes everything it holds before letting the file
+  go, so signing straight back in to the same account reads the file only after the old log is
+  done with it, and a closed log never writes again (`AccountGraph.close` closes it). What is
+  in memory goes with the account (`AccountGraph.playLog`).
 - **The mixes** (`library/Mixes.kt`, a port of src/mixes.rs with its test): On repeat (from
   Recently played, as Windows: what was played twice or more in thirty days), Your top songs
   (the server's counts), Rediscover, the two genres played most, and mixes of one's own made to
@@ -2236,7 +2247,9 @@ How it is built (M5b, the log of plays, Your stats and the mixes):
   song (new accessors on `SongTable`), sorted as places with a stable sort of its own that
   boxes nothing (`IntSort.kt`). `MixBook` (`AccountGraph.mixes`) works them out again off the
   main thread whenever the copy, the likes, Recently played, the rules or the UTC day change;
-  null until there is a whole copy.
+  null until there is a whole copy. Until the whole of Liked songs has been heard (`Likes.known`),
+  a song is liked if the copy says it is starred, as Windows' `is_liked` falls back to the song's
+  own star: offline with no kept Liked songs page, liked-only rules and Rediscover still work.
 - **Mixes of one's own** (`store/RuleMixes.kt`, `rule-mixes.json` in the account's data
   folder, in Windows' `Rules` form): each change written atomically and durably before it is
   shown; a change the phone won't keep is not made, and said ("That didn't save…"); a file
@@ -2258,13 +2271,16 @@ How it is built (M5b, the log of plays, Your stats and the mixes):
   copy plus what the log has since that copy was fetched; the rest is the log. Days, weeks
   (from Monday) and months by the phone's clock. Counted into arrays by place in the table and
   by the log's number for a name, not maps of boxed counts. From the phone alone, so the same
-  offline (a song that doesn't play is dimmed, as anywhere).
+  offline (a song that doesn't play is dimmed, as anywhere). A ranking carries the copy of the
+  library it was worked out from (`Stats.Page.table`), and the page draws it against that and no
+  other, so a newer copy arriving can't pair one ranking's places with another table.
 - **In the car**: under Home, after Liked songs, a group "Made for you", each mix a folder
   (`mix/<id>`) of Shuffle and its songs, playing the mix from the song chosen; nothing asked
   of the server. Offline a mix lists what plays, each song keeping its place in the whole mix,
   and one with nothing that plays isn't listed. The car is told to look again at Home only
-  when the row's mixes or covers change, and at an open mix only when its songs do. Stats
-  don't go to the car.
+  when what the row shows changes, and at an open mix only when what it holds does (its songs'
+  ids, and offline which play), looked at whenever the mixes, being offline or what is
+  downloaded change. Stats don't go to the car.
 - **Cost** (Android 17 emulator, debug build, 50,120 songs; `DebugControl --es library
   mixes`): every mix (four of one's own among them) 17 ms, allocating 2.9 MB; the slowest
   stats period with a full 200,000-play log 50 ms, allocating 2.9 MB (before the arrays, 146
@@ -2293,6 +2309,26 @@ How it is built (M5b, the log of plays, Your stats and the mixes):
   toast and no question, as on Windows.
 - **One sheet opening another** (a menu's "Save as playlist") used to open hidden: every sheet
   now has its own bottom sheet state (the shell keys its host on the sheet).
+
+Known, and accepted (the M5b fixes):
+
+- **A play older than everything the log still holds** (taken out at its limit) is not known,
+  and is taken in again if another device offers it again, as on Windows: the log can't
+  remember what it has let go.
+- **A kill of the process between a play's line in the log and its change for the server**
+  leaves it in one and not the other: making the pair one write would need a journal of
+  counted plays, which the rare window doesn't pay for. And a play whose answer from the server
+  was lost is still sent twice (so before this milestone too: the Subsonic interface has no way
+  to make a submission safe to repeat).
+- **A mix opened in the car just before midnight (UTC) and tapped just after** plays the song
+  tapped with the new day's mix after it, and a song that has left the mix plays by itself: the
+  folder is the day's mix, and a car's tap names a song, not a day.
+- **Restarting the app part-way through a song starts the count of what was heard again**: the
+  count lives with the player, as before this milestone; a play straddling a restart may not
+  count.
+- **Every song that starts works the mixes out again** (16 ms off the main thread, for On
+  repeat's sake, which follows Recently played): not worth splitting the mixes by what each
+  depends on.
 
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed

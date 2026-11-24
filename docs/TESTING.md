@@ -1954,6 +1954,41 @@ emulator was another engineer's); TalkBack read aloud (the names are in `scripts
 phone's speed; a new install's mix page before any copy of the library exists ("Your library is
 still being read", by reading, not on screen).
 
+### The M5b fixes: what was checked
+
+No emulator this round (none was to be started). Each fix has a unit test, the order of events
+forced where it matters:
+
+- **One owner of the log** (`PlayLogTest.oneOwnerOfTheFileAtATime`): the old log's write of
+  its last play is held at a gate (`beforeWrite`) while the account's new log opens; the new
+  one doesn't open until the old one has closed, then reads the play; a play told to the
+  closed log is neither kept nor written.
+- **A failed write taken back** (`aFailedWriteIsTakenBackBeforeTheNext`, through
+  `appendBytes`): half a line written and the disk full, then a whole line written and its sync
+  failing; `flushed()` throws each time; the next write leaves each play in the file once.
+  `theLastRecordEndsInOnePlaceForReadingAndWriting`: a last line with no newline that reads is a
+  play and gets its newline; one that doesn't is cut off. With the cut-back or the wait for the
+  old owner taken out, these tests fail (checked by doing so).
+- **Absorbing** (`eachPlayIsTakenInAtMostOnce`: a play offered twice with another of the same
+  second between them; a play held further back than 5,000) and **sources**
+  (`sourcesAreWindowsOne`: one per song and second, the last noted; `sharedWithSources`).
+- **Trimming** (`theNamesOnlyTheOldestUsedGoWithThem`: 10,014 names kept before, 12 after).
+- **A play and its report together** (`AccountPlaysTest`): the account's own dispatcher held at
+  a gate while a play is counted and the account closed; the play is in the log and held for the
+  server. With the report launched as before, the play is in the log and not held.
+- **A station** (`PlayCountTest.aStationIsNeverToldToTheServer`), **stats** (`StatsTest
+  .theRankingCarriesTheTableItWasMadeFrom`), **likes not yet known** (`MixBookTest`), **the
+  car's mix folders** (`CarMixesTest.aMixsFolderChangesByWhatItHolds`).
+
+Two of the commits were checked in a scratch copy of the last commit plus the files changed:
+the shared checkout didn't build at those moments for other engineers' work in progress.
+
+**The checks**, in a clean copy of 284158e (the last of the fixes; the shared checkout held
+other engineers' unfinished work): `scripts/check --release` passed (908 tests, lint clean,
+release APK 6,583,390 bytes), and the whole suite twice in a row with `--no-build-cache
+--rerun-tasks`, 908 tests each, none failed. (`DownloadsTest.aGroupThatIsNoListIsRemovedWholeToo`,
+which failed under load in M5b's runs, passed in all three.)
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
