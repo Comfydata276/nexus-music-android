@@ -12,7 +12,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import org.medianexus.music.net.Song
-import org.medianexus.music.store.syncDir
+import org.medianexus.music.store.syncDirOrFail
 import org.medianexus.music.store.temporaryFor
 import org.medianexus.music.store.writeAtomically
 
@@ -404,7 +404,18 @@ class Catalogue(
     @Throws(IOException::class)
     private fun append(change: Change) {
         val file = File(dir, LOG_FILE)
-        val created = !file.exists()
+        if (!file.exists()) {
+            // A log that has only just come to be: its name must reach the disk before
+            // anything is written in it. A line in a log a power cut could take away whole
+            // is no mark, and no unmarking. If the folder can't be synced, nothing is written.
+            RandomAccessFile(file, "rw").close()
+            try {
+                syncDirOrFail(dir)
+            } catch (e: IOException) {
+                file.delete()
+                throw e
+            }
+        }
         RandomAccessFile(file, "rw").use { log ->
             // Never onto the end of a fragment (one left by an earlier run is cut off when
             // the log is read; one left by a write that failed in this run, here).
@@ -431,8 +442,6 @@ class Catalogue(
                 throw e
             }
         }
-        // A log that has only just come to be: its name must reach the disk too.
-        if (created) syncDir(dir)
         logged++
     }
 
@@ -474,8 +483,11 @@ class Catalogue(
             temp.delete()
             throw IOException(e)
         }
-        // The new list's name on the disk before the log that it replaces is emptied.
-        syncDir(dir)
+        // The new list's name on the disk before the log that it replaces is emptied: **if
+        // the folder can't be synced, the log is not emptied** (a power cut could then give
+        // back the list before, with nothing left to say what had happened since). The new
+        // list and the whole log together still say everything; it is tried again later.
+        syncDirOrFail(dir)
         RandomAccessFile(File(dir, LOG_FILE), "rw").use { log ->
             log.setLength(0)
             log.fd.sync()

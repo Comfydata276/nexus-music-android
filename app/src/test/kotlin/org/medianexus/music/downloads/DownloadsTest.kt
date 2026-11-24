@@ -762,4 +762,40 @@ class DownloadsTest {
         assertEquals(0, asked.count { it.url.queryParameter("id") == "s2" })
         assertEquals(null, catalogue.collection("playlist:p1"))
     }
+
+    // ---- A repair with no room for it (offline hardening 2, item 3) -------------------------
+
+    @Test
+    fun aRepairThatCannotBeQueuedForWantOfRoomIsListedAsFailedNotDropped() {
+        // Two downloads were marked whole; by the time the app is next started one file has
+        // gone and the other is short.
+        val first = downloads()
+        until("ready") { first.state.value.settled }
+        run { first.download(listOf(song("s1"), song("s2"))) }
+        until("both") { first.state.value.downloaded.size == 2 && !first.state.value.busy }
+        first.release()
+        made.remove(first)
+        idle()
+        catalogue.fileOf("s1")!!.delete()
+        catalogue.fileOf("s2")!!.let { it.writeBytes(it.readBytes().copyOf(1_000)) }
+        // And the phone has no room to fetch them again.
+        spare = Long.MAX_VALUE / 2
+        catalogue = Catalogue(catalogue.dir)
+        engineNotes.clear()
+        val engine = downloads()
+        until("ready") { engine.state.value.settled }
+        until("said") { engine.state.value.failed.size == 2 }
+        // Neither is a download, neither is on its way, and both are shown as failed for
+        // want of room: nothing says they are being fetched.
+        assertTrue(engine.state.value.downloaded.isEmpty())
+        assertFalse(engine.state.value.busy)
+        assertEquals(setOf("Not enough room on the phone to download it again."), engine.state.value.failed.map { it.reason }.toSet())
+        assertTrue("$engineNotes", engineNotes.any { "could not be queued: not enough room" in it })
+        assertTrue("$engineNotes", engineNotes.none { it.endsWith("are fetched again") })
+        // Room again, and Retry failed fetches them.
+        spare = 0
+        run { engine.retryFailed() }
+        until("both again") { engine.state.value.downloaded.size == 2 && !engine.state.value.busy }
+        assertTrue(engine.state.value.failed.isEmpty())
+    }
 }

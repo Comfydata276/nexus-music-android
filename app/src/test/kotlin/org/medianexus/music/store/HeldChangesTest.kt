@@ -261,4 +261,24 @@ class HeldChangesTest {
         assertEquals(listOf("a", "b"), ids(held.all()))
         assertEquals(listOf("a", "b"), ids(held().all()))
     }
+
+    @Test
+    fun aChangeIsNotSaidToBeHeldWhenItsFileMayNotBeOnTheDisk() = runBlocking {
+        // Offline, and the folder can't be synced: the file was written, but a power cut
+        // could give back the one before it. The change is not acknowledged as held.
+        folderSync = { false }
+        try {
+            offline = true
+            val changes = held()
+            try {
+                changes.submit(star("a", true))
+                fail("it was neither sent nor safely kept")
+            } catch (e: ApiError.Network) {
+            }
+            assertEquals(0, changes.waiting.value)
+        } finally {
+            folderSync = ::forceFolder
+            offline = false
+        }
+    }
 }

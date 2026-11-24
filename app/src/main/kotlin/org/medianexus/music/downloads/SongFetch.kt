@@ -13,7 +13,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.medianexus.music.net.Song
 import org.medianexus.music.playback.NATIVE_SUFFIXES
-import org.medianexus.music.store.syncDir
+import org.medianexus.music.store.syncDirOrFail
 import org.medianexus.music.store.writeAtomically
 
 /** The form a song is downloaded in: the bit rate asked of the server (0 for the file as it
@@ -207,7 +207,10 @@ class SongFetch(
         meta.delete()
     }
 
-    private fun save(meta: File, of: PartOf) = writeAtomically(meta, json.encodeToString(PartOf.serializer(), of).toByteArray())
+    /** Writes a part's record, **and its name in the folder**: a record that a power cut
+     *  could swap for an older one (or for none) is no checkpoint. Throws if either can't be
+     *  put on the disk. */
+    private fun save(meta: File, of: PartOf) = writeAtomically(meta, json.encodeToString(PartOf.serializer(), of).toByteArray(), durable = true)
 
     /**
      * One request and what comes of it. Null: the answer didn't fit the part (the server's
@@ -266,8 +269,15 @@ class SongFetch(
                     // to carry on with later if the server gave no validator or no length.)
                     record = of.takeIf { !form.converted && it.validator.isNotEmpty() && length > 0 }
                     record?.let {
-                        save(meta, it)
-                        syncDir(catalogue.dir)
+                        try {
+                            save(meta, it)
+                        } catch (_: IOException) {
+                            // The record may not be on the disk: then nothing vouches for
+                            // this part, and it is not one to carry on from later. The song
+                            // is still fetched, whole, now.
+                            meta.delete()
+                            record = null
+                        }
                     }
                 }
                 // Any other "success" is not a song.
@@ -285,7 +295,13 @@ class SongFetch(
                     if (arrived == synced) return
                     out.fd.sync()
                     synced = arrived
-                    record = of.copy(synced = synced).also { save(meta, it) }
+                    try {
+                        record = of.copy(synced = synced).also { save(meta, it) }
+                    } catch (_: IOException) {
+                        // This checkpoint didn't reach the disk for certain; whichever
+                        // record is there (this one or the one before) says no more than
+                        // the part, just synced, really holds. Carried on with.
+                    }
                 }
                 try {
                     val source = response.body.byteStream()
@@ -353,9 +369,11 @@ class SongFetch(
             Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             meta.delete()
             CrashPoints.reached("renamed")
-            // Its name must be on the disk before the mark that vouches for it.
-            syncDir(catalogue.dir)
+            // Its name must be on the disk before the mark that vouches for it: if the
+            // folder can't be synced, it is not marked.
+            syncDirOrFail(catalogue.dir)
         } catch (e: IOException) {
+            target.delete()
             throw failure(e)
         }
         CrashPoints.reached("placed")

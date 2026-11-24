@@ -612,10 +612,12 @@ class Downloads(
             }
             // Downloads whose files were found, at sign-in, to be missing or not the length
             // that was recorded: not downloads any more, and fetched again.
+            // (Queued, or, if there is no room to queue them, listed as failed for want of
+            // room: never dropped while this says they are being fetched.)
             val again = catalogue.wanting.map { it.song }.filter { !catalogue.has(it.id) }
             if (again.isNotEmpty()) {
-                note("downloads: ${again.size} marked whole were not, and are fetched again")
-                scope.launch(Dispatchers.Main.immediate) { download(again) }
+                note("downloads: ${again.size} marked whole were not (their files are missing or not the length recorded)")
+                scope.launch(Dispatchers.Main.immediate) { refetch(again) }
             }
         }
 
@@ -889,7 +891,7 @@ class Downloads(
                 entry.takeIf { catalogue.remove(listOf(id)).isNotEmpty() }
             } ?: return@launch
             if (::manager.isInitialized && !released) manager.removeDownload(id)
-            note("downloads: one marked whole $why: it is no longer a download" + if (id in demoted) "" else ", and is fetched again")
+            note("downloads: one marked whole $why: it is no longer a download")
             if (!demoted.add(id)) {
                 later { catalogue.failed(Failed(entry.song, "It was downloaded again and still wouldn't play.")) }
                 return@launch
@@ -906,8 +908,10 @@ class Downloads(
     private suspend fun refetch(songs: List<Song>) {
         val asked = download(songs)
         if (asked is Asked.NoRoom) {
-            note("downloads: ${songs.size} to be fetched again could not be queued: not enough room on the phone")
+            note("downloads: ${songs.size} to be fetched again could not be queued: not enough room on the phone. They are listed as failed")
             later { for (song in songs) if (!catalogue.has(song.id)) catalogue.failed(Failed(song, "Not enough room on the phone to download it again.")) }
+        } else {
+            note("downloads: ${songs.size} are fetched again")
         }
     }
 

@@ -23,7 +23,9 @@ fun writeAtomically(file: File, bytes: ByteArray, durable: Boolean = false) = wr
  * is about to rely on it (a record that a download is whole, a change waiting for the
  * server). The bytes reach the disk before the rename either way; with `durable` the folder
  * does too, after it ([syncDir]): without that the rename itself can be lost, and the old
- * file is back. A cache (a page, a cover) doesn't ask for it: the old one would do.
+ * file is back. If the folder can't be synced, a durable write **throws**: the new file is in
+ * place, but nothing may be done on the strength of it. A cache (a page, a cover) doesn't
+ * ask for it: the old one would do.
  */
 @Throws(IOException::class)
 fun writeAtomically(file: File, durable: Boolean = false, write: (java.io.OutputStream) -> Unit) {
@@ -46,7 +48,9 @@ fun writeAtomically(file: File, durable: Boolean = false, write: (java.io.Output
         temp.delete()
         throw e
     }
-    if (durable) file.parentFile?.let { syncDir(it) }
+    // (A write asked to be durable that isn't is a write that failed: whoever asked is about
+    // to rely on it.)
+    if (durable) file.parentFile?.let { syncDirOrFail(it) }
 }
 
 /**
@@ -56,9 +60,23 @@ fun writeAtomically(file: File, durable: Boolean = false, write: (java.io.Output
  * rename that "happened" can be undone by the battery going, with whatever was written
  * afterwards on the strength of it still there.
  *
- * False if the system wouldn't do it (nothing here can do more about that than say so).
+ * False if the system wouldn't do it. **Whatever is about to be done on the strength of it
+ * must then not be done** (a log emptied because the list that replaces it is in place, a
+ * download marked because its file is): use [syncDirOrFail] where that is so.
  */
-fun syncDir(dir: File): Boolean = try {
+fun syncDir(dir: File): Boolean = folderSync(dir)
+
+/** [syncDir], for a step that must not go on without it: throws if the folder couldn't be
+ *  synced. */
+@Throws(IOException::class)
+fun syncDirOrFail(dir: File) {
+    if (!syncDir(dir)) throw IOException("The folder couldn't be synced")
+}
+
+/** How a folder is synced (a test puts a failing one here, to see what then isn't done). */
+@Volatile internal var folderSync: (File) -> Boolean = ::forceFolder
+
+internal fun forceFolder(dir: File): Boolean = try {
     java.nio.channels.FileChannel.open(dir.toPath(), java.nio.file.StandardOpenOption.READ).use { it.force(true) }
     true
 } catch (_: IOException) {
