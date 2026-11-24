@@ -392,7 +392,12 @@ class AccountGraph(
                 look()
                 front.collectLatest { inFront ->
                     if (!inFront) return@collectLatest
-                    if (System.currentTimeMillis() - synchronized(this@AccountGraph) { lookedAt } >= LOOK_FLOOR_MILLIS) look()
+                    // (Not within ten seconds of the last look. A last look that is in the
+                    // future is one made before the phone's clock was put back: that is no
+                    // reason to wait, and after a clock that was wrong is exactly when a
+                    // look is wanted.)
+                    val since = System.currentTimeMillis() - synchronized(this@AccountGraph) { lookedAt }
+                    if (since < 0 || since >= LOOK_FLOOR_MILLIS) look()
                     while (true) {
                         pause(org.medianexus.music.sync.InStep.LOOK_MILLIS)
                         look()
