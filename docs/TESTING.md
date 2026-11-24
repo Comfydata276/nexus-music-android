@@ -37,7 +37,7 @@ In the app, the server's address is **`http://127.0.0.1:4533`** (see "Two addres
 | `scripts/cartour` | Pictures of the app in a car's own media screens (Android Automotive) |
 | `scripts/dhu` | Google's Desktop Head Unit with the real Android Auto: not usable yet, see below |
 | `scripts/measure` | Size, start-up time, memory, scrolling |
-| `scripts/slowlink` | Slows the emulator's tunnel to the test server, or cuts it (downloads part-way, the server gone) |
+| `scripts/slowlink` | Slows the emulator's tunnel to the test server, cuts it, or makes it a black hole (downloads part-way, the server gone, a signal that carries nothing) |
 
 Each prints its own help when run with no arguments or `--help`.
 
@@ -594,6 +594,10 @@ Media3's own test kit for a clock the player can be run against. They are part o
 | `RangedAnswerTest` | Media3's `OkHttpDataSource` over a real connection, counting the bytes of each answer actually read: an answer that ignored a range is not read up to the place |
 | `Mp3TrimTest` | Media3's MP3 extractor reading made-up files with and without a LAME header, sniffed first and then read, as Media3 does a new stream |
 | `KnownHostsTest` | The app's own copy of Google's list, read from its resources |
+| `DoneMeansDoneTest` | Media3's `DownloadManager` and its database under our downloader, real audio made by ffmpeg (`src/test/resources/audio`), a server whose answers stop where the test says (`GatedServer`), then ExoPlayer with Media3's extractors reading what was marked Done through the app's data source with the network gone: an original interrupted after its first bytes, the app "restarted" on the same files, a different file under the same song id, the network cut, the downloads read cold, and every one played to its end |
+| `WholeDownloadTest`, `AudioCheckTest` | Media3's extractors on that audio: each way a resumed or cut-short answer could once be marked complete (a part joined to another file, a server that ignores the condition, no validator, "no such range", an unasked range, a short answer that agrees with itself, a conversion most of the way there, something that isn't audio) |
+| `DownloadsTest`, `KeeperTest` | Media3's `DownloadManager` again (lists that share songs, the space check, the start-up sweep held by a gate, the network turning metered, Android stopping the job, an old engine still unwinding); Android's `JobScheduler` and connectivity classes (what network the job asks for, a schedule rejected) |
+| `PinnedCopyTest` | ExoPlayer, the progressive source and the MP3 extractor over two copies of a song at different bit rates, each frame carrying its time: a seek after the download arrives, a download removed or replaced while it plays |
 
 What Robolectric cannot be: Android's rules about foreground services and audio, another
 app's process, a real `MediaControllerCompat` across a binder, Android's own answer about a
@@ -777,6 +781,23 @@ scripts/slowlink cut           # the server gone: connections dropped, new ones 
 scripts/slowlink stop          # back to the server directly
 ```
 
+`scripts/slowlink hole` is the dead spot with bars showing: every connection is taken and
+nothing is ever answered, so a request made into it hangs until the app gives it up (where
+`cut` refuses at once, which a phone notices at once).
+
+**Two things about the tunnel that cost time to find.** Under Android's job (a download
+asked for with the app on screen, on Android 14 and later) transfers go out on the network
+Android gave the job, and on the emulator a connection made on that network to `127.0.0.1`
+does not pass through adb's tunnel: such downloads arrive at full speed whatever the slow
+link says, and are not cut by `cut`. The API, the player and the first downloads of a batch
+(begun before the job has started) do go through it. And an emulator signed in at
+`http://10.0.2.2:4533` is not touched by `scripts/slowlink` at all (see below): look at
+`files/settings.json` before believing an "offline" run. There, take the network away
+(`svc wifi disable; svc data disable`), or swallow the server's packets
+(`adb root`, then `iptables -I OUTPUT -d 10.0.2.2 -p tcp --dport 4533 -j DROP`; `-D` to undo).
+The car emulator sometimes comes up unable to reach `10.0.2.2` at all ("Network is
+unreachable" from its shell): `svc wifi disable; svc wifi enable` puts it right.
+
 A phone signed in at `http://127.0.0.1:4533` goes through it at once (connections already
 open: force-stop the app first). One signed in at `10.0.2.2` must sign in at
 `http://10.0.2.2:4534` to go through it (the relay listens on the server's port plus one).
@@ -790,7 +811,14 @@ server, and how many changes are held), `--es downloads retry|cancel|remove` and
 `--es downloads "'remove <id>,<id>'"` (the inner quotes survive adb's shell), `--es spare
 999999` makes the free-space check refuse (`--es spare usual` to undo), `--es offline on|off`,
 and `--es measure availability`. Debug builds log where each song was opened from (tag
-`NexusPlayback`: "from its download", "through the kept songs").
+`NexusPlayback`: "from its download", "through the kept songs"), and what each download did
+(tag `NexusDownloads`: "carried on from byte N", "sent the whole file: its part is thrown
+away", "verified and in place", "failed its checks"). For the hard cases: `--es toggle
+"playlist:<id>"` is a list's download button pressed (download, cancel or remove, as it
+stands); `--es like <song id>` and `--es unlike <song id>` are its heart; and `--es killat
+<moment>` has the app kill itself (SIGKILL) at a named moment of a download's last steps
+(`CrashPoints`: `last-write`, `arrived`, `verified`, `renamed`, `placed`, `append-half`,
+`appended`; `never` to stop).
 
 Ending the app mid-download: `am kill` does nothing while a user-initiated job is running
 (Android ranks the app as perceptible, oom adj 201). To kill it as the low-memory killer
@@ -896,6 +924,67 @@ frames; with nothing downloaded, the same day, 8.71% (M1b fixes: 8.7%). Scrollin
 of it arrive was not measured reliably: the measuring script force-stops the app between
 runs, and by hand the batch finished in under a minute even through the slow link, before the
 scrolling could be timed.
+
+### The hardening of the offline engine: what was checked
+
+A review of M2a answered "would you trust this to have your music ready in a dead spot?"
+with no. What was changed is in `docs/DESIGN.md`; this is how it was checked. Every numbered
+finding has a test that fails on the code as it was reviewed (run against a checkout of
+that code where the test compiles against it: the twelve of `WholeDownloadTest` and
+`DoneMeansDoneTest`, the torn log, the order of a like and an unlike, five of the
+shared-list tests, the two seeks of `PinnedCopyTest`, the two cold-car tests). On the
+emulators, with reports under `~/.cache/nexus-music-android/reports/offline-hardening/` and
+pictures under `shots/offline-hardening/`:
+
+| Check | What was seen | Where |
+|---|---|---|
+| **Killed at the worst moments** (Android 16, debug). The app kills itself (SIGKILL) at each of seven named moments of a download's last steps, three times each, while a 100-song playlist arrives; the folder is audited as the kill left it and again after a restart (`audit.py`: everything marked is a file of the length recorded) | 21 kills: marked but not whole, 0 every time; the log's last line torn after each `append-half` kill and whole after the restart; no mark lost (59, 61, 63, 64 across the three torn-log rounds). Left to finish: 100 marked, **100 identical to the server's file byte for byte** (sha256) | `kills-android16.txt` |
+| An original interrupted by SIGKILL six seconds in, against the real server | The part's record on the disk (`"synced":1052194` of a 1.9 MB part); restarted: "carried on from byte 1052194 of 7452519 (the server's copy is the same one)", then verified; sha256 the server's | `resume-android16.txt` |
+| The same, the part's record changed to name another copy (the server's file "replaced") | "asked to carry on from byte 1052194, and sent the whole file: its part is thrown away" (Navidrome honours `If-Range`), then verified; sha256 the server's | the same |
+| A file marked Done cut short by hand, the app stopped | Started again: Diagnostics "1 marked whole were not, and are fetched again"; whole again, sha256 the server's | the same |
+| Offline mode on, like, off and unlike in the same breath, three times (Android 16; once each on 17 and 9) | Held 1, then held 0 and the server **not liked**, every time | `held-order-android16.txt`, `smoke-android17.txt`, `smoke-android9.txt` |
+| Two playlists that share eight songs: both downloaded, the larger removed by its button; started again | 100 downloaded, then 8, the smaller list still downloaded whole, the same after a restart. A list never asked for whose songs another holds: "Its songs stay downloaded: something else you've downloaded has them" | `shared-lists-android16.txt` |
+| Two albums (12 MB and 35 MB) asked for in the same breath with room for 40 MB | The first started; the second: "Not enough room: that needs about 48 MB…" | the same |
+| Android stops the job mid-download (`cmd jobscheduler timeout`) | "held ANDROID", nothing fetching, the bytes in part files the same five seconds later; Diagnostics "the job was stopped by Android (reason 3); they wait until it runs again"; the app opened: carried on | `job-and-network-android16.txt` |
+| The Wi-Fi turns metered with Wi-Fi only on (`cmd netpolicy set metered-network AndroidWifi true`) | "held WIFI" and nothing fetching within three seconds; unmetered again: fetching | the same |
+| A Wi-Fi Android has not validated (its own internet check pointed at nothing), mobile data off, Wi-Fi only on | The Wi-Fi's capabilities without `VALIDATED`; an album asked for and downloaded; the job's CONNECTIVITY constraint satisfied, running as a user-initiated transfer | the same |
+| The car check, the release build as committed, Android 16: online; cold with the server cut; cold on a black hole | Online 52 passed, none failed. Cut: `--mode offline` 25 and none, the whole check 49 and none. Black hole: the whole check 48 and none (connected in 92 ms; 80 folders opened, the slowest 8 ms); `--mode offline` from cold 23 and one (below), and 25 and none once the app knows | `carcheck-final-android16.txt`, `carcheck-*-android16.json` |
+| The same on Android 17 (data cleared, signed in afresh) and Android 9 | 17: cut 25 and none; black hole 48 and none; online 48 and none. 9: no network at all, cold, 25 and none; online 48 and none | `carcheck-*-android17.json`, `carcheck-*-android9.json` |
+| Pictures of each tab, the player, the queue and search in a car's own screens (Android Automotive), release build, from a cold start: with no network at all, and with the server's packets swallowed (`iptables … DROP`) | Home, Playlists, Library and Downloads drawn at once from the phone; a song chosen plays (0:04 of 0:36 in the picture) | `shots/offline-hardening/cartour-cold-no-network/`, `cartour-cold-black-hole/` |
+| Smoke: downloads, a kill in the middle of a mark, held changes, no crash | Android 17 and Android 9, as above; on 9 the 46 marked after two kills were all identical to the server's files | `smoke-android17.txt`, `smoke-android9.txt` |
+
+**What the runs found that the tests had not** (all put right, each with a test where one
+could be written): the engine's start-up block ran ahead of fields declared after it, so
+downloads could begin before the sweep (it showed as a test failing only under load); a list
+no longer downloaded kept its cover, and the room downloads take wasn't added up again after
+a removal; a removal that removes nothing said "Removed"; downloads Android had paused stayed
+paused with the app open; on a black hole from a cold start, for the four seconds before
+the app knows, entries were given addresses for covers not on the phone (`art.readable`),
+and a search with no match on the phone waited on the server; and a kept page from before
+the server gave its songs other ids (the emulators had some) made a listed album open empty.
+
+**The one failure left standing, and why.** Cold on a black hole, `--mode offline` picks a
+song from another tab in the first four seconds, before the app can know the server is not
+there: the tabs then show what the phone has kept of the whole library (as they do online),
+and a song chosen that is not on the phone waits for a server that never answers
+("Reconnecting…"), as it would had the signal gone mid-song. After those seconds the tabs
+show only what plays. With no network at all there is no such moment.
+
+**Before the first unlock after a restart** (`before-first-unlock-android16.txt`): with a
+screen lock set and the phone restarted and not unlocked, the app is not started at all.
+The system does not list its service among the media browsers ("Not found; no service
+started"), so a car has nothing of the app to show, and the app has no way to say "Unlock
+your phone to use Nexus Music": to be started then it would have to be direct-boot aware,
+and everything it builds as it starts reads its own stored data, which can't be read then.
+Left as it is. Unlocked, the service starts.
+
+**Measured** (release build, Android 17, signed in, 46 songs downloaded, the 100-song
+playlist, `--keep`; this build and the one before the hardening, 4fdbeac, on the same
+emulator and data the same hour; `measure-android17.json`, `measure-android17-before-4fdbeac.json`):
+APK 6,112,634 bytes (before: 6,062,082); cold start 511 ms median, 506 to 541 (556, 531 to
+566); idle 87.4 MB (83.1); playing 96.8 MB, 96.4 in the background (93.2, 92.8); the
+100-song playlist 8.99% slow frames (10.07%). One run each: about 4 MB more memory, which is
+within what two runs of one build have differed by here, and not shown to be the hardening's.
 
 ## What is not covered
 
@@ -1039,6 +1128,36 @@ And these nothing on the phone records, so they are for eyes and ears:
 - a Play button after the phone has been restarted and the app not opened since;
 - One UI's own battery rules: whether it stops the app in the background mid-drive (put
   the app on "Unrestricted" under Battery if it does, and say so);
+- **downloads on the real phone**, none of which an emulator can say:
+  - **Samsung's battery rules above all**: whether One UI lets a user-initiated transfer run
+    to the end with the screen off, whether it runs the job again after stopping the app
+    (on Google's Android 16 it did within ten seconds; on 17 at the next look at the
+    device), and whether "sleeping apps" or "deep sleeping apps" stops a downloaded playlist
+    topping itself up. Ask for a long playlist, lock the phone, and read Diagnostics after:
+    `downloads: carried on by Android's job scheduler` (with its count) and `the job was
+    stopped by Android (reason N)`;
+  - a power cut or a hard reset mid-download: the syncing is as the documentation asks, and
+    whether the phone's storage keeps its word can't be seen here (an emulator's disk is a
+    file on this machine);
+  - the network Android gives the job when a VPN is up, or on a mesh that hands the phone
+    between access points: if a transfer on it can't reach the server the app goes back to
+    the phone's own route and says so in Diagnostics (`the network Android gave the job
+    didn't reach the server`);
+  - a real home Wi-Fi with no internet beyond it, and a hotspot Android does or doesn't know
+    is metered: made on the emulator by hand, never met;
+  - a real dead spot: a mobile network that swallows packets, not one made with a relay.
+    What a car's screen does in the four seconds before the app knows; how long the
+    phone's own radio takes to say "no network";
+  - whether every file the phone downloads is one its decoders play: the check before a
+    download is marked reads the file as the player's extractors do (container, audio track,
+    length); it does not decode it. A file the phone can't decode is found at its first
+    play, set aside and streamed;
+  - a library whose lengths are wrong on the server (an old variable-rate MP3 with no
+    header): such a song fails to download, with the reason. How many of the person's own
+    songs do is only known by downloading them: look at "Couldn't be downloaded";
+  - the phone full to the brim: made here by raising the spare, never by filling a disk;
+  - what the real Android Auto shows before the phone is first unlocked after a restart
+    (the app is not started then: above);
 - the sound itself: gaps at joins, the level, a click after a dropped connection picks up.
 
 ## Where things are
