@@ -328,8 +328,12 @@ How it is built (M1a):
   (`Recovery.laidAtTheFile`): it couldn't be read, it couldn't be parsed, or it holds what
   this phone can't decode. And **only that file**: its name and the modification time it had
   when it was marked. It is marked, on the disk, as needing a fresh copy, shown as on its
-  way again, and fetched when the server can be reached; the new copy takes its place, in
-  one step, only once it has been verified. **Meanwhile it is still a download**: on the
+  way again, and fetched when the server can be reached; the new copy takes its place only
+  once it has been verified, **under a name of its own** (`<id>.r.<kind>`, the next one
+  back at the plain name), and the old file goes only once the catalogue's mark for the new
+  one is on the disk. If any step fails (the folder can't be synced, the mark can't be
+  written) the new file goes and the old copy and its entry are as they were. (It was
+  renamed over the old file first, so a mark that couldn't be written then cost both.) **Meanwhile it is still a download**: on the
   phone, listed offline, and played with no server as far as it plays; with the server
   there, the server's copy is played instead. (It used to be unmarked and deleted on the
   spot, and set aside for the rest of the run: a song that stumbled once in a dead spot was
@@ -337,9 +341,10 @@ How it is built (M1a):
   listed as failed with the reason, not fetched over and over, and is still on the phone.
   **If what failed was the phone's decoding of the file as it is** (the player says the
   format is unsupported, or exceeds what the phone can do), that is remembered on the disk
-  (`Catalogue.mustConvert`, `convert.json`, by the song's id and that file's size) and the
-  fresh copy is the server's conversion: the same original is never fetched again to fail
-  again, in this run or any other, and the song is streamed converted too. A decoder that
+  (`Catalogue.mustConvert`, `convert.json`, by the song's id, that file's size and the
+  version of Android that said so) and the fresh copy is the server's conversion: the same
+  original is never fetched again to fail again on that version of Android, and the song is
+  streamed converted too. After a system update the question is asked again. A decoder that
   fell over or couldn't be had, or the sound output failing, says nothing about the file:
   the entry is made ready again, once, and nothing else is done. Such failures are final at
   once: the player's retry rule used to take a file it couldn't parse (Media3's
@@ -609,9 +614,17 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
     search and a spoken request. The list of playlists puts the downloaded ones in whether
     or not the server's list is kept. **The Albums folders by order** (Recently added,
     Recently played, Most played), whose order only the server knows, show the albums on the
-    phone when their own list is not kept (they were empty). **One playlist asked for by id**
+    phone when their own list is not kept (they were empty), **or is kept with nothing on it
+    that plays** (that, filtered, was an empty folder taken for the answer). **One playlist asked for by id**
     is answered from what the phone has of that playlist itself (its downloads, its own kept
     page), and only then from the list of playlists.
+  - **An album, or a song of one, asked to be played with no page of the album kept** is
+    played from the downloads' own record when that has what was asked for (the song
+    chosen; for the whole album, the album downloaded whole and all arrived), **whether or
+    not the server is known to be there** (`CarTree.downloadedInstead`): chosen in a
+    folder, shuffled, added by its id or asked for by voice. It used to go to the server
+    first, and on a link that had just gone silent waited out the car's limit with the
+    songs on the phone. A downloaded song asked for by itself is had from the record too.
   - **While it isn't known whether the server is there** (the first seconds of a cold
     start: four at most, none at all with no network; and the moment after offline mode is
     switched off), **every path answers at once from what the phone has**, and the server is
@@ -645,7 +658,15 @@ Google draws the car's screen. We supply lists, artwork, what's playing and a fe
     repeat is on. (It was looked for along the player's own playlist, by position: a song on
     the phone three hundred places on in a long queue was "nothing further on", and repeat
     counted for nothing.) A song that fails for any other reason is passed over the same
-    way: to the queue's next, not the playlist's. It used to wait as "Reconnecting…" for as
+    way: to the queue's next, not the playlist's. **Offline, passing over ends**
+    (`Recovery.PassingOver`): in one run of passing over (each failure of the entry it last
+    passed to), a song that has already failed is not tried again, and when every song on
+    the phone has, it stops there and says nothing can be played offline. (Two downloads
+    that both failed to open, with repeat on, sent the player from one to the other for
+    ever: a stale download still counts as on the phone, and this path is outside the
+    limit of three failures in a row.) Something playing, or Play pressed, ends the run;
+    a song the person chooses begins a new one, so a stale copy can still be played on
+    purpose. It used to wait as "Reconnecting…" for as
     long as the stream's own tries took: the stream's loader looks only at the switch set by
     hand. A song that was *playing* when the server went still stays where it is and carries
     on when the server is back.
@@ -818,9 +839,12 @@ How it is built (M1a):
       them, and whether one of them takes **this very format**, its profile, channels and
       sample rate (`MediaCodecInfo.isFormatSupported`, what `MediaCodecAudioRenderer` asks
       at 1.11.1); not merely whether a decoder for the kind exists. **A question that can't
-      be put is a no.** A no (an ALAC in an `.m4a`; more channels than the phone decodes) is
-      not a failure: the server's conversion is downloaded in its place, that is remembered
-      on the disk, and the file as it is is not asked for again.
+      be put is a no, for that download only**: it is downloaded converted, and nothing is
+      remembered. A definite no (an ALAC in an `.m4a`; more channels than the phone
+      decodes) is not a failure: the server's conversion is downloaded in its place, that is
+      remembered on the disk with the version of Android that said it, and the file as it is
+      is not asked for again on that version. (A question that failed was written down for
+      good, as a no is.)
     - **The server's own copy may be what has the flaw.** When a file that is a song fails
       its reading-through, and the next complete fetch brings exactly the same bytes (the
       same length and SHA-256) failing the same way, asking again will bring nothing else:
@@ -927,11 +951,16 @@ How it is built (M1a):
     the Downloads page can only name the songs it shows, which are the ones that have
     arrived. Removed, a half-arrived album is all removed: what has arrived is deleted and
     what is on its way is stopped. (The page's ids were all that was acted on: the one
-    arrived song went, and the rest carried on arriving for a list just forgotten.)
+    arrived song went, and the rest carried on arriving for a list just forgotten.) **A
+    list's own button goes the same way**: what it is (Cancel, Remove) is decided by what
+    its page shows, and what it acts on is every member of the list, so a song a top-up has
+    queued that the page has not caught up with is cancelled with the rest.
   - **The wish goes first, on the disk, or nothing goes** (`Catalogue.forget`, `unsingle`).
     That a list is wanted whole, or a song for itself, is withdrawn durably before a file is
     deleted or a transfer stopped; if the phone won't take that write nothing else is done,
-    and the person is told ("Nothing was removed: the phone wouldn't save the change"). It
+    and the person is told ("Nothing was removed: the phone wouldn't save the change", or
+    "Nothing was cancelled"); so too for a song's own Cancel and Remove and for Cancel all,
+    which say they are done only once it is written. It
     used to be forgotten in memory whatever became of the write: "Removed" was said, and at
     the next start the list was back and fetched its songs again. A song removed or
     cancelled by hand goes the same way, in its turn with every other asking.
@@ -1044,8 +1073,8 @@ How it is built (M1a):
   goes and its maker is told. **Any other error of the server's says nothing about the
   change** (a fault of its own, a code the app doesn't know; Windows takes these as final):
   it waits, later changes to the same thing wait behind it, the rest go on, and it is tried
-  again later; a like or a rating is given up a day after it was made if the server still
-  answers so (said in Diagnostics, and what is liked is asked for again), **a play never**.
+  again later, **for as long as it takes, a like or a rating as a play** (a like or a rating
+  used to be given up a day after it was made, with nobody told).
   A proxy's error page in the server's place is the same wait, and the server is asked
   whether it is there; no answer, or a sign-in it won't take, keeps the lot. The app no
   longer being offline starts the sender, however that came about. **And what is kept that
@@ -1303,8 +1332,9 @@ described where it belongs above; what was decided, and what was taken out:
 - **A change the phone won't write is not sent**, even with the server there (it used to be
   queued unwritten and sent). On a phone whose storage refuses a hundred-byte write, a
   like fails with its message and a play is lost with a line in Diagnostics.
-- **Only codes 50 and 70 are final for a held change.** A like or a rating the server keeps
-  answering with any other error is given up a day after it was made; a play never.
+- **Only codes 50 and 70 are final for a held change.** Any other error, and the change
+  waits, a play for ever (a like or a rating was given up after a day: see "What the
+  offline loose ends decided").
 - **With Wi-Fi only on, the server is asked on the Wi-Fi**, and what the app as a whole
   knows of the server (asked on the phone's own route) decides nothing for downloads.
 - **With Wi-Fi only on, the app's own unmetered network governs, not the job's** (above).
@@ -1319,6 +1349,30 @@ described where it belongs above; what was decided, and what was taken out:
   the job and fall back to the phone's own route; a like held, the server's list fetched
   while it is held, and the app restarted before it is delivered shows the heart but not
   the song in Liked songs until it is delivered.
+
+### What the offline loose ends decided
+
+After the third round, an independent review left seven small faults, each fixed in its
+simplest form (described where it belongs above). What had to be decided on the way:
+
+- **A replacement's name** is the plain one with `.r` before the kind, and the next
+  replacement goes back to the plain name; the part it arrives in keeps the plain name, so
+  one left by an earlier run is carried on with.
+- **A like or a rating is never given up**, whatever the server answers but 50 or 70.
+- **"The whole list" for a list's own button** is the Downloads page's: its songs as
+  recorded, and for an album every song of it downloaded or on its way.
+- **"Nothing was cancelled"** is said for a cancel that could not be written down, beside
+  the existing "Nothing was removed".
+- **What a decoder's no is held to** is the Android version number (`SDK_INT`): a monthly
+  security update that changes a codec is not noticed. A record from before this was kept
+  is asked again.
+- **A cover waits a minute** for the server to answer on a network that has just come; then
+  it is not kept this time, as with no network.
+- **One run of passing over** is the failures of the entries it passed to in turn; a song
+  that has played, Play, or the person choosing another entry ends it.
+- **The downloads' record answers for an album with no page kept** only when it has what
+  was asked for: the song chosen, or for the album as a whole, every song of an album
+  downloaded whole.
 
 ### What the design left open, and what was decided (M2b)
 
@@ -1740,10 +1794,11 @@ How it is built (M3a, finding music):
 
 ### What the finding-music fixes decided
 
-- **A copy fetched while the library moved is used, and fetched again** (as Windows now
-  does): after the last page the scan status is read again; if it moved, couldn't be read, or
-  a song came twice, the copy is stamped out of date (count -1) and the next ordinary check
-  fetches it. No refusing, no retries, no comparison with the server's count. Nothing is
+- **A copy fetched while the library moved is used, and fetched again** (as Windows does):
+  after the last page the scan status is read again, waiting five seconds at most; only if
+  both readings succeeded and differ, or a scan is running, is the copy stamped out of date
+  (count -1) and the next ordinary check fetches it. A second reading that fails or is slow,
+  or a song that came twice, marks nothing (small fixes, item 5). No refusing, no retries, no comparison with the server's count. Nothing is
   fetched while the server scans. A copy Android cleared is written again from memory; a
   resumed fetch uses only pages kept under its own scan. Whether there is another page is
   decided by how many the server returned (kept with each page), not by what is left once a

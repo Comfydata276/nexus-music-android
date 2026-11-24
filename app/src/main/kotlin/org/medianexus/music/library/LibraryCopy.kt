@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.medianexus.music.net.Album
 import org.medianexus.music.net.Artist
 import org.medianexus.music.net.Found
@@ -192,13 +193,14 @@ class LibraryCopy(
      * fetched while the server is scanning: half a library is no use, and a long scan would
      * otherwise meet a fetch at every check.
      *
-     * A fetched copy is always used. Whether it can be trusted is said by its stamp: if the
-     * server's library stood still while it was read (asked again once the last page is in,
-     * the server says what it said before the first) and no song came round twice, it is
-     * stamped as the server stood. If not (a song deleted or added between two pages moves
-     * every song after it, and one falls between two pages or comes round twice), or the
-     * server couldn't be asked again, it is stamped as out of date ([UNSETTLED]), and the next
-     * ordinary check fetches it again.
+     * A fetched copy is always used. Whether it can be trusted is said by its stamp, as on
+     * Windows: asked again once the last page is in, if the server says its library changed
+     * since the first (a song deleted or added between two pages moves every song after it,
+     * and one falls between two pages or comes round twice), or that it is scanning, the copy
+     * is stamped as out of date ([UNSETTLED]) and the next ordinary check fetches it again.
+     * Otherwise (it said the same, or couldn't say within five seconds) it is stamped as the
+     * server stood: a server that is slow or troubled at that moment, or lists a song twice,
+     * doesn't have the whole library fetched again at every check.
      */
     suspend fun check(): Boolean = lock.withLock {
         openLocked()
@@ -273,17 +275,18 @@ class LibraryCopy(
             }
             // Did the library stand still while it was read? Asked again now every page is in:
             // a scan since the first page (or one under way) may have moved songs between pages.
+            // Only an answer that says so marks the copy (as Windows does): none in five
+            // seconds, or a failure, holds up a finished copy no longer, and marks nothing.
             val after = try {
-                server.scanStatus()
+                withTimeoutOrNull(ASK_AGAIN_MILLIS) { server.scanStatus() }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (_: Exception) {
                 null
             }
             val moved = when {
-                after == null -> "the server couldn't be asked how its library stands"
+                after == null -> null
                 after.scanning || after.count != stamp.count || after.lastScan != stamp.lastScan -> "the server's library changed while it was fetched"
-                gathered.repeated -> "a song came round twice"
                 else -> null
             }
             // Used all the same; stamped so that the next check fetches it again.
@@ -337,10 +340,6 @@ class LibraryCopy(
             private set
         val songCount: Int get() = songs.count
 
-        /** A song came round twice: the library moved while it was read a page at a time. */
-        var repeated = false
-            private set
-
         /** The last page brought nothing that hadn't come before. */
         var stuck = false
             private set
@@ -348,7 +347,7 @@ class LibraryCopy(
         fun add(part: Part) {
             var new = false
             for (song in part.found.songs) {
-                if (songs.add(song)) new = true else if (song.id.isNotEmpty()) repeated = true
+                if (songs.add(song)) new = true
             }
             for (album in part.found.albums) if (album.id.isNotEmpty() && albums.putIfAbsent(album.id, album.copy(songs = emptyList())) == null) new = true
             for (artist in part.found.artists) if (artist.id.isNotEmpty() && artists.putIfAbsent(artist.id, artist.copy(albums = emptyList())) == null) new = true
@@ -407,6 +406,10 @@ class LibraryCopy(
         const val REFRESH_AFTER = 24 * 3600L
 
         private const val SHOW_EVERY_NANOS = 1_000_000_000L
+
+        /** How long the server's word on its library is waited for, asked again once a copy
+         *  is in (Windows' five seconds): a slow answer doesn't hold up a copy that's ready. */
+        const val ASK_AGAIN_MILLIS = 5_000L
 
         /** The count a copy is stamped with when it can't be trusted to be whole: no server
          *  says it has -1 songs, so the next check finds it out of date ([isStale]). */

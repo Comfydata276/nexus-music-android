@@ -104,21 +104,19 @@ class LibraryFetchTest {
     }
 
     @Test
-    fun aSongAddedBetweenPagesIsCaughtByTheSongThatCameTwice() = runBlocking {
+    fun aSongThatCameTwiceDoesNotMakeTheCopyOutOfDate() = runBlocking {
         val server = Server(thirty)
         // A song added near the top, and the scan status (wrongly) not moved: s09 is pushed
-        // onto the second page and comes round twice, and "new" is never seen.
+        // onto the second page and comes round twice, and "new" is never seen. The server's
+        // word is what decides, as on Windows: it said nothing changed. (A copy marked for
+        // this was fetched again at every check from a server that lists a song twice.)
         server.says = 30
         server.served = { page -> if (page == 0 && server.ids.size == 30) server.ids.add(1, "new") }
         val copy = copy(server)
         assertTrue(copy.check())
         assertEquals(thirty, ids(copy.ready))
-        assertEquals(LibraryCopy.UNSETTLED, copy.ready!!.stamp.count)
-        server.served = {}
-        server.says = null
-        assertTrue(copy.check())
-        assertEquals(listOf("s00", "new") + thirty.drop(1), ids(copy.ready))
-        assertEquals(31L, copy.ready!!.stamp.count)
+        assertEquals(30L, copy.ready!!.stamp.count)
+        assertFalse(copy.check())
     }
 
     @Test
@@ -155,7 +153,7 @@ class LibraryFetchTest {
     }
 
     @Test
-    fun aServerThatCantBeAskedAgainGivesACopyMarkedOutOfDate() = runBlocking {
+    fun aServerThatCantBeAskedAgainGivesAFinishedCopy() = runBlocking {
         var asked = 0
         val server = object : LibraryServer {
             override suspend fun scanStatus(): ScanStatus {
@@ -168,7 +166,31 @@ class LibraryFetchTest {
         val copy = copy(server)
         assertTrue(copy.check())
         assertEquals(listOf("a", "b", "c"), ids(copy.ready))
-        assertEquals(LibraryCopy.UNSETTLED, copy.ready!!.stamp.count)
+        // Not marked: only an answer that says the library moved does that. (It was marked,
+        // and a server that failed that second reading had the whole library fetched again at
+        // every check, on mobile data too.)
+        assertEquals(3L, copy.ready!!.stamp.count)
+        assertFalse(copy.check())
+    }
+
+    @Test
+    fun aSecondReadingThatStallsHoldsUpAFinishedCopyFiveSecondsAtMost() = kotlinx.coroutines.test.runTest {
+        var asked = 0
+        val server = object : LibraryServer {
+            override suspend fun scanStatus(): ScanStatus {
+                // The second reading never answers.
+                if (++asked == 2) CompletableDeferred<Unit>().await()
+                return ScanStatus(count = 3, lastScan = "a")
+            }
+            override suspend fun page(artists: Int, albums: Int, songs: Int, offset: Int) =
+                Found(songs = listOf("a", "b", "c").drop(offset).take(songs).map { Song(id = it) })
+        }
+        val copy = LibraryCopy(folder.root, server, kotlinx.coroutines.test.StandardTestDispatcher(testScheduler), now = { 10_000 }, pageSize = 10)
+        assertTrue(copy.check())
+        // Five seconds of the test's clock, and the copy is used, as the server stood.
+        assertEquals(LibraryCopy.ASK_AGAIN_MILLIS, testScheduler.currentTime)
+        assertEquals(listOf("a", "b", "c"), ids(copy.ready))
+        assertEquals(3L, copy.ready!!.stamp.count)
     }
 
     @Test
@@ -185,7 +207,6 @@ class LibraryFetchTest {
         assertTrue(copy.check())
         assertEquals(2, pages.get())
         assertEquals(10, copy.ready!!.songs.size)
-        assertEquals(LibraryCopy.UNSETTLED, copy.ready!!.stamp.count)
     }
 
     @Test
