@@ -601,6 +601,7 @@
     <string name="selected_count">%1$d selected</string>
     <string name="leave_selection">Leave selection</string>
     <string name="songs_named">%1$d songs</string>
+    <string name="songs_named_one">1 song</string>
     <string name="songs_liked_one">1 song added to Liked songs</string>
     <string name="songs_liked">%1$d songs added to Liked songs</string>
     <string name="songs_unliked_one">1 song removed from Liked songs</string>

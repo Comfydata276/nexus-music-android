@@ -146,7 +146,7 @@ private fun Ui.openSelectionMenu(selection: Selection, songs: List<Song>, inPlay
         val res = LocalResources.current
         val android = androidx.compose.ui.platform.LocalContext.current.applicationContext
         val done = { action: () -> Unit -> choose { action(); selection.clear() } }
-        Title(res.getString(R.string.songs_named, chosen.size))
+        Title(if (chosen.size == 1) res.getString(R.string.songs_named_one) else res.getString(R.string.songs_named, chosen.size))
         Rule()
         Entry(R.drawable.ic_list_start, stringResource(R.string.play_next)) { done { ui.player.playNext(chosen); ui.toast(res.getString(R.string.playing_next)) } }
         Entry(R.drawable.ic_list_end, stringResource(R.string.add_to_queue)) { done { ui.player.addToQueue(chosen); ui.toast(res.getString(R.string.added_to_queue)) } }
