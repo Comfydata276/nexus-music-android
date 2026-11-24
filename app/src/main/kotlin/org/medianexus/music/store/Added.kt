@@ -63,8 +63,10 @@ class Added(
     private val writing = Mutex()
     @Volatile private var dirty = 0L
 
+    /** `mark`: [MARK] in a file written under the present rule for what gets a time (see
+     *  the class); 0 in one from a build before it. */
     @Serializable
-    private data class Stored(val lists: Map<String, Map<String, AddedNote>> = emptyMap(), val seen: Set<String> = emptySet())
+    private data class Stored(val lists: Map<String, Map<String, AddedNote>> = emptyMap(), val seen: Set<String> = emptySet(), val mark: Int = 0)
 
     @Synchronized
     private fun load() {
@@ -76,11 +78,23 @@ class Added(
         val stored = runCatching { json.decodeFromString(Stored.serializer(), text) }.getOrNull()?.takeIf { it.lists.isNotEmpty() || it.seen.isNotEmpty() }
             // The file as written before notes were shared: just the times.
             ?: runCatching { json.decodeFromString(OLD, text) }.getOrNull()?.let { old ->
-                Stored(old.mapValues { (_, songs) -> songs.mapValues { (_, times) -> AddedNote(times, times.maxOrNull() ?: 0) } }, old.keys)
+                Stored(old.mapValues { (_, songs) -> songs.mapValues { (_, times) -> AddedNote(times, 0) } }, old.keys)
             }
             ?: return
         lists = HashMap(stored.lists.mapValues { HashMap(it.value) })
         seen = HashSet(stored.seen)
+        if (stored.mark < MARK) {
+            // Written by a build that dated whatever it noticed in a playlist with the moment
+            // it looked, and would now share that as the day the song was added. Which of
+            // its notes were the person's own doing can't be told from the file, so none
+            // keeps its time: all become what the phone merely saw, for its own "Date added",
+            // and are never shared. (A note that only said "it went" says nothing then.)
+            for (notes in lists.values) {
+                notes.values.removeAll { it.times.isEmpty() }
+                for (entry in notes.entries) entry.setValue(entry.value.copy(at = 0))
+            }
+            save()
+        }
     }
 
     /**
@@ -304,7 +318,7 @@ class Added(
      *  time, one write after another: a write that was overtaken is skipped. With no scope
      *  (tests), at once. */
     private fun save() {
-        val stored = Stored(lists.mapValues { HashMap(it.value) }, HashSet(seen))
+        val stored = Stored(lists.mapValues { HashMap(it.value) }, HashSet(seen), MARK)
         val number = ++dirty
         val write = {
             try {
@@ -319,6 +333,10 @@ class Added(
     companion object {
         /** A removed song's note is kept this long, so other devices hear that it went. */
         const val KEEP_REMOVED = 90 * 24 * 3600L
+
+        /** The rule a file's notes were given their times under: 1, only the person's own
+         *  changes on this phone are dated. */
+        private const val MARK = 1
 
         private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
         private val OLD = MapSerializer(String.serializer(), MapSerializer(String.serializer(), ListSerializer(Long.serializer())))

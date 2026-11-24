@@ -1,0 +1,14 @@
+What a phone holds that was set up with the build before keeping in step (0.3.0), for the
+tests of what a build with it does on first opening those files (UpgradeTest, and
+scripts/instep-check).
+
+settings.json and playlist-added.json are in the form that build's own code wrote them
+(store/SettingsStore.kt and store/Added.kt as of commit 4147858^: every setting by name, the
+notes as "lists" and "seen" with no mark), with made-up values. They were written out by
+hand from that code, not copied off a phone. PLAYLIST_A, SONG_1 and SONG_2 stand for ids:
+the tests put real ones in.
+
+What matters in them: a pin, a theme and two lists' choices, each with a time that build put
+on as it was changed, under whichever account was signed in; and a note that dates SONG_2 to
+the moment that build happened to look at the playlist (1795000300), which is not when the
+song was added.

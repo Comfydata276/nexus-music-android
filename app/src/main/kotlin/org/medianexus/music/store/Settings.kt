@@ -137,6 +137,13 @@ data class Settings(
      */
     val agreed: Agreed = Agreed(),
     val waiting: List<Waiting> = emptyList(),
+    /**
+     * Which rules the shared choices above were written under: `sync/Belongs.kt`'s
+     * `MARK` once a build that keeps them as [agreed] and [waiting] has had them. 0 in a file
+     * from any build before that, whose pins, list choices and theme carry times put on by
+     * rules since thrown out: such a file's are demoted as it is first opened.
+     */
+    val stepMark: Int = 0,
     /** Which account the choices that are shared between devices belong to (its storage
      *  key): the pins and their time, each list's choices, the theme's time and the sync
      *  playlist's id. They are shared into that account's record and no other's: when

@@ -1,0 +1,59 @@
+{
+    "server": "",
+    "username": "",
+    "shuffle": false,
+    "repeat": 0,
+    "bitrate": 0,
+    "scrobble": true,
+    "crossfade": 0.0,
+    "gapless": true,
+    "autoplay": true,
+    "normalize": false,
+    "volume_level": 1,
+    "level_mode": 0,
+    "untagged_db": -6.0,
+    "mono": false,
+    "equalizer": false,
+    "eq_gains": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+    ],
+    "eq_preamp": 0.0,
+    "eq_saved": [],
+    "cache_limit_mb": 2048,
+    "cache_ahead": 3,
+    "download_quality": 0,
+    "download_wifi_only": true,
+    "offline": false,
+    "pinned_playlists": [
+        "PLAYLIST_A"
+    ],
+    "lists": {
+        "playlist:PLAYLIST_A": {
+            "shuffle": true,
+            "sort": 0,
+            "descending": false,
+            "sort_chosen": false,
+            "at": 1795000000
+        },
+        "liked": {
+            "shuffle": false,
+            "sort": 2,
+            "descending": true,
+            "sort_chosen": true,
+            "at": 1795000050
+        }
+    },
+    "theme": "Rose",
+    "sync": true,
+    "device_id": "",
+    "sync_playlist": "",
+    "pins_at": 1795000100,
+    "theme_at": 1795000200,
+    "local_network_refused_for_good": false,
+    "download_notifications_asked": true
+}
