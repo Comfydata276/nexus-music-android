@@ -349,6 +349,20 @@ class PlaylistsTest {
     }
 
     @Test
+    fun aChangeRefusedBeforeItsMakerHasReturnedLeavesNothingToUndo() = runBlocking<Unit> {
+        // The sending runs at once, on the caller's thread, and is refused before remove()
+        // has returned: the fastest a refusal can be. (Undo used to be remembered after the
+        // change was queued, so a refusal that fast was followed by an Undo for it.)
+        val now = Playlists(server, pages, ::listSpec, ::spec, reachable = { reachable }, username = "tester", scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined))
+        val page = opened()
+        server.trouble["remove"] = Trouble.REFUSE
+        now.remove(page, listOf(1))
+        assertEquals(1, server.count("remove"))
+        assertNull(now.undo.value)
+        assertFalse(now.undoLast(page))
+    }
+
+    @Test
     fun undoWaitsBehindWhatItUndoesAndGoesWithItIfThatFails() = runBlocking<Unit> {
         val page = opened()
         val (reached, open) = server.hold("remove")

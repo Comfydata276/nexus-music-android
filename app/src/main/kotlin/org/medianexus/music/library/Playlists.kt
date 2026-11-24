@@ -152,10 +152,16 @@ class Playlists(
      * playlist made before it; `done` is told whether the server took it. Returns why it can't
      * be made now, doing nothing, or null.
      */
-    fun edit(id: String, record: Playlist?, edit: PlaylistEdit, name: String, done: (Boolean) -> Unit = {}): Unavailable? {
+    fun edit(id: String, record: Playlist?, edit: PlaylistEdit, name: String, done: (Boolean) -> Unit = {}): Unavailable? =
+        queue(id, record, edit, name, done, undo = null)
+
+    /** [edit], remembering `undo` as the way to take it back: before it can be sent, so a
+     *  refusal however quick forgets it. */
+    private fun queue(id: String, record: Playlist?, edit: PlaylistEdit, name: String, done: (Boolean) -> Unit, undo: PlaylistUndo?): Unavailable? {
         if (!reachable()) return Unavailable.OFFLINE
         if (edit !is PlaylistEdit.Create && (record == null || !canEdit(record))) return Unavailable.NOT_YOURS
         val start = synchronized(lock) {
+            if (undo != null) lastUndo.value = undo
             queues.value = queues.value + (id to (queues.value[id].orEmpty() + Waiting(edit, name, done)))
             working.add(id)
         }
@@ -167,27 +173,25 @@ class Playlists(
     fun remove(playlist: Playlist, rows: Collection<Int>): Unavailable? {
         val places = rows.filter { it in playlist.songs.indices }.distinct().sorted()
         if (places.isEmpty()) return null
-        val unavailable = edit(playlist.id, playlist, PlaylistEdits.removing(playlist.songs.map { it.id }, places), playlist.name)
-        if (unavailable == null) lastUndo.value = PlaylistUndo.Removed(playlist.id, playlist.songs, places, clock())
-        return unavailable
+        return queue(playlist.id, playlist, PlaylistEdits.removing(playlist.songs.map { it.id }, places), playlist.name, {}, PlaylistUndo.Removed(playlist.id, playlist.songs, places, clock()))
     }
 
     /** Moves the song at row `from` of `playlist` (as shown) to row `to`. */
     fun move(playlist: Playlist, from: Int, to: Int): Unavailable? {
         val songs = playlist.songs
         if (from == to || from !in songs.indices || to !in songs.indices) return null
-        val unavailable = edit(playlist.id, playlist, PlaylistEdits.moving(songs.map { it.id }, from, to), playlist.name)
-        if (unavailable == null) lastUndo.value = PlaylistUndo.Moved(playlist.id, songs, from, to, clock())
-        return unavailable
+        return queue(playlist.id, playlist, PlaylistEdits.moving(songs.map { it.id }, from, to), playlist.name, {}, PlaylistUndo.Moved(playlist.id, songs, from, to, clock()))
     }
 
     /**
      * Takes back the last removal or move, if it was made in the last minute (Windows'
      * `undo_last`): the reverse change, behind what it undoes. It is never sent if that didn't
      * happen (its failure dropped it, and forgot it could be undone). False if there is nothing
-     * to undo, or it can't be done now.
+     * to undo, or it can't be done now. Taken and queued in one step, under the lock a
+     * failure drops changes under: so the reverse is either behind what it undoes (and goes
+     * with it if that fails) or not made at all.
      */
-    fun undoLast(record: Playlist): Boolean {
+    fun undoLast(record: Playlist): Boolean = synchronized(lock) {
         val undo = lastUndo.value?.takeIf { it.playlist == record.id } ?: return false
         lastUndo.value = null
         if (clock() - undo.at > UNDO_MILLIS) return false
@@ -198,7 +202,7 @@ class Playlists(
                 PlaylistEdits.moving(after, undo.to, undo.from)
             }
         }
-        return edit(record.id, record, reverse, record.name) == null
+        edit(record.id, record, reverse, record.name) == null
     }
 
     /** Adds songs at the end of a playlist. */
@@ -259,9 +263,9 @@ class Playlists(
             }
             // It didn't happen, or may not have: nothing is applied on top of it.
             val dropped = synchronized(lock) {
+                if (lastUndo.value?.playlist == id) lastUndo.value = null
                 queues.value[id].orEmpty().also { queues.value = queues.value - id }
             }
-            if (lastUndo.value?.playlist == id) lastUndo.value = null
             dropped.forEach { it.done(false) }
             refusals.emit(PlaylistRefused(id, next.name, failure.outcome, failure.error))
             catchUp(id, failure.error)
