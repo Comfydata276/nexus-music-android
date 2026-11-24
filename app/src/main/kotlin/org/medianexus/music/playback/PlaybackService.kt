@@ -867,6 +867,7 @@ class PlaybackService : MediaLibraryService() {
         era = null
         reading.clear()
         triedAgain.clear()
+        readThrough.clear()
         ahead.want(emptyList())
         old.scope.cancel()
         // Off the main thread: closing writes the cache's index.
@@ -1136,11 +1137,8 @@ class PlaybackService : MediaLibraryService() {
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
             val from = oldPosition.positionMs / 1000.0
             val sameEntry = entryOf(oldPosition.mediaItem) != null && entryOf(oldPosition.mediaItem) == entryOf(newPosition.mediaItem)
-            // A download that came to its end well before the song's length: no error (the
-            // reader took a stretch it couldn't read for the end of the song, or the file
-            // stops short), and nothing was said. Its file is read through, and if it is at
-            // fault it stops being a download and is fetched again.
-            if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) endedAt(oldPosition.mediaItem, oldPosition.positionMs)
+            // A download has played to its end: its file is read through (see [playedOut]).
+            if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) playedOut(oldPosition.mediaItem)
             when {
                 // Repeating one song: the play that just finished is counted, and the next
                 // time round is a new play of it.
@@ -1153,16 +1151,27 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlaybackStateChanged(playbackState: Int) {
             // The end of the queue. The same song started again from the top is a new play.
             if (playbackState == Player.STATE_ENDED) {
-                endedAt(exo.currentMediaItem, exo.currentPosition)
+                playedOut(exo.currentMediaItem)
                 plays.ended(clock())
             }
         }
 
-        /** A song has played to its end at `positionMs`: see [Recovery.endedEarly]. */
-        private fun endedAt(item: MediaItem?, positionMs: Long) {
+        /**
+         * A song has played to its end from its download: that file is read through, once
+         * in a run of the app, and if it is at fault it stops being a download and is
+         * fetched again (`Downloads.verifyNow`).
+         *
+         * Nothing the player says can be gone by instead. Seen on the Android 16 emulator: a
+         * FLAC with bytes changed inside a frame played its whole length with no error (the
+         * decoder plays on past it); and an MP3 with a stretch of junk in its middle "played"
+         * its whole length too, the last twenty-three seconds of it in silence (Media3's
+         * reader took the junk for the end of the song, and the player ran the clock on to
+         * the length the file states). No error, no early end, nothing to notice: only
+         * reading the file says.
+         */
+        private fun playedOut(item: MediaItem?) {
             val song = (item?.localConfiguration?.tag as? QueuePlayer.SongTag)?.song ?: return
-            if (reading[song.id] !is SongCopy.Download || !Recovery.endedEarly(positionMs, song.duration)) return
-            graph.diagnostics.note("a downloaded copy ended well before the song's length: its file is read through")
+            if (reading[song.id] !is SongCopy.Download || !readThrough.add(song.id)) return
             era?.account?.downloads?.verifyNow(song.id)
         }
 
@@ -1387,6 +1396,9 @@ class PlaybackService : MediaLibraryService() {
         // The words change: no longer "Reconnecting…".
         player.refresh()
     }
+
+    /** Downloads read through after playing to their end, in this run (see `playedOut`). */
+    private val readThrough = HashSet<String>()
 
     /** The queue entry that has been heard since it came to the cursor (its number). */
     private var heardUid: Long? = null

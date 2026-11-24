@@ -50,18 +50,6 @@ object Recovery {
     fun passesOverOutOfReach(known: Boolean, onPhone: Boolean, heard: Boolean, meansToPlay: Boolean): Boolean =
         known && !onPhone && !heard && meansToPlay
 
-    /**
-     * Whether a song that played to its end at `positionMs` ended **early**: more than three
-     * seconds, and more than a fiftieth of its length, before the length the library gives
-     * it (`seconds`; 0: not known, so no). A library's lengths are whole seconds and now and
-     * then a little out; a song that stops at half its length is not that.
-     */
-    fun endedEarly(positionMs: Long, seconds: Int): Boolean {
-        if (seconds <= 0) return false
-        val whole = seconds * 1000L
-        return positionMs < whole - maxOf(3_000L, whole / 50)
-    }
-
     /** The place of the next entry after `current`, of `count`, that plays with no server;
      *  null if none does. */
     fun nextThatPlays(current: Int, count: Int, plays: (Int) -> Boolean): Int? = (current + 1 until count).firstOrNull(plays)
