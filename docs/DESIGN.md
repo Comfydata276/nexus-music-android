@@ -3001,6 +3001,15 @@ file has).
       and is dropped: it does not unpin anything on a PC.
     - (A waiting change to something that build *had* agreed with the server, at the
       record's own time, would be a change still. No released build is in that state.)
+- **The saved queue is not looked at as often as the record** (0.5.1; `queueDue` in
+  `AccountGraph.kt`). The record is two or three small requests. The saved queue is not
+  small: the server sends every song of it in full, about 1.2 KB a song, 120 bytes
+  squeezed (measured against Navidrome: 121,553 bytes for 100 songs, 11,975 squeezed). So
+  with the screens in front the record is looked at every 15 seconds on any network, and
+  the saved queue with it only on a network Android says is not metered and only while
+  nothing is playing here; otherwise once a minute, as it always was. Coming to the front
+  looks at both at once. A phone that is playing keeps its own queue whatever the server
+  holds, so nothing there is worth seconds.
 - **When an exchange runs on a phone, and what it costs** (C2). At start (once the account's
   stores are read); **every 15 seconds while the app's screens are in front** (it was each
   minute until 0.5.1: a change made on another device then took up to a minute to show,

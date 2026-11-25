@@ -226,6 +226,7 @@ class AccountGraph(
     @Volatile private var closed = false
 
     private val front: StateFlow<Boolean> = wiring?.front ?: MutableStateFlow(false)
+    private val network: StateFlow<org.medianexus.music.net.NetworkNow>? = wiring?.network
 
     /** Songs the server has said it doesn't have, so they aren't asked for at every exchange
      *  (a song in another device's history that has since been deleted). */
@@ -325,12 +326,13 @@ class AccountGraph(
     private var lookedAt = 0L
 
     /** Picks up whatever other devices have changed, and passes on what changed here
-     *  (Windows' `look_elsewhere`): the shared record, then the saved queue. */
-    suspend fun look() {
+     *  (Windows' `look_elsewhere`): the shared record, then the saved queue. `queue` false:
+     *  the record alone (see [queueDue]). */
+    suspend fun look(queue: Boolean = true) {
         if (!mayShare()) return
         synchronized(this) { lookedAt = System.currentTimeMillis() }
         step?.exchange()
-        queueStep?.check()
+        if (queue) queueStep?.check()
     }
 
     /** The account's mixes of its own, made to rules (Windows' `rule_mixes`). */
@@ -418,9 +420,17 @@ class AccountGraph(
                     // look is wanted.)
                     val since = System.currentTimeMillis() - synchronized(this@AccountGraph) { lookedAt }
                     if (since < 0 || since >= LOOK_FLOOR_MILLIS) look()
+                    // The record is a few small requests, and is looked at every time. The
+                    // saved queue is not small (the server sends every song of it in full),
+                    // so it is looked at as often only where that costs nobody anything:
+                    // see [queueDue].
+                    var sinceQueue = 0L
                     while (true) {
                         pause(org.medianexus.music.sync.InStep.LOOK_MILLIS)
-                        look()
+                        sinceQueue += org.medianexus.music.sync.InStep.LOOK_MILLIS
+                        val queue = queueDue(sinceQueue, unmetered = network?.value?.unmetered != false, playing = queueStep?.playingHere() == true)
+                        if (queue) sinceQueue = 0
+                        look(queue)
                     }
                 }
             }
@@ -640,3 +650,24 @@ class AccountGraph(
         const val LOOK_FLOOR_MILLIS = 10_000L
     }
 }
+
+/** How often the server's saved queue is looked at where it is not looked at with
+ *  every look: once a minute, as it was before 0.5.1. */
+internal const val QUEUE_SPARING_MILLIS = 60_000L
+
+/**
+ * Whether a look, made `since` milliseconds after the saved queue was last looked
+ * at, looks at it too. With every look (every quarter of a minute) only on a
+ * network Android says is not metered, and only while nothing is playing here:
+ *
+ * - the saved queue is the heavy part of a look: about 120 bytes a song once
+ *   squeezed, so 60 KB for a queue of 500, four times a minute, is 15 MB an hour
+ *   of mobile data spent on a screen that is merely open;
+ * - a phone that is playing keeps its own queue whatever the server holds, and what
+ *   another device played is offered for half an hour: nothing there is worth
+ *   seconds.
+ *
+ * Otherwise once a minute, as before. Coming to the front looks at it at once
+ * either way.
+ */
+internal fun queueDue(since: Long, unmetered: Boolean, playing: Boolean): Boolean = since >= QUEUE_SPARING_MILLIS || (unmetered && !playing)

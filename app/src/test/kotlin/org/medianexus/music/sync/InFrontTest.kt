@@ -103,4 +103,69 @@ class InFrontTest {
             server.close()
         }
     }
+
+    @Test
+    fun theSavedQueueIsLookedAtWithEveryLookOnlyWhereThatCostsNothing() = runBlocking {
+        // The rule: with every look on a network that isn't metered and with nothing playing
+        // here; otherwise once a minute, as it was.
+        assertEquals(true, org.medianexus.music.queueDue(15_000, unmetered = true, playing = false))
+        assertEquals(false, org.medianexus.music.queueDue(15_000, unmetered = false, playing = false))
+        assertEquals(false, org.medianexus.music.queueDue(45_000, unmetered = true, playing = true))
+        assertEquals(true, org.medianexus.music.queueDue(60_000, unmetered = false, playing = false))
+        assertEquals(true, org.medianexus.music.queueDue(60_000, unmetered = true, playing = true))
+
+        // And the timer follows it, on mobile data: the record every time, the queue one
+        // time in four.
+        InStepBuild.forTests = true
+        val records = AtomicInteger()
+        val queues = AtomicInteger()
+        val server = MockWebServer()
+        server.dispatcher = object : mockwebserver3.Dispatcher() {
+            override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+                if ("getPlaylists" in request.url.encodedPath) records.incrementAndGet()
+                if ("getPlayQueue" in request.url.encodedPath) queues.incrementAndGet()
+                return MockResponse.Builder().code(200).setHeader("Content-Type", "application/json").body("""{"subsonic-response":{"status":"ok","version":"1.16.1"}}""").build()
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient(), OfflineSwitch())
+        val settings = SettingsStore.open(File(folder.root, "settings.json"), scope, Dispatchers.IO)
+        val dirs = AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))
+        Belongs.takeOn(settings, "key", { dirs.data })
+        val front = MutableStateFlow(false)
+        val network = MutableStateFlow(org.medianexus.music.net.NetworkNow(connected = true, unmetered = false))
+        val waits = AtomicInteger()
+        val quarter = Channel<Unit>(Channel.UNLIMITED)
+        val wiring = AccountWiring(
+            settings = settings.state, reach = MutableStateFlow(Reach()), suspect = {}, settingsStore = settings, front = front, network = network,
+            pause = { millis -> if (millis == InStep.LOOK_MILLIS) { waits.incrementAndGet(); quarter.receive() } else delay(millis) },
+        )
+        val account = AccountGraph(Account(api.server, api.username, "key", dirs), api, Dispatchers.IO, wiring)
+        try {
+            until("the look at start") { records.get() == 1 && queues.get() == 1 }
+            front.value = true
+            until("the timer to start") { waits.get() == 1 }
+            // Three quarters of a minute on mobile data: three looks at the record, none at the queue.
+            repeat(3) { n ->
+                quarter.send(Unit)
+                until("look ${n + 1}") { records.get() == n + 2 && waits.get() == n + 2 }
+            }
+            delay(200)
+            assertEquals(1, queues.get())
+            // The minute is up: this look reads the queue too.
+            quarter.send(Unit)
+            until("the minute's look") { records.get() == 5 && queues.get() == 2 }
+            until("the next wait") { waits.get() == 5 }
+            // On Wi-Fi, with nothing playing: the queue with every look.
+            network.value = org.medianexus.music.net.NetworkNow(connected = true, unmetered = true)
+            quarter.send(Unit)
+            until("a look on Wi-Fi") { records.get() == 6 && queues.get() == 3 }
+        } finally {
+            InStepBuild.forTests = null
+            account.close()
+            scope.cancel()
+            server.close()
+        }
+    }
 }
