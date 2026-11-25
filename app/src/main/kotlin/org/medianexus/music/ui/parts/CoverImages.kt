@@ -29,10 +29,11 @@ data class CoverArt(
 )
 
 /**
- * The app's one image loader. Every picture comes through the cover store of whoever is
- * signed in, which fetches and keeps it; Coil only decodes the store's file at the size it
- * is shown and holds a few recent ones in memory. Its own disk cache is off, so no picture is
- * kept on disk twice.
+ * The app's one image loader. Every picture of the music server's comes through the cover
+ * store of whoever is signed in, which fetches and keeps it; Coil only decodes the store's
+ * file at the size it is shown and holds a few recent ones in memory. Its own disk cache is
+ * off, so no picture is kept on disk twice. (A cover that is a web address, [WebCover], comes
+ * through [WebCovers] instead, which shares nothing with the music server.)
  *
  * What it holds in memory is decoded pictures, which are most of the app's memory once a few
  * pages have been looked at: a fifteenth of a large phone's allowance is 75 MB of them. So
@@ -47,6 +48,10 @@ fun coverImageLoader(context: Context, accounts: Accounts): ImageLoader {
         .components {
             add(CoverFetcher.Factory(accounts), CoverArt::class)
             add(CoverKeyer(accounts), CoverArt::class)
+            // Covers that are web addresses (albums and artists not in the library): a client
+            // and a small disk cache of their own, and a rule for where they may come from.
+            add(WebCoverFetcher.Factory(WebCovers(java.io.File(context.cacheDir, "web-covers")), accounts), WebCover::class)
+            add(WebCoverKeyer, WebCover::class)
         }
         .diskCache(null)
         .memoryCache { MemoryCache.Builder().maxSizeBytes(minOf(MEMORY_CACHE_BYTES, (allowance * 0.15).toLong())).build() }

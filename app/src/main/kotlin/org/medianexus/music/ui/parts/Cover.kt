@@ -53,6 +53,9 @@ fun Cover(
     shape: CoverShape = CoverShape.CARD,
     @DrawableRes placeholder: Int = R.drawable.ic_music,
     large: Boolean = false,
+    /** `cover` is a web address (an album or artist that isn't in the library): fetched by
+     *  [WebCovers], under its rule, and never asked for again once it has failed. */
+    web: Boolean = false,
 ) {
     Box(
         modifier.clip(shapeOf(shape)).background(Theme.colors.raised),
@@ -69,6 +72,14 @@ fun Cover(
         var largeFailed by remember(cover) { mutableStateOf(false) }
         var attempt by remember(cover) { mutableIntStateOf(0) }
         var largeAttempt by remember(cover) { mutableIntStateOf(0) }
+        if (web) {
+            if (!shown) Icon(placeholder, Modifier.glyphSize(), tint = Theme.colors.faint)
+            if (cover.isNotEmpty()) {
+                val art = remember(cover) { WebCover(cover) }
+                AsyncImage(art, contentDescription = null, modifier = Modifier.matchParentSize(), contentScale = ContentScale.Crop, onSuccess = { shown = true })
+            }
+            return@Box
+        }
         if (cover.isNotEmpty() && (failed || largeFailed)) {
             val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
             LaunchedEffect(cover, failed, largeFailed) {

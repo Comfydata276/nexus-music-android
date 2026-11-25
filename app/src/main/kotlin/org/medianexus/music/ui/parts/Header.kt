@@ -57,6 +57,8 @@ data class HeroData(
     val liked: Boolean = false,
     /** A playlist: its stand-in, until a cover is drawn, is a list's. */
     val playlist: Boolean = false,
+    /** `cover` is a web address (something not in the library: see `WebCovers`). */
+    val web: Boolean = false,
 )
 
 /**
@@ -118,6 +120,7 @@ private fun HeroCover(hero: HeroData, side: androidx.compose.ui.unit.Dp) {
                     hero.playlist -> R.drawable.ic_list_music
                     else -> R.drawable.ic_disc_3
                 },
+                web = hero.web,
             )
         }
     }

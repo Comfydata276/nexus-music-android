@@ -39,6 +39,8 @@ data class CardData(
     val title: String,
     val subtitle: String = "",
     val cover: String = "",
+    /** `cover` is a web address, not the music server's (something not in the library). */
+    val web: Boolean = false,
 )
 
 /** What a long press on a card opens (its menu: Play, Play next, Add to queue, …), given by the
@@ -60,13 +62,19 @@ fun MediaCard(
     onPlay: (() -> Unit)? = null,
     /** This is the list that's playing: the play button offers to pause. */
     playing: Boolean = false,
+    /** The button on the cover adds (asks for an album that isn't in the library): a plus,
+     *  and `playLabel` says what it does. */
+    adds: Boolean = false,
+    playLabel: String? = null,
 ) {
     val colors = Theme.colors
     val shape = RoundedCornerShape(Theme.dimens.radius)
     // A long press opens the card's menu (Windows' right-click on a card), where the shell
     // gives one.
     val cardMenu = LocalCardMenu.current
-    val onLongClick = onLongClick ?: cardMenu?.let { menu -> { menu(card) } }.takeIf { card.kind != CardKind.GENRE }
+    // (Not for something that isn't in the library, whose picture is a web address: there is
+    // nothing of it to play or queue.)
+    val onLongClick = onLongClick ?: cardMenu?.let { menu -> { menu(card) } }.takeIf { card.kind != CardKind.GENRE && !card.web }
     if (card.kind == CardKind.GENRE) {
         Box(
             modifier
@@ -109,6 +117,7 @@ fun MediaCard(
                     CardKind.PLAYLIST, CardKind.MIX -> R.drawable.ic_list_music
                     else -> R.drawable.ic_disc_3
                 },
+                web = card.web,
             )
             if (onPlay != null) {
                 PlayButton(
@@ -116,7 +125,8 @@ fun MediaCard(
                     onClick = onPlay,
                     modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
                     size = 44.dp,
-                    label = stringResource(if (playing) R.string.pause_named else R.string.play_named, card.title),
+                    label = playLabel ?: stringResource(if (playing) R.string.pause_named else R.string.play_named, card.title),
+                    adds = adds,
                 )
             }
         }

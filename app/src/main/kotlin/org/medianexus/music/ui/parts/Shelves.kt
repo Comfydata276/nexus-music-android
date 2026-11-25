@@ -65,6 +65,11 @@ fun Shelf(
     cardWidth: Dp = 148.dp,
     onShowAll: (() -> Unit)? = null,
     onPlay: ((CardData) -> Unit)? = null,
+    /** The button on a card asks for it (an album that isn't in the library): a plus, said
+     *  as `playLabel` says, and only on the cards `playable` allows. */
+    adds: Boolean = false,
+    playLabel: ((CardData) -> String)? = null,
+    playable: (CardData) -> Boolean = { true },
 ) {
     Column(modifier.fillMaxWidth()) {
         SectionTitle(title, onShowAll = onShowAll)
@@ -77,7 +82,9 @@ fun Shelf(
                     card,
                     onClick = { onOpen(card) },
                     modifier = Modifier.width(cardWidth),
-                    onPlay = onPlay?.let { play -> { play(card) } },
+                    onPlay = onPlay?.takeIf { playable(card) }?.let { play -> { play(card) } },
+                    adds = adds,
+                    playLabel = playLabel?.invoke(card),
                 )
             }
         }
