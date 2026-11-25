@@ -2772,6 +2772,32 @@ Once the stand-in was killed in the middle of an "ask", after the artist had bee
 the album marked: "Couldn't reach Lidarr. The connection was refused.", and no note kept
 (`shots/m7a/pages/cut/`).
 
+**With the switch off, as every build has it** (the commit before this note; reports in
+`~/.cache/nexus-music-android/reports/m7a/`): the suite three times without the build cache,
+1,166 tests each time, none failed; `scripts/check --release`; `scripts/instep-check`; the
+car check on the release build on Android 16, online 52 passed and none failed, and from a
+cold start with the server stopped 24 and none (each with the standing warning about a
+folder empty on purpose).
+
+What requests cost a build that never switches them on, beside 0.5.1's own file on the same
+emulator in the same state (signed in afresh, one playlist downloaded):
+
+| | 0.5.1 | This build |
+|---|---|---|
+| The file (both kinds of processor in it) | 8,921,351 bytes | 9,648,287 bytes |
+| Of that, the shared library for a phone (arm64) | 948,432 | 1,265,928 |
+| Of that, the app's own code | 5,679,080 | 5,686,724 |
+| Cold start, the middle of five | 953 ms (948 to 1,055) | 988 ms (896 to 1,015) |
+| Memory a quarter of a minute after a cold start, six starts | 70.5 to 83.7 MB | 71.6 to 79.2 MB |
+
+The size is the library's rules for requests, which are in the file whether or not they are
+ever used. Start-up and memory show nothing beyond what two starts of the same build differ
+by: the memory comes in steps of about 4 MB from one start to the next, in either build.
+(`scripts/measure`'s single reading of memory cannot tell the builds apart for that reason;
+`shots/m7a/how/idle-memory.sh` takes several.) Another engineer's build was loading the
+machine during the timings, so the scrolling numbers in those reports mean nothing: 0.5.1
+itself read 46% slow frames there against 4.5% the day before.
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
