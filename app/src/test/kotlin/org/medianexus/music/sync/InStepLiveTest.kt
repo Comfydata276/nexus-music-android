@@ -39,7 +39,7 @@ import org.medianexus.music.net.Subsonic
  * The phone here is everything of the app's below its screens and its player: the real API
  * client, the exchange, the stores on disk, and the shared library it carries. Each PC is
  * `tools/instep pc`: the Windows app's own asking of the server and its library's exchange,
- * compiled from the Windows checkout beside this repository (0.40.5's code), with what the
+ * compiled from the Windows commit the phone's library is pinned to, with what the
  * PC holds kept in a file between its exchanges. Run by `scripts/instep-check`, which
  * starts a server of its own and says where it and the tool are; without that, this test is
  * passed over.
@@ -140,14 +140,14 @@ class InStepLiveTest {
     private fun peek(user: String = "tester") = windows("peek", user)
     private fun JsonObject.text(name: String): String? = this[name]?.takeIf { it !is JsonNull }?.jsonPrimitive?.content
 
-    /** A PC on 0.40.5's code: what it holds is the file `tools/instep pc` reads and writes. */
+    /** A PC on the code of the Windows commit the phone's library is pinned to: what it holds is the file `tools/instep pc` reads and writes. */
     private inner class Pc(val name: String) {
         private val state = File(folder.root, "$name.json")
 
         /** One exchange, after the person has done `does` on it (`--pin <id>` and so on:
          *  see `tools/instep/src/household.rs`). What it printed. */
         fun exchange(vararg does: String): JsonObject = windows("pc", "tester", "--state", state.path, *does).also {
-            say("  $name (0.40.5's code) exchanged${if (does.isEmpty()) "" else " after ${does.toList().chunked(2).joinToString { (what, value) -> "${what.removePrefix("--")} ${value.take(24)}" }}"}: wrote ${it.wrote()}${it.text("held")?.let { held -> ", held: $held" }.orEmpty()}${it.text("stopped")?.let { why -> ", stopped: $why" }.orEmpty()}")
+            say("  $name (the pinned commit's code) exchanged${if (does.isEmpty()) "" else " after ${does.toList().chunked(2).joinToString { (what, value) -> "${what.removePrefix("--")} ${value.take(24)}" }}"}: wrote ${it.wrote()}${it.text("held")?.let { held -> ", held: $held" }.orEmpty()}${it.text("stopped")?.let { why -> ", stopped: $why" }.orEmpty()}")
         }
     }
 

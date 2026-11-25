@@ -2295,7 +2295,7 @@ one go); every test of `sync/` has a time limit.
 **3. With PCs on the Windows app's code, through a real server** (`scripts/instep-check`,
 `InStepLiveTest`). The script starts a server of its own (`scripts/server --instance step`,
 port 4536, wiped first), lays out the Windows commit the phone's library is pinned to
-(0.40.5) and builds `tools/instep` from it, and runs the tests with both: on one side the
+(0.40.5 when this was written; 0.40.7 since) and builds `tools/instep` from it, and runs the tests with both: on one side the
 phone's real client, exchange, stores and library (everything below its screens and its
 player), on the other `instep pc`, which is the Windows app's own asking of the server and
 that library's exchange, with what each PC holds kept in a file and what the person does on
