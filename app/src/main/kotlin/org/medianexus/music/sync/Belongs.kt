@@ -122,7 +122,11 @@ object Belongs {
      * (taken on all the same, this account would have shared them as its own, or they would
      * have been lost), or this account's own, put away earlier, are there and couldn't be
      * read (taken for none, they would be written over when it next gives way). Whoever
-     * asked must not go on as this account.
+     * asked must not go on as this account; trying again is the way out.
+     *
+     * Put-away choices that **read and are not what this app wrote** are not a refusal:
+     * they are moved to a name beside their place (`in-step.json.damaged`, which nothing
+     * ever writes to), Diagnostics says so, and the account is taken on with no choices.
      */
     fun takeOn(settings: SettingsStore, account: String, dataOf: (String) -> File, note: (String) -> Unit = {}): Boolean {
         // First, what a build before this one left in the settings is brought under this
@@ -168,7 +172,21 @@ object Belongs {
             note("in step: this account's pins and list choices on the phone couldn't be read, so it wasn't taken on")
             return false
         } catch (_: IllegalArgumentException) {
-            note("in step: this account's pins and list choices on the phone couldn't be read")
+            // They read, and are not what this app wrote (cut short, say). Never written
+            // over: moved to a name beside their place that nothing is ever written to
+            // again, and the account goes on with no choices. If they can't be moved, the
+            // account is not taken on (they would be written over when it next gives way).
+            try {
+                val damaged = fileIn(dataOf(account))
+                var aside = File(damaged.path + ".damaged")
+                var n = 2
+                while (aside.exists()) aside = File(damaged.path + ".damaged-${n++}")
+                java.nio.file.Files.move(damaged.toPath(), aside.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                note("in step: this account's pins and list choices on the phone couldn't be read, so they were kept beside their place (${aside.name}) and the account starts with none")
+            } catch (_: IOException) {
+                note("in step: this account's pins and list choices on the phone couldn't be read or kept aside, so it wasn't taken on")
+                return false
+            }
             null
         }?.let { kept ->
             if (kept.mark >= MARK) kept else try {

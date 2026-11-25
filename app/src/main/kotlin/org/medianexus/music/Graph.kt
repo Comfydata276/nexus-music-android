@@ -27,7 +27,12 @@ import org.medianexus.music.store.accountDirs
  * belongs to a screen.
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-class Graph(context: Context) {
+class Graph(
+    context: Context,
+    /** What seals the saved password: the Android Keystore, except in a test of the
+     *  saved-password start (the test runner has no Keystore). */
+    passwordBox: org.medianexus.music.store.SecretBox = KeystoreBox(),
+) {
     private val app: Context = context.applicationContext
 
     /** The app's words, for what is said from outside a screen (a toast after a question). */
@@ -96,7 +101,7 @@ class Graph(context: Context) {
 
     val session = Session(
         settings = settings,
-        vault = PasswordVault(passwordFile(context), KeystoreBox()),
+        vault = PasswordVault(passwordFile(context), passwordBox),
         http = http,
         offline = offline,
         dirsFor = { key -> accountDirs(context.filesDir, context.cacheDir, key) },
@@ -173,12 +178,10 @@ class Graph(context: Context) {
     /** What belongs to whoever is signed in: their library, covers, likes, downloads and
      *  queue. */
     val accounts = Accounts(session, scope) { signedIn ->
-        // The pins, each list's choices and the theme's time in the settings are made this
-        // account's own before anything of the account exists to read or share them: what
-        // was chosen under another account is put away with it (see sync/Belongs.kt).
-        // (The session has done this already, before it said who is signed in, and signs
-        // nobody in if it can't be done. Here it finds them this account's, and does nothing.)
-        org.medianexus.music.sync.Belongs.takeOn(settings, signedIn.account.key, { key -> accountDirs(context.filesDir, context.cacheDir, key).data }) { diagnostics.note(it) }
+        // (The pins, each list's choices and the theme in the settings are this account's
+        // by now: the session takes an account on before it says anyone is signed in, at a
+        // typed sign-in and at a start from the saved password alike, and signs nobody in
+        // if that can't be done. See [takeOn] and sync/Belongs.kt.)
         AccountGraph(
             signedIn.account, signedIn.api,
             wiring = AccountWiring(

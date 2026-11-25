@@ -122,6 +122,15 @@ class Session(
                 null
             }
             val restored = password?.let { signedIn(Subsonic(saved.server, saved.username, it, http, offline)) }
+            // **Through the same door as a typed sign-in**: the account is taken on before
+            // it is said to be signed in. If the choices in the settings are another
+            // account's and can't be put away, nobody is signed in, and the sign-in screen
+            // says why; the password stays, for the next start.
+            if (restored != null && generation.get() == asked && !takeOn(restored.account.key)) {
+                if (generation.get() == asked) signingIn.value = SignInState(choicesNotPutAway = true)
+                current.value = SessionState.SignedOut
+                return@inOrder
+            }
             if (restored == null || !publish(asked, restored)) current.value = SessionState.SignedOut
         }
     }
