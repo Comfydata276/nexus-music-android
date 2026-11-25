@@ -226,7 +226,11 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         Route.Home -> HomePage()
         Route.Search -> SearchPage()
         Route.Library -> LibraryPage()
-        Route.Settings -> SettingsPage(graph, onBack = navigator::back, onDiagnostics = { navigator.open(Route.Diagnostics) }, onLicences = { navigator.open(Route.Licences) })
+        Route.Settings -> SettingsPage(
+            graph, onBack = navigator::back, onDiagnostics = { navigator.open(Route.Diagnostics) }, onLicences = { navigator.open(Route.Licences) },
+            onControlApps = { navigator.open(Route.ControlApps) },
+        )
+        Route.ControlApps -> org.medianexus.music.ui.settings.ControlAppsPage(graph, onBack = navigator::back)
         Route.Diagnostics -> DiagnosticsPage(graph, onBack = navigator::back)
         is Route.Album -> AlbumPage(route)
         is Route.Artist -> ArtistPage(route)

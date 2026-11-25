@@ -135,9 +135,11 @@ class CoverProvider : ContentProvider() {
         }
         val standing = graph.callers.standing(name, android.os.Binder.getCallingPid(), uid)
         val asker = Asker(name, standing) { graph.diagnostics.note(it) }
-        if (!standing.admitted) {
+        // (An app the person allowed to control playback is shown what is playing, and its
+        // cover with it: asked only of a caller with no other standing.)
+        if (!standing.admitted && !graph.controlApps.allowed(name, uid)) {
             asker.noted("refused")
-            for (line in graph.callers.signedBy(name, uid)) graph.diagnostics.note(line)
+            graph.controlApps.refused(name, uid)
             throw SecurityException("Covers are for the player's own callers")
         }
         return asker

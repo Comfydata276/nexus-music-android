@@ -1,5 +1,7 @@
 package org.medianexus.music.playback
 
+import android.content.Intent
+import android.net.Uri
 import android.app.Notification
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
@@ -10,6 +12,7 @@ import android.os.Looper
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import kotlinx.coroutines.flow.first
 import androidx.media3.session.MediaSession
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -344,12 +347,8 @@ class StartingTest {
         assertTrue(inside.callback.onConnect(inside.session, car).isAccepted)
     }
 
-    @Test
-    fun aRefusedCallerIsNotedWithTheCertificateItIsSignedWith() {
-        // A watch's phone-side plug-in: Android doesn't trust it with media, and it isn't a
-        // known host. Refused, and Diagnostics says what it is signed with, beside its name.
-        val certificate = "a watch plug-in's certificate".toByteArray()
-        val name = "com.example.watchplugin"
+    /** Puts an app on the stand-in phone: this package at this uid, signed with this. */
+    private fun install(name: String, uid: Int, certificate: ByteArray, label: String? = null, withThePhone: Boolean = false) {
         val manager = shadowOf(app.packageManager)
         manager.installPackage(
             PackageInfo().apply {
@@ -359,18 +358,93 @@ class StartingTest {
                 signingInfo = SigningInfo().also {
                     org.robolectric.shadow.api.Shadow.extract<org.robolectric.shadows.ShadowSigningInfo>(it).setSignatures(arrayOf(Signature(certificate)))
                 }
-                applicationInfo = ApplicationInfo().apply { packageName = name; uid = 10_777 }
+                applicationInfo = ApplicationInfo().apply {
+                    packageName = name
+                    this.uid = uid
+                    nonLocalizedLabel = label
+                    if (withThePhone) flags = flags or ApplicationInfo.FLAG_SYSTEM
+                }
             },
         )
-        manager.setPackagesForUid(10_777, name)
+        manager.setPackagesForUid(uid, name)
+        // (The system says so whenever an app is installed or updated.)
+        app.sendBroadcast(Intent(Intent.ACTION_PACKAGE_REPLACED, Uri.parse("package:$name")))
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun colons(certificate: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(certificate).joinToString(":") { "%02x".format(it) }
+
+    private fun listed() = app.graph.settings.state.value.playbackApps
+
+    @Test
+    fun anAppThePersonAllowsIsLetInAsItIsSignedAndForTransportOnly() {
+        // A watch's phone-side plug-in: Android doesn't trust it with media, and it isn't a
+        // known host. Refused, and remembered: Diagnostics says who the system says it is
+        // and what it is signed with, and Settings lists it, not yet looked at.
+        val certificate = "a watch plug-in's certificate".toByteArray()
+        val name = "com.example.watchplugin"
+        install(name, 10_777, certificate, label = "Watch plug-in", withThePhone = true)
         val plugin = MediaSession.ControllerInfo.createTestOnlyControllerInfo(name, 4_777, 10_777, 1_000_000, 0, false, Bundle.EMPTY, true)
         assertFalse(inside.callback.onConnect(inside.session, plugin).isAccepted)
-        val sha = java.security.MessageDigest.getInstance("SHA-256").digest(certificate).joinToString(":") { "%02x".format(it) }
         assertTrue(noted().any { it.startsWith("connection from $name") && it.contains("refused") })
-        assertTrue(noted().toString(), noted().contains("refused caller $name is signed with SHA-256 $sha; signing history: no"))
-        // A caller let in is not looked up.
+        assertTrue(noted().toString(), noted().any { it.startsWith("refused caller with uid 10777: Android says it is $name (“Watch plug-in”), installed with the phone. It is listed in Settings") })
+        assertTrue(noted().toString(), "refused caller $name is signed with SHA-256 ${colons(certificate)}" in noted())
+        val entry = listed().single()
+        assertEquals(listOf(name, colons(certificate).replace(":", ""), "Watch plug-in"), listOf(entry.packageName, entry.certificate, entry.label))
+        assertTrue(entry.withThePhone && !entry.allowed && !entry.seen)
+        assertEquals(1, kotlinx.coroutines.runBlocking { app.graph.controlApps.unseen.first() })
+
+        // The person switches it on. It connects, and gets what a headset gets: transport,
+        // and what is playing. Nothing of the library, none of the buttons, not the queue.
+        app.graph.controlApps.allow(entry, true)
+        val let = inside.callback.onConnect(inside.session, plugin)
+        assertTrue(let.isAccepted)
+        assertEquals(0, let.availableSessionCommands.commands.size)
+        val may = (0 until let.availablePlayerCommands.size()).map { let.availablePlayerCommands.get(it) }.toSet()
+        assertEquals(Access.ALLOWED_PLAYER, may)
+        for (not in listOf(Player.COMMAND_GET_TIMELINE, Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_CHANGE_MEDIA_ITEMS, Player.COMMAND_SET_SHUFFLE_MODE, Player.COMMAND_SET_REPEAT_MODE)) assertFalse("command $not", not in may)
+        @Suppress("DEPRECATION")
+        fun asked(controller: MediaSession.ControllerInfo, command: Int) = inside.callback.onPlayerCommandRequest(inside.session, controller, command)
+        assertEquals(androidx.media3.session.SessionResult.RESULT_SUCCESS, asked(plugin, Player.COMMAND_PLAY_PAUSE))
+        assertEquals(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED, asked(plugin, Player.COMMAND_SET_MEDIA_ITEM))
+        assertTrue(noted().any { it.startsWith("connection from $name") && it.contains("let in as an app you allowed in Settings") })
+        assertEquals(0, kotlinx.coroutines.runBlocking { app.graph.controlApps.unseen.first() })
+
+        // Another app that calls itself by that name is not it: the uid says who it is.
+        install("com.example.other", 10_888, "somebody else's certificate".toByteArray())
+        val borrowed = MediaSession.ControllerInfo.createTestOnlyControllerInfo(name, 4_888, 10_888, 1_000_000, 0, false, Bundle.EMPTY, false)
+        assertFalse(inside.callback.onConnect(inside.session, borrowed).isAccepted)
+        assertTrue(noted().toString(), noted().any { it.startsWith("refused caller with uid 10888: Android says it is com.example.other") })
+
+        // An app Android names nothing for (one this app may not see) cannot be offered at
+        // all: refused, said in Diagnostics by its uid, and not listed.
+        val hidden = MediaSession.ControllerInfo.createTestOnlyControllerInfo("com.example.hidden", 4_999, 10_999, 1_000_000, 0, false, Bundle.EMPTY, false)
+        assertFalse(inside.callback.onConnect(inside.session, hidden).isAccepted)
+        assertTrue(noted().toString(), noted().any { it.startsWith("refused caller with uid 10999, calling itself com.example.hidden: Android doesn't say which app that is") })
+        assertTrue(listed().none { it.packageName == "com.example.hidden" })
+        assertTrue(noted().all { it.length <= org.medianexus.music.Diagnostics.MOST_CHARS })
+
+        // The same name, signed with another certificate (an update that is not the app's
+        // maker's): not the app that was allowed. Refused, and listed as another app.
+        val forged = "not the plug-in maker's certificate".toByteArray()
+        install(name, 10_777, forged, label = "Watch plug-in")
+        assertFalse(inside.callback.onConnect(inside.session, plugin).isAccepted)
+        assertEquals(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED, asked(plugin, Player.COMMAND_PLAY_PAUSE))
+        assertEquals(setOf(colons(certificate).replace(":", "") to true, colons(forged).replace(":", "") to false), listed().filter { it.packageName == name }.map { it.certificate to it.allowed }.toSet())
+        assertTrue(noted().toString(), noted().any { it.contains("signed differently from the app of that name decided on before") })
+
+        // Signed as it was again, it is let in again; and switched off, a connection that is
+        // open is refused its very next command.
+        install(name, 10_777, certificate, label = "Watch plug-in", withThePhone = true)
+        assertTrue(inside.callback.onConnect(inside.session, plugin).isAccepted)
+        assertEquals(androidx.media3.session.SessionResult.RESULT_SUCCESS, asked(plugin, Player.COMMAND_PLAY_PAUSE))
+        app.graph.controlApps.allow(listed().first { it.packageName == name && it.allowed }, false)
+        assertEquals(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED, asked(plugin, Player.COMMAND_PLAY_PAUSE))
+        assertFalse(inside.callback.onConnect(inside.session, plugin).isAccepted)
+
+        // The car is who it always was, and none of this is asked of it.
         assertTrue(inside.callback.onConnect(inside.session, car).isAccepted)
-        assertFalse(noted().any { it.startsWith("refused caller com.example.car") })
+        assertFalse(noted().any { it.startsWith("refused caller") && it.contains("com.example.car") })
     }
 
     // ---- What a car is told when the server says no ---------------------------------------------

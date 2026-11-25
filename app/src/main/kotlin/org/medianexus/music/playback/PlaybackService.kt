@@ -325,6 +325,11 @@ class PlaybackService : MediaLibraryService() {
         // Streaming quality changed in Settings: the song playing switches to it at once,
         // from where it is, as on Windows (`reload_current`).
         scope.launch { graph.settings.state.map { it.bitrate }.distinctUntilChanged().drop(1).collect { qualityChanged() } }
+        // The person switched an app off in Settings (or forgot it): a connection it has
+        // open is cut. Media3 has no way to throw a controller out, so it is left with
+        // nothing: no command it may send, and nothing more it is told. (Every command is
+        // also decided afresh as it arrives: see onPlayerCommandRequest.)
+        scope.launch { graph.controlApps.apps.drop(1).collect { cutThoseNoLongerAllowed() } }
         // The sound settings reach the sound processor as one value, heard at once.
         scope.launch { graph.settings.state.collect { sound.update(it, player.queue.shuffle) } }
         main.postDelayed(ticker, TICK_MILLIS)
@@ -1954,6 +1959,16 @@ class PlaybackService : MediaLibraryService() {
             val caller = callerOf(session, controller)
             noteConnection(controller, caller)
             if (caller == Caller.REFUSED) return MediaSession.ConnectionResult.reject()
+            // An app the person allowed in Settings gets what a headset gets, and it is
+            // narrowed here, for this controller alone: transport and what is playing. No
+            // session commands at all, so nothing of the library, and none of the buttons.
+            if (caller == Caller.ALLOWED) {
+                return MediaSession.ConnectionResult.AcceptedResultBuilder(session, controller)
+                    .setAvailableSessionCommands(androidx.media3.session.SessionCommands.EMPTY)
+                    .setAvailablePlayerCommands(Player.Commands.Builder().addAll(*Access.ALLOWED_PLAYER.toIntArray()).build())
+                    .setMediaButtonPreferences(emptyList())
+                    .build()
+            }
             val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 .add(LIKE).add(SHUFFLE).add(REPEAT)
             // The app's own commands go to the app's own screens and nobody else: not to
@@ -2379,19 +2394,33 @@ class PlaybackService : MediaLibraryService() {
     /** Who a controller is (see [Access]). */
     private fun callerOf(session: MediaSession, controller: MediaSession.ControllerInfo): Caller {
         val own = controller.uid == android.os.Process.myUid()
+        // Media3's "trusted" is taken only from a caller whose name is its own: on
+        // Android 12 nobody has checked the name a platform controller gives, and
+        // "trusted" can rest on that name alone (see Callers.namedTruly).
+        val trusted = controller.isTrusted && namedTruly(controller)
+        // Asked of the system only for a caller that has no other standing: its package
+        // name and its signing certificate, against Google's list (see KnownHosts).
+        val knownHost = !own && !controller.isTrusted && graph.callers.knownHost(controller.packageName, controller.uid)
         return Access.caller(
-            // Media3's "trusted" is taken only from a caller whose name is its own: on
-            // Android 12 nobody has checked the name a platform controller gives, and
-            // "trusted" can rest on that name alone (see Callers.namedTruly).
-            trusted = controller.isTrusted && namedTruly(controller),
-            // Asked of the system only for a caller that has no other standing: its package
-            // name and its signing certificate, against Google's list (see KnownHosts).
-            knownHost = !own && !controller.isTrusted && graph.callers.knownHost(controller.packageName, controller.uid),
+            trusted = trusted,
+            knownHost = knownHost,
+            // Asked only of a caller with no other standing: whether the person has allowed
+            // the app the system says this uid is, as it is signed now (see ControlApps).
+            allowed = !own && !trusted && !knownHost && graph.controlApps.allowed(controller.packageName, controller.uid),
             sameUid = own,
             ownPackage = controller.isPackageNameVerified && controller.packageName == packageName,
             legacy = controller.controllerVersion == MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION,
             notification = session.isMediaNotificationController(controller),
         )
+    }
+
+    /** Controllers that are connected and would now be refused are left with nothing. */
+    private fun cutThoseNoLongerAllowed() {
+        for (controller in session.connectedControllers) {
+            if (callerOf(session, controller) != Caller.REFUSED) continue
+            session.setAvailableCommands(controller, androidx.media3.session.SessionCommands.EMPTY, Player.Commands.EMPTY)
+            graph.diagnostics.note("connection from ${controller.packageName}: cut, now that it is no longer allowed in Settings")
+        }
     }
 
     private fun namedTruly(controller: MediaSession.ControllerInfo): Boolean =
@@ -2408,6 +2437,7 @@ class PlaybackService : MediaLibraryService() {
         val outcome = when (caller) {
             Caller.REFUSED -> "refused"
             Caller.TRUSTED -> "let in"
+            Caller.ALLOWED -> "let in as an app you allowed in Settings (transport and what is playing only)"
             Caller.NOTIFICATION -> "let in as the notification's own"
             Caller.OWN_INTERFACE -> "let in as the app's own screens"
         }
@@ -2418,9 +2448,10 @@ class PlaybackService : MediaLibraryService() {
                 if (controller.isTrusted && !namedTruly(controller)) "; its name is not its own" else "",
             now = caller == Caller.REFUSED,
         )
-        // Who signed a refused caller, on lines of their own (a fingerprint is longer than
-        // what is left of the line above): what letting it in by name and certificate needs.
-        if (caller == Caller.REFUSED) for (line in graph.callers.signedBy(controller.packageName, controller.uid)) graph.diagnostics.note(line, now = true)
+        // Who a refused caller is, by its uid, on a line of its own: the packages Android
+        // names for it and what they are signed with. It is remembered for Settings, where
+        // the person can allow it; or, if Android names nothing, said to be unnameable.
+        if (caller == Caller.REFUSED) graph.controlApps.refused(controller.packageName, controller.uid)
     }
 
     private fun yes(on: Boolean) = if (on) "yes" else "no"

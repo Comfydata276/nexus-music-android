@@ -59,6 +59,12 @@ class Graph(
     /** Read here, at start-up, because the first frame needs the theme. The file is small. */
     val settings: SettingsStore = SettingsStore.open(File(context.filesDir, "settings.json"), scope, Dispatchers.IO)
 
+    /** The apps the person has been asked about, and has allowed, to control playback
+     *  (see [org.medianexus.music.playback.ControlApps]). Made when first asked. */
+    val controlApps: org.medianexus.music.playback.ControlApps by lazy {
+        org.medianexus.music.playback.ControlApps(callers, settings, note = { text, now -> diagnostics.note(text, now) })
+    }
+
     /** A tap, with the account it was made under; or a mark in the queue, for whoever
      *  waits until everything tapped before it has been carried out. */
     private class Tapped(val did: org.medianexus.music.sync.Chosen.Did?, val account: String, val reached: kotlinx.coroutines.CompletableDeferred<Unit>? = null)

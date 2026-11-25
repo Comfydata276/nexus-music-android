@@ -230,6 +230,41 @@ How it is built (M1a):
   installed, updated or removed, and a "no" that came from the lookup failing is not kept.
   `VoiceActivity`, which must be open to the Assistant, accepts the play-from-search action
   and reads only its words and fields, as text of bounded length.
+- **Apps the person allows** (`ControlApps`; Settings, Playback, "Apps that can control
+  playback"; from 0.5.1). A fourth way in, for an app that is none of the three above: a
+  watch's companion on the phone, which connects with a Media3 controller as any app might.
+  The first person to run the app on his own phone had his Galaxy Watch refused eleven
+  times, and Diagnostics could not even say what it was signed with.
+  - **Why it could not be named.** Media3 1.11.1 lets a controller that connects straight
+    to the session (not through the service) reach `onConnect` when `getPackagesForUid`
+    returns nothing for its uid, and marks its name unverified. It returns nothing because
+    the companion is not an app this one may see: Android hides most apps from each other.
+    The uid is the system's word; whose it is, the system would not say.
+  - **A caller is identified by its uid**, which Binder gives and no app can claim: the
+    package Android names for that uid and the certificate it is signed with
+    (`Callers.who`). What a caller calls itself only chooses among the uid's own packages.
+  - **The person decides, once, and the decision is bound to the certificate.** An app
+    that is refused is remembered and listed in Settings by its name, its package, whether
+    it came with the phone, and the SHA-256 of what it is signed with, with a switch. There
+    is no pop-up and no notification: the row in Settings shows a dot and "1 app has
+    asked" until the list has been looked at. Switching one on stores the package and the
+    certificate; every later connection, and every command of an open one, is let through
+    only if the calling uid's package and certificate are exactly those. The same name
+    signed otherwise is another app: refused, and listed separately.
+  - **What it gets** is what a headset gets, narrowed for that controller alone when it
+    connects: play, pause, stop, next, previous and moving about in the song; and the song
+    that is playing, with its details and its cover. No session commands at all, so nothing
+    of the library and none of like, shuffle and repeat; and not the queue (without
+    `COMMAND_GET_TIMELINE` Media3 shows such a controller the one song playing).
+  - **Switched off, an open connection is cut.** Media3 has no way to throw a controller
+    out, so it is left with no command it may send and is told nothing more
+    (`setAvailableCommands` with none); and every command is decided afresh as it arrives.
+  - **An app Android will not name cannot be offered**: there is nothing to bind a
+    decision to. Diagnostics says so, with the uid and what the app called itself. **That
+    line is how a new watch or controller app comes to be supported: its package is named
+    in the manifest's `<queries>`, one line, in a release.** `com.samsung.android.waterplugin`
+    is the first. The app never asks to see every app on the phone
+    (`QUERY_ALL_PACKAGES`).
 - **Each sign-in is a generation** (`Era` in the service). What the session is asked runs
   in that generation's scope, and what was found for an account that has gone is never
   handed on: the question is answered "not signed in" if nobody is signed in by then, and
@@ -486,12 +521,13 @@ How it is built (M1a):
   (which app, by which protocol, whether Android trusts it, whether it is a known host, let
   in or refused, and whether a name was not its caller's own), who asked for covers and
   what became of each (given, not given and why, refused), for a caller refused either way
-  the SHA-256 of each certificate its package is signed with now and whether it has a
-  signing history (`Callers.signedBy`, a line of its own beside the package name, in the
-  colon-separated form Google's list of known hosts is written in, and only for a name the
-  system says is the caller's: what letting an app in by package and certificate, as the
-  known hosts are, needs; it lets nothing in. A signing certificate's fingerprint is public,
-  the same in every copy of the app, and identifies no person, only the app's publisher),
+  who the system says its uid is (`ControlApps.refused`: the package Android names for the
+  uid, its name, whether it came with the phone, and on a line of its own the SHA-256 of
+  each certificate it is signed with, in the colon-separated form Google's list of known
+  hosts is written in; or, where Android names nothing for the uid, the uid, what the
+  caller called itself, and that it cannot be offered in Settings. A signing certificate's
+  fingerprint is public, the same in every copy of the app, and identifies no person, only
+  the app's publisher),
   what started the player and
   whether and how soon Android let it into the foreground for each kind of request, a
   start that could not be made and why, audio focus refused straight after Play, what the

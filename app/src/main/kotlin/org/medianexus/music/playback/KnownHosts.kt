@@ -116,6 +116,12 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
 
         /** How the package is signed now, as the system says; null if it can't say. */
         fun signing(packageName: String): Signing? = null
+
+        /** What the app calls itself to people; null if the system can't say. */
+        fun label(packageName: String): String? = null
+
+        /** Whether the app came with the phone (a system app), as the system says. */
+        fun withThePhone(packageName: String): Boolean = false
     }
 
     /** The certificates an app is signed with now (each one's bytes; more than one only for
@@ -148,6 +154,18 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
         } catch (_: Exception) {
             // (Not installed, or the package manager couldn't answer: not known.)
             null
+        }
+
+        override fun label(packageName: String): String? = try {
+            packages.getApplicationLabel(packages.getApplicationInfo(packageName, 0)).toString().trim().take(60).ifEmpty { null }
+        } catch (_: Exception) {
+            null
+        }
+
+        override fun withThePhone(packageName: String): Boolean = try {
+            packages.getApplicationInfo(packageName, 0).flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0
+        } catch (_: Exception) {
+            false
         }
 
         // The system's own word that an app has come, changed or gone. (It tells an app only
@@ -183,8 +201,63 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
      */
     private val known = ConcurrentHashMap<String, Boolean>()
 
+    /** Who each calling uid was found to be ([who]), kept as [known] is and for as long. */
+    private val named = ConcurrentHashMap<String, Who.App>()
+
     init {
-        phone.onPackageChanged { name -> known.keys.removeAll { it.substringAfter('/') == name } }
+        phone.onPackageChanged { name ->
+            known.keys.removeAll { it.substringAfter('/') == name }
+            named.entries.removeIf { it.value.packageName == name || name in it.value.others }
+        }
+    }
+
+    /** Who a caller is, as far as Android will say. */
+    sealed interface Who {
+        /**
+         * An app Android names for the calling uid, and how it is signed. `certificate` is
+         * the SHA-256 of what it is signed with now (64 hex digits; several, in order and
+         * joined by "+", for an app with several signers): what a person's decision about
+         * the app is bound to. `others` are further packages the same uid has (apps that
+         * share one are signed alike, or Android would not let them).
+         */
+        data class App(val uid: Int, val packageName: String, val certificate: String, val label: String, val withThePhone: Boolean, val others: List<String> = emptyList()) : Who
+
+        /**
+         * Android lists no app for the uid. On Android 11 and later that is what it says of
+         * an app this one may not see: nothing can be learnt of it, so nothing can be decided
+         * about it. `claims` is what the caller called itself, which is worth nothing by
+         * itself.
+         */
+        data class Unnamed(val uid: Int, val claims: String?) : Who
+    }
+
+    /**
+     * Who is calling: **by the uid, which the system gives and nobody can claim**. The
+     * packages Android lists for that uid, and what the one in question is signed with.
+     * The name the caller gave (`claims`) only chooses among the uid's own packages, where
+     * it has several; a name that is not one of them is ignored.
+     */
+    fun who(claims: String?, uid: Int): Who {
+        val key = "$uid/${claims.orEmpty()}"
+        named[key]?.let { return it }
+        val ofCaller = try {
+            phone.packagesOf(uid).sorted()
+        } catch (_: RuntimeException) {
+            emptyList()
+        }
+        val packageName = ofCaller.firstOrNull { it == claims } ?: ofCaller.firstOrNull() ?: return Who.Unnamed(uid, claims)
+        val signing = try {
+            phone.signing(packageName)
+        } catch (_: RuntimeException) {
+            null
+        }
+        // (Named, but the system couldn't say how it is signed: nothing to bind a decision to.)
+        if (signing == null || signing.certificates.isEmpty()) return Who.Unnamed(uid, claims)
+        val certificate = signing.certificates.map { KnownHosts.tidy(KnownHosts.fingerprint(it))!! }.sorted().joinToString("+")
+        val label = runCatching { phone.label(packageName) }.getOrNull() ?: packageName
+        val app = Who.App(uid, packageName, certificate, label, runCatching { phone.withThePhone(packageName) }.getOrDefault(false), ofCaller - packageName)
+        named[key] = app
+        return app
     }
 
     /** How many apps are listed as known hosts. */
@@ -242,40 +315,6 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
             phone.trustedForMedia(packageName, pid, uid)
         } catch (_: RuntimeException) {
             false
-        }
-    }
-
-    /**
-     * Who a refused caller is signed by, for Diagnostics: a line for each certificate its
-     * package is signed with now, beside its name, as the SHA-256 in hex pairs with colons
-     * between (the form Google's list of known hosts is written in), and whether it has a
-     * history of certificates rotated from. It is what letting an app in by package and
-     * certificate, as the known hosts are, needs to be known; it lets nobody in. A signing
-     * certificate's fingerprint is public (it is in every copy of the app, and the same on
-     * every phone) and identifies no person: only whoever publishes the app.
-     *
-     * Only for a name the system says is the caller's own: the certificate of a package the
-     * caller only named would say nothing about the caller.
-     */
-    fun signedBy(packageName: String?, uid: Int): List<String> {
-        if (packageName == null) return emptyList()
-        val who = "refused caller $packageName"
-        val own = try {
-            packageName in phone.packagesOf(uid)
-        } catch (_: RuntimeException) {
-            false
-        }
-        if (!own) return listOf("$who: its signing certificate not looked up (the system doesn't say the name is the caller's)")
-        val signing = try {
-            phone.signing(packageName)
-        } catch (_: RuntimeException) {
-            null
-        } ?: return listOf("$who: the system couldn't say what it is signed with")
-        val history = "signing history: ${if (signing.history) "yes" else "no"}"
-        val all = signing.certificates
-        return all.mapIndexed { i, certificate ->
-            val which = if (all.size > 1) "certificate ${i + 1} of ${all.size}, " else ""
-            "$who is signed with ${which}SHA-256 ${KnownHosts.fingerprint(certificate)}; $history"
         }
     }
 

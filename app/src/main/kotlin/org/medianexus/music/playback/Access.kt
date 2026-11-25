@@ -29,6 +29,14 @@ enum class Caller {
 
     /** This app's own screens. */
     OWN_INTERFACE,
+
+    /**
+     * An app the person has allowed, in Settings, by who signed it ([ControlApps]): a
+     * watch's companion, say, that Android itself does not vouch for. It gets what a
+     * headset gets and no more: transport, and what is playing. It does not browse or
+     * search the library, see or change the queue, or press like, shuffle or repeat.
+     */
+    ALLOWED,
 }
 
 /**
@@ -47,16 +55,19 @@ object Access {
      * controller rather than a Media3 one. `notification` is Media3's media notification
      * controller.
      */
-    fun caller(trusted: Boolean, knownHost: Boolean, sameUid: Boolean, ownPackage: Boolean, legacy: Boolean, notification: Boolean): Caller = when {
+    fun caller(trusted: Boolean, knownHost: Boolean, sameUid: Boolean, ownPackage: Boolean, legacy: Boolean, notification: Boolean, allowed: Boolean = false): Caller = when {
         sameUid && notification -> Caller.NOTIFICATION
         sameUid && ownPackage && !legacy -> Caller.OWN_INTERFACE
         trusted || knownHost -> Caller.TRUSTED
+        // (`allowed`: the person's own decision about this very app, by the certificate
+        // Android says the calling uid's package is signed with: see ControlApps.)
+        allowed -> Caller.ALLOWED
         else -> Caller.REFUSED
     }
 
     /** Whether this caller may send this custom command. */
     fun mayCustom(caller: Caller, action: String): Boolean = when {
-        caller == Caller.REFUSED -> false
+        caller == Caller.REFUSED || caller == Caller.ALLOWED -> false
         // (Under the notification controller's name too: that is how Media3 reports the
         // system's own media controls, on the lock screen and in Quick Settings, which show
         // these buttons. A start intent shaped like one of them never gets this far: see
@@ -69,9 +80,17 @@ object Access {
     /** Whether this caller may use this player command (`Player.COMMAND_…`). */
     fun mayPlayer(caller: Caller, command: Int): Boolean = when (caller) {
         Caller.REFUSED -> false
-        Caller.NOTIFICATION -> command in TRANSPORT
+        Caller.NOTIFICATION, Caller.ALLOWED -> command in TRANSPORT
         else -> true
     }
+
+    /**
+     * Everything an app the person allowed may use of the player: [TRANSPORT], and reading
+     * what is playing (the song and its details, and through them how far it has got). Not
+     * the queue: without `COMMAND_GET_TIMELINE` Media3 shows such a controller the one
+     * song that is playing and nothing before or after it.
+     */
+    val ALLOWED_PLAYER: Set<Int> get() = TRANSPORT + setOf(Player.COMMAND_GET_CURRENT_MEDIA_ITEM, Player.COMMAND_GET_METADATA)
 
     /** The buttons on the car's player and the notification. */
     val BUTTONS = setOf("org.medianexus.music.LIKE", "org.medianexus.music.SHUFFLE", "org.medianexus.music.REPEAT")

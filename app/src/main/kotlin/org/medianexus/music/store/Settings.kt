@@ -4,6 +4,30 @@ import kotlin.math.abs
 import kotlinx.serialization.Serializable
 
 /** What's remembered about one list of songs (a playlist, an album, Liked songs). */
+/**
+ * An app that asked to control playback, and what the person decided: **the decision is
+ * bound to who signed the app**, not to what it is called. `certificate` is the SHA-256 of
+ * the certificate the app was signed with when it was seen (64 hex digits; several, in
+ * order and joined by "+", for an app with several signers). An app of the same name
+ * signed otherwise is another app, with an entry and a decision of its own.
+ */
+@Serializable
+data class PlaybackApp(
+    val packageName: String,
+    val certificate: String,
+    /** The person has switched it on: it may connect, for as long as it is still signed so. */
+    val allowed: Boolean = false,
+    /** The person has looked at the list since this one first asked. */
+    val seen: Boolean = false,
+    /** What the app is called, as Android said when it asked (for showing if it has since
+     *  been removed). */
+    val label: String = "",
+    /** It came with the phone, as Android says: not installed by the person. */
+    val withThePhone: Boolean = false,
+    /** When it last asked and was refused, in seconds since 1970. */
+    val refusedAt: Long = 0,
+)
+
 @Serializable
 data class ListPrefs(
     /** Play it shuffled. */
@@ -118,6 +142,12 @@ data class Settings(
     // ---- Appearance ----
     /** Name of the colour theme (see `THEMES`). */
     val theme: String = DEFAULT_THEME,
+
+    // ---- Apps that can control playback ----
+    /** The apps that have asked to control playback and are not ones Android or the app
+     *  itself vouches for, each with what the person has decided about it
+     *  (see `playback/ControlApps.kt`). The phone's own: never shared. */
+    val playbackApps: List<PlaybackApp> = emptyList(),
 
     // ---- In step with other devices ----
     /** Share the queue, pins and so on with the app on other devices. */

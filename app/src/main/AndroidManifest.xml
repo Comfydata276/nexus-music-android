@@ -32,6 +32,15 @@
         <package android:name="com.google.android.autosimulator" />
         <package android:name="com.google.android.googlequicksearchbox" />
         <package android:name="com.google.android.carassistant" />
+        <!-- Apps that control playback as an ordinary app would, and that Android does not
+             vouch for: named here so that the app may see who they are (their package and
+             what they are signed with) when they ask, and offer them to the person in
+             Settings, "Apps that can control playback". Without its line here such an app
+             cannot be identified at all, and stays refused. One line for each, added in a
+             release when somebody's Diagnostics names one: never a permission to see
+             every app on the phone. (See playback/ControlApps.kt.)
+             The Galaxy Watch's companion on the phone: -->
+        <package android:name="com.samsung.android.waterplugin" />
     </queries>
 
     <!-- No backups: the password is sealed with a key that can't leave this phone, and a

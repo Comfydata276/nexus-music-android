@@ -72,6 +72,20 @@
     <string name="diagnostics">Diagnostics</string>
     <string name="diagnostics_detail">A note of what the player has met: which apps connected to it and whether they were let in, what started it, and playback errors. Useful when something isn\'t working, in the car above all. It names no server address, account or song, and it stays on this phone unless you share it.</string>
     <string name="show_diagnostics">Show diagnostics</string>
+    <string name="control_apps">Apps that can control playback</string>
+    <string name="control_apps_detail">Headsets, your car and apps Android already trusts need nothing here. Another app that asks, like a watch\'s companion, is listed for you to allow or not.</string>
+    <string name="control_apps_show">Show apps</string>
+    <plurals name="control_apps_asked">
+        <item quantity="one">%1$d app has asked</item>
+        <item quantity="other">%1$d apps have asked</item>
+    </plurals>
+    <string name="control_apps_about">An app you switch on here can play, pause, skip and seek, and see what is playing and its cover. It cannot browse your library or see or change the queue. Your choice is for the app as it is signed now: a different app using the same name is listed separately and stays off.</string>
+    <string name="control_apps_none">No app has asked.</string>
+    <string name="control_app_allow">Allow %1$s to control playback</string>
+    <string name="control_app_with_phone">Installed with the phone</string>
+    <string name="control_app_by_you">Installed by you</string>
+    <string name="control_app_signed">Signed with the certificate (SHA-256):</string>
+    <string name="control_app_forget">Forget</string>
     <string name="share">Share</string>
     <string name="share_diagnostics">Share diagnostics</string>
 

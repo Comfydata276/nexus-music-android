@@ -35,6 +35,26 @@ class AccessTest {
     }
 
     @Test
+    fun anAppThePersonAllowedGetsWhatAHeadsetGetsAndWhatIsPlaying() {
+        // Allowed in Settings, by who signed it; nothing else vouches for it.
+        val watch = Access.caller(trusted = false, knownHost = false, sameUid = false, ownPackage = false, legacy = false, notification = false, allowed = true)
+        assertEquals(Caller.ALLOWED, watch)
+        // Whatever else is true of a caller counts first: the person's list never makes a
+        // car or the app's own screens into less than they are.
+        assertEquals(Caller.TRUSTED, Access.caller(trusted = true, knownHost = false, sameUid = false, ownPackage = false, legacy = true, notification = false, allowed = true))
+        // Transport, and nothing that chooses what plays or how.
+        for (command in Access.TRANSPORT) assertTrue("command $command", Access.mayPlayer(watch, command))
+        for (command in listOf(Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_CHANGE_MEDIA_ITEMS, Player.COMMAND_SEEK_TO_MEDIA_ITEM, Player.COMMAND_SET_SHUFFLE_MODE, Player.COMMAND_SET_REPEAT_MODE)) {
+            assertFalse("command $command", Access.mayPlayer(watch, command))
+        }
+        // None of the buttons, and none of the app's own commands.
+        for (action in queueEdits + Access.BUTTONS) assertFalse(action, Access.mayCustom(watch, action))
+        // What it may use of the player at all: transport, the song playing and its details.
+        assertEquals(Access.TRANSPORT + setOf(Player.COMMAND_GET_CURRENT_MEDIA_ITEM, Player.COMMAND_GET_METADATA), Access.ALLOWED_PLAYER)
+        assertFalse(Player.COMMAND_GET_TIMELINE in Access.ALLOWED_PLAYER)
+    }
+
+    @Test
     fun whatArrivesAsTheNotificationCannotTouchTheQueue() {
         // A start intent sent to the exported service by any app is carried out under this
         // name: it was given every one of the app's own commands.

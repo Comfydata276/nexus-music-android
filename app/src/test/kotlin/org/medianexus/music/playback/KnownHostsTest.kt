@@ -129,6 +129,11 @@ class KnownHostsTest {
             told = changed
         }
 
+        var labels = emptyMap<String, String>()
+        var system = emptySet<String>()
+        override fun label(packageName: String) = labels[packageName]
+        override fun withThePhone(packageName: String) = packageName in system
+
         /** The system's broadcast that an app has been installed, updated or removed. */
         fun changed(packageName: String) = told(packageName)
     }
@@ -258,11 +263,10 @@ class KnownHostsTest {
         assertFalse(Access.mayCustom(caller(trusted = false, knownHost = true), AppActions.CLEAR))
         assertTrue(Access.mayCustom(caller(trusted = false, knownHost = true), "org.medianexus.music.LIKE"))
     }
-    /** Diagnostics says who a refused caller is signed by, so it can be let in by name and
-     *  certificate (a watch's phone-side plug-in): every certificate, the form Google's list
-     *  is written in, whether there is a history; and nothing for a name not the caller's. */
+    /** Who a caller is goes by its uid, which the system gives and nobody can claim: the
+     *  package Android names for it and what that package is signed with. */
     @Test
-    fun aRefusedCallerIsSaidToBeSignedByEachOfItsCertificates() {
+    fun aCallerIsWhoeverTheSystemSaysItsUidIsWhateverItCallsItself() {
         val one = "the plug-in's certificate".toByteArray()
         val other = "a second signer's certificate".toByteArray()
         val phone = Phone(
@@ -270,34 +274,40 @@ class KnownHostsTest {
                 Triple(10_500, "com.example.plugin", one),
                 Triple(10_600, "com.example.twosigners", one),
                 Triple(10_600, "com.example.twosigners", other),
+                Triple(10_700, "com.example.shared.b", one),
+                Triple(10_700, "com.example.shared.a", one),
             ),
         )
+        phone.labels = mapOf("com.example.plugin" to "Watch plug-in")
+        phone.system = setOf("com.example.plugin")
         val callers = Callers(phone, listed)
-        val colons = { bytes: ByteArray -> sha256(bytes).chunked(2).joinToString(":") }
-        assertEquals(
-            listOf("refused caller com.example.plugin is signed with SHA-256 ${colons(one)}; signing history: no"),
-            callers.signedBy("com.example.plugin", 10_500),
-        )
-        // Read back as the list reads a key: what is said is what would be listed.
-        assertEquals(sha256(one), KnownHosts.tidy(colons(one)))
-        phone.rotated = setOf("com.example.plugin")
-        assertTrue(callers.signedBy("com.example.plugin", 10_500).single().endsWith("; signing history: yes"))
-        assertEquals(
-            listOf(
-                "refused caller com.example.twosigners is signed with certificate 1 of 2, SHA-256 ${colons(one)}; signing history: no",
-                "refused caller com.example.twosigners is signed with certificate 2 of 2, SHA-256 ${colons(other)}; signing history: no",
-            ),
-            callers.signedBy("com.example.twosigners", 10_600),
-        )
-        // Every line fits in one of Diagnostics' (a fingerprint is 95 characters).
-        assertTrue(callers.signedBy("com.example.twosigners", 10_600).all { it.length <= org.medianexus.music.Diagnostics.MOST_CHARS })
-        // A name the caller only gave: another app's certificate says nothing of the caller.
-        assertEquals(
-            listOf("refused caller com.example.plugin: its signing certificate not looked up (the system doesn't say the name is the caller's)"),
-            callers.signedBy("com.example.plugin", 10_600),
-        )
-        assertTrue(callers.signedBy(null, 10_500).isEmpty())
-        // And it lets nobody in.
+        assertEquals(Callers.Who.App(10_500, "com.example.plugin", sha256(one), "Watch plug-in", withThePhone = true), callers.who("com.example.plugin", 10_500))
+        // What it calls itself changes nothing: a name that is not its uid's is ignored.
+        assertEquals("com.example.plugin", (callers.who("com.google.android.projection.gearhead", 10_500) as Callers.Who.App).packageName)
+        assertEquals("com.example.plugin", (callers.who(null, 10_500) as Callers.Who.App).packageName)
+        // And the app of that name is not what another uid becomes by saying it.
+        assertEquals("com.example.twosigners", (callers.who("com.example.plugin", 10_600) as Callers.Who.App).packageName)
+        // Several signers: every certificate, in order. With no name of its own to show, the package's.
+        val two = callers.who("com.example.twosigners", 10_600) as Callers.Who.App
+        assertEquals(listOf(sha256(one), sha256(other)).sorted().joinToString("+"), two.certificate)
+        assertEquals("com.example.twosigners" to false, two.label to two.withThePhone)
+        // A uid with several packages: the one the caller names, if it is one of them;
+        // otherwise the first, and the others are said.
+        assertEquals("com.example.shared.b" to listOf("com.example.shared.a"), (callers.who("com.example.shared.b", 10_700) as Callers.Who.App).let { it.packageName to it.others })
+        assertEquals("com.example.shared.a", (callers.who("com.example.nothing", 10_700) as Callers.Who.App).packageName)
+        // A uid Android names nothing for (an app this one may not see), and one whose lookup
+        // fails: nobody that anything can be decided about.
+        assertEquals(Callers.Who.Unnamed(10_900, "com.example.hidden"), callers.who("com.example.hidden", 10_900))
+        phone.failing = true
+        assertEquals(Callers.Who.Unnamed(10_800, "com.example.plugin"), callers.who("com.example.plugin", 10_800))
+        phone.failing = false
+        // What was found is kept until the system says that app has changed: then it is
+        // asked again, and an update signed otherwise is seen to be.
+        phone.apps = phone.apps.map { if (it.second == "com.example.plugin") Triple(it.first, it.second, other) else it }
+        assertEquals(sha256(one), (callers.who("com.example.plugin", 10_500) as Callers.Who.App).certificate)
+        phone.changed("com.example.plugin")
+        assertEquals(sha256(other), (callers.who("com.example.plugin", 10_500) as Callers.Who.App).certificate)
+        // None of which lets anybody in.
         assertFalse(callers.standing("com.example.plugin", 1, 10_500).admitted)
     }
 }

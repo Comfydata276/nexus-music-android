@@ -76,7 +76,7 @@ private enum class Section(val title: Int) { APPEARANCE(R.string.appearance), PL
  * what does something on the phone today.
  */
 @Composable
-fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {}, onLicences: () -> Unit = {}) {
+fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {}, onLicences: () -> Unit = {}, onControlApps: () -> Unit = {}) {
     var section by rememberSaveable { mutableIntStateOf(0) }
     val scroll = rememberScrollState()
     Column(Modifier.fillMaxSize()) {
@@ -98,7 +98,7 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
         ) {
             when (sections[section.coerceIn(0, sections.lastIndex)]) {
                 Section.APPEARANCE -> Appearance(graph)
-                Section.PLAYBACK -> Playback(graph)
+                Section.PLAYBACK -> Playback(graph, onControlApps)
                 Section.SOUND -> Sound(graph)
                 Section.STORAGE -> Storage(graph)
                 Section.JAM -> org.medianexus.music.ui.jam.JamSettings(graph)
@@ -122,11 +122,24 @@ private fun Appearance(graph: Graph) {
 }
 
 @Composable
-private fun Playback(graph: Graph) {
+private fun Playback(graph: Graph, onControlApps: () -> Unit) {
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     val title = stringResource(R.string.report_plays)
     SettingRow(title, stringResource(R.string.report_plays_detail)) {
         Toggle(settings.scrobble, { on -> graph.settings.update { it.copy(scrobble = on) } }, title)
+    }
+    // An app that has asked to control playback and not been looked at yet is said here by
+    // a dot, quietly: nothing pops up and no notification is sent (playback/ControlApps.kt).
+    val unseen = settings.playbackApps.count { !it.seen && !it.allowed }
+    SettingRow(stringResource(R.string.control_apps), stringResource(R.string.control_apps_detail), stacked = true) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            TextButton(stringResource(R.string.control_apps_show), onClick = onControlApps)
+            if (unseen > 0) {
+                val asked = androidx.compose.ui.res.pluralStringResource(R.plurals.control_apps_asked, unseen, unseen)
+                Box(Modifier.size(9.dp).background(Theme.colors.accentBright, androidx.compose.foundation.shape.CircleShape))
+                BasicText(asked, style = Theme.type.rowDetail.copy(color = Theme.colors.text))
+            }
+        }
     }
 }
 
