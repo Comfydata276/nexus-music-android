@@ -31,7 +31,6 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,7 +45,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import org.medianexus.music.R
 import org.medianexus.music.ui.theme.Theme
@@ -150,26 +148,21 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
 
 /**
  * The toast: a few words at the foot of the screen for three seconds, as the Windows app's
- * (a pill in the text colour with the words in the background's). The newest replaces any
- * still showing. Screen readers read it out.
+ * (a pill in the text colour with the words in the background's). Notes come one after
+ * another, each for its time, oldest first ([NoteLine]): a newer one waits for the one
+ * showing. Screen readers read it out.
  */
 @Composable
 fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier) {
     var toast by remember { mutableStateOf(org.medianexus.music.Toasts.Toast("")) }
     var shown by remember { mutableStateOf(false) }
-    var said by remember { mutableIntStateOf(0) }
-    LaunchedEffect(toasts) {
-        toasts.collect {
-            toast = it
-            shown = true
-            said++
-        }
-    }
-    LaunchedEffect(said) {
-        if (said == 0) return@LaunchedEffect
-        // One with a button stays long enough to press it (Windows' eight seconds).
-        delay(if (toast.action != null) 8_000 else 3_200)
-        shown = false
+    val line = remember { NoteLine() }
+    LaunchedEffect(toasts) { toasts.collect { line.add(it) } }
+    LaunchedEffect(line) {
+        line.run({ note, up ->
+            if (up) toast = note
+            shown = up
+        })
     }
     val colors = Theme.colors
     Box(modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
@@ -201,7 +194,7 @@ fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: M
                             .heightIn(min = Theme.dimens.touch)
                             .clip(RoundedCornerShape(18.dp))
                             .clickable(role = androidx.compose.ui.semantics.Role.Button, onClickLabel = action) {
-                                shown = false
+                                line.dismiss()
                                 onAction()
                             }
                             .padding(horizontal = 14.dp),
