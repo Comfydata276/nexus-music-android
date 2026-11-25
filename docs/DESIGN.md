@@ -3010,6 +3010,12 @@ file has).
   nothing is playing here; otherwise once a minute, as it always was. Coming to the front
   looks at both at once. A phone that is playing keeps its own queue whatever the server
   holds, so nothing there is worth seconds.
+- **A look does not pass on a change that is still settling** (0.5.1; `InStep.settling`).
+  A change made here is passed on three seconds later, so that a burst of changes goes as
+  one. With a look every 15 seconds, one such wait in five would have a look come round
+  inside it and send half the burst. A look that finds a change settling leaves the record
+  to that change's own exchange, seconds away, which reads as a look does. (And a look
+  never waits behind a look: the 15 seconds are counted from the end of the last one.)
 - **When an exchange runs on a phone, and what it costs** (C2). At start (once the account's
   stores are read); **every 15 seconds while the app's screens are in front** (it was each
   minute until 0.5.1: a change made on another device then took up to a minute to show,

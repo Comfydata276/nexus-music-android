@@ -331,7 +331,10 @@ class AccountGraph(
     suspend fun look(queue: Boolean = true) {
         if (!mayShare()) return
         synchronized(this) { lookedAt = System.currentTimeMillis() }
-        step?.exchange()
+        // (Not while a change made here is settling: its own exchange is seconds away and
+        // reads as this would. A look that came round first would pass on half a burst of
+        // changes, which the settling is there to send as one.)
+        if (step?.settling() != true) step?.exchange()
         if (queue) queueStep?.check()
     }
 

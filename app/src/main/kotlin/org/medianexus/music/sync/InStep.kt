@@ -222,6 +222,10 @@ class InStep(
         }
     }
 
+    /** Whether a change made here is being given its few seconds to settle: its exchange is
+     *  about to be made. */
+    fun settling(): Boolean = synchronized(this) { soon?.isActive == true }
+
     /**
      * Reads what's on the server, has the core decide, and carries out what it decided.
      */

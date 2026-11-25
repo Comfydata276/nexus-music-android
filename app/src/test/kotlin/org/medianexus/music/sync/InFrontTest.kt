@@ -105,6 +105,79 @@ class InFrontTest {
     }
 
     @Test
+    fun aLookDoesNotPassOnAChangeThatIsStillSettling() = runBlocking {
+        InStepBuild.forTests = true
+        val looks = AtomicInteger()
+        val requests = AtomicInteger()
+        val server = MockWebServer()
+        server.dispatcher = object : mockwebserver3.Dispatcher() {
+            override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+                requests.incrementAndGet()
+                // (Each exchange begins by asking for the list of playlists.)
+                if ("getPlaylists" in request.url.encodedPath) looks.incrementAndGet()
+                return MockResponse.Builder().code(200).setHeader("Content-Type", "application/json").body("""{"subsonic-response":{"status":"ok","version":"1.16.1"}}""").build()
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient(), OfflineSwitch())
+        val settings = SettingsStore.open(File(folder.root, "settings.json"), scope, Dispatchers.IO)
+        val dirs = AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))
+        Belongs.takeOn(settings, "key", { dirs.data })
+        val front = MutableStateFlow(false)
+        // Both waits by hand: the quarter minute between looks, and the few seconds a
+        // change made here is given to settle.
+        val waits = AtomicInteger()
+        val tick = Channel<Unit>(Channel.UNLIMITED)
+        val settles = AtomicInteger()
+        val settled = Channel<Unit>(Channel.UNLIMITED)
+        val wiring = AccountWiring(
+            settings = settings.state, reach = MutableStateFlow(Reach()), suspect = {}, settingsStore = settings, front = front,
+            pause = { millis ->
+                when (millis) {
+                    InStep.LOOK_MILLIS -> { waits.incrementAndGet(); tick.receive() }
+                    InStep.SETTLE_MILLIS -> { settles.incrementAndGet(); settled.receive() }
+                    else -> delay(millis)
+                }
+            },
+        )
+        val account = AccountGraph(Account(api.server, api.username, "key", dirs), api, Dispatchers.IO, wiring)
+        try {
+            until("the look at start") { looks.get() == 1 }
+            front.value = true
+            until("the timer to start") { waits.get() == 1 }
+            // Something shared is changed here. It is passed on in a few seconds, so that a
+            // burst of changes goes as one...
+            account.step!!.shareSoon()
+            until("the change to be settling") { settles.get() == 1 }
+            // ...and a look that comes round meanwhile does not pass it on early: the
+            // exchange the change is waiting for is about to be made, and reads as a look does.
+            tick.send(Unit)
+            until("the timer to start again") { waits.get() == 2 }
+            assertEquals("a look made an exchange of its own while a change made here was settling", 1, looks.get())
+            settled.send(Unit)
+            until("the change's own exchange") { looks.get() == 2 }
+            // With nothing settling, the next look makes its exchange as ever. (Once that
+            // exchange has ended: the server has been asked nothing more for a moment. A
+            // look that found it still out would be put off, through a settling of its
+            // own, which is let through here so that even then this ends.)
+            var asked: Int
+            do {
+                asked = requests.get()
+                delay(300)
+            } while (requests.get() != asked)
+            settled.send(Unit)
+            tick.send(Unit)
+            until("the next look") { looks.get() >= 3 }
+        } finally {
+            InStepBuild.forTests = null
+            account.close()
+            scope.cancel()
+            server.close()
+        }
+    }
+
+    @Test
     fun theSavedQueueIsLookedAtWithEveryLookOnlyWhereThatCostsNothing() = runBlocking {
         // The rule: with every look on a network that isn't metered and with nothing playing
         // here; otherwise once a minute, as it was.
