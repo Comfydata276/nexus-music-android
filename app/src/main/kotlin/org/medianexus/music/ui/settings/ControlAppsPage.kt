@@ -45,10 +45,15 @@ fun ControlAppsPage(graph: Graph, onBack: () -> Unit) {
     LaunchedEffect(apps.size) { graph.controlApps.seen() }
     val colors = Theme.colors
     Column(Modifier.fillMaxSize()) {
-        TitleBar(stringResource(R.string.control_apps), onBack = onBack)
+        // (The bar holds one line, and the whole name does not fit it on a narrow screen with
+        // large type: a short name there, and the name the Settings row has just beneath.)
+        TitleBar(stringResource(R.string.control_apps_bar), onBack = onBack)
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = Theme.dimens.pagePad, end = Theme.dimens.pagePad, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item(key = "about") {
-                BasicText(stringResource(R.string.control_apps_about), Modifier.padding(top = 4.dp), style = Theme.type.rowDetail.copy(color = colors.muted))
+                Column {
+                    BasicText(stringResource(R.string.control_apps), Modifier.padding(top = 4.dp).semantics { heading() }, style = Theme.type.rowTitle.copy(color = colors.text))
+                    BasicText(stringResource(R.string.control_apps_about), Modifier.padding(top = 4.dp), style = Theme.type.rowDetail.copy(color = colors.muted))
+                }
             }
             if (apps.isEmpty()) {
                 item(key = "none") {

@@ -250,7 +250,9 @@ How it is built (M1a):
     asked" until the list has been looked at. Switching one on stores the package and the
     certificate; every later connection, and every command of an open one, is let through
     only if the calling uid's package and certificate are exactly those. The same name
-    signed otherwise is another app: refused, and listed separately.
+    signed otherwise is another app: refused, and listed separately. (The list's own bar
+    says "Playback apps": a bar holds one line, and at 360 dp with large type the whole
+    name was cut short in it. The whole name is the page's first line.)
   - **What it gets** is what a headset gets, narrowed for that controller alone when it
     connects: play, pause, stop, next, previous and moving about in the song; and the song
     that is playing, with its details and its cover. No session commands at all, so nothing
