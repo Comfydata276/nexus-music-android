@@ -171,6 +171,26 @@ class InStep(
 
     private val wrongClock = MutableStateFlow(false)
 
+    /** What is known of this phone's clock beside the server's, since the app started. */
+    enum class ClockIs {
+        /** No answer has come from the server yet in this run: nothing is known. **Not the
+         *  same as right**: nothing that depends on comparing times may be decided by it. */
+        UNMEASURED,
+        /** Within five minutes of the server's by its last answers; or the server gives no
+         *  date, and there is nothing to compare with (the core takes the phone's as right). */
+        RIGHT,
+        /** More than five minutes from the server's. */
+        WRONG,
+    }
+
+    private val clockNow = MutableStateFlow(ClockIs.UNMEASURED)
+
+    /** See [ClockIs]. What the queue goes by is the clock **as its own read of the server
+     *  measured it** (`QueueStep`): a save that compares times reads the server first, and
+     *  that read is the measurement; a save made while a song plays compares none. This is
+     *  for what has no read of its own: no queue is saved, or taken up, while it is WRONG. */
+    val clockIs: StateFlow<ClockIs> = clockNow.asStateFlow()
+
     /**
      * This phone's clock disagrees with the server's by more than five minutes, as last
      * compared (the core's `Clock`). While it does the phone takes in what other devices
@@ -261,6 +281,7 @@ class InStep(
         val settled = Core.settle(device, Answers(stated, playlist, read?.serverTime ?: listed.serverTime, received))
         if (settled.clock.wrong && !wrongClock.value) note("in step: this phone's clock and the server's disagree by more than five minutes; nothing is shared from here until they agree")
         wrongClock.value = settled.clock.wrong
+        clockNow.value = if (settled.clock.wrong) ClockIs.WRONG else ClockIs.RIGHT
         // 4. Stop: say why, and do nothing else.
         settled.stop?.let { stop ->
             note("in step: ${stop.words}")

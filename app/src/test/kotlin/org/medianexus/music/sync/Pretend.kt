@@ -145,11 +145,18 @@ internal class PretendPlayer(var playing: Boolean = false, var current: String? 
     /** Something that happens while a queue is being made ready. */
     var meanwhile: () -> Unit = {}
 
-    override fun queue() = songs?.let { ids -> QueueNow(ids.map { org.medianexus.music.core.QueueSong(it, 200) }, ids.indexOf(current).coerceAtLeast(0), positionSeconds) }
+    /** Something that happens as the queue is asked for (a save being prepared). */
+    var asked: () -> Unit = {}
+
+    override fun queue() = songs.also { asked() }?.let { ids -> QueueNow(ids.map { org.medianexus.music.core.QueueSong(it, 200) }, ids.indexOf(current).coerceAtLeast(0), positionSeconds) }
     override fun currentId() = current
     override fun playing() = playing
     override fun stamp() = stamp
     override fun taken() = taken
+
+    /** Moved on by the test whenever it does something to the queue or to playing. */
+    var revision = 0L
+    override fun revision() = revision
     override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, taken: String, choice: Long?, asOf: Long, stampThen: Long, still: () -> Boolean): Boolean {
         meanwhile()
         // (As the playback service: not if the person has done anything to the queue since

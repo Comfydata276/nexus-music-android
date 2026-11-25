@@ -126,6 +126,29 @@ class ContinueHereTest {
     }
 
     @Test
+    fun ofTwoQueuesMadeReadyAtOnceOnlyTheFirstToBeReadyGoesIn() {
+        inside.player.play(mine(), 1, "A list", playNow = false)
+        settle()
+        // Two looks decided, at the same moment, to take up what another device had saved
+        // (each on what it had read), and both queues are being made ready together.
+        val asOf = Choices.latest
+        val stampThen = here().stamp()
+        val other = List(2) { Song(id = "other$it", title = "Other $it", duration = 200) }
+        val one = scope.async { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = asOf, stampThen = stampThen, still = { true }) }
+        val two = scope.async { here().replace(other, 0, 5_000, later() + 5, "2026-01-01T00:00:05Z", choice = null, asOf = asOf, stampThen = stampThen, still = { true }) }
+        val until = System.nanoTime() + 30_000_000_000L
+        while (!(one.isCompleted && two.isCompleted)) {
+            settle()
+            check(System.nanoTime() < until) { "not done in thirty seconds" }
+            Thread.yield()
+        }
+        // One went in. The other found the queue no longer the one it was decided against,
+        // and gave way: it is for the next look to say what stands.
+        @Suppress("OPT_IN_USAGE")
+        assertEquals(setOf(true, false), setOf(one.getCompleted(), two.getCompleted()))
+    }
+
+    @Test
     fun aQueueTakenUpFromAnotherDeviceIsStillThatDevicesAfterARestartUntilSomethingIsDoneToIt() {
         inside.player.play(mine(), 1, "A list", playNow = false)
         settle()

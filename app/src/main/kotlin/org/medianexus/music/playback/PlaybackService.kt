@@ -1226,6 +1226,8 @@ class PlaybackService : MediaLibraryService() {
         val before = queueMark
         if (mark != before) {
             queueMark = mark
+            // (Whatever it was, a save prepared before it is for another queue.)
+            queueRevision++
             if (!queueQuiet && !queue.isEmpty) {
                 queueStamp = System.currentTimeMillis() / 1000
                 // (Whatever it was before, it is this phone's own now.)
@@ -1248,6 +1250,8 @@ class PlaybackService : MediaLibraryService() {
      *  at (see [queueChanged]). */
     private var shufflePressesSeen = 0L
 
+    /** Moves on at everything done to the queue or to playing it (see `QueueHere.revision`). */
+    private var queueRevision = 0L
     /** When the queue was last changed here, or played on (seconds since 1970; see [save]). */
     private var queueStamp = 0L
     /** Set while the queue is one taken up from another device with nothing done to it or
@@ -1290,6 +1294,7 @@ class PlaybackService : MediaLibraryService() {
         override fun playing(): Boolean = exo.playWhenReady && !player.queue.isEmpty
         override fun stamp(): Long = queueStamp
         override fun taken(): String? = queueTaken
+        override fun revision(): Long = queueRevision
 
         override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, taken: String, choice: Long?, asOf: Long, stampThen: Long, still: () -> Boolean): Boolean {
             // Not before this phone's own queue from its last run is back: that comes first,
@@ -1300,6 +1305,9 @@ class PlaybackService : MediaLibraryService() {
             // since it was decided to take this one up. Whether the other device's is the
             // newer was the shared core's to say, from the stamp as it was then.)
             if (choice == null && (exo.playWhenReady && !player.queue.isEmpty || queueStamp != stampThen || !Choices.stands(asOf))) return false
+            // (The queue as it is at this moment, by number: looked at once more when the
+            // one to take up is ready.)
+            val was = queueRevision
             // The place it acts for in the order of choices. "Continue here" took its own, at
             // the tap. A queue taken up without being asked is nobody's choice and takes
             // none: it acts for the newest there was when it was decided on, so a start the
@@ -1314,6 +1322,11 @@ class PlaybackService : MediaLibraryService() {
             // "Continue here"; while it was being made ready, taken up unasked.
             if (!still() || !Choices.stands(place)) return false
             if (choice == null && exo.playWhenReady && !player.queue.isEmpty) return false
+            // Immediately before it goes in, once more: nothing has been done here to the
+            // queue, or to playing it, while this one was being made ready. Another queue
+            // taken up meanwhile is such a thing: of two made ready at once, only the first
+            // to be ready goes in, and the other gives way to it.
+            if (choice == null && (queueRevision != was || queueStamp != stampThen)) return false
             if (choice != null) holdForeground(why = "to carry on from another device")
             val before = queueStamp
             queueStamp = stamp
@@ -1449,6 +1462,9 @@ class PlaybackService : MediaLibraryService() {
             // Something is playing, or meant to be: a reason to know whether the server is
             // back, and to ask now if it is out of reach (see ServerWatch).
             graph.playing = playWhenReady
+            // (Play and pause: a save of the queue prepared before it was decided on what
+            // was true then. See `QueueHere.revision`.)
+            queueRevision++
             if (playWhenReady) graph.watch.nudge()
             // "Play" with nothing to play is not playing: Media3 presses play all the same
             // when there was nothing to resume, and left like that the next queue to arrive

@@ -61,6 +61,15 @@ interface QueueHere {
     fun taken(): String?
 
     /**
+     * A number that moves on at everything done to the queue or to playing it here: a
+     * change to the queue, the place in it moving on, play and pause, another device's
+     * queue put in its place. A save is for the queue as it was at one such number, and is
+     * sent only if it is still that number ([QueueStep]): the time alone ([stamp]) is in
+     * whole seconds, and says nothing of a pause.
+     */
+    fun revision(): Long
+
+    /**
      * Puts another device's queue in place of this one, at `cursor` and `positionMs` into
      * that song; `stamp` and `taken` are the queue's own from then on ([stamp], [taken]).
      * Putting it there is not a change to pass on.
@@ -100,6 +109,8 @@ class QueueStep(
     private val saved: suspend () -> Timed<PlayQueue>,
     /** This device's made-up id (eight hex digits), made the first time it is wanted. */
     private val deviceId: () -> String,
+    /** The account's key on the phone: what "saves take turns" goes by. */
+    private val account: String,
     /** Sharing is switched on, this is still the account signed in, and the server may be
      *  asked now. */
     private val may: () -> Boolean,
@@ -128,8 +139,14 @@ class QueueStep(
     private var soon: Job? = null
     @Volatile private var uploadedAt = 0L
 
-    /** Saves take turns, in the order they were asked for. */
-    private val saving = Mutex()
+    /** Looks take turns too, for the account: one that began later reads the server later,
+     *  and what it finds is never put in the player before an earlier look's. */
+    private val looking = lookOf(account)
+
+    /** Saves take turns, in the order they were asked for: **for the account**, whichever
+     *  of its objects asks (signing out and straight back in makes a second set while a
+     *  save of the first's may still be on its way). */
+    private val saving = turnOf(account)
 
     /** The name this device saves the queue under, so it can tell its own from others'. */
     private fun device(): String = Core.deviceName(deviceId())
@@ -174,7 +191,10 @@ class QueueStep(
             // (With no player there is nothing to save, and no main thread need be asked.)
             if (here == null) return@withLock
             val name = device()
-            val (now, mine) = withContext(main) { here?.let { it.queue() to hereOf(it, name) } } ?: return@withLock
+            // The queue this save is for: as the player has it at this moment, by number.
+            val (player, prepared) = withContext(main) { here?.let { it to it.revision() } } ?: return@withLock
+            val (now, mine) = withContext(main) { player.queue() to hereOf(player, name) }
+            if (withContext(main) { player.revision() } != prepared) return@withLock
             val upload = now?.let { Core.queueWindow(it.songs, it.cursor, it.positionSeconds) } ?: return@withLock
             // 1 and 2. While a song is playing here the queue is this phone's to keep, and is
             // saved without a look. Otherwise the server's saved queue is read first, and the
@@ -186,9 +206,11 @@ class QueueStep(
                 if (Core.queueSave(theirs, mine) != SaveVerdict.SAVE) return@withLock
             }
             // 3. Immediately before sending: the queue is still the one this save was for
-            // (nothing has been done to it since), and it is still this account with sharing
-            // on. Otherwise nothing is sent: the change that came after has a save of its own.
-            val same = withContext(main) { here?.let { it.stamp() == mine.stamp && it.taken() == mine.taken && it.currentId() == mine.current } ?: false }
+            // (nothing has been done to it, or to playing it, since: the same player, at
+            // the same number), and it is still this account with sharing on. Otherwise
+            // nothing is sent: the change that came after has a save of its own, or the next
+            // look finds one owed.
+            val same = withContext(main) { here === player && player.revision() == prepared }
             if (!same || !may()) return@withLock
             uploadedAt = clock()
             // (Not abandoned half-way: see InStep.)
@@ -208,18 +230,18 @@ class QueueStep(
      * here and nothing is playing here; offered as "Continue here" if it has been playing in
      * the last half hour; and this phone's own save, if it is owed, is made.
      */
-    suspend fun check() {
-        if (!may()) return
+    suspend fun check() = looking.withLock {
+        if (!may()) return@withLock
         try {
             val answer = saved()
             val theirs = theirsOf(answer, clock())
             // The setting was switched off while the answer was on its way: it is not used.
-            if (!may()) return
+            if (!may()) return@withLock
             val name = device()
             // With no player (the playback service isn't up) there is nothing to take the
             // queue up or to offer it to: it is looked at again when there is.
-            if (here == null) return forget()
-            val (mine, asOf) = withContext(main) { here?.let { hereOf(it, name) to Choices.latest } } ?: return forget()
+            if (here == null) return@withLock forget()
+            val (mine, asOf) = withContext(main) { here?.let { hereOf(it, name) to Choices.latest } } ?: return@withLock forget()
             val looked = Core.queueLook(theirs, mine, clock())
             withContext(main) {
                 val player = here ?: return@withContext
@@ -283,6 +305,16 @@ class QueueStep(
     }
 
     private companion object {
+        private val turns = HashMap<String, Mutex>()
+
+        /** One save at a time for an account (see [saving]). */
+        private fun turnOf(account: String): Mutex = synchronized(turns) { turns.getOrPut(account) { Mutex() } }
+
+        private val looks = HashMap<String, Mutex>()
+
+        /** One look at a time for an account (see [looking]). */
+        private fun lookOf(account: String): Mutex = synchronized(looks) { looks.getOrPut(account) { Mutex() } }
+
         /** How often the place in a song that is simply playing is saved (Windows: every
          *  twenty seconds; a phone may be on a data plan). */
         const val PROGRESS_SECONDS = 60L

@@ -483,6 +483,28 @@ class InStepContractTest {
     // ---- the clock -------------------------------------------------------------------------------
 
     @Test
+    fun aClockNobodyHasMeasuredYetIsNotAClockThatIsRight() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        // Before any answer has come from the server in this run, nothing is known of it.
+        val step = phone.step(server)
+        assertEquals(InStep.ClockIs.UNMEASURED, step.clockIs.value)
+        assertEquals(InStep.Outcome.DONE, step.exchange())
+        assertEquals(InStep.ClockIs.RIGHT, step.clockIs.value)
+        // An hour out, by the server's own answers.
+        val wrong = phone.step(server, clock = { PRETEND_NOW + 3_600 })
+        assertEquals(InStep.ClockIs.UNMEASURED, wrong.clockIs.value)
+        assertEquals(InStep.Outcome.CLOCK_WRONG, wrong.exchange())
+        assertEquals(InStep.ClockIs.WRONG, wrong.clockIs.value)
+        // A server that gives no date: there is nothing to compare with, and the phone's is
+        // taken to be right, as the core has it. That is known, not assumed.
+        server.time = null
+        val undated = phone.step(server, clock = { PRETEND_NOW + 3_600 })
+        assertEquals(InStep.Outcome.DONE, undated.exchange())
+        assertEquals(InStep.ClockIs.RIGHT, undated.clockIs.value)
+    }
+
+    @Test
     fun aPhoneWhoseClockDisagreesWithTheServersTakesInAndSharesNothing() = runBlocking {
         val server = PretendServer().apply { put("a", windows) }
         val phone = phone()

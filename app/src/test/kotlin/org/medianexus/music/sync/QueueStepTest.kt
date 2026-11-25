@@ -91,7 +91,7 @@ class QueueStepTest {
     private val main = Main()
 
     private fun step(server: Server, player: PretendPlayer?, now: Long = DAY + 700) =
-        QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, may = { on && reached }, on = { on }, scope = scope, clock = { now }, pause = {}, onMain = main).also { it.here = player }
+        QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, account = "account-${System.nanoTime()}", may = { on && reached }, on = { on }, scope = scope, clock = { now }, pause = {}, onMain = main).also { it.here = player }
 
     // ---- saving: only if it is still the newest thing that happened --------------------------------
 
@@ -118,6 +118,84 @@ class QueueStepTest {
         server.queue = PlayQueue()
         step.changedHere()
         assertEquals(3, server.saves.size)
+    }
+
+    @Test
+    fun aSaveIsForTheQueueAsItIsWhenItIsSent() = runBlocking {
+        val server = Server()
+        // Paused, the queue last changed at 00:05:00. Its save reads the server first...
+        val player = PretendPlayer(stamp = DAY + 300)
+        val step = step(server, player)
+        // ...and while that read is on its way the person moves a song in the queue: the
+        // same song is current, in the same second, and nothing was taken up. It is not
+        // the queue the save was prepared from.
+        server.onRead = {
+            player.songs = listOf("mine", "another", "next")
+            player.revision++
+        }
+        step.changedHere()
+        assertTrue("the queue as it was is not sent", server.saves.isEmpty())
+        // The change that came after has a save of its own: that one is for the queue as it is.
+        server.onRead = {}
+        step.changedHere()
+        assertEquals(listOf(QueueSaved(listOf("mine", "another", "next"), "mine", 5_000)), server.saves)
+        // And a save prepared while playing (no look first), with the player paused before
+        // it is sent: not sent either. Playing is why it was not to look first.
+        player.playing = true
+        player.asked = { main.busy = true }
+        step.changedHere()
+        player.asked = {}
+        player.playing = false
+        player.revision++
+        main.free()
+        assertEquals("only the one", 1, server.saves.size)
+    }
+
+    @Test
+    fun savesTakeTurnsForAnAccountNotForASignIn() = runBlocking {
+        val server = Server()
+        val first = PretendPlayer(stamp = DAY + 300)
+        val one = QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, account = "the-same", may = { true }, scope = scope, clock = { DAY + 700 }, pause = {}, onMain = main).also { it.here = first }
+        // The account's first sign-in has a save on its way (held)...
+        val held = CompletableDeferred<Unit>()
+        val going = CompletableDeferred<Unit>()
+        server.onSave = { going.complete(Unit); held.await() }
+        one.changedHere()
+        going.await()
+        // ...when it is signed out and straight back in: a second set of objects for the
+        // same account, with a save of its own to make. It waits its turn.
+        val second = PretendPlayer(stamp = DAY + 310).apply { songs = listOf("later", "next"); current = "later" }
+        val two = QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, account = "the-same", may = { true }, scope = scope, clock = { DAY + 700 }, pause = {}, onMain = main).also { it.here = second }
+        server.onSave = {}
+        val asked = server.asked
+        two.changedHere()
+        assertEquals("not even its look at the server is made while the first is on its way", asked, server.asked)
+        assertTrue(server.saves.isEmpty())
+        held.complete(Unit)
+        assertEquals(listOf("mine", "later"), server.saves.map { it.current })
+    }
+
+    @Test
+    fun looksTakeTurnsSoALaterOneIsNeverPutInBeforeAnEarlierOne() = runBlocking {
+        val server = Server()
+        val player = PretendPlayer(stamp = DAY + 100)
+        val step = step(server, player)
+        server.savedBy(pc, "1970-01-02T00:10:00Z", "a", "b", "c", current = "b", position = 30_000)
+        // A look has read the server and is waiting for the main thread...
+        main.busy = true
+        val first = scope.launch { step.check() }
+        assertEquals(1, server.asked)
+        // ...when the PC saves again, and another look is asked for. It does not so much as
+        // read the server until the first is done: what it finds is the later, and goes in
+        // after the first's or not at all.
+        server.savedBy(pc, "1970-01-02T00:10:05Z", "x", "y", current = "y", position = 1_000)
+        val second = scope.launch { step.check() }
+        assertEquals("the second look waits its turn", 1, server.asked)
+        main.free()
+        first.join()
+        second.join()
+        assertEquals(2, server.asked)
+        assertEquals("the PC's later queue is the one in the player", "y", player.current)
     }
 
     @Test
@@ -155,7 +233,7 @@ class QueueStepTest {
         val player = PretendPlayer(stamp = DAY + 100)
         // A save has been asked for, and is waiting out its three seconds...
         val waits = ArrayList<CompletableDeferred<Unit>>()
-        val step = QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, may = { on }, scope = scope, clock = { DAY + 700 },
+        val step = QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, account = "account-waits", may = { on }, scope = scope, clock = { DAY + 700 },
             pause = { CompletableDeferred<Unit>().also { waits += it }.await() }, onMain = main).also { it.here = player }
         step.changedHere()
         // ...when the PC's queue, saved later than anything done here, is taken up.
