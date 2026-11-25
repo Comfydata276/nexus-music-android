@@ -70,7 +70,7 @@ class ContinueHereTest {
         service.onDestroy()
         settle()
         server.stop()
-        org.medianexus.music.sync.InStepBuild.forTests = false
+        org.medianexus.music.sync.InStepBuild.forTests = null
     }
 
     private fun settle() = shadowOf(Looper.getMainLooper()).idle()

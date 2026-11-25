@@ -48,7 +48,7 @@ class SwitchedOffTest {
 
     @After
     fun stop() {
-        InStepBuild.forTests = false
+        InStepBuild.forTests = null
         scope.cancel()
         server.close()
     }
@@ -108,7 +108,9 @@ class SwitchedOffTest {
 
     @Test
     fun switchedOffNothingOfItRunsAndNothingIsAskedOfTheServer() = runBlocking {
-        assertTrue("keeping in step exists in this build", !InStepBuild.EXISTS)
+        // (Switched off for this test, whatever the build says: this is what "off" means,
+        // and it must go on meaning it once the build has it on.)
+        InStepBuild.forTests = false
         startServer()
         val settings = SettingsStore.open(File(folder.root, "settings.json"), scope, Dispatchers.IO)
         val reach = MutableStateFlow(Reach())
@@ -155,6 +157,7 @@ class SwitchedOffTest {
      */
     @Test
     fun switchedOffPinsAndListChoicesAreThePhonesOwnAndKeptAcrossARestart() = runBlocking {
+        InStepBuild.forTests = false
         startServer()
         val file = File(folder.root, "settings.json")
         val dirs = AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))

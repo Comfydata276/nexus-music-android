@@ -24,12 +24,16 @@ object InStepBuild {
     /** The one switch, for the whole build. */
     const val EXISTS = false
 
-    /** Set only by tests of the feature itself, so that its code goes on being tested while
-     *  it is switched off: the unit tests, and a debug build told to by the test rig, as it
-     *  starts (`DebugStep`, which a release build has only an empty version of). Nothing in
-     *  a release build sets it. */
-    @Volatile internal var forTests = false
+    /**
+     * Set only by tests: `true` by the tests of the feature itself, so that its code goes
+     * on being tested while it is switched off (the unit tests, and a debug build told to
+     * by the test rig, as it starts: `DebugStep`, which a release build has only an empty
+     * version of); `false` by the tests of what "switched off" means, so that they go on
+     * proving it once [EXISTS] is true. Null, as it always is in a release build: the
+     * build's own answer.
+     */
+    @Volatile internal var forTests: Boolean? = null
 
-    /** Whether it runs: [EXISTS], or a test of it. */
-    val on: Boolean get() = EXISTS || forTests
+    /** Whether it runs: what a test says, or [EXISTS]. */
+    val on: Boolean get() = forTests ?: EXISTS
 }

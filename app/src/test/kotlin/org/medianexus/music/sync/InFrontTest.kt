@@ -97,7 +97,7 @@ class InFrontTest {
             front.value = true
             until("a look once back") { looks.get() == 3 }
         } finally {
-            InStepBuild.forTests = false
+            InStepBuild.forTests = null
             account.close()
             scope.cancel()
             server.close()
