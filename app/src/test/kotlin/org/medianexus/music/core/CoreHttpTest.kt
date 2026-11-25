@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -19,7 +20,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import org.medianexus.music.BuildConfig
 
 /**
@@ -30,6 +33,11 @@ import org.medianexus.music.BuildConfig
  */
 class CoreHttpTest {
     private val closing = mutableListOf<StandIn>()
+
+    /** No test here waits for long; one that does has met something that never ends, and
+     *  fails for it rather than holding up every build on the machine. */
+    @get:Rule
+    val noLongerThan: Timeout = Timeout.builder().withTimeout(120, TimeUnit.SECONDS).build()
 
     private fun standIn(answer: (StandIn.Asked, StandIn.Reply) -> Unit) = StandIn(answer).also { closing += it }
 
@@ -531,6 +539,20 @@ class CoreHttpTest {
         late.cancelAndJoin()
         Thread.sleep(4_000)
         assertEquals(1, server.asked.size)
+
+        // And the one that is let through has only the short while: not answered in it, it
+        // is cut off.
+        val cut = CopyOnWriteArrayList<Boolean>()
+        val slow = standIn { _, reply ->
+            cut += reply.hungUpWithin(3_000)
+            runCatching { reply.json("{}") }
+        }
+        val held = launch(Dispatchers.Default) { Core.wireProbe(Core.Probe(method = "PUT", url = slow.address, body = "{}", pause = 800), changing = true) }
+        Thread.sleep(200)
+        held.cancelAndJoin()
+        assertTrue(slow.awaitAsked(5_000) { it.method == "PUT" })
+        withTimeout(6_000) { while (cut.isEmpty()) delay(50) }
+        assertEquals(listOf(true), cut.toList())
     }
 
     @Test
@@ -652,6 +674,9 @@ class CoreHttpTest {
             reply.json("{}")
         }
         (1..10).map { async(Dispatchers.Default) { Core.wireProbe(Core.Probe(url = looks.address)) } }.awaitAll()
+        // (The numbers themselves, as the design has them: a change to either is a decision.)
+        assertEquals(4, CoreHttp.LOOKING)
+        assertEquals(2, CoreHttp.CHANGING)
         assertEquals(CoreHttp.LOOKING, looks.mostAtOnce.get())
         val changes = standIn { _, reply ->
             Thread.sleep(400)

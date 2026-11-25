@@ -2064,7 +2064,7 @@ each thing as one call of the surface above and nothing past it.
 | The Requests page | `onTheirWay()` | `Found<Waiting>`: what has arrived lately, "On their way (3)", each album still to come with its line, or what to say when there is nothing |
 | Taking one off the list | `cancel(number, title)` | `Said`: "“…” is off the list" |
 | "Artists you might like" | `suggest()`, and the flow `suggestions` | A list of `Suggestion` |
-| An arrival to announce | the flow `news` | The sentence, once for each arrival |
+| An arrival to announce | the flow `news` | The sentence, once for each arrival. Kept until somebody listens (an arrival found as the app starts is said to the first screen that does), and handed to one listener only: collect it in one place |
 | What this phone asked for | the flow `asked` | The notes as they are kept |
 
 Every caption, heading and sentence in those answers is the shared library's

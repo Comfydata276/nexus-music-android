@@ -208,16 +208,18 @@ class RequestsPagesTest {
         assertEquals(Asking.Already("That one has already been asked for."), made.pages.asking("single-1", "One Song"))
         assertEquals("On their way (1)", got(made.pages.onTheirWay()).heading)
 
-        // It turns up in the phone's copy of the library: said, once.
-        val said = CopyOnWriteArrayList<String>()
-        val listening = launch(Dispatchers.Default) { made.pages.news.collect { said += it } }
-        delay(100)
+        // It turns up in the phone's copy of the library while no screen is listening: the
+        // news is kept, and said once, to the first that does.
         now.set(start + 4_000)
         library.value = LibraryLists(albums = listOf(LibraryAlbum("al-9", "One Song", "Quillon Vane", "cover-9")), songs = listOf(listOf("Its Song", "Quillon Vane")), artists = listOf("Quillon Vane"))
         withTimeout(20_000) { made.pages.asked.first { it.singleOrNull()?.arrived == start + 4_000 } }
         delay(300)
         made.pages.checkArrivals()
         made.pages.onTheirWay()
+        val said = CopyOnWriteArrayList<String>()
+        val listening = launch(Dispatchers.Default) { made.pages.news.collect { said += it } }
+        withTimeout(10_000) { while (said.isEmpty()) delay(20) }
+        made.pages.checkArrivals()
         delay(300)
         assertEquals(listOf("“Its Song” has arrived, on “One Song”."), said.toList())
         assertEquals("al-9", made.pages.asked.value.single().libraryAlbum)

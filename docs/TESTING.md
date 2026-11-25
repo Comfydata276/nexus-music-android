@@ -2660,7 +2660,8 @@ Requests are switched off in every build so far (`RequestsBuild`), and there are
 for them yet. What is below the screens is driven three ways.
 
 **In the JVM, against stand-ins written into the tests**: `CoreHttpTest` (the boundary: 33
-tests against a server that answers in bytes of the test's choosing), `RequestsTest` (the
+tests against a server that answers in bytes of the test's choosing; none may take more than two
+minutes, so that a change which makes one wait for ever fails it instead of holding the machine's builds), `RequestsTest` (the
 connection: an address and a key, the browser sign-in played by the test, what is kept and
 what is handed back), `requests/SwitchedOffTest` (with the build's switch off an account
 has nothing of requests at all).
@@ -2694,7 +2695,11 @@ what came back, whole, where the rig can read it:
 adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es do search --es what "quillon vane"
 adb shell run-as org.medianexus.music cat files/requests-debug.txt
 # also: album, question, ask, artist, add, way, offlist, suggest, singles (see the file's own comment)
+adb shell run-as org.medianexus.music cat files/requests-news.txt     # each arrival it was told of
 ```
+
+The first command sent to that screen after the app has been stopped is lost (the account is
+not up yet when it arrives): send it again.
 
 On the emulator MusicBrainz, ListenBrainz and the Cover Art Archive are the real ones, asked
 at the library's own pace, as the Windows walk asks them; Lidarr and the sign-in never are.
@@ -2718,6 +2723,54 @@ log in `~/.cache/nexus-music-android/shots/m7a/signin/`):
 
 The first time Chrome is opened on a fresh emulator it shows its own welcome ("Stay signed
 out"); that is Chrome's, once.
+
+**The same cases on Android 16 and Android 12** (`scripts/emu -d phone36`, `-d phone31`;
+`shots/m7a/signin-36/` and `signin-31/`, each with an index): every one as on Android 17,
+with one difference. On Android 12 the emulator's Chrome is version 91, and **the first time
+it is ever opened** its welcome screens leave the tab in a task of its own instead of over
+the app. The sign-in goes through and the browser shows the library's page ("You're signed
+in. You can close this tab and go back to Nexus Music."), but the app cannot come forward by
+itself: Android refuses a start from an app with nothing on screen ("Background activity
+start … isCallingUidForeground: false" in the system's log). Closing the tab shows the app
+connected. From the second time on the tab opens over the app and the app comes forward as
+on 16 and 17.
+
+**One walk of each action, and the comparison with Windows** (Android 17; the stand-in
+without the sign-in in front, as the Windows walks had it; `shots/m7a/asking/` and
+`shots/m7a/pages/`, what each call came to in the numbered text files there). The steps are
+the Windows walks' own (`shots/requests-in-core/how/walk.py` "asking", and `walk3.py`
+"search", "asking", "singles-off", "none"), each done as one call of the debug screen:
+
+```sh
+cd ~/.cache/nexus-music-android/shots/m7a/how
+./fresh.sh ../pages/lidarr-phone-asking.jsonl --all-kinds      # a fresh stand-in, and an app that remembers nothing asked for
+./phone-do.sh phone out.txt search "quillon vane"              # one call, and what it came to
+python3 compare-phone.py <the Windows walk's .jsonl> <the phone's .jsonl>
+```
+
+`compare-phone.py` counts every header name and value either app sent, then compares the
+calls in order: method, path, query and body, with what differs from run to run by design
+written the same way (the time in an artist's record, the stand-in's address). What it found:
+
+| Walk | Calls | Against the Windows log |
+|---|---|---|
+| "asking" (a search, an album's page, asking for it, the artist's page, "Add artist", an artist Lidarr doesn't keep, the Requests page) | 30 and 30 | The same, bodies included. The two look-ups of a search go out side by side, so which is logged first varies |
+| The pages' "asking" (an arrival said at start, an album, an EP and a single asked for, "Add artist", the Requests page, one taken off the list) | 54 and 52 | The same but for two things: Windows asks Lidarr for its artists at start (Home's suggestions) where the phone asks its version (so that the connection's state is true), and Windows loads the artist's page again after "Add artist" (the screen's doing) |
+| Singles and EPs switched off | 17 and 17 | The same but for that first call |
+| The Requests page with nothing asked for | 3 and 3 | The same but for that first call |
+| Six searches and an artist Lidarr doesn't keep | 21 and 23 | The text look-ups are the same. Which artists are then looked up by id differs, because they come from the real MusicBrainz's songs for each search, which were not the same on the two days |
+| The sign-in | | The same sequence: Lidarr with the key, without it, the outpost's start, the code for a token, the token for a pass, who it is, a renewal and its pass, Lidarr with the pass. The phone's log also has its browser fetching the sign-in page |
+
+Headers: the same names and values on every call, but the app's own name.
+
+An arrival was tried by writing a note of an album the test library has ("Tidewater", asked
+for through "Low Water") into the app's `asked.json` before it started: "“Low Water” has
+arrived, on “Tidewater”." within a second of the start, before any screen was listening,
+which is how it was found that such news must wait for a listener.
+
+Once the stand-in was killed in the middle of an "ask", after the artist had been added and
+the album marked: "Couldn't reach Lidarr. The connection was refused.", and no note kept
+(`shots/m7a/pages/cut/`).
 
 ## What is not covered
 

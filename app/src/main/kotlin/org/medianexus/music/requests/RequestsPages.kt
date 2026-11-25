@@ -8,15 +8,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -93,15 +94,22 @@ class RequestsPages internal constructor(
     private val suggestionsFile = Kept(File(dir, "suggestions.json"), KeptSuggestions.serializer(), KeptSuggestions(), note)
 
     private val askedNow = MutableStateFlow<List<Asked>>(emptyList())
-    private val newsNow = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    private val newsNow = Channel<String>(8, BufferOverflow.DROP_OLDEST)
     private val suggestionsNow = MutableStateFlow<List<Suggestion>>(emptyList())
 
     /** What was asked for through this phone and is still followed up, newest note last. */
     val asked: StateFlow<List<Asked>> = askedNow.asStateFlow()
 
-    /** Said when albums that were asked for have turned up in the library ("“Yellow” has
-     *  arrived, on “Parachutes”."), once for each arrival. The screens add where to see it. */
-    val news: SharedFlow<String> = newsNow.asSharedFlow()
+    /**
+     * Said when albums that were asked for have turned up in the library ("“Yellow” has
+     * arrived, on “Parachutes”."), once for each arrival. The screens add where to see it.
+     *
+     * **Kept until somebody is there to say it**: an arrival found as the app starts, before
+     * any screen is listening, is handed to the first that does (the last eight, if nobody
+     * listens for a long while). Each is handed over once, to one listener: collect this in
+     * one place, where the app shows its passing notes, and nowhere else.
+     */
+    val news: Flow<String> = newsNow.receiveAsFlow()
 
     /** Artists the person might like, as last found; empty until [suggest] has been asked. */
     val suggestions: StateFlow<List<Suggestion>> = suggestionsNow.asStateFlow()
@@ -363,7 +371,7 @@ class RequestsPages internal constructor(
             }
             arrived
         } ?: return@withContext
-        if (arrived.news.isNotEmpty()) newsNow.tryEmit(arrived.news)
+        if (arrived.news.isNotEmpty()) newsNow.trySend(arrived.news)
     }
 
     // ---- artists the person might like -------------------------------------------------------------

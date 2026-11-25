@@ -39,6 +39,7 @@ import org.medianexus.music.graph
  *     ... --es do search --es what "quillon vane"      "Not in your library"
  *     ... --es do album --es what <album id>           an album's page
  *     ... --es do question --es what <album id> --es name <title>      the question before asking
+ *                          (and --es by <artist>, --es song <the song that led here>, --es kind EP|Single)
  *     ... --es do ask --es what <album id> --es name <title>           asks Lidarr for it
  *     ... --es do artist --es what <artist id>         an artist's page, then their most played
  *     ... --es do add --es what <artist id> --es name <name>           "Add artist"
@@ -48,13 +49,19 @@ import org.medianexus.music.graph
  *     ... --es do singles --es what on|off
  *
  * What each came to is shown, and written whole to `files/requests-debug.txt` for the rig
- * (`adb shell run-as org.medianexus.music cat files/requests-debug.txt`).
+ * (`adb shell run-as org.medianexus.music cat files/requests-debug.txt`). While this screen
+ * exists it is the one place that listens for [RequestsPages.news]: each is added to
+ * `files/requests-news.txt`.
  */
 class RequestsDebugActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var text: TextView
     private var showing: Job? = null
     private var last = ""
+    /** [org.medianexus.music.core.OutsideArtist.open] of the artist's page last shown here,
+     *  as the real page will have it by it when "Add artist" is pressed. */
+    private var open = 0
+    private var hearing: Job? = null
 
     private val requests: Requests? get() = graph.accounts.state.value?.requests
 
@@ -77,6 +84,11 @@ class RequestsDebugActivity : Activity() {
             }
         }
         setContentView(ScrollView(this).apply { addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)) })
+        hearing = scope.launch {
+            graph.accounts.state.collectLatest { account ->
+                account?.requestsPages?.news?.collect { java.io.File(filesDir, "requests-news.txt").appendText(it + "\n") }
+            }
+        }
         handle(intent)
     }
 
@@ -87,12 +99,12 @@ class RequestsDebugActivity : Activity() {
 
     private fun handle(intent: Intent?) {
         val what = intent?.getStringExtra("do") ?: return
-        if (what in PAGES) page(what, intent.getStringExtra("what").orEmpty(), intent.getStringExtra("name").orEmpty(), intent.getStringExtra("song").orEmpty())
+        if (what in PAGES) page(what, intent.getStringExtra("what").orEmpty(), intent.getStringExtra("name").orEmpty(), intent.getStringExtra("song").orEmpty(), intent.getStringExtra("by").orEmpty(), intent.getStringExtra("kind").orEmpty())
         else act(what, intent.getStringExtra("address"), intent.getStringExtra("key"))
     }
 
     /** One call of the pages' surface, and what it came to, in full. */
-    private fun page(what: String, about: String, name: String, song: String) {
+    private fun page(what: String, about: String, name: String, song: String, by: String, kind: String) {
         val pages = graph.accounts.state.value?.requestsPages ?: return show("no requests here")
         val requests = requests ?: return
         show("$what…")
@@ -127,7 +139,7 @@ class RequestsDebugActivity : Activity() {
                         is org.medianexus.music.core.AlbumPage.Unavailable -> listOf("unavailable: ${page.why}")
                         else -> listOf("$page")
                     }
-                    "question" -> lines += when (val asking = pages.asking(about, name, song = song)) {
+                    "question" -> lines += when (val asking = pages.asking(about, name, by = by, song = song, kind = kind)) {
                         is org.medianexus.music.core.Asking.Already -> listOf("already: ${asking.said}")
                         is org.medianexus.music.core.Asking.Ask -> listOf("heading: ${asking.heading}", "text: ${asking.text}")
                     }
@@ -138,6 +150,7 @@ class RequestsDebugActivity : Activity() {
                     "artist" -> {
                         val page = found(pages.artist(about))
                         if (page is org.medianexus.music.core.OutsideArtist) {
+                            open = page.open
                             lines += listOf("artist: ${page.name}", "about: ${page.about}", "open: ${page.open}", "empty: ${page.empty}${if (page.failed) " (failed)" else ""}")
                             lines += page.albums.map { "album: ${it.offer.title} | ${it.caption} | id=${it.offer.album}${if (it.library != null) " | library=${it.library?.id}" else ""}" }
                             lines += page.smaller.map { "smaller: ${it.offer.title} | ${it.caption} | id=${it.offer.album}" }
@@ -153,7 +166,7 @@ class RequestsDebugActivity : Activity() {
                         }
                     }
                     "add" -> {
-                        val (heading, text) = pages.adding(name, 0)
+                        val (heading, text) = pages.adding(name, open)
                         lines += listOf("heading: $heading", "text: $text", "saying: ${pages.addingNow(name)}")
                         lines += pages.addArtist(about, name).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
                     }

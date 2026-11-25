@@ -249,6 +249,47 @@ class PagesTest {
     }
 
     @Test
+    fun `a soundtrack credited to various artists is asked for under that name, and the question says so`() {
+        // (MusicBrainz's own id for "Various Artists", which the library knows them by.)
+        val various = "89ad4ac3-39f7-470e-963a-56509c546377"
+        val film = """{"title":"Film Music","foreignAlbumId":"ost-1","albumType":"Album","secondaryTypes":["Soundtrack"],"artist":{"artistName":"Various Artists","foreignArtistId":"$various"}}"""
+        val standard = """{"id":1,"name":"Standard","primaryAlbumTypes":[{"albumType":{"name":"Album"},"allowed":true}],""" +
+            """"secondaryAlbumTypes":[{"albumType":{"name":"Studio"},"allowed":true},{"albumType":{"name":"Soundtrack"},"allowed":false}],"releaseStatuses":[{"releaseStatus":{"name":"Official"},"allowed":true}]}"""
+        route("recording?query", """{"recordings":[]}""")
+        route("/api/v1/") { asked, reply ->
+            val path = asked.target.substringAfter("/api/v1/")
+            when {
+                path.startsWith("album/lookup") -> reply.json("[$film]")
+                path.startsWith("artist/lookup") -> reply.json("[]")
+                asked.method == "GET" && path == "artist" -> reply.json("[]")
+                asked.method == "GET" && path == "rootfolder" -> reply.json("""[{"path":"/music","defaultQualityProfileId":3,"defaultMetadataProfileId":1}]""")
+                asked.method == "GET" && path == "metadataprofile" -> reply.json("[$standard]")
+                asked.method == "POST" && path == "metadataprofile" -> reply.json(asked.body.replaceFirst("{", """{"id":2,"""))
+                asked.method == "POST" && path == "album" -> reply.json("{}")
+                else -> reply.send(404)
+            }
+        }
+        // Offered by a search, as a soundtrack.
+        val found = got(wait { Core.pageSearch(lidarr, place, "film music") {} })
+        val offer = found.albums.single()
+        assertEquals(listOf("ost-1", various, "Various Artists", true), listOf(offer.album, offer.artistId, offer.artist, offer.soundtrack))
+        // The question says where it will be filed.
+        val asking = Core.asking(place, "ost-1", "Film Music", by = "Various Artists") as Asking.Ask
+        assertEquals("Ask for this album?", asking.heading)
+        assertTrue(asking.text, asking.text.endsWith("It's a soundtrack credited to various artists, so it goes on Lidarr's list under “Various Artists”."))
+        // Asked for: Lidarr is handed its own description of the album back, wanted, under
+        // "Various Artists", with a profile that lists soundtracks, which it had to be given.
+        val begun = Core.request(lidarr, place, "ost-1")
+        assertEquals(Outcome.Got("Various Artists"), wait { begun.done.await() })
+        val made = server.asked.single { it.method == "POST" && it.target.endsWith("/metadataprofile") }
+        assertTrue(made.body, "\"name\":\"Albums, EPs, singles and soundtracks\"" in made.body)
+        val added = server.asked.single { it.method == "POST" && it.target.endsWith("/album") }.body
+        for (part in listOf("\"foreignAlbumId\":\"ost-1\"", "\"foreignArtistId\":\"$various\"", "\"metadataProfileId\":2", "\"qualityProfileId\":3", "\"rootFolderPath\":\"/music\"", "\"albumsToMonitor\":[\"ost-1\"]", "\"monitorNewItems\":\"none\"")) {
+            assertTrue("$part in $added", part in added)
+        }
+    }
+
+    @Test
     fun `an album taken off Lidarr's list is no longer watched for`() {
         val wanted = lidarrWithASingle()
         assertEquals(Outcome.Got("Quillon Vane"), wait { Core.request(lidarr, place, "single-1").done.await() })
