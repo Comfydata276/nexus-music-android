@@ -61,11 +61,12 @@ interface QueueHere {
     fun taken(): String?
 
     /**
-     * A number that moves on at everything done to the queue or to playing it here: a
-     * change to the queue, the place in it moving on, play and pause, another device's
-     * queue put in its place. A save is for the queue as it was at one such number, and is
-     * sent only if it is still that number ([QueueStep]): the time alone ([stamp]) is in
-     * whole seconds, and says nothing of a pause.
+     * A number that moves on whenever what a save of the queue would carry has changed:
+     * the list, the current song or the place in it by a jump of any kind (a seek within
+     * the same second too), play and pause, another device's queue put in its place. It
+     * does not move as a song simply plays on. A save is for the queue as it was at one
+     * such number, and is sent only if it is still that number ([QueueStep]): the time
+     * alone ([stamp]) is in whole seconds, and says nothing of a pause.
      */
     fun revision(): Long
 

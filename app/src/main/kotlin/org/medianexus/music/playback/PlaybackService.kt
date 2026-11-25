@@ -1226,8 +1226,11 @@ class PlaybackService : MediaLibraryService() {
         val before = queueMark
         if (mark != before) {
             queueMark = mark
-            // (Whatever it was, a save prepared before it is for another queue.)
-            queueRevision++
+            // The list itself is another list (a change made here, or one put in its
+            // place): a save prepared before it is for another queue. (The place in it and
+            // the second of the song moving on are the song playing on, and no change: what
+            // moves them otherwise is a jump, which says so itself. See [queueRevision].)
+            if (before == null || before.first != mark.first) queueRevision++
             if (!queueQuiet && !queue.isEmpty) {
                 queueStamp = System.currentTimeMillis() / 1000
                 // (Whatever it was before, it is this phone's own now.)
@@ -1250,7 +1253,13 @@ class PlaybackService : MediaLibraryService() {
      *  at (see [queueChanged]). */
     private var shufflePressesSeen = 0L
 
-    /** Moves on at everything done to the queue or to playing it (see `QueueHere.revision`). */
+    /**
+     * Moves on whenever **what a save of the queue would carry has changed**: the list (in
+     * [save]), the song or the place in it by a jump of any kind (the player's position
+     * discontinuity, other than one song ending and the next beginning), playing or paused.
+     * It does not move as a song simply plays on, or plays on into the next: the saves made
+     * now and then while one plays are for the same queue. See `QueueHere.revision`.
+     */
     private var queueRevision = 0L
     /** When the queue was last changed here, or played on (seconds since 1970; see [save]). */
     private var queueStamp = 0L
@@ -1442,6 +1451,10 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            // A jump in position, or another song by anything but the one before it
+            // ending: what a save of the queue would carry has changed (within the same
+            // second of the same song too, which the queue's time can't show).
+            if (reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION) queueRevision++
             val from = oldPosition.positionMs / 1000.0
             val sameEntry = entryOf(oldPosition.mediaItem) != null && entryOf(oldPosition.mediaItem) == entryOf(newPosition.mediaItem)
             when {

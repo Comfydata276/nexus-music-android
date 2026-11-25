@@ -126,6 +126,37 @@ class ContinueHereTest {
     }
 
     @Test
+    fun theQueuesNumberMovesAtWhateverChangesWhatASaveWouldCarry() {
+        inside.player.play(mine(), 1, "A list", playNow = false)
+        settle()
+        // (The service's own number, which a save of the queue is prepared from and sent
+        // only if it is still: `QueueHere.revision`.)
+        fun moved(what: String, act: () -> Unit) {
+            val was = here().revision()
+            act()
+            settle()
+            assertTrue("$what did not move the queue's number", here().revision() != was)
+        }
+        // A jump in position within the same second of the same song: the queue's time, in
+        // whole seconds, does not see it, and a save prepared before it carries the old place.
+        assertEquals(0L, inside.exo.currentPosition)
+        moved("a seek within the second") { inside.exo.seekTo(400) }
+        assertEquals(400L, inside.exo.currentPosition)
+        moved("a seek back within the second") { inside.exo.seekTo(50) }
+        // Play, and pause: playing is why a save does not look at the server first.
+        moved("play") { inside.exo.play() }
+        moved("pause") { inside.exo.pause() }
+        // Another song chosen in the queue, and a change to the list itself.
+        moved("another song chosen") { inside.player.jumpAhead(1) }
+        moved("a song taken out of the queue") { inside.player.removeEntry(inside.player.queue.lastUid()!!) }
+        // And with nothing done, it stays: the queue is saved now and then as it stands
+        // (as it is while a song simply plays on), and that is no change to it.
+        val still = here().revision()
+        settle()
+        assertEquals(still, here().revision())
+    }
+
+    @Test
     fun ofTwoQueuesMadeReadyAtOnceOnlyTheFirstToBeReadyGoesIn() {
         inside.player.play(mine(), 1, "A list", playNow = false)
         settle()
