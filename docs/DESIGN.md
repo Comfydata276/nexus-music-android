@@ -2189,7 +2189,8 @@ own words) are the Windows app's, in `strings.xml`.
   `RequestsPages` sees it through. After anything asked, the pages that show music beyond
   the library ask again (`Ui.requestsChanged`), to say "Requested".
 - **The Requests page**: from Library (a row while requests are on) and from an arrival's
-  note. Arrived as cards of the library's own albums, then "On their way (n)"; one is taken
+  note. Arrived as rows of the library's own albums (small cover, title, the library's line
+  whole over two lines), then "On their way (n)"; one is taken
   off by its "…" or a swipe, as the queue's songs are. Pulled down it asks again, and every
   half minute while on screen, as Windows does.
 - **Home, "Artists you might like"**, after Recently played, only while connected; asked
@@ -2402,7 +2403,10 @@ How it is built (M1b):
   song's radio, as Windows does (M3b).
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
-  a like the server refused).
+  a like the server refused). They come one after another, oldest first, each for its time
+  (eight seconds with a button); a newer one never cuts the showing one short (`NoteLine`,
+  M7b: an arrival's note was replaced a second after it came). The same sentence is never
+  waiting twice, and with more than three waiting the oldest with nothing to do on them go.
 - **Notifications** are asked for once, at the first download (by the shell, `Ui.askToDownload`,
   which is still there when the answer comes: a song's menu has closed by then), for the downloads' progress
   notification (Android 13 and later). The player's never needed it: Android exempts
