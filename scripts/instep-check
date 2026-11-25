@@ -11,6 +11,14 @@
 #                                 the Windows code (tools/instep), runs InStepLiveTest
 #                                 against both, and stops the server
 #   scripts/instep-check --keep   leaves the server running afterwards (for the emulator)
+#   scripts/instep-check --mixed  a household on mixed versions instead: two devices on the
+#                                 Windows code at NEXUS_WINDOWS_SRC (the version under test,
+#                                 whose exchange is decided in its library) and a PC on
+#                                 0.40.4, built from that release's source (NEXUS_WINDOWS_GIT
+#                                 says which checkout to take it from, NEXUS_WINDOWS_OLD which
+#                                 commit: by default ../nexus-music and the commit "0.40.4").
+#                                 No Gradle, and nothing of the phone's: see
+#                                 tools/instep/src/household.rs.
 #
 # Needs Docker, the app's build image and the Windows app's (see tools/instep/README.md).
 # The server is wiped first: it is this check's own, and nothing else uses it.
@@ -18,13 +26,53 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 keep=false
+mixed=false
 [ "${1:-}" = "--keep" ] && keep=true
+[ "${1:-}" = "--mixed" ] && mixed=true
 export NEXUS_TEST_PORT="${NEXUS_STEP_PORT:-4536}"
 
 scripts/server --instance step start >/dev/null
 scripts/server --instance step reset >/dev/null
 $keep || trap 'scripts/server --instance step stop >/dev/null || true' EXIT
 
+# The source of 0.40.4, the last version whose exchange is its own (`instep pc`): laid out
+# in the cache from the Windows repository's history, never in that repository.
+old_source() {
+  local cache="${NEXUS_ANDROID_CACHE:-$HOME/.cache/nexus-music-android}"
+  local git_dir="${NEXUS_WINDOWS_GIT:-$root/../nexus-music}"
+  local old_commit="${NEXUS_WINDOWS_OLD:-$(git -C "$git_dir" log --format=%H --grep='^0\.40\.4$' -1)}"
+  [ -n "$old_commit" ] || { echo "scripts/instep-check: the commit of 0.40.4 wasn't found in $git_dir (set NEXUS_WINDOWS_OLD)" >&2; exit 1; }
+  local old_src="$cache/windows-$old_commit"
+  if [ ! -f "$old_src/src/sync.rs" ]; then
+    mkdir -p "$old_src"
+    git -C "$git_dir" archive "$old_commit" src core Cargo.lock Cargo.toml | tar -x -C "$old_src"
+  fi
+  echo "$old_src/src"
+}
+
+if $mixed; then
+  old_src="$(old_source)"
+  old="$(NEXUS_WINDOWS_SRC="$old_src" tools/instep/run build | tail -1)"
+  new="$(tools/instep/run build | tail -1)"
+  mkdir -p build/instep/household
+  status=0
+  "$new" household --server "http://127.0.0.1:$NEXUS_TEST_PORT" --user tester --password tester-pass-1 --old "$old" --folder build/instep/household | tee build/instep/household.txt || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "scripts/instep-check --mixed: FAILED" >&2
+  else
+    echo "scripts/instep-check --mixed: the household held"
+  fi
+  exit "$status"
+fi
+
+# The PC the phone's Kotlin exchanges with is the Windows app's own `exchange`, which the
+# versions after 0.40.4 no longer have (theirs is decided in the library the phone is to
+# share): where the Windows checkout is one of those, the PC is 0.40.4's.
+windows="${NEXUS_WINDOWS_SRC:-$root/../nexus-music/src}"
+if grep -q "^pub fn look(" "$windows/sync.rs" 2>/dev/null; then
+  NEXUS_WINDOWS_SRC="$(old_source)"
+  export NEXUS_WINDOWS_SRC
+fi
 program="$(tools/instep/run build | tail -1)"
 mkdir -p build/instep
 cp "$program" build/instep/instep

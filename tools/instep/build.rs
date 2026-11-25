@@ -13,6 +13,13 @@
 //! does (Cargo.toml here); the files above name them from there. Then `sync.rs` above its
 //! cut is `exchange` and what it calls, and `ListPrefs` is the library's. A Windows checkout
 //! from before the library is still compiled as it was (`split` below says which it is).
+//!
+//! From the version after 0.40.4 the exchange itself is decided in the library
+//! (`nexus_core::step`), and `sync.rs` above its cut is the app's asking of the server:
+//! `look` and `send`. Such a checkout is "stepped" (the `stepped` cfg, which main.rs goes
+//! by): it can play a whole household (`instep household`), and has no `pc` mode of its own,
+//! since the PC it would play is the code under test. A checkout at 0.40.4 or before has
+//! `pc`, and is what the household's older PC is run from.
 
 use std::path::{Path, PathBuf};
 
@@ -57,7 +64,15 @@ fn main() {
         // (`sync::merge`, `sync::Shared`): the same items, made visible, nothing changed.
         .map(|line| if split && line.starts_with("use nexus_core::sync::{") { format!("pub {line}\n") } else { format!("{line}\n") })
         .collect();
-    let above: &[&str] = if split {
+    // Whether the exchange is the library's (see the top).
+    let stepped = head.contains("pub fn look(");
+    println!("cargo::rustc-check-cfg=cfg(stepped)");
+    if stepped {
+        println!("cargo::rustc-cfg=stepped");
+    }
+    let above: &[&str] = if stepped {
+        &["pub fn look(", "pub fn send(", "pub struct Holds", "use nexus_core::sync::{"]
+    } else if split {
         &["fn exchange(", "fn find_or_create(", "pub use nexus_core::sync::{", "merge, merge_history, merge_plays"]
     } else {
         &["pub fn merge(", "pub fn merge_history(", "pub fn merge_plays(", "fn merge_sources(", "fn exchange(", "fn find_or_create(", "pub struct Shared"]
@@ -67,6 +82,13 @@ fn main() {
     }
     // The tool's way in to what is private there. Added lines, not changed ones: they call
     // the Windows functions as they are.
+    let stepped_doors = r#"
+/// (The tool's.) What the tool names through this module, from the library where it now is.
+pub use nexus_core::sync::{LONG_AGO, Shared, VERSION, merge, merge_history};
+
+/// (The tool's.) Windows' own limits and layout number.
+pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTORY_LENGTH, PLAYS_SHARED, nexus_core::handover::QUEUE_BEHIND, nexus_core::handover::QUEUE_AHEAD, LONG_AGO);
+"#;
     let doors = r#"
 /// (The tool's.) Windows' `exchange`, with what it came back with.
 pub fn tool_exchange(client: &Client, known: Option<String>, local: Shared) -> ApiResult<(String, Shared)> {
@@ -76,7 +98,7 @@ pub fn tool_exchange(client: &Client, known: Option<String>, local: Shared) -> A
 /// (The tool's.) Windows' own limits and layout number.
 pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTORY_LENGTH, PLAYS_SHARED, QUEUE_BEHIND, QUEUE_AHEAD, LONG_AGO);
 "#;
-    write(&out, "sync.rs", &(head + doors));
+    write(&out, "sync.rs", &(head + if stepped { stepped_doors } else { doors }));
 
     // config.rs: three items.
     let config = read("config.rs");

@@ -10,6 +10,14 @@
 //!   instep plant ...         puts a text of your choosing in the comment (an unreadable one,
 //!                            a newer layout), or makes a second sync playlist
 //!   instep queue-save / queue-get    the server's saved queue, as Windows saves and reads it
+//!   instep pc-looks ...      the PC opens a playlist: that version's own noting of what is in it
+//!   instep household ...     two devices on the Windows code under test and a PC on an older
+//!                            version, as one household against a real server (household.rs)
+//!
+//! Which of these a build has depends on the Windows checkout it was compiled from (build.rs):
+//! `pc` and `pc-looks` are that checkout's own exchange, and exist for 0.40.4 and before;
+//! `household` drives the exchange that is decided in the Windows app's library, and exists
+//! for the versions after.
 //!
 //! The modules below are the Windows app's own files, compiled from its source by path (see
 //! build.rs). Nothing of them is copied into this repository.
@@ -31,6 +39,8 @@ mod plays {
 mod sync {
     include!(concat!(env!("OUT_DIR"), "/sync.rs"));
 }
+#[cfg(stepped)]
+mod household;
 
 use serde_json::{Value, json};
 use sync::Shared;
@@ -42,7 +52,17 @@ fn main() {
     let status = match mode {
         "cases" => cases(rest.first().expect("the file to write")),
         "reads" => reads(rest.first().expect("the file to read")),
+        #[cfg(not(stepped))]
         "pc" => pc(&Options::of(rest)),
+        #[cfg(not(stepped))]
+        "pc-looks" => pc_looks(&Options::of(rest)),
+        #[cfg(stepped)]
+        "household" => household::household(&Options::of(rest)),
+        #[cfg(stepped)]
+        "pc" | "pc-looks" => {
+            eprintln!("this instep was built from a Windows checkout whose exchange is its library's: the PC it would play is the code under test (see `household`). Build it from 0.40.4 or before for `pc`.");
+            2
+        }
         "peek" => peek(&Options::of(rest)),
         "plant" => plant(&Options::of(rest)),
         "queue-save" => queue_save(&Options::of(rest)),
@@ -466,9 +486,26 @@ fn peek(options: &Options) -> i32 {
     0
 }
 
+/// The PC opens a playlist: that version's own `observe`, with the playlist as `--ids` and
+/// the time as `--now`. What it notes is kept in a file beside `--state`, and whatever of it
+/// that version shares goes into what the PC holds, for its next exchange.
+#[cfg(not(stepped))]
+fn pc_looks(options: &Options) -> i32 {
+    let state = options.need("state");
+    let mut holds: Shared = std::fs::read_to_string(state).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    let mut noted = added::Added::load(std::path::PathBuf::from(state).with_extension("added.json"));
+    let songs: Vec<subsonic::Song> = options.need("ids").split(',').map(|id| subsonic::Song { id: id.to_string(), ..Default::default() }).collect();
+    let now: i64 = options.need("now").parse().expect("a time in seconds");
+    noted.observe(options.need("playlist"), &songs, now);
+    holds.added = added::merge_notes(&holds.added, &noted.shared(None), now);
+    std::fs::write(state, serde_json::to_string_pretty(&holds).unwrap()).unwrap();
+    0
+}
+
 /// One exchange, exactly as the Windows app makes it: `exchange` with this PC's record
 /// (`--state`, a file: read, and written back as what the PC then holds). Prints what the
 /// server's comment was before and after.
+#[cfg(not(stepped))]
 fn pc(options: &Options) -> i32 {
     let client = options.client();
     let state = options.need("state");

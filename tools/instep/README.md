@@ -11,6 +11,15 @@ it **is** the Windows code, compiled from the Windows repository's source where 
 | The other direction | The same test writes the texts the Kotlin produced to `app/build/instep/kotlin-wrote.json`; `tools/instep/run reads /work/app/build/instep/kotlin-wrote.json` has Windows' code read each one back and says whether it is the record Windows made. |
 | Playing the PC | `tools/instep/run pc --server … --user … --password … --state <file>` makes one exchange with a server exactly as the Windows app does (its own `exchange`, `find_or_create` and API client), with `<file>` as what that PC holds. `peek` shows the playlist's comment byte for byte and changes nothing; `plant` puts a text of your choosing there; `queue-save` and `queue-get` are the server's saved queue as Windows saves and reads it. `scripts/instep-check` runs the whole end-to-end check with it (docs/TESTING.md). |
 
+| A household on mixed versions | `scripts/instep-check --mixed` builds this tool twice, from the Windows code under test (`NEXUS_WINDOWS_SRC`) and from 0.40.4's source, and runs `instep household`: two devices on the new code and a PC on 0.40.4 against a real server, saying a line at a time what each did. `ok` lines are what the new code must do; `old` lines are what a PC on 0.40.4 goes on doing until it is updated. See `src/household.rs`. |
+
+**Which Windows versions.** Up to 0.40.4 the exchange is the Windows app's own (`exchange`
+in its `src/sync.rs`), and a build of this tool from such a checkout has `pc` and
+`pc-looks`. After it the exchange is decided in the Windows app's library
+(`nexus_core::step`), which the phone is to share; a build from such a checkout has
+`household` instead, and drives that code as the Windows app does (`sync::look`,
+`sync::send`). `cases`, `reads`, `peek`, `plant` and the queue modes are in both.
+
 **What is compiled** (see `build.rs`): `subsonic.rs`, `added.rs` and `plays.rs` whole;
 `sync.rs` from its top down to `impl Controller` (the record, the merges, `exchange`); from
 `config.rs`, `ListPrefs`, `Played` and `write_atomically`. Nothing is rewritten; if the Windows
