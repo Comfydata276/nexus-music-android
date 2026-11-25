@@ -81,7 +81,9 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
     val scroll = rememberScrollState()
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.settings), onBack = onBack)
-        ChipRow(Section.entries.map { stringResource(it.title) }, selected = section, onChoose = {
+        // (Jam only in a build where jams exist: see jam/JamBuild.)
+        val sections = Section.entries.filter { it != Section.JAM || org.medianexus.music.jam.JamBuild.on }
+        ChipRow(sections.map { stringResource(it.title) }, selected = section, onChoose = {
             section = it
         })
         Box(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad).height(1.dp).background(Theme.colors.line))
@@ -94,7 +96,7 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
                 .padding(horizontal = Theme.dimens.pagePad)
                 .padding(bottom = 56.dp),
         ) {
-            when (Section.entries[section]) {
+            when (sections[section.coerceIn(0, sections.lastIndex)]) {
                 Section.APPEARANCE -> Appearance(graph)
                 Section.PLAYBACK -> Playback(graph)
                 Section.SOUND -> Sound(graph)

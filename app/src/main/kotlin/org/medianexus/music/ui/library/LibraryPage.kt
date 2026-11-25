@@ -190,7 +190,7 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                 }
             }
             // Jams (Windows' Jam, in its sidebar under Radio): one queue friends add to.
-            item(key = "jam", contentType = "row") {
+            if (org.medianexus.music.jam.JamBuild.on) item(key = "jam", contentType = "row") {
                 ListRow(stringResource(R.string.jam), stringResource(R.string.jam_listen_with_friends), onClick = { ui.open(Route.Jam()) }) {
                     Box(
                         Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),

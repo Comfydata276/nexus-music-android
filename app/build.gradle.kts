@@ -6,6 +6,18 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+/**
+ * Whether jams and linked devices (M6: `jam/`, `ui/jam/`) exist in this build. **They do not.**
+ * A security review found that the way linked devices prove they are the person's own leaks a
+ * guessable fingerprint of the music-server password to the relay, and ways a guest or
+ * another app can interfere with playback; none of it goes to a phone until that is fixed.
+ * This is the one switch: it gives the app `BuildConfig.JAMS` (read through
+ * `jam/JamBuild.kt`), and decides whether `src/jam/AndroidManifest.xml` (the activity that
+ * takes a jam link from other apps, `JamService`, and the permission it needs) is merged into
+ * the APK at all, so that with it off the phone offers other apps nothing for it.
+ */
+val jamsExist = false
+
 android {
     namespace = "org.medianexus.music"
     compileSdk {
@@ -18,6 +30,7 @@ android {
         targetSdk = 37
         versionCode = 4
         versionName = "0.3.0"
+        buildConfigField("boolean", "JAMS", jamsExist.toString())
     }
 
     signingConfigs {
@@ -69,6 +82,13 @@ android {
     lint {
         abortOnError = true
         checkDependencies = false
+    }
+}
+
+// (See jamsExist, above.)
+androidComponents {
+    onVariants { variant ->
+        if (jamsExist) variant.sources.manifests.addStaticManifestFile("src/jam/AndroidManifest.xml")
     }
 }
 

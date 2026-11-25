@@ -291,6 +291,8 @@ class Graph(context: Context) {
     /** Jams and the person's other devices: made the first time anything asks (see
      *  `jam/JamApp`), never with the feature unused. */
     val jams: org.medianexus.music.jam.Jams by lazy {
+        // Never in a build without them: nothing that would ask is there (jam/JamBuild).
+        check(org.medianexus.music.jam.JamBuild.on) { "Jams don't exist in this build" }
         org.medianexus.music.jam.JamApp(app, this, steered).also { it.start() }.jams.also { jamsNow.value = it }
     }
 
@@ -355,7 +357,7 @@ class Graph(context: Context) {
                 // started the app): nothing of theirs is carried on, by job or service.
                 if (account == null && had) org.medianexus.music.downloads.DownloadKeeper.letGo(app)
                 // Signed out: the relay's key goes with the password (M6, rule 4).
-                if (account == null && had) {
+                if (account == null && had && org.medianexus.music.jam.JamBuild.on) {
                     relayKey.delete()
                     jamsIfMade()?.let { jams -> mainHandler.post { jams.signedOut() } }
                 }
@@ -393,7 +395,7 @@ class Graph(context: Context) {
         // Jams and linked devices, when hosting is switched on: made now, so that the phone
         // can be among the person's devices while it has a reason to be (M6). Otherwise
         // nothing of them is made until asked for.
-        if (settings.value.jamHost) mainHandler.post { jams }
+        if (org.medianexus.music.jam.JamBuild.on && settings.value.jamHost) mainHandler.post { jams }
         // Allowed to reach the home network: what failed tries again.
         scope.launch { localAccess.allowed.collect { if (it > 0) { reconnected(); watch.networkBack() } } }
         // A network again (after none, or another one): the same.

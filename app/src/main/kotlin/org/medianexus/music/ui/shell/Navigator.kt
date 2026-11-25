@@ -120,6 +120,8 @@ class Navigator private constructor(saved: Saved?) {
     val canGoBack: Boolean get() = visible.size > 1
 
     fun open(route: Route) {
+        // No way to jams in a build where they don't exist (jam/JamBuild).
+        if (route is Route.Jam && !org.medianexus.music.jam.JamBuild.on) return
         motion = Motion.PUSH
         stacks.getValue(tab) += Place(route, next++)
     }

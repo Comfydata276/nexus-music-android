@@ -318,7 +318,7 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
     )
     SeekBar()
     // Steering another of the person's devices: its volume (M6).
-    org.medianexus.music.ui.jam.VolumeThere()
+    if (org.medianexus.music.jam.JamBuild.on) org.medianexus.music.ui.jam.VolumeThere()
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         IconButton(
             R.drawable.ic_shuffle,
@@ -349,7 +349,7 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
         SleepButton()
         IconButton(R.drawable.ic_mic_vocal, stringResource(if (lyrics) R.string.hide_lyrics else R.string.lyrics), onLyrics, active = lyrics)
         // Windows' "Connect to a device": the person's other devices, and jams (M6).
-        org.medianexus.music.ui.jam.ConnectButton()
+        if (org.medianexus.music.jam.JamBuild.on) org.medianexus.music.ui.jam.ConnectButton()
         Spacer(Modifier.weight(1f))
         if (queueButton) IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
     }

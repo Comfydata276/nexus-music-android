@@ -2860,6 +2860,26 @@ several people add to while the music plays where its host is; **linked devices*
 person's other copies of the app, listed under "Connect to a device", which the music moves
 to and which are steered from here. Both go through a small relay the owner runs.
 
+**Switched off in this build** (`jamsExist = false` in app/build.gradle.kts, the one switch;
+the app reads it as `jam/JamBuild`). A security review found that the way linked devices
+prove they are the person's own leaks a guessable fingerprint of the music-server password to
+the relay and its logs (the Windows app does the same; it is to be redesigned once for both),
+and ways a guest or another app can interfere with playback. With it off nothing of it shows
+(no Jam in Settings or Library, no strip, no "Connect to a device" or its volume on Now
+Playing, no route to the jam page: `Navigator.open` refuses one) and nothing of it runs:
+`Graph.jams` is never made (it refuses to be), so no relay is asked anything, no room joined,
+no session opened, no timer set; no relay key is asked for, kept, read or deleted; nothing
+about jams is written. The player's other player (`Steered`) is never shown, so the media
+session, the notification, the car and a headset act on the phone's own queue as before M6.
+The switch also decides whether `app/src/jam/AndroidManifest.xml` is merged into the APK: off,
+the APK has no activity taking a jam's link (no share target, no link filter), no
+`JamService`, and no `FOREGROUND_SERVICE_CONNECTED_DEVICE`, so other apps can find nothing of
+it. The order of choices that came with M6 stays on. `jam/SwitchedOffTest` holds this (with
+the switch on, it fails at the route and at the share target); `jam/`'s own tests build their
+objects directly and run whatever the switch says. With the feature on, `Jams.scheduleRecheck`
+wakes once a second once the ten-minute grace after a pause has run out while linking is on
+(the review's finding): not fixed here, as nothing of it runs in this build.
+
 How it is built (`jam/`, `ui/jam/`, `playback/Steered.kt`):
 
 - **The relay** (`RelayLine`): its address and the app's HTTP client made fit for it. The
