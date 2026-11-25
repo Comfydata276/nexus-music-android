@@ -74,6 +74,8 @@
     <string name="diagnostics">Diagnostics</string>
     <string name="diagnostics_detail">A note of what the player has met: which apps connected to it and whether they were let in, what started it, and playback errors. Useful when something isn\'t working, in the car above all. It names no server address, account or song, and it stays on this phone unless you share it.</string>
     <string name="show_diagnostics">Show diagnostics</string>
+    <!-- Ends the shared library's sentence when a request was not sent: "Couldn't reach Lidarr. Offline mode is on." -->
+    <string name="requests_offline">Offline mode is on.</string>
     <string name="control_apps">Apps that can control playback</string>
     <!-- The page's own bar holds one line: on a narrow screen with large type the whole name doesn't fit it. -->
     <string name="control_apps_bar">Playback apps</string>

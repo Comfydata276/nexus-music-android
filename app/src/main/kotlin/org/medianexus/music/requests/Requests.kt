@@ -43,6 +43,9 @@ data class RequestsSettings(
     /** A sign-in was started and has neither finished nor been given up: if the app starts
      *  and finds this, it was stopped behind the browser. */
     val signingIn: Boolean = false,
+    /** "Singles and EPs": whether an artist's page lists them, and a search offers a song
+     *  that only came out as one. On by default, as on Windows. */
+    val singles: Boolean = true,
 ) {
     val door: SignInDoor? get() = if (service.isEmpty()) null else SignInDoor(service, client)
 }
@@ -278,6 +281,15 @@ class Requests internal constructor(
             return@withContext RequestsState.KeyForgotten
         }
         check()
+    }
+
+    /** Switches "singles and EPs" on or off (see [RequestsSettings.singles]). What is being
+     *  found when it changes takes the new setting from the next thing it asks. */
+    suspend fun setSingles(on: Boolean) = withContext(io) {
+        turn.withLock {
+            read()
+            if (!unreadable && settingsNow.value.singles != on) write(settingsNow.value.copy(singles = on))
+        }
     }
 
     /** Lidarr's key as it may be shown: its last few letters (`lidarr::mask`). Empty for none. */

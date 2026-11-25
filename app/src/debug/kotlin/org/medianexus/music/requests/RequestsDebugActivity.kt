@@ -32,6 +32,23 @@ import org.medianexus.music.graph
  * or the buttons. "Sign in" opens the browser over this screen, as the real one will
  * ([BrowserTab]); coming back to this screen with the browser's part unfinished gives the
  * sign-in up ([Requests.cameBack]). Needs requests forced on first ([DebugRequests]).
+ *
+ * The pages and actions, each one call of [RequestsPages], with `--es what <text or id>`
+ * (and `--es name`, `--es song` where they are taken):
+ *
+ *     ... --es do search --es what "quillon vane"      "Not in your library"
+ *     ... --es do album --es what <album id>           an album's page
+ *     ... --es do question --es what <album id> --es name <title>      the question before asking
+ *     ... --es do ask --es what <album id> --es name <title>           asks Lidarr for it
+ *     ... --es do artist --es what <artist id>         an artist's page, then their most played
+ *     ... --es do add --es what <artist id> --es name <name>           "Add artist"
+ *     ... --es do way                                  what is on its way
+ *     ... --es do offlist --es what <Lidarr's number> --es name <title>
+ *     ... --es do suggest                              artists the person might like
+ *     ... --es do singles --es what on|off
+ *
+ * What each came to is shown, and written whole to `files/requests-debug.txt` for the rig
+ * (`adb shell run-as org.medianexus.music cat files/requests-debug.txt`).
  */
 class RequestsDebugActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -70,7 +87,104 @@ class RequestsDebugActivity : Activity() {
 
     private fun handle(intent: Intent?) {
         val what = intent?.getStringExtra("do") ?: return
-        act(what, intent.getStringExtra("address"), intent.getStringExtra("key"))
+        if (what in PAGES) page(what, intent.getStringExtra("what").orEmpty(), intent.getStringExtra("name").orEmpty(), intent.getStringExtra("song").orEmpty())
+        else act(what, intent.getStringExtra("address"), intent.getStringExtra("key"))
+    }
+
+    /** One call of the pages' surface, and what it came to, in full. */
+    private fun page(what: String, about: String, name: String, song: String) {
+        val pages = graph.accounts.state.value?.requestsPages ?: return show("no requests here")
+        val requests = requests ?: return
+        show("$what…")
+        scope.launch {
+            val lines = ArrayList<String>()
+            fun found(found: Found<*>): Any? = when (found) {
+                is Found.Got -> found.value
+                is Found.Not -> "NOT: ${found.why}"
+            }
+            try {
+                when (what) {
+                    "search" -> {
+                        val stages = java.util.Collections.synchronizedList(ArrayList<String>())
+                        val all = pages.search(about) { stages += "${it.note} [${it.songs.size} songs, ${it.artists.size} artists, ${it.albums.size} albums]" }
+                        lines += "stages:"
+                        lines += stages.map { "  $it" }
+                        when (all) {
+                            is Found.Not -> lines += "NOT: ${all.why}"
+                            is Found.Got -> {
+                                lines += "note: ${all.value.note}"
+                                lines += all.value.songs.map { (song, asked) -> "song: ${song.title} | ${song.artist} | on ${song.albumTitle} (${song.kind.ifEmpty { "Album" }}) | album=${song.album} | artist=${song.artistId}${if (asked) " | asked for" else ""}" }
+                                lines += all.value.artists.map { "artist: ${it.name} | ${it.about} | id=${it.id} | cover=${it.cover.isNotEmpty()}" }
+                                lines += all.value.albums.map { "album: ${it.title} | ${it.artist} | ${it.year} | ${it.kind.ifEmpty { "Album" }} | id=${it.album}${if (it.requested) " | requested" else ""}" }
+                            }
+                        }
+                    }
+                    "album" -> lines += when (val page = found(pages.album(about))) {
+                        is org.medianexus.music.core.AlbumPage.Found -> listOf(
+                            "album: ${page.album.offer.title} | ${page.album.offer.artist} | id=${page.album.offer.album}", "about: ${page.album.about}", "action: ${page.album.action}",
+                            "tracks: ${page.album.tracks.size}${if (page.album.tracksFailed.isEmpty()) "" else " (${page.album.tracksFailed})"}",
+                        ) + page.album.tracks.map { "  ${it.disc}.${it.number} ${it.title} (${it.seconds} s)" }
+                        is org.medianexus.music.core.AlbumPage.Unavailable -> listOf("unavailable: ${page.why}")
+                        else -> listOf("$page")
+                    }
+                    "question" -> lines += when (val asking = pages.asking(about, name, song = song)) {
+                        is org.medianexus.music.core.Asking.Already -> listOf("already: ${asking.said}")
+                        is org.medianexus.music.core.Asking.Ask -> listOf("heading: ${asking.heading}", "text: ${asking.text}")
+                    }
+                    "ask" -> {
+                        lines += "saying: ${pages.askingFor(name)}"
+                        lines += pages.request(about, name, song).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
+                    }
+                    "artist" -> {
+                        val page = found(pages.artist(about))
+                        if (page is org.medianexus.music.core.OutsideArtist) {
+                            lines += listOf("artist: ${page.name}", "about: ${page.about}", "open: ${page.open}", "empty: ${page.empty}${if (page.failed) " (failed)" else ""}")
+                            lines += page.albums.map { "album: ${it.offer.title} | ${it.caption} | id=${it.offer.album}${if (it.library != null) " | library=${it.library?.id}" else ""}" }
+                            lines += page.smaller.map { "smaller: ${it.offer.title} | ${it.caption} | id=${it.offer.album}" }
+                            val popular = found(pages.popular(about, page.name))
+                            if (popular is org.medianexus.music.core.Popular) {
+                                lines += "popular: ${popular.heading.ifEmpty { "(none)" }}"
+                                lines += popular.songs.map { (song, asked) -> "  ${song.title} | on ${song.albumTitle} | album=${song.album}${if (asked) " | asked for" else ""}" }
+                            } else {
+                                lines += "popular: $popular"
+                            }
+                        } else {
+                            lines += "$page"
+                        }
+                    }
+                    "add" -> {
+                        val (heading, text) = pages.adding(name, 0)
+                        lines += listOf("heading: $heading", "text: $text", "saying: ${pages.addingNow(name)}")
+                        lines += pages.addArtist(about, name).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
+                    }
+                    "way" -> {
+                        val waiting = found(pages.onTheirWay())
+                        if (waiting is org.medianexus.music.core.Waiting) {
+                            lines += waiting.arrived.map { (asked, line) -> "arrived: ${asked.title} | $line | library=${asked.libraryAlbum}" }
+                            lines += "heading: ${waiting.heading.ifEmpty { "(none)" }}"
+                            lines += waiting.pending.map { (album, line) -> "pending: ${album.title} | $line | number=${album.id}" }
+                            lines += "empty: ${waiting.empty}${if (waiting.failed) " (failed)" else ""}"
+                        } else {
+                            lines += "$waiting"
+                        }
+                        lines += "asked for through this phone: ${pages.asked.value.map { "${it.title}${if (it.arrived != 0L) " (arrived)" else ""}" }}"
+                    }
+                    "offlist" -> lines += pages.cancel(about.toLongOrNull() ?: -1, name).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
+                    "suggest" -> lines += pages.suggest().map { "suggested: ${it.name} | like ${it.like} | id=${it.id}" }.ifEmpty { listOf("(no suggestions)") }
+                    "singles" -> {
+                        requests.setSingles(about == "on")
+                        lines += "singles and EPs: ${requests.settings.value.singles}"
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lines += "THREW ${e.javaClass.simpleName}: ${e.message}"
+            }
+            val all = (listOf("$what ${listOf(about, name, song).filter { it.isNotEmpty() }}") + lines).joinToString("\n")
+            java.io.File(filesDir, "requests-debug.txt").writeText(all + "\n")
+            show(all)
+        }
     }
 
     override fun onStart() {
@@ -152,11 +266,16 @@ class RequestsDebugActivity : Activity() {
             "key: ${requests.keyHint().ifEmpty { "(none)" }}",
             "sign-in service: ${settings.service.ifEmpty { "(none)" }}",
             "signed in as: ${settings.signedIn.ifEmpty { "(nobody)" }}",
+            "singles and EPs: ${settings.singles}",
             "last: $last",
         ).joinToString("\n")
     }
 
     private fun show(what: String) {
         text.text = what
+    }
+
+    private companion object {
+        val PAGES = setOf("search", "album", "question", "ask", "artist", "add", "way", "offlist", "suggest", "singles")
     }
 }

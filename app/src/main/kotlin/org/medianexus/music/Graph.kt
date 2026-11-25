@@ -201,6 +201,10 @@ class Graph(
                 settingsStore = settings,
                 front = front,
                 requests = { account ->
+                    // With offline mode switched on by hand nothing is asked of Lidarr or
+                    // the services beside it either, and each call says so in the
+                    // library's sentence ("Couldn't reach Lidarr. Offline mode is on.").
+                    org.medianexus.music.core.CoreHttp.unsent = { if (watch.state.value.manual) context.getString(R.string.requests_offline) else null }
                     org.medianexus.music.requests.Requests(
                         account.account, account.scope,
                         // (Beside the saved password, out of backups; a folder for each account.)

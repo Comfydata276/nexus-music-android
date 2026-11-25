@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -338,6 +340,28 @@ class AccountGraph(
      */
     val requests: org.medianexus.music.requests.Requests? =
         if (org.medianexus.music.requests.RequestsBuild.on) wiring?.requests?.invoke(this)?.also { it.start() } else null
+
+    /** Everything the screens of requests ask for (see there). Null as [requests] is. */
+    val requestsPages: org.medianexus.music.requests.RequestsPages? = requests?.let { connection ->
+        org.medianexus.music.requests.RequestsPages(
+            connection, scope, account.dirs.data,
+            // (Only a copy that is whole: one still arriving for the first time would
+            // say that music the library has is not in it.)
+            library = copy.state.filterNotNull().filter { it.complete }.map { snapshot ->
+                org.medianexus.music.core.LibraryLists(
+                    albums = snapshot.albums.map { org.medianexus.music.core.LibraryAlbum(it.id, it.name, it.artistLabel, it.coverArt) },
+                    songs = List(snapshot.songs.size) { listOf(snapshot.songs.title(it), snapshot.songs.artistLabel(it)) },
+                    artists = snapshot.artists.map { it.name },
+                )
+            },
+            played = {
+                val songs = copy.state.value?.songs
+                if (songs == null) emptyList() else List(songs.size) { org.medianexus.music.core.Core.Played(songs.artistId(it), songs.artistLabel(it), songs.playCount(it)) }
+            },
+            similar = { id -> api.similarOutside(id) },
+            note = wiring?.note ?: {},
+        )
+    }
 
     private var lookedAt = 0L
 

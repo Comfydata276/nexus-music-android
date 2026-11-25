@@ -2047,6 +2047,72 @@ There are no screens yet. A debug build has a stand-in for them
 (`requests/RequestsDebugActivity`, with requests forced on by `DebugRequests`), which does
 each thing as one call of the surface above and nothing past it.
 
+### Requests: what the screens ask for
+
+`requests/RequestsPages.kt` is everything the screens of requests ask for, for one account
+(`AccountGraph.requestsPages`, null as `requests` is). **The screens need this and
+`Requests` (the connection) and nothing else**: no call of `Core`, nothing of JNI.
+
+| The screen wants | It calls | It gets |
+|---|---|---|
+| "Not in your library", under a search | `search(query, soFar)` | `Found<Outside>`: the line to show above, songs (each with whether its album has been asked for), artists, albums. `soFar` is handed the same as more of it is known, so the page fills |
+| An artist's page | `artist(id)`, then `popular(id, name)` | `Found<OutsideArtist>`: name, cover, the line under the name, albums and "singles and EPs" each with its caption and the library's own album if it has it, how many could be asked for. Then `Found<Popular>`: a heading and their most played songs the library doesn't have |
+| An album's page | `album(id)` | `Found<AlbumPage>`: the album, its songs, the line under its name and what its button says; or why it can't be shown |
+| The question before asking | `asking(album, title, by, song, kind)` | `Asking.Ask(heading, text)` or `Asking.Already(said)` |
+| Asking for it | `request(album, title, song)` | `Said(done, words)`: "Asked for “…”. It'll be in your library once it arrives.", or why not |
+| "Add artist" | `adding(name, open)`, then `addArtist(id, name)` | The question's heading and text; then `Said` |
+| The Requests page | `onTheirWay()` | `Found<Waiting>`: what has arrived lately, "On their way (3)", each album still to come with its line, or what to say when there is nothing |
+| Taking one off the list | `cancel(number, title)` | `Said`: "“…” is off the list" |
+| "Artists you might like" | `suggest()`, and the flow `suggestions` | A list of `Suggestion` |
+| An arrival to announce | the flow `news` | The sentence, once for each arrival |
+| What this phone asked for | the flow `asked` | The notes as they are kept |
+
+Every caption, heading and sentence in those answers is the shared library's
+(`core::requests` in the Windows repository at the pinned commit), **ready to show and not to
+be reworded**: the two apps say the same thing because neither says it itself. `Found.Not`
+carries the library's sentence for why a page could not be had ("Not connected yet.",
+"Couldn't reach Lidarr. …", "Lidarr is behind a sign-in. …").
+
+What is the phone's own:
+
+- **The place** (`native/src/pages.rs`). The library's functions read three things of the
+  app at the moment they need them: its copy of the library, what has been asked for, and
+  the "singles and EPs" setting. On the phone those are kept on the Rust side under a
+  number for the account, with what has been offered while it is connected, and set from
+  Kotlin whenever they change: the copy each time the phone's copy of the library is
+  replaced (only whole copies: one still arriving for the first time would call music the
+  library has "not in your library"), the setting when it is switched. An operation under
+  way reads whatever is there when it asks, as the Windows app's does.
+- **Leaving a screen stops what it asked for.** The calls suspend; cancelling the caller
+  cuts the requests off and delivers nothing. **Asking for an album and adding an artist
+  are the exception once Lidarr has begun to be changed** (see "Stopping"): they run in the
+  account's own scope, to the end, and what was asked for is written down though the
+  screen has gone. The order is the library's: the note is kept on the phone first, and
+  only then is the offer marked as asked for.
+- **What is kept**, in the account's folder, written whole and synced, and never over a
+  file that is there and can't be read: `asked.json` (the notes of what was asked for
+  through this phone, as the library makes them) and `suggestions.json` (three days; six
+  hours when there were none to be had, both the library's numbers). Nothing asked for on
+  another device is known here: the list is each device's own, as on Windows.
+- **When arrivals are looked for.** There is no background job. The phone's copy of the
+  library is looked through, by the library's own rule for "the same album", each time
+  that copy is read or replaced (as the app starts; at each refresh of the copy, which the
+  app makes while it is in use) and when the Requests page is opened. An album that
+  arrives while the app is closed is said the next time it is opened. Nothing is asked of
+  Lidarr or anyone else for it.
+- **Suggestions** are looked for when the screen that shows them asks (`suggest()`) and
+  what is kept has gone stale: who the music server says each of the ten most played
+  artists is like (four questions at a time), then Lidarr for who each of those is. A look
+  that is stopped, or fails, keeps nothing; one look at a time.
+- **Offline, and on any network.** With offline mode switched on by hand nothing is sent
+  and each call says so in the library's sentence ("Couldn't reach Lidarr. Offline mode is
+  on."). Nothing is retried in a loop anywhere: a page that could not be had says why,
+  once, and the person asks again. Mobile data is not treated differently: these are small
+  answers, asked only when a screen is opened.
+- **Not on the phone**: importing a playlist and asking for what it is missing in bulk
+  (`core::bulk`), which the phone has no screen for. A note made by the Windows app with
+  songs to put into playlists is never here; the field is carried untouched if it ever is.
+
 ### How it is tested
 
 Against the real library, on the JVM, in the ordinary unit suite: the build makes the same

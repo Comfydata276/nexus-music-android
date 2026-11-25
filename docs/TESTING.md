@@ -2665,6 +2665,14 @@ connection: an address and a key, the browser sign-in played by the test, what i
 what is handed back), `requests/SwitchedOffTest` (with the build's switch off an account
 has nothing of requests at all).
 
+`PagesTest` (each call of the library's pages and actions, against a stand-in that is
+Lidarr, MusicBrainz and ListenBrainz in one and answers with what the library's own tests
+give it) and `RequestsPagesTest` (the surface the screens will use: what is kept and in what
+order, an arrival said once, a request seen through after its screen has gone and one
+stopped before it changed anything, suggestions kept and forgotten, a file that can't be
+read, an account that has gone). In all of them MusicBrainz's and ListenBrainz's addresses,
+which the library fixes, are turned to the stand-in: nothing leaves the machine.
+
 **On an emulator, a debug build, against the kit's stand-in Lidarr and Authentik.**
 
 ```sh
@@ -2678,6 +2686,18 @@ adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es 
 adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es do connect --es address http://10.0.2.2:4591 --es key standinkeystandinkeystandinkey12
 adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es do signin      # also: check, cancel, signout, off
 ```
+
+The same debug screen does each page and action as one call of `RequestsPages` and writes
+what came back, whole, where the rig can read it:
+
+```sh
+adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es do search --es what "quillon vane"
+adb shell run-as org.medianexus.music cat files/requests-debug.txt
+# also: album, question, ask, artist, add, way, offlist, suggest, singles (see the file's own comment)
+```
+
+On the emulator MusicBrainz, ListenBrainz and the Cover Art Archive are the real ones, asked
+at the library's own pace, as the Windows walk asks them; Lidarr and the sign-in never are.
 
 The stand-in's sign-in page has two links, "Sign in as the walker" and "Refuse". Its key is
 the one above and no other; it is not a secret and opens nothing.
