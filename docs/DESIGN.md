@@ -2966,14 +2966,19 @@ file has).
     - (A waiting change to something that build *had* agreed with the server, at the
       record's own time, would be a change still. No released build is in that state.)
 - **When an exchange runs on a phone, and what it costs** (C2). At start (once the account's
-  stores are read); **each minute while the app's screens are in front**; when they come to
-  the front (not within ten seconds of the last); when the server comes back or sharing is
+  stores are read); **every 15 seconds while the app's screens are in front** (it was each
+  minute until 0.5.1: a change made on another device then took up to a minute to show,
+  which the first person to use it called "quite a big delay"); when they come to the
+  front (not within ten seconds of the last); when the server comes back or sharing is
   switched on; and three seconds after something shared changes here (a pin, a list's
-  choice, the theme, a song added or removed, a song starting). **The minute's timer itself
-  runs only while the screens are in front** (`Graph.front`): with them gone nothing wakes
-  each minute to find it has nothing to do. With music playing and the screen off the record
+  choice, the theme, a song added or removed, a song starting). **The timer itself runs
+  only while the screens are in front** (`Graph.front`): with them gone nothing wakes to
+  find it has nothing to do. With music playing and the screen off the record
   still goes out as each song starts, which also brings in what changed elsewhere, and
-  nothing runs when nothing is playing; no wake lock, alarm or job is used. A look is three
+  nothing runs when nothing is playing; no wake lock, alarm or job is used. **Two answers
+  that disagree** about what is in the record's playlist are what another device writing
+  between the phone's two reads looks like: the server is asked once more straight away,
+  and only a second disagreement running stops the exchange and is noted in Diagnostics. A look is three
   requests: the list of playlists, the record's playlist (at most about 40 KB, a few KB
   compressed) and the saved queue, of which the server sends every song in full. The record
   is written only when the phone adds something.

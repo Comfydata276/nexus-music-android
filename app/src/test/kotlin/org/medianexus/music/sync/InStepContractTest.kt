@@ -638,6 +638,34 @@ class InStepContractTest {
     // ---- what the server said, and did not say ---------------------------------------------------
 
     @Test
+    fun aPcWritingBetweenThePhonesTwoReadsCostsOneMoreAskingAndNoLine() = runBlocking {
+        val phone = phone()
+        val before = """{"nexus_music_sync":1,"pins":["p1"],"pins_at":1794000000}"""
+        val after = """{"nexus_music_sync":1,"pins":["p1","p2"],"pins_at":1794000050}"""
+        val server = PretendServer().apply { put("a", before) }
+        // A PC writes after the list of playlists has been read, and before the playlist
+        // itself is: the two answers disagree about what is in it. That is no fault.
+        var writes = 1
+        server.gate = { what -> if (what == "read" && writes-- > 0) server.put("a", after) }
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        // Asked once more straight away, and what the PC wrote is here: not a period later.
+        assertEquals(2 to 2, server.listed to server.reads)
+        assertEquals(listOf("p1", "p2"), phone.pins)
+        assertTrue(phone.notes.toString(), phone.notes.none { "disagree" in it })
+
+        // Answers that disagree a second time running stop the exchange, and are said: once.
+        // Nothing was read from them and nothing written, and there is no third asking.
+        val other = phone("other")
+        val stuck = PretendServer().apply { put("a", before) }
+        var count = 0
+        stuck.gate = { what -> if (what == "read") stuck.put("a", """{"nexus_music_sync":1,"pins":["q${count++}"],"pins_at":1794000050}""") }
+        assertEquals(InStep.Outcome.NOT_STATED, other.step(stuck).exchange())
+        assertEquals(2 to 2, stuck.listed to stuck.reads)
+        assertEquals(1, other.notes.count { "disagree" in it })
+        assertTrue(stuck.writes.isEmpty() && other.pins.isEmpty())
+    }
+
+    @Test
     fun whatTheCoreStopsAtIsLeftExactlyAsItIsAndSaidInDiagnostics() = runBlocking {
         val phone = phone()
         phone.pin("mine")

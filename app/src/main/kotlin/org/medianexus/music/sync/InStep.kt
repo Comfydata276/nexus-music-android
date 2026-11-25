@@ -240,11 +240,23 @@ class InStep(
             val began = phone.standing()
             val asker = kotlin.coroutines.coroutineContext[Job]
             val still = { may() && phone.standing() == began && asker?.isActive != false }
+            // The server's two answers disagreed about what is in the playlist: what a PC
+            // writing between this phone's two reads looks like, and no fault. It is asked
+            // once more straight away, with nothing said; only answers that disagree a
+            // second time running stop the exchange and are noted.
+            val pass = Pass()
+            var outcome = once(began, still, made = null, pass)
+            if (outcome == null && pass.disagreed) {
+                if (!still()) return Outcome.NOT_NOW
+                pass.again = true
+                outcome = once(began, still, made = null, pass)
+            }
             // (The playlist that holds the record, made by this exchange: what goes into
             // it is decided again, from the top, with it there.)
-            return once(began, still, made = null)
+            pass.again = true
+            return outcome
                 // (Its leave asked again before the read that follows making the playlist.)
-                ?: (if (still()) once(began, still, made = true) else Outcome.NOT_NOW)
+                ?: (if (still()) once(began, still, made = true, pass) else Outcome.NOT_NOW)
                 ?: Outcome.FAILED
         } catch (e: CancellationException) {
             throw e
@@ -270,9 +282,11 @@ class InStep(
      * made the playlist that is to hold the record: nothing is written into it on the
      * strength of what was decided before it existed (the person may have taken a change
      * back while the server was making it); the steps are gone through again, once
-     * (`made`), and that time nothing is made.
+     * (`made`), and that time nothing is made. Null too, with [Pass.disagreed] set, when the
+     * server's two answers disagreed and may be asked for once more.
      */
-    private suspend fun once(began: Long, still: () -> Boolean, made: Boolean?): Outcome? {
+    private suspend fun once(began: Long, still: () -> Boolean, made: Boolean?, pass: Pass): Outcome? {
+        pass.disagreed = false
         // 1. Ask the server. Nothing of the phone's state is taken yet: what the person
         // does while these answers are on their way is in what is decided.
         val listed = server.playlists()
@@ -292,8 +306,13 @@ class InStep(
         if (settled.clock.wrong && !wrongClock.value) note("in step: this phone's clock and the server's disagree by more than five minutes; nothing is shared from here until they agree")
         wrongClock.value = settled.clock.wrong
         clockNow.value = if (settled.clock.wrong) ClockIs.WRONG else ClockIs.RIGHT
-        // 4. Stop: say why, and do nothing else.
+        // 4. Stop: say why, and do nothing else. (Answers that disagree are asked for again
+        // first, once: see [exchange].)
         settled.stop?.let { stop ->
+            if (stop.kind == "Disagree" && !pass.again) {
+                pass.disagreed = true
+                return null
+            }
             note("in step: ${stop.words}")
             return when (stop.kind) {
                 "NotARecord" -> Outcome.UNREADABLE
@@ -384,12 +403,23 @@ class InStep(
         }
     }
 
+    /** What one exchange carries from one asking of the server to the next. */
+    private class Pass {
+        /** The answers just read disagreed, and were not acted on. */
+        var disagreed = false
+
+        /** This asking is not to be followed by another on that account. */
+        var again = false
+    }
+
     companion object {
         /** How long after a change before it's passed on, so a burst of changes goes as one. */
         const val SETTLE_MILLIS = 3_000L
 
-        /** How often to look for changes made elsewhere. */
-        const val LOOK_MILLIS = 60_000L
+        /** How often to look for changes made elsewhere, while the app's screens are in
+         *  front (the Windows app's, while its window is open): what another device changed
+         *  shows here within a quarter of a minute. */
+        const val LOOK_MILLIS = 15_000L
 
         private val turns = HashMap<String, Mutex>()
 

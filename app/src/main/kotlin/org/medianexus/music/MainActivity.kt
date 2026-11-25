@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
         // download, and is asked for a job of the kind only it may have).
         graph.checkIfDown()
         // And what the person's other devices have changed meanwhile is picked up, now and
-        // each minute while the screens stay in front (see Graph.front).
+        // every quarter of a minute while the screens stay in front (see Graph.front).
         graph.front.value = true
         graph.accounts.state.value?.downloads?.let { downloads ->
             downloads.stoppedByAndroid(false)

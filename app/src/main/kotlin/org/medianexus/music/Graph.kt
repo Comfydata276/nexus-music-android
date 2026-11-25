@@ -171,8 +171,8 @@ class Graph(
     }
 
     /** Whether the app's screens are in front: the activity says, as it starts and stops.
-     *  What only matters to someone looking (each minute's look at what the person's other
-     *  devices have changed) runs while this is true and not otherwise. */
+     *  What only matters to someone looking (the look, every quarter of a minute, at what
+     *  the person's other devices have changed) runs while this is true and not otherwise. */
     val front = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     /** What belongs to whoever is signed in: their library, covers, likes, downloads and

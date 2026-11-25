@@ -403,9 +403,9 @@ class AccountGraph(
             historyRead.complete(Unit)
             // In step with the person's other devices: now (Windows' `start_sync`); when
             // the app's screens come to the front (unless a look was made a moment ago); and
-            // every minute from then on while they stay there. **The timer itself runs only
-            // while the screens are in front**: with them gone, nothing here wakes each
-            // minute to find it has nothing to do. In the background what changes here
+            // every quarter of a minute from then on while they stay there. **The timer
+            // itself runs only while the screens are in front**: with them gone, nothing
+            // here wakes to find it has nothing to do. In the background what changes here
             // still goes out a few seconds after it does (each song that starts, each play
             // that counts), and nobody is looking at what changed elsewhere.
             if (step != null) {
