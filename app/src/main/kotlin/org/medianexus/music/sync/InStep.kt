@@ -289,6 +289,9 @@ class InStep(
             val into = plan.writeInto ?: server.create(PLAYLIST_NAME).ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
             if (!may()) return@withContext Outcome.NOT_NOW
             server.setComment(into, plan.writeText)
+            // (Where the test rig can have the process killed: the server has the write, and
+            // the phone has not yet kept that it has. In a release build, a null field read.)
+            org.medianexus.music.downloads.CrashPoints.reached("step-sent")
             // Only now is what the write carried agreed, and its changes done with.
             phone.written(write)
             Outcome.DONE

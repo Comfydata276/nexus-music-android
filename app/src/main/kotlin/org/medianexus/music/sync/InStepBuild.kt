@@ -25,7 +25,9 @@ object InStepBuild {
     const val EXISTS = false
 
     /** Set only by tests of the feature itself, so that its code goes on being tested while
-     *  it is switched off. Nothing in the app sets it. */
+     *  it is switched off: the unit tests, and a debug build told to by the test rig, as it
+     *  starts (`DebugStep`, which a release build has only an empty version of). Nothing in
+     *  a release build sets it. */
     @Volatile internal var forTests = false
 
     /** Whether it runs: [EXISTS], or a test of it. */

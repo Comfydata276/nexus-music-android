@@ -18,6 +18,10 @@ package org.medianexus.music.downloads
  * backup: no list at its own name), `compact-placed` (the new list at its name; the folder
  * not yet synced, the log still whole), `compact-emptied` (the log cut to nothing, not yet
  * synced).
+ *
+ * And one that is not a download's: `step-sent`, in an exchange with the person's other
+ * devices, when the server has taken the phone's write and the phone has not yet kept that
+ * it has (`sync/InStep.kt`): a write whose answer never arrived.
  */
 object CrashPoints {
     @Volatile var at: ((String) -> Unit)? = null

@@ -82,6 +82,12 @@ import androidx.media3.session.SessionToken
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library search --es queries "masie|lantern"
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library forget
  *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es library mixes
+ *
+ * Keeping in step, which no build has switched on, forced on for the rig; and the shared
+ * library made to panic (see `sync/DebugStep.kt` for all of these):
+ *
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es instep on|off|say|now
+ *     adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es core panic
  */
 class DebugControl : BroadcastReceiver() {
     private companion object {
@@ -160,6 +166,20 @@ class DebugControl : BroadcastReceiver() {
         }
         intent.getStringExtra("spare")?.let { megabytes ->
             resultData = org.medianexus.music.downloads.DebugSpare.set(context.applicationContext, megabytes)
+            return
+        }
+        // Keeping in step forced on, an exchange made now, a pin; and the shared library made
+        // to panic (see sync/DebugStep.kt).
+        (intent.getStringExtra("instep") ?: intent.getStringExtra("core"))?.let { what ->
+            val core = intent.hasExtra("core")
+            val done = goAsync()
+            Thread {
+                done.resultData = runCatching {
+                    if (core) org.medianexus.music.sync.DebugStep.panic()
+                    else org.medianexus.music.sync.DebugStep.asked(context.applicationContext, what, intent.getStringExtra("id"))
+                }.getOrElse { "failed: $it" }
+                done.finish()
+            }.start()
             return
         }
         val graph = (context.applicationContext as org.medianexus.music.App).graph
