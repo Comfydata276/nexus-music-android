@@ -138,6 +138,7 @@ fun Shell(graph: Graph) {
                         LocalNetworkBar(graph)
                         NoticeList(graph)
                         if (!keyboard && org.medianexus.music.jam.JamBuild.on) org.medianexus.music.ui.jam.JamStrip()
+                        if (!keyboard) org.medianexus.music.ui.player.ContinueStrip()
                         if (!keyboard) MiniPlayer(Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)))
                     }
                 }
@@ -150,6 +151,7 @@ fun Shell(graph: Graph) {
                     NoticeList(graph)
                     if (!keyboard) {
                         if (org.medianexus.music.jam.JamBuild.on) org.medianexus.music.ui.jam.JamStrip()
+                        org.medianexus.music.ui.player.ContinueStrip()
                         MiniPlayer()
                         BottomBar(navigator.tab, navigator::select)
                     }

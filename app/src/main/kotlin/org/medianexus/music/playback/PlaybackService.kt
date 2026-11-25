@@ -1249,14 +1249,20 @@ class PlaybackService : MediaLibraryService() {
             // the second of the song moving on are the song playing on, and no change: what
             // moves them otherwise is a jump, which says so itself. See [queueRevision].)
             if (before == null || before.first != mark.first) queueRevision++
-            if (!queueQuiet && !queue.isEmpty) {
+            // Whose the queue is was said at the person's own action ([claimQueue]). Here
+            // it has only come to look different. If the list itself is another list, that
+            // is a change made here whoever made it (a list chosen by voice or in the car
+            // reaches the player without a command of its own). If only the place has
+            // moved, that is the song playing on: a change to save if the queue is this
+            // phone's own, and nothing at all if it is still another device's.
+            val listChanged = before == null || before.first != mark.first
+            if (!queueQuiet && !queue.isEmpty && (listChanged || queueTaken == null)) {
                 queueStamp = System.currentTimeMillis() / 1000
-                // (Whatever it was before, it is this phone's own now.)
                 queueTaken = null
                 // Saved on the server for the person's other devices: a few seconds after a
                 // change, and now and then while a song simply plays on.
                 val step = era?.account?.queueStep
-                if (before != null && before.first == mark.first && before.second == mark.second && exo.playWhenReady) step?.progressed() else step?.changedHere()
+                if (!listChanged && before?.second == mark.second && exo.playWhenReady) step?.progressed() else step?.changedHere()
             }
         }
         val stamp = queueStamp
@@ -1290,6 +1296,35 @@ class PlaybackService : MediaLibraryService() {
     private var queueMark: Triple<Long, Int, Long>? = null
     /** Set while a queue is put in place that is not a change made here. */
     private var queueQuiet = false
+
+    /**
+     * **The person has done something to the queue, or to playing it, on this phone**: from
+     * this moment it is this phone's own queue, timed now, and not one "taken up from another
+     * device and left alone", which that device's next save would replace. (The shared
+     * core's contract, at the top of its `handover.rs`.)
+     *
+     * Said at the action itself, not found out afterwards from the queue looking different
+     * ([save]): a seek while paused, or Play and then Pause inside a second, changes nothing a
+     * look at the queue would notice. **This is the one place the person's ways in pass**:
+     * every command a controller sends the player (the app's own screens, the notification,
+     * a headset, the car, an app the person allowed) and the app's own commands for the
+     * queue. What the app does by itself never comes here: the next song beginning, the
+     * sleep timer, the sound taken away, similar songs arriving, another device's queue put
+     * in the player, the last run's queue put back.
+     */
+    private fun claimQueue() {
+        queueTaken = null
+        if (player.queue.isEmpty) return
+        queueStamp = System.currentTimeMillis() / 1000
+        // (Another queue, to a save that was being prepared: it is sent only for the queue
+        // as it was at the number it was prepared at.)
+        queueRevision++
+        val step = era?.account?.queueStep ?: return
+        // What another device was playing was offered as the newer of the two, which it has
+        // just stopped being: the person has acted past that offer.
+        step.actedPast()
+        step.changedHere()
+    }
 
     /** Does something to the queue that is not the person changing it here: nothing of it
      *  is stamped as changed now, or passed on to other devices. */
@@ -1361,9 +1396,12 @@ class PlaybackService : MediaLibraryService() {
             quietly { done = player.playFor(place, next, positionMs, playNow = choice != null) }
             if (!done) queueStamp = before
             // It is that device's queue, and not this phone's to save, until something is
-            // done to it here: which playing it ("Continue here") is.
+            // done to it here.
             if (done) queueTaken = taken.takeIf { choice == null }
             if (done) save()
+            // "Continue here", once taken, is the person's own choice: this phone's own
+            // queue from this moment, by its own clock.
+            if (done && choice != null) claimQueue()
             return done
         }
     }
@@ -2023,6 +2061,9 @@ class PlaybackService : MediaLibraryService() {
             // still show the places as they were a moment ago, is the player's to act on or
             // not: see QueuePlayer.placeIsSure.)
             if (!Access.mayPlayer(caller, playerCommand)) return SessionError.ERROR_PERMISSION_DENIED
+            // The person's press, about to be carried out: the queue is this phone's own
+            // from now (see claimQueue).
+            if (playerCommand in PRESSES) claimQueue()
             // Play or Pause tapped on the app's own screens took its place at the tap; carried
             // out now (straight after this, on this thread), it takes no other.
             if (caller == Caller.OWN_INTERFACE && playerCommand == Player.COMMAND_PLAY_PAUSE && Choices.arrivedFromTap()) {
@@ -2295,6 +2336,8 @@ class PlaybackService : MediaLibraryService() {
             if (!Access.mayCustom(callerOf(session, controller), customCommand.customAction)) {
                 return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
             }
+            // (The app's own commands for the queue, and shuffle, are the person's doing.)
+            if (customCommand.customAction in Access.APP_ONLY || customCommand.customAction == SHUFFLE.customAction) claimQueue()
             val done = when (customCommand.customAction) {
                 in Access.BUTTONS -> press(customCommand.customAction)
                 AppActions.PLAY -> {
@@ -2823,6 +2866,15 @@ class PlaybackService : MediaLibraryService() {
     }
 
     companion object {
+        /**
+         * The player commands that are the person doing something to the queue or to
+         * playing it: transport, choosing what plays, changing the list, and shuffle (which
+         * rearranges it). Not the volume, the speed, repeat, or anything that only reads.
+         */
+        internal val PRESSES: Set<Int> = (Access.TRANSPORT - Player.COMMAND_PREPARE) + setOf(
+            Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_CHANGE_MEDIA_ITEMS, Player.COMMAND_SEEK_TO_MEDIA_ITEM, Player.COMMAND_SET_SHUFFLE_MODE,
+        )
+
         private const val TAG = "NexusPlayback"
 
         val LIKE = SessionCommand("org.medianexus.music.LIKE", Bundle.EMPTY)

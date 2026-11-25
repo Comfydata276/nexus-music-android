@@ -3070,12 +3070,57 @@ file has).
   (Windows: every twenty seconds; each save sends the ids again): the songs around the one
   playing that the core's window says, stations left out, nothing while a station plays. At
   each look the saved queue is read, with the clock of that read, and the core says what
-  then: nothing; take it up (another device saved it after this phone's queue last changed
-  and nothing is playing here: it takes this one's place, paused); or this phone's save is
-  owed. And whether to offer it: if another device has been playing something else in the
-  last half hour the queue sheet says "Playing on another device", the song, "Continue
-  here" (Windows' card and words), and a tap picks it up where it had got to and plays.
-  Nothing starts playing by itself.
+  then: nothing; take it up (it takes this phone's queue's place, paused); or this phone's
+  save is owed; and whether to offer it ("Continue here": a tap picks it up where it had got
+  to and plays). Nothing starts playing by itself.
+- **A queue the person has made their own is never replaced by itself** (0.5.1; the core's
+  rule, for both apps, in its `handover.rs`). The first person to run the phone beside a
+  PC added a song to the phone's queue while the PC was playing, and "it just removed
+  itself from the queue when the phone updated ~70s later": the PC had saved its queue
+  again, the phone was not playing, and the newer queue was put in the phone's queue's
+  place. Now another device's newer queue is taken up by itself **only while this phone has
+  nothing of the person's to lose**: its queue is empty, or is one taken up from another
+  device and left alone since (which then goes on following that device). From the first
+  thing the person does to a queue here it is this phone's own, and another's is only ever
+  **offered**:
+  - with nothing playing here, whatever another device saved that is strictly newer than
+    the queue here, **for as long as that is so**, the next morning included (it used to be
+    half an hour; without this the hand-over would quietly stop working for anyone who uses
+    the phone daily, whose queue is nearly always their own);
+  - while a song plays here, what another device was playing in the last half hour, as
+    before.
+
+  An offer is of another queue than the one here: the same song current in a different list
+  (a song added here; the other device's list changed and then paused) is another queue, so
+  the phone says what its queue holds (`Here.ids`: the ids it would save; a radio station's
+  own id where it would save nothing) and the lists are compared. **An offer that was
+  taken, or that the person acted past, is never made again**: it is remembered by the time
+  of that save and who made it, and what that device saves next is another offer. An offer
+  is withdrawn when it is taken, when the person does anything here, when a look cannot ask
+  the server, and when sharing is switched off.
+- **Where the offer shows** (0.5.1). At the top of the queue sheet, as always ("Playing on
+  another device", the song, "Continue here": Windows' card and words). And, while nothing
+  is playing here, **in a strip of its own above the mini player**, where a person looks on
+  opening the app: "Continue from another device", the song, "Continue here"
+  (`ui/player/ContinueStrip.kt`). It is a row of its own, so nothing of the mini player is
+  covered or moved, the play button least of all. It names the app that saved the queue only
+  when that is another music app: a copy of this app saves under a made-up number, and
+  **no device has a name other devices can read**. Linking has device names; when that
+  arrives it should give this strip one ("Continue from the kitchen PC").
+- **Whose the queue is, is said at the person's own action** (0.5.1; `PlaybackService.claimQueue`).
+  It used to be found out afterwards, from the queue looking different at the next save, so
+  what changes nothing a save would notice claimed nothing: a seek while paused that stays
+  inside the same second, Play and then Pause inside a second. The other device's next save
+  then replaced the queue after the person had plainly used it. Now every command a
+  controller sends the player (the app's own screens, the notification, a headset, the car,
+  an app the person allowed) and the app's own commands for the queue pass one place, which
+  makes the queue this phone's own there and then, timed by this phone's clock, and to
+  anything waiting to be saved another queue. "Continue here", once taken, is the person's
+  own from that moment. What the app does by itself claims nothing: the next song
+  beginning, the sleep timer, the sound taken away, another device's queue put in the
+  player, the last run's queue put back. (A list that reaches the player some other way,
+  chosen by voice or in the car, is still a change made here: the list itself being another
+  list always was.)
 - **The phone saves its queue only if it is still the newest thing that happened** (B1).
   Saves go one at a time, in the order they were asked for, **for the account** (a second
   sign-in to it has no turn of its own while a save of the first's is on its way), and
@@ -3136,6 +3181,15 @@ server offers, and is written down where the rules are (the Windows repository's
   good by it: each device still holds what it wrote as agreed, with its time, and offers it
   again at its next look, where it is merged back in. The same holds for the saved queue,
   between the phone's look at it and its save (B1).
+- **A phone that is not playing saves a queue the person has just changed, though another
+  device is playing.** For the seconds until that device's next save (it saves as it plays,
+  without looking: at most 23 seconds on a PC, a minute on a phone) the server holds the
+  queue that is not being played. A third device that looks in those seconds, with nothing
+  of its own in its queue, takes that one up, and puts it right at its next look (what it
+  took is still "taken", so it follows). The saved queue does not say whether its device is
+  playing, and guessing from how lately it was saved would hold back a person's own change
+  for longer than the mistake lasts. (Written in the Windows repository's README and at the
+  top of `handover.rs` too.)
 - **A change to the queue in the instant between the last look at its number and the save
   leaving the phone** is sent as it was looked at, and put right by the next save. (The same
   kind of instant the Windows app accepts for an exchange: nothing can be checked after the
@@ -3161,10 +3215,10 @@ server offers, and is written down where the rules are (the Windows repository's
   the same song; two notes of when a song was added with the same time and different
   contents) is the core's, for both apps at once: the phone can no longer be a third
   opinion.
-- **The half hour of "another device has been playing" runs from when that device last saved
-  its queue**, not from when it last played: a queue only edited on a PC, with nothing
-  playing there, is offered as "Playing on another device" for half an hour, as between two
-  PCs.
+- **The half hour of "another device has been playing"**, which now applies only to a
+  phone that is itself playing, **runs from when that device last saved its queue**, not
+  from when it last played: a queue only edited on a PC, with nothing playing there, is
+  offered as "Playing on another device" for half an hour, as between two PCs.
 - **The time a queue changed here is by the phone's clock, and the time another device saved
   one is by the server's.** The two are compared (which is the newer), with at most the five
   minutes between them that the core allows before a device stops sharing.

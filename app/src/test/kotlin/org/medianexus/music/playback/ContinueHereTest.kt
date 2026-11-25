@@ -274,6 +274,132 @@ class ContinueHereTest {
         assertNull(here().taken())
     }
 
+    /** A headset, a car, the app's own screens: whoever it is, a press reaches the player
+     *  as a command the service is asked about, which is then carried out. */
+    private val headset = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+        "com.example.car", 4_321, 10_123, androidx.media3.session.MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, android.os.Bundle.EMPTY, true,
+    )
+
+    private fun pressed(command: Int, act: () -> Unit) {
+        @Suppress("DEPRECATION")
+        assertEquals(androidx.media3.session.SessionResult.RESULT_SUCCESS, inside.callback.onPlayerCommandRequest(inside.session, headset, command))
+        act()
+        settle()
+    }
+
+    @Test
+    fun thePersonsOwnActionMakesAQueueTakenUpThisPhonesOwnAtTheAction() {
+        inside.player.play(mine(), 1, "A list", playNow = false)
+        settle()
+        fun takeUp(saved: String) {
+            assertTrue(wait { here().replace(theirs(), 1, 30_000, later(), saved, choice = null, asOf = Choices.latest, stampThen = here().stamp(), still = { true }) })
+            settle()
+            assertEquals(saved, here().taken())
+        }
+        fun now() = System.currentTimeMillis() / 1000
+
+        // Another device's queue, taken up and sitting paused. The person seeks in the song,
+        // not even into another second of it: nothing a look at the queue would notice. The
+        // press itself makes it this phone's own, timed now.
+        takeUp("2026-01-01T00:00:00Z")
+        val number = here().revision()
+        pressed(androidx.media3.common.Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) { inside.exo.seekTo(30_400) }
+        assertNull(here().taken())
+        assertTrue("the queue's time is the press's", here().stamp() in now() - 5..now() + 1)
+        assertTrue("a save prepared before the seek is for another queue", here().revision() != number)
+
+        // Play, and Pause straight after.
+        takeUp("2026-01-01T00:00:10Z")
+        pressed(androidx.media3.common.Player.COMMAND_PLAY_PAUSE) { inside.exo.play() }
+        pressed(androidx.media3.common.Player.COMMAND_PLAY_PAUSE) { inside.exo.pause() }
+        assertNull(here().taken())
+
+        // "Continue here", and paused at once: the person's own choice from the moment it
+        // is taken, by this phone's clock, not the other device's.
+        val tap = Choices.take()
+        assertTrue(wait { here().replace(theirs(), 2, 0, later(), "2026-01-01T00:00:20Z", choice = tap, asOf = tap, stampThen = 0, still = { true }) })
+        settle()
+        assertNull(here().taken())
+        assertTrue(here().stamp() in now() - 5..now() + 1)
+        pressed(androidx.media3.common.Player.COMMAND_PLAY_PAUSE) { inside.exo.pause() }
+        assertNull(here().taken())
+
+        // What the app does by itself claims nothing: the place moving with no press (as
+        // when something of the app's own moves it) leaves a queue taken up the other
+        // device's still.
+        takeUp("2026-01-01T00:00:30Z")
+        val stamp = here().stamp()
+        inside.exo.seekTo(95_000)
+        settle()
+        // (And the queue's place is noted, as it is whenever the sound stops: the note
+        // finds the place moved, in a queue that is not this phone's, and claims nothing.)
+        inside.watcher.onIsPlayingChanged(false)
+        settle()
+        assertEquals("2026-01-01T00:00:30Z", here().taken())
+        assertEquals(stamp, here().stamp())
+    }
+
+    @Test
+    fun aTapOnAnEntryOfAQueueTakenUpMakesItThisPhonesOwn() {
+        inside.player.play(mine(), 1, "A list", playNow = false)
+        settle()
+        assertTrue(wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = Choices.latest, stampThen = here().stamp(), still = { true }) })
+        settle()
+        assertEquals("2026-01-01T00:00:00Z", here().taken())
+        // The app's own screens: a tap on another entry of the queue. The list is the same
+        // list afterwards, so nothing but the tap itself says it is the person's now.
+        val screens = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            app.packageName, android.os.Process.myPid(), android.os.Process.myUid(), androidx.media3.common.MediaLibraryInfo.VERSION_INT, 0, false, android.os.Bundle.EMPTY, true,
+        )
+        val entry = inside.player.queue.playingUids()[2]
+        inside.callback.onCustomCommand(inside.session, screens, AppCommands.JUMP, android.os.Bundle().apply { putLong("uid", entry) })
+        settle()
+        assertEquals("pc2", inside.player.queue.current()?.id)
+        assertNull(here().taken())
+        assertTrue(here().stamp() in System.currentTimeMillis() / 1000 - 5..System.currentTimeMillis() / 1000 + 1)
+    }
+
+    @Test
+    fun aPressTakesWhatWasOnOfferAwayAndThatOfferIsNotMadeAgain() {
+        inside.player.play(mine(), 1, "A list", playNow = false)
+        settle()
+        val step = app.graph.accounts.state.value!!.queueStep!!
+        fun look() {
+            val looking = scope.async { step.check() }
+            turnUntil("the look ran") { looking.isCompleted }
+        }
+        // This phone's own queue, paused, and another device has saved a newer one: it is
+        // offered, and nothing here is replaced.
+        server.answers["getPlayQueue"] = savedElsewhere()
+        look()
+        assertEquals("Theirs 1", step.elsewhere.value?.title)
+        assertEquals("s1", inside.player.queue.current()?.id)
+        // The person does something here (a seek, not even changing the list). The offer
+        // goes at the press: what it offered is no longer the newer of the two.
+        pressed(androidx.media3.common.Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) { inside.exo.seekTo(5_000) }
+        assertNull(step.elsewhere.value)
+        // And it does not come back at the next look, though by the clock (the other
+        // device's save is stamped a minute ahead) it would still pass for the newer.
+        look()
+        assertNull("an offer the person acted past was made again", step.elsewhere.value)
+        assertEquals("s1", inside.player.queue.current()?.id)
+        // What that device saves next is another offer.
+        server.answers["getPlayQueue"] = savedElsewhere()
+        look()
+        assertEquals("Theirs 1", step.elsewhere.value?.title)
+        // A change to the queue from the app's own screens (a song taken out of it) is the
+        // person's action as much as a press is: that offer goes too, there and then.
+        val screens = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            app.packageName, android.os.Process.myPid(), android.os.Process.myUid(), androidx.media3.common.MediaLibraryInfo.VERSION_INT, 0, false, android.os.Bundle.EMPTY, true,
+        )
+        inside.callback.onCustomCommand(inside.session, screens, AppCommands.REMOVE, android.os.Bundle().apply { putLong("uid", inside.player.queue.playingUids()[3]) })
+        assertNull("the offer was still there after the queue was changed on a screen", step.elsewhere.value)
+        settle()
+        assertEquals(listOf("s0", "s1", "s2", "s4"), inside.player.queue.playingUids().mapNotNull { uid -> inside.player.queue.let { q -> q.songs.getOrNull(q.uids.indexOf(uid))?.id } })
+        look()
+        assertNull(step.elsewhere.value)
+    }
+
     @Test
     fun continueHereIsPlayedIfNothingWasChosenAfterItsTap() {
         inside.player.play(mine(), 1, "A list", playNow = false)

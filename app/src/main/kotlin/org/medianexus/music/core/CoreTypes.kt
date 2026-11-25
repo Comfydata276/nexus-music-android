@@ -199,9 +199,12 @@ data class Theirs(
 )
 
 /** This phone's side of a comparison of queues (`Here`): `stamp` by the phone's own clock;
- *  `taken` set while the queue is one taken up from another device and untouched since. */
+ *  `taken` set while the queue is one taken up from another device and untouched since;
+ *  `ids` the songs of the queue as the phone would save them ([Core.queueWindow]), which is
+ *  what tells another device's queue with the same song current from the same queue (left
+ *  empty, only the current song is compared). */
 @Serializable
-data class Here(val device: String, val current: String?, val playing: Boolean, val stamp: Long, val taken: String?)
+data class Here(val device: String, val current: String?, val playing: Boolean, val stamp: Long, val taken: String?, val ids: List<String> = emptyList())
 
 /** What of a queue is saved on the server (`Saved`); `position` in milliseconds. */
 @Serializable

@@ -66,6 +66,8 @@
     <string name="keep_in_step_detail">Your queue, Recently played, pinned playlists, each list\'s shuffle and sort, the dates songs were added and the theme follow you to Nexus Music on other devices. Kept on your server in a playlist named “Nexus Music sync”, which other apps will show; leave it be.</string>
     <string name="playing_elsewhere">Playing on another device</string>
     <string name="continue_here">Continue here</string>
+    <string name="continue_from_another">Continue from another device</string>
+    <string name="continue_from">Continue from %1$s</string>
     <string name="elsewhere_song">%1$s — %2$s</string>
     <string name="sign_out">Sign out</string>
     <string name="about">About</string>

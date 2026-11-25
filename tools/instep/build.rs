@@ -6,7 +6,8 @@
 //! * `subsonic.rs`, `added.rs` and `plays.rs` whole.
 //! * `sync.rs` from its top to where the part that drives the window begins (`impl
 //!   Controller`): the record, the merges, and `exchange` with what it calls.
-//! * From `config.rs` only `ListPrefs`, `Played` and `write_atomically`.
+//! * From `config.rs` only `ListPrefs`, `Played`, `write_atomically` and, where it has
+//!   them, `write_surely` and `beside`.
 //!
 //! From the release after 0.40.3 the record, the merges and what a server's answers are read into are in the
 //! Windows app's library (`core/`, beside `src/`), which this tool depends on as the app
@@ -113,7 +114,7 @@ pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTOR
 
     // config.rs: three items.
     let config = read("config.rs");
-    let mut parts = String::from("use std::fs;\nuse std::path::Path;\nuse serde::{Deserialize, Serialize};\nuse crate::subsonic::Song;\n\n");
+    let mut parts = String::from("use std::fs;\n#[allow(unused_imports)]\nuse std::path::{Path, PathBuf};\nuse serde::{Deserialize, Serialize};\nuse crate::subsonic::Song;\n\n");
     if split {
         parts.push_str("pub use nexus_core::sync::ListPrefs;\n\n");
     } else {
@@ -129,6 +130,12 @@ pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTOR
     };
     for marker in wanted {
         parts.push_str(&item(&config, marker));
+        parts.push('\n');
+    }
+    // (From 0.40.8 the name a file is written under before it is put in place is a function
+    // of its own, which `write_surely` calls.)
+    if stepped && config.contains("\npub fn beside(") {
+        parts.push_str(&item(&config, "pub fn beside("));
         parts.push('\n');
     }
     write(&out, "config.rs", &parts);

@@ -30,7 +30,25 @@ import org.medianexus.music.playback.Choices
 /** What another device has been playing: its saved queue, and the song it had got to, in
  *  words, for "Continue here". `read` is that queue as the core takes it, with the clocks
  *  as the answer that brought it had them. */
-data class Elsewhere(val queue: PlayQueue, val title: String, val artist: String, internal val read: Theirs = Theirs())
+data class Elsewhere(val queue: PlayQueue, val title: String, val artist: String, internal val read: Theirs = Theirs()) {
+    /**
+     * The name of whatever saved that queue, where it is a name worth showing: another
+     * music app's own name for itself. Null for a copy of this app, which saves under a
+     * made-up number ("NexusMusic-0badc0de") that would mean nothing to anybody: a device
+     * has no name of its own that other devices can read.
+     */
+    val by: String? get() = queue.changedBy.trim().takeIf { it.isNotEmpty() && !it.startsWith("NexusMusic-") && it.length <= 40 && it.all { c -> c >= ' ' } }
+}
+
+/**
+ * What a look is told is in the queue here: what a save of it would carry, in order; and
+ * where a save would carry nothing though something is at the cursor (a radio station),
+ * that one thing. Empty only with nothing in the queue. That is the library's contract
+ * (`handover.rs`): it compares the lists and not only the song, and takes an empty list
+ * for an empty queue.
+ */
+internal fun idsHere(current: String?, queue: QueueNow?): List<String> =
+    queue?.let { Core.queueWindow(it.songs, it.cursor, it.positionSeconds) }?.ids ?: listOfNotNull(current)
 
 /** The queue in the player as it stands: its songs in the order they play, which one is
  *  playing, and how far into it (seconds). */
@@ -94,7 +112,10 @@ interface QueueHere {
 
 /**
  * Sharing the play queue and the place in it through the server's own saved-queue feature:
- * whichever device changed it last has the say; a device that's playing keeps its own.
+ * whichever device changed it last has the say; a device that's playing keeps its own; and
+ * **a queue the person has made their own is never replaced by itself**: another device's
+ * newer queue is put in this phone's queue's place only while that is empty, or is one taken
+ * up from another device and left alone. Otherwise it is offered ("Continue here").
  *
  * **Whose queue is the newest is the shared core's to say** ([Core.queueSave],
  * [Core.queueLook]; the Windows repository's `core/src/handover.rs`, whose numbered steps
@@ -137,8 +158,10 @@ class QueueStep(
 
     private val offer = MutableStateFlow<Elsewhere?>(null)
 
-    /** What another device has been playing in the last half hour, for "Continue here";
-     *  null when there is nothing to offer. */
+    /** Another device's queue, offered as "Continue here"; null when there is nothing to
+     *  offer. With nothing playing here: whatever another device saved that is newer than
+     *  the queue here, for as long as it is. While a song plays here: what another device
+     *  was playing in the last half hour. (The shared core's rule: `handover::look`.) */
     val elsewhere: StateFlow<Elsewhere?> = offer.asStateFlow()
 
     private var soon: Job? = null
@@ -230,10 +253,10 @@ class QueueStep(
     }
 
     /**
-     * A look at the server's saved queue (the core's steps for a look): another device's is
-     * taken up, paused, if it changed its queue at or after the time anything was last done
-     * here and nothing is playing here; offered as "Continue here" if it has been playing in
-     * the last half hour; and this phone's own save, if it is owed, is made.
+     * A look at the server's saved queue (the core's steps for a look): another device's
+     * newer queue is taken up, paused, if this phone has nothing of the person's to lose by
+     * it (its queue is empty, or is one taken up and left alone); otherwise it is offered as
+     * "Continue here"; and this phone's own save, if it is owed, is made.
      */
     suspend fun check() = looking.withLock {
         if (!may()) return@withLock
@@ -248,7 +271,10 @@ class QueueStep(
             // With no player (the playback service isn't up) there is nothing to take the
             // queue up or to offer it to: it is looked at again when there is.
             if (here == null) return@withLock forget()
-            val (mine, asOf) = withContext(main) { here?.let { hereOf(it, name) to Choices.latest } } ?: return@withLock forget()
+            val (seen, asOf) = withContext(main) { here?.let { (hereOf(it, name) to it.queue()) to Choices.latest } } ?: return@withLock forget()
+            // (What is in the queue here, as it would be saved: the same song current in
+            // another list is another queue.)
+            val mine = seen.first.copy(ids = idsHere(seen.first.current, seen.second))
             val looked = Core.queueLook(theirs, mine, clock())
             withContext(main) {
                 val player = here ?: return@withContext
@@ -267,7 +293,9 @@ class QueueStep(
         } catch (e: CancellationException) {
             throw e
         } catch (_: ApiError) {
-            // Looked at again at the next look.
+            // Looked at again at the next look. And an offer made from an earlier answer is
+            // no longer known to stand: it is not left there to be tapped.
+            forget()
         } catch (e: CoreException) {
             note("in step: ${e.message}")
         }
@@ -276,11 +304,25 @@ class QueueStep(
     /** What is offered as "Continue here", or nothing. */
     private fun offered(what: Elsewhere?) = synchronized(offering) {
         // (Asked under the same lock as [forget], which is called once the setting is off:
-        // whichever of the two comes second, nothing is left on offer.)
-        offer.value = if (on()) what else null
+        // whichever of the two comes second, nothing is left on offer. And an offer that
+        // was taken, or that the person acted past, is not made again.)
+        offer.value = if (on()) what?.takeIf { idOf(it.queue) != used } else null
     }
 
     private val offering = Any()
+
+    /** The offer that was last taken, or acted past: the time of that save and who made it.
+     *  The same one is never made again; what that device saves next is another. */
+    private var used: Pair<String, String>? = null
+
+    private fun idOf(queue: PlayQueue) = queue.changed to queue.changedBy
+
+    /** The person has done something to the queue, or to playing it, here: whatever was on
+     *  offer is no longer the newer of the two, and that offer is done with. */
+    fun actedPast() = synchronized(offering) {
+        offer.value?.let { used = idOf(it.queue) }
+        offer.value = null
+    }
 
     /**
      * Takes up what another device was playing, from where it had got to, and plays it: the
@@ -289,8 +331,10 @@ class QueueStep(
      * nothing has taken a later place (a pause, something else chosen, a change to the queue).
      */
     fun continueHere() {
-        val theirs = offer.value ?: return
-        offer.value = null
+        val theirs = synchronized(offering) {
+            // (Taken: that offer is done with.)
+            offer.value?.also { used = idOf(it.queue) }.also { offer.value = null }
+        } ?: return
         if (!on()) return
         val began = standing()
         val asked = Choices.take()
@@ -307,7 +351,16 @@ class QueueStep(
         }
     }
 
-    /** Nothing is offered any more (sharing switched off, or there is no player). */
+    /** Whether something is playing here, or meant to be: asked of the player, on its own
+     *  thread. False with no player. */
+    suspend fun playingHere(): Boolean {
+        val player = here ?: return false
+        return withContext(main) { player.playing() }
+    }
+
+    /** Nothing is offered any more: sharing was switched off, or there is no player, or the
+     *  person has just done something to the queue here while nothing was playing (what
+     *  another device saved is offered only while it is the newer, and it no longer is). */
     fun forget() = synchronized(offering) {
         offer.value = null
     }

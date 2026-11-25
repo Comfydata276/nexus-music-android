@@ -471,19 +471,23 @@ pub fn household(options: &Options) -> i32 {
     std::thread::sleep(std::time::Duration::from_secs(2));
     client.save_play_queue(name_b, &ids(&[&songs[1], &songs[2], &songs[3]]), &songs[2], 5_000).expect("B's queue");
     let (theirs, clock) = saved_queue(&client);
-    let here_a = Here { device: name_a.into(), current: Some(songs[5].clone()), playing: false, stamp: changed_on_a, taken: None };
+    // (A device always says what its queue holds: the library's contract.)
+    let here_a = Here { device: name_a.into(), current: Some(songs[5].clone()), playing: false, stamp: changed_on_a, taken: None, ids: ids(&[&songs[4], &songs[5]]) };
     t.ok(handover::save(&theirs, &here_a, clock) == Save::NotNewest, "A changed its queue, paused; B saved its own two seconds later; A's save, three seconds after the change, reads the server first and is not made");
     let looked = handover::look(&theirs, &here_a, clock, now());
-    let Then::TakeUp(place) = looked.then else { panic!("A did not take B's queue up: {looked:?}") };
-    t.ok(place.cursor == 1 && place.position == 5.0, "at its next look A takes B's queue up, paused, at B's song and place");
-    let taken = Here { stamp: place.stamp, taken: Some(place.taken.clone()), current: Some(songs[2].clone()), ..here_a.clone() };
+    t.ok(looked.offer == Some(1) && looked.then == Then::Nothing, "at its next look A, whose queue is the person's own, keeps it: B's newer queue is offered as \"Continue here\", and is not put in its place");
+    // (A device with nothing in its queue has nothing of the person's to lose.)
+    let empty_a = Here { current: None, ids: Vec::new(), ..here_a.clone() };
+    let Then::TakeUp(place) = handover::look(&theirs, &empty_a, clock, now()).then else { panic!("A, with nothing in its queue, did not take B's up") };
+    t.ok(place.cursor == 1 && place.position == 5.0, "with nothing in its queue, A takes B's up, paused, at B's song and place");
+    let taken = Here { stamp: place.stamp, taken: Some(place.taken.clone()), current: Some(songs[2].clone()), ids: ids(&[&songs[1], &songs[2], &songs[3]]), ..here_a.clone() };
     t.ok(handover::save(&theirs, &taken, clock) == Save::NotNewest && handover::look(&theirs, &taken, clock, now()).then == Then::Nothing, "and does not save it back as its own, nor take it up a second time");
     std::thread::sleep(std::time::Duration::from_secs(2));
     let played = Here { stamp: now(), taken: None, ..taken.clone() };
     t.ok(handover::save(&theirs, &played, clock) == Save::Save, "played on at A, it is A's to save");
     client.save_play_queue(name_a, &ids(&[&songs[1], &songs[2], &songs[3]]), &songs[3], 1_000).expect("A's queue");
     let (theirs, clock) = saved_queue(&client);
-    let here_b = Here { device: name_b.into(), current: Some(songs[2].clone()), playing: true, stamp: changed_on_a, taken: None };
+    let here_b = Here { device: name_b.into(), current: Some(songs[2].clone()), playing: true, stamp: changed_on_a, taken: None, ids: ids(&[&songs[1], &songs[2], &songs[3]]) };
     let looked = handover::look(&theirs, &here_b, clock, now());
     t.ok(looked.offer == Some(2) && looked.then == Then::Nothing, "B, playing, keeps its own queue and is offered A's as \"Continue here\"");
     t.ok(handover::first(&here_b) == handover::First::Save && handover::first(&here_a) == handover::First::Read, "and while B plays, the saves of its place don't each read the server first; A's, made while nothing plays, do");
@@ -636,8 +640,9 @@ pub fn household(options: &Options) -> i32 {
     // (The PC changed its queue before A did, and saves it three seconds later, as it does.)
     pc.run("queue-save", &["--device", "NexusMusic-0badc0de", "--ids", &format!("{},{}", songs[6], songs[7]), "--current", &songs[6], "--position", "0"]);
     let (theirs, clock) = saved_queue(&client);
-    let here_a = Here { device: name_a.into(), current: Some(songs[5].clone()), playing: false, stamp: changed_on_a, taken: None };
-    t.old(theirs.changed_by == "NexusMusic-0badc0de" && matches!(handover::look(&theirs, &here_a, clock, now()).then, Then::TakeUp(_)), "0.40.4 saves without a look at what is there: its older queue lands on top of A's newer one, as the newest, and A, paused, takes it up");
+    let here_a = Here { device: name_a.into(), current: Some(songs[5].clone()), playing: false, stamp: changed_on_a, taken: None, ids: ids(&[&songs[4], &songs[5]]) };
+    let looked = handover::look(&theirs, &here_a, clock, now());
+    t.old(theirs.changed_by == "NexusMusic-0badc0de" && looked.offer == Some(0) && looked.then == Then::Nothing, "0.40.4 saves without a look at what is there: its older queue lands on top of A's newer one, as the newest. A keeps its own queue, which is the person's, and is offered the PC's");
 
     clear(&client);
     println!("{} expectations held, {} did not.", t.held, t.failed);

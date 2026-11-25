@@ -90,6 +90,9 @@ class QueueStepTest {
 
     private val main = Main()
 
+    /** A phone with nothing in its queue: nothing of the person's to lose. */
+    private fun emptyPlayer(stamp: Long = DAY + 100) = PretendPlayer(current = null, stamp = stamp).apply { songs = null }
+
     private fun step(server: Server, player: PretendPlayer?, now: Long = DAY + 700) =
         QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, account = "account-${System.nanoTime()}", may = { on && reached }, on = { on }, scope = scope, clock = { now }, pause = {}, onMain = main).also { it.here = player }
 
@@ -178,7 +181,7 @@ class QueueStepTest {
     @Test
     fun looksTakeTurnsSoALaterOneIsNeverPutInBeforeAnEarlierOne() = runBlocking {
         val server = Server()
-        val player = PretendPlayer(stamp = DAY + 100)
+        val player = emptyPlayer()
         val step = step(server, player)
         server.savedBy(pc, "1970-01-02T00:10:00Z", "a", "b", "c", current = "b", position = 30_000)
         // A look has read the server and is waiting for the main thread...
@@ -230,7 +233,7 @@ class QueueStepTest {
     @Test
     fun aQueueTakenUpFromAnotherDeviceIsNotSavedAsThePhonesOwn() = runBlocking {
         val server = Server()
-        val player = PretendPlayer(stamp = DAY + 100)
+        val player = emptyPlayer()
         // A save has been asked for, and is waiting out its three seconds...
         val waits = ArrayList<CompletableDeferred<Unit>>()
         val step = QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, account = "account-waits", may = { on }, scope = scope, clock = { DAY + 700 },
@@ -263,23 +266,156 @@ class QueueStepTest {
     fun theSavedQueueIsTakenUpOfferedOrLeft() = runBlocking {
         val server = Server()
         server.savedBy(pc, "1970-01-02T00:10:00Z", "a", "b", "c", current = "b", position = 30_000)
-        // Not playing, and nothing done here since: taken up, paused, and nothing offered.
+        // Nothing in the queue here: taken up, paused, and nothing offered.
+        val empty = emptyPlayer()
+        val emptyStep = step(server, empty)
+        emptyStep.check()
+        assertEquals(listOf("[a, b, c] at 1, 30000 ms, paused"), empty.replaced)
+        assertNull(emptyStep.elsewhere.value)
+        // Taken up and left alone, it follows: the PC's next save is taken up as the last was.
+        server.savedBy(pc, "1970-01-02T00:10:20Z", "a", "b", "c", current = "c", position = 0)
+        emptyStep.check()
+        assertEquals("[a, b, c] at 2, 0 ms, paused", empty.replaced.last())
+        // A queue of the person's own, not playing: left exactly as it is, and the PC's is
+        // offered. Not for half an hour: for as long as it is the newer. The next morning too.
         val idle = PretendPlayer(stamp = DAY + 100)
         val idleStep = step(server, idle)
         idleStep.check()
-        assertEquals(listOf("[a, b, c] at 1, 30000 ms, paused"), idle.replaced)
-        assertNull(idleStep.elsewhere.value)
-        // Playing something of its own: left alone, and offered.
+        assertTrue(idle.replaced.isEmpty())
+        assertEquals("Tc", idleStep.elsewhere.value?.title)
+        val morning = PretendPlayer(stamp = DAY + 100)
+        val morningStep = step(server.apply { time = DAY + 20 * 3_600 }, morning, now = DAY + 20 * 3_600)
+        morningStep.check()
+        assertTrue(morning.replaced.isEmpty())
+        assertEquals("Tc", morningStep.elsewhere.value?.title)
+        server.time = DAY + 700
+        // Playing something of its own: left alone, and offered what another device was
+        // playing in the last half hour.
         val busy = PretendPlayer(playing = true, stamp = DAY + 100)
         val busyStep = step(server, busy)
         busyStep.check()
         assertTrue(busy.replaced.isEmpty())
-        assertEquals("Tb", busyStep.elsewhere.value?.title)
+        assertEquals("Tc", busyStep.elsewhere.value?.title)
         // No player at all (the playback service isn't up): there is nothing to take the
         // queue up or to offer it to. It is looked at again when there is one.
         val none = step(server, null)
         none.check()
         assertNull(none.elsewhere.value)
+    }
+
+    @Test
+    fun whatALookIsToldIsInTheQueueIsWhatASaveWouldCarryAndForAStationThatOneThing() {
+        val songs = listOf("a", "b", "c").map { org.medianexus.music.core.QueueSong(it, 200) }
+        assertEquals(listOf("a", "b", "c"), idsHere("b", QueueNow(songs, 1, 30.0)))
+        // A radio station is not saved, so a save of it would carry nothing; the look is
+        // told the one thing that is there, and never "nothing" of a queue with something
+        // in it (which the library takes for an empty queue).
+        val station = listOf(org.medianexus.music.core.QueueSong("station-1", 0, radio = true))
+        assertEquals(listOf("station-1"), idsHere("station-1", QueueNow(station, 0, 0.0)))
+        assertEquals(emptyList<String>(), idsHere(null, null))
+    }
+
+    @Test
+    fun theSameSongsWithTheSameOneCurrentSavedByAnotherDeviceAreNothingToOffer() = runBlocking {
+        // This phone's own queue, paused; a PC holds the same songs at the same one and
+        // saves, later. There is nothing there the person does not already have here.
+        val server = Server()
+        val player = PretendPlayer(current = "b", stamp = DAY + 600).apply { songs = listOf("a", "b", "c") }
+        val step = step(server, player)
+        server.savedBy(pc, "1970-01-02T00:11:00Z", "a", "b", "c", current = "b", position = 40_000)
+        step.check()
+        assertNull(step.elsewhere.value)
+        // The same song current in another list is another queue, and is offered. (So the
+        // look must be told the list, not only the song.)
+        server.savedBy(pc, "1970-01-02T00:11:10Z", "a", "b", "d", current = "b", position = 45_000)
+        step.check()
+        assertEquals("Tb", step.elsewhere.value?.title)
+        assertEquals(emptyList<String>(), player.replaced)
+    }
+
+    @Test
+    fun aQueueThePersonHasMadeTheirOwnIsNeverReplacedByItself() = runBlocking {
+        // What happened on a phone beside a PC. The PC is playing, and saves as it goes.
+        val server = Server()
+        var now = DAY + 610
+        val waits = ArrayList<CompletableDeferred<Unit>>()
+        val player = emptyPlayer()
+        val step = QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, account = "account-own", may = { on }, scope = scope, clock = { now },
+            pause = { CompletableDeferred<Unit>().also { waits += it }.await() }, onMain = main).also { it.here = player }
+        suspend fun settled() {
+            waits.toList().forEach { it.complete(Unit) }
+            yield()
+        }
+        // The phone, with nothing in its queue, takes the PC's up, and goes on following it.
+        server.time = now
+        server.savedBy(pc, "1970-01-02T00:10:00Z", "a", "b", "c", current = "b", position = 30_000)
+        step.check()
+        server.savedBy(pc, "1970-01-02T00:10:20Z", "a", "b", "c", current = "b", position = 50_000)
+        step.check()
+        assertEquals(listOf("[a, b, c] at 1, 30000 ms, paused", "[a, b, c] at 1, 50000 ms, paused"), player.replaced)
+
+        // The person adds a song to it, at 00:11:00. It is this phone's own queue from then.
+        now = DAY + 660
+        server.time = now
+        player.songs = listOf("a", "b", "c", "x")
+        player.stamp = now
+        player.taken = null
+        player.revision++
+        step.forget()
+        step.changedHere()
+        settled()
+        // Its save goes (the PC's last save is the older)...
+        assertEquals(listOf(listOf("a", "b", "c", "x")), server.saves.map { it.ids })
+        // ...and twenty seconds later the PC, playing, saves over it without a look.
+        server.savedBy(pc, "1970-01-02T00:11:20Z", "a", "b", "c", current = "b", position = 110_000)
+        // The phone looks, and looks again a minute on. The PC's queue is the newer each
+        // time, and it is not put in the phone's queue's place: the song is still there.
+        for (at in listOf(DAY + 700L, DAY + 760L)) {
+            now = at
+            server.time = at
+            step.check()
+            settled()
+        }
+        assertEquals(listOf("a", "b", "c", "x"), player.songs)
+        assertEquals(2, player.replaced.size)
+        // The phone does not save over the PC again either: the two don't take turns.
+        assertEquals(1, server.saves.size)
+        assertEquals(pc, server.queue.changedBy)
+        // The PC's queue is offered instead (the same song, but not the same songs after
+        // it), and goes on being offered as the PC moves on.
+        assertEquals("Tb", step.elsewhere.value?.title)
+        server.savedBy(pc, "1970-01-02T00:13:00Z", "a", "b", "c", current = "c", position = 0)
+        now = DAY + 790
+        server.time = now
+        step.check()
+        assertEquals("Tc", step.elsewhere.value?.title)
+        assertEquals(listOf("a", "b", "c", "x"), player.songs)
+        // The person does something else to the queue here: the offer is withdrawn at once
+        // (as the playback service does, at the action), and that offer is done with. It is
+        // not made again at the next look, though the phone's clock had not yet moved on...
+        step.actedPast()
+        assertNull(step.elsewhere.value)
+        step.check()
+        assertNull(step.elsewhere.value)
+        // ...but what the PC saves next is another offer.
+        server.savedBy(pc, "1970-01-02T00:13:05Z", "a", "b", "c", current = "c", position = 5_000)
+        step.check()
+        assertEquals("Tc", step.elsewhere.value?.title)
+        // A look that cannot ask the server leaves no offer standing to be tapped.
+        server.onRead = { throw org.medianexus.music.net.ApiError.Network("The connection dropped.") }
+        step.check()
+        assertNull(step.elsewhere.value)
+        // And one that is taken is not offered again while it is still what the server holds.
+        server.onRead = {}
+        step.check()
+        assertEquals("Tc", step.elsewhere.value?.title)
+        step.continueHere()
+        yield()
+        assertEquals("[a, b, c] at 2, 5000 ms, playing", player.replaced.last())
+        player.playing = false
+        player.stamp = DAY + 660
+        step.check()
+        assertNull(step.elsewhere.value)
     }
 
     // ---- "Continue here" is a choice like any other ---------------------------------------------------
@@ -308,8 +444,13 @@ class QueueStepTest {
         // And the offer is gone once taken.
         assertNull(step.elsewhere.value)
         // The server out of reach is no reason to refuse it: the songs may be on the phone.
-        // (The person has gone back to something of their own, and it is offered again.)
+        // (The person has gone back to something of their own. The offer that was taken is
+        // not made again; what the PC saves next is another.)
         player.current = "mine"
+        player.songs = listOf("mine", "next")
+        step.check()
+        assertNull(step.elsewhere.value)
+        server.savedBy(pc, "1970-01-02T00:10:20Z", "a", "b", "c", current = "b", position = 50_000)
         step.check()
         reached = false
         step.continueHere()
