@@ -219,3 +219,60 @@ enum class SaveVerdict { SAVE, NOT_NEWEST, NOT_NOW }
  *  here", null to withdraw any offer. */
 @Serializable
 data class Looked(val offer: Int? = null, val then: String = "nothing", val place: Place? = null, val clock: ClockRead = ClockRead())
+
+// ---- Requests: asking Lidarr for music that isn't in the library ----
+
+/**
+ * How something the library did over the network ended ([Core]'s `suspend` functions).
+ * **Stopped is an outcome of its own**: it is never a failure with words to show and never
+ * "nothing found". (A caller that is cancelled is not handed an outcome at all: it is
+ * cancelled, as any coroutine is. This one is for a stop the caller didn't make itself.)
+ */
+sealed interface Outcome<out T> {
+    data class Got<T>(val value: T) : Outcome<T>
+
+    /** It failed, and `why` is the library's own sentence for it, as the Windows app shows. */
+    data class Failed(val why: String) : Outcome<Nothing>
+
+    data object Stopped : Outcome<Nothing>
+}
+
+/**
+ * What a call to Lidarr is made with: where it is, its key, and the sign-in in front of it
+ * if there is one (the number [Core.gateOpen] gave). Never printed: its key is a secret.
+ */
+@Serializable
+class LidarrAt(val address: String, val key: String, val session: Long? = null) {
+    override fun toString(): String = "LidarrAt"
+}
+
+/** Where the sign-in service in front of Lidarr is, and the name it knows that sign-in by
+ *  (the core's `gate::Found`). Neither is a secret. */
+@Serializable
+data class SignInDoor(val service: String, val client: String)
+
+/** What a finished sign-in leaves behind (`gate::SignedIn`): the token to keep, and who
+ *  signed in, for showing (may be empty). Never printed: the token is a secret. */
+@Serializable
+class SignedIn(val token: String, val name: String) {
+    override fun toString(): String = "SignedIn"
+}
+
+/** An album that could be asked for, as Lidarr and MusicBrainz both describe one (`Offer`):
+ *  `album` and `artistId` are their names for it and for its artist; `kind` is "EP" or
+ *  "Single" for one of those and empty for an album. */
+@Serializable
+data class Offer(
+    val album: String, val artistId: String, val title: String, val artist: String, val year: String = "", val cover: String = "",
+    val requested: Boolean = false, val kind: String = "", val soundtrack: Boolean = false,
+)
+
+/** An album on Lidarr's list that hasn't fully arrived (`lidarr::Pending`): `id` is
+ *  Lidarr's number for it, `progress` how much has been fetched in hundredths, null if it
+ *  isn't being fetched yet. */
+@Serializable
+data class Pending(val id: Long, val title: String, val artist: String, val progress: Int? = null)
+
+/** A song on an album, by name only (`musicbrainz::TrackName`). */
+@Serializable
+data class TrackName(val title: String, val seconds: Int, val disc: Int, val number: Int)

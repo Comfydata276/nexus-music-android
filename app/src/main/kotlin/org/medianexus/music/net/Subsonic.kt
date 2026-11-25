@@ -619,9 +619,27 @@ internal fun neverLeft(error: IOException): Boolean {
 internal fun answeredOverTls(error: IOException): Boolean = read(error).second
 
 /** What a failure says, in words, and whether it was the secure connection with a server that
- *  answered (the certificate and TLS cases below, unless something earlier came first). */
-private fun read(error: IOException): Pair<String, Boolean> {
-    // Every cause, and every attempt given up on with its own causes, a few dozen at most.
+ *  answered (the certificate and TLS cases, unless something earlier came first). */
+private fun read(error: IOException): Pair<String, Boolean> = when (netTrouble(error)) {
+    NetTrouble.REDIRECT -> redirectWords(error) to false
+    // The system's own words name the host and quote the certificate, so they aren't passed on.
+    NetTrouble.CERTIFICATE_FOR_ANOTHER -> "The server's certificate is for a different address. Check the address." to true
+    NetTrouble.CERTIFICATE_NOT_TRUSTED -> "The server's certificate isn't one this phone trusts." to true
+    NetTrouble.NAME_NOT_FOUND -> "The server name couldn't be found. Check the address." to false
+    NetTrouble.REFUSED -> "The connection was refused. Check the port and that Navidrome is running." to false
+    NetTrouble.TIMED_OUT -> "The connection timed out. Check the address and your network." to false
+    NetTrouble.SECURE_CONNECTION -> "The secure connection failed." to true
+    NetTrouble.NOT_ALLOWED -> "The phone didn't allow the connection." to false
+    NetTrouble.NO_WAY -> "There's no way to the server from this network. Check your network." to false
+    // Windows' words for it.
+    NetTrouble.DROPPED -> "The connection dropped." to false
+    NetTrouble.NO_CONNECTION -> "Couldn't connect. Check the address and your network." to false
+    NetTrouble.OTHER -> "The connection failed." to false
+}
+
+/** Every cause of a failure, and every attempt given up on with its own causes, a few dozen
+ *  at most. */
+private fun causes(error: IOException): List<Throwable> {
     val all = mutableListOf<Throwable>()
     val waiting = ArrayDeque<Throwable>().apply { add(error) }
     while (waiting.isNotEmpty() && all.size < 32) {
@@ -631,42 +649,60 @@ private fun read(error: IOException): Pair<String, Boolean> {
         next.cause?.let { waiting += it }
         waiting += next.suppressed
     }
+    return all
+}
+
+private fun redirectWords(error: IOException): String = causes(error).first { it is InsecureRedirect }.message!!
+
+/** The ways a request fails on its way, as far as the phone tells them apart: what the
+ *  music server's client and the client for the library's requests (`core/CoreHttp`) each
+ *  put into their own words. */
+internal enum class NetTrouble {
+    /** A redirect that wasn't followed (see `Http.NoDowngrade`). */
+    REDIRECT,
+    CERTIFICATE_FOR_ANOTHER,
+    CERTIFICATE_NOT_TRUSTED,
+    NAME_NOT_FOUND,
+    REFUSED,
+    TIMED_OUT,
+    /** TLS that failed for some other reason, once it had answered. */
+    SECURE_CONNECTION,
+    /** The phone itself wouldn't let the app connect (a permission, a firewall). */
+    NOT_ALLOWED,
+    /** No way there from the network the phone is on. */
+    NO_WAY,
+    /** Cut off part-way ("unexpected end of stream", a reset). */
+    DROPPED,
+    /** Couldn't connect, for no reason the system gave. */
+    NO_CONNECTION,
+    OTHER,
+}
+
+/** Which of them a failure was. */
+internal fun netTrouble(error: IOException): NetTrouble {
+    val all = causes(error)
     val lower = all.joinToString(" ") { it.message.orEmpty() }.lowercase()
     fun any(kind: Class<*>) = all.any { kind.isInstance(it) }
     return when {
-        any(InsecureRedirect::class.java) -> all.first { it is InsecureRedirect }.message!! to false
+        any(InsecureRedirect::class.java) -> NetTrouble.REDIRECT
         // First among the rest: a server whose certificate was turned down was reached, even
-        // if another of its addresses then refused (OkHttp tries them all). The system's own
-        // words name the host and quote the certificate, so they aren't passed on.
-        any(SSLPeerUnverifiedException::class.java) ->
-            "The server's certificate is for a different address. Check the address." to true
+        // if another of its addresses then refused (OkHttp tries them all).
+        any(SSLPeerUnverifiedException::class.java) -> NetTrouble.CERTIFICATE_FOR_ANOTHER
         // Android says "trust anchor … not found"; the desktop JVM the tests run on says
         // "unable to find valid certification path".
         any(CertificateException::class.java) || any(CertPathValidatorException::class.java) ||
             any(CertPathBuilderException::class.java) || "trust anchor" in lower || "certification path" in lower ->
-            "The server's certificate isn't one this phone trusts." to true
-        any(UnknownHostException::class.java) || "dns" in lower || "resolve" in lower || "lookup" in lower ->
-            "The server name couldn't be found. Check the address." to false
-        "refused" in lower ->
-            "The connection was refused. Check the port and that Navidrome is running." to false
-        any(SocketTimeoutException::class.java) || "timeout" in lower || "timed out" in lower ->
-            "The connection timed out. Check the address and your network." to false
-        any(SSLException::class.java) || "certificate" in lower || "tls" in lower ->
-            "The secure connection failed." to true
-        // The phone itself wouldn't let the app connect (a permission, a firewall).
-        "permission denied" in lower || "eperm" in lower || "eacces" in lower || "operation not permitted" in lower ->
-            "The phone didn't allow the connection." to false
-        // No way there from the network the phone is on.
-        "unreachable" in lower || "no route to host" in lower || "enetunreach" in lower || "ehostunreach" in lower ->
-            "There's no way to the server from this network. Check your network." to false
-        // Cut off part-way ("unexpected end of stream", a reset): Windows' words for it.
+            NetTrouble.CERTIFICATE_NOT_TRUSTED
+        any(UnknownHostException::class.java) || "dns" in lower || "resolve" in lower || "lookup" in lower -> NetTrouble.NAME_NOT_FOUND
+        "refused" in lower -> NetTrouble.REFUSED
+        any(SocketTimeoutException::class.java) || "timeout" in lower || "timed out" in lower -> NetTrouble.TIMED_OUT
+        any(SSLException::class.java) || "certificate" in lower || "tls" in lower -> NetTrouble.SECURE_CONNECTION
+        "permission denied" in lower || "eperm" in lower || "eacces" in lower || "operation not permitted" in lower -> NetTrouble.NOT_ALLOWED
+        "unreachable" in lower || "no route to host" in lower || "enetunreach" in lower || "ehostunreach" in lower -> NetTrouble.NO_WAY
         "end of stream" in lower || "reset" in lower || "broken pipe" in lower || "eof" in lower || "closed" in lower ||
-            any(java.net.ProtocolException::class.java) ->
-            "The connection dropped." to false
-        // Couldn't connect, for no reason the system gave.
-        any(java.net.ConnectException::class.java) || "failed to connect" in lower ->
-            "Couldn't connect. Check the address and your network." to false
-        else -> "The connection failed." to false
+            any(java.net.ProtocolException::class.java) -> NetTrouble.DROPPED
+        any(java.net.ConnectException::class.java) || "failed to connect" in lower -> NetTrouble.NO_CONNECTION
+        else -> NetTrouble.OTHER
     }
 }
 

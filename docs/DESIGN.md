@@ -1720,8 +1720,10 @@ compiled into a library (`libnexus_core_android.so`). It is not a port, and ther
 Kotlin copy of what it decides.
 
 What the core is: no window, no threads of its own, no network code, no files and no clock.
-It is handed what the app knows and says what follows. Every request still goes through
-the phone's one OkHttp client; every file is still the phone's to write.
+It is handed what the app knows and says what follows. Every request is still made by the
+phone (the music server's through the phone's one client for it; what the core itself asks
+of Lidarr and the like through a second, see "The library's requests"); every file is
+still the phone's to write.
 
 ### How it gets into the APK
 
@@ -1799,6 +1801,137 @@ values. Nothing else declares a native function or loads a library.
   main thread is refused before anything is loaded.
 - R8 keeps the native functions' names and the exception's constructor
   (`app/proguard-rules.pro`): the library finds both by name.
+
+### The library's requests
+
+Requests (asking Lidarr for music that isn't in the library) are the first part of the core
+that wants the network: Lidarr, the sign-in that can sit in front of it (Authentik),
+MusicBrainz and ListenBrainz. The core still opens no connection. It asks through its own
+`Http` (`core/src/http.rs`: `send` and `pause`), and each app answers. On Windows that is
+one of the app's agents (`src/corehttp.rs` there). On the phone it is **one implementation
+on the Rust side (`native/src/wire.rs`), which calls up into one Kotlin object
+(`core/CoreHttp.kt`), which makes the request with OkHttp.** There is one of each, for
+every service.
+
+**Which client.** None of these services is the music server, so they have a client of
+their own, and nothing of the music server's is near it: not its sign-in, its cookies (this
+client keeps none), its interceptors (this client has none) or its connections.
+
+| | Windows (`src/subsonic.rs`) | Phone |
+|---|---|---|
+| To connect | 8 s | 8 s |
+| For an answer to begin | 30 s | 30 s |
+| Between pieces of a body | no limit | 30 s |
+| The whole call | no limit, or the library's own for that call (`patience`: 5 s for ListenBrainz) | the same |
+| Redirects, Lidarr and the sign-in | never followed | never followed |
+| Redirects, MusicBrainz and ListenBrainz | followed, ten at most | followed, twenty at most (OkHttp's own) |
+| Idle connections kept | Lidarr 300 s, MusicBrainz 12 s, ListenBrainz 50 s | the same, a pool for each |
+| Name (`User-Agent`) | `NexusMusic/<version>` | `NexusMusic/<version> (Android)`, as the phone's music client |
+| Sent where the library names none | `Accept: */*`, `Accept-Encoding: gzip` | the same |
+
+A redirect is never followed for Lidarr because one is how a sign-in in front of it shows
+itself, and because the request carries Lidarr's key. MusicBrainz asks every application
+to name itself and give a way to reach its author; neither app gives the second, and if
+that is added it should be added to both at once.
+
+A request that changes something (`POST`, `PUT`) is **sent once**: the client never sends
+it again on its own, as it may a `GET` that failed on a connection gone stale. It could not
+know whether the first had been acted on.
+
+**Bodies.** An answer comes back as its status and headers; its body waits on the Kotlin
+side and is read **only if the library asks**, as the Windows app reads one: whole, as
+text (bytes that aren't text become the mark for that, not a failure), or a piece at a time
+as bytes, which is how the library reads JSON, so that an answer that doesn't begin as
+JSON is given up at its first letter. Either way no more than 10 MB is read
+(`BODY_LIMIT`); past that the read fails. A body nobody asks for is let go when the
+library drops the answer, and the connection with it. A header whose value isn't text
+(anything but visible ASCII and tabs) is handed over as there and unreadable, never
+dropped: the first of a name is the one that counts, readable or not.
+
+**Stopping.** On Windows nothing the library does is ever stopped. On the phone it can be:
+the screen is left, the account signs out. Everything the library does that makes requests
+is an *operation* with a number, started by a `suspend` function of `Core`; cancelling the
+caller stops the operation, and **the caller is let go at once**: nothing is handed to it
+afterwards. What a stop does to the operation behind it depends on which of two kinds it is:
+
+- One that only **looks** (a search, a page, checking the address): its waits end, the
+  request in flight is cut off, and no more are sent.
+- One that **changes** something (asking for an album, adding an artist, finishing a
+  sign-in): its waits end. The request in flight is *not* cut off at once: a `PUT` cut off
+  half-way may or may not have been acted on, and the library would then not know that it
+  had something to put back. It is given ten seconds. Requests the library goes on to make
+  are let through, each with that same short limit, for thirty seconds from the stop; then
+  none is. That is what lets the library **put back what it changed**: asking for a single
+  turns an artist's "new releases" off in Lidarr while Lidarr reads their singles in, and
+  the library puts it back even when its wait was cut short (the Windows repository's
+  `6dffaf9`). Putting back is two requests, a read and a write, so both kinds must pass.
+- A request that is **nobody's** is never stopped and never cut off. These are the
+  sign-in's own (renewing the pass for Lidarr), which replace the token that is kept: one
+  cut off after the service had replaced it would leave the phone holding a token that no
+  longer works, and the person signed out. It has a minute for the whole call, and no
+  more.
+
+Nothing survives the app being killed: a single asked for in the seconds before leaves
+"new releases" off for that artist until it is asked for again, as on Windows.
+
+**Which operation a request belongs to.** `Lidarr` costs nothing to make, so each operation
+has its own, asked through a way out that carries the operation's number. `MusicBrainz` is
+one for the whole app (it keeps the gap MusicBrainz asks for between requests, and two
+would each keep their own), so its requests are whichever operation's the calling thread
+is carrying out. That is right while the library starts no threads of its own inside an
+operation; the search that is to move into the core does, and comes with a way to ask
+MusicBrainz through an operation's own way out.
+
+**Threads.** The library's calls block, some for a minute and a half (asking for an album
+waits while Lidarr learns an artist). They run on threads kept for them and nothing else,
+as the Windows app's do: **four at once for looking, two for changing**, made when first
+wanted and let go after thirty seconds idle. None is ever the main thread: the only way
+to them is `Core`'s `suspend` functions, which hop there themselves. A call up from the
+library is made on whichever thread the library is on; a thread the library started
+itself is joined to the Java machine for the length of the call and let go again.
+**Whatever the Kotlin side throws** is caught, cleared and turned into the library's own
+"couldn't be reached", so no exception is ever left waiting in the Java machine. A panic
+in the library is still the one `CoreException`, and an answer it was holding is let go.
+
+**Secrets.** Lidarr's key, a pass, the sign-in's code, its check and its token cross as
+bytes inside the call's argument or answer, like everything else. Neither side ever logs
+a request, an answer or part of one: OkHttp's logging is not a dependency of the app in
+any build, this client has no interceptors, and what goes wrong is said in words written
+for it (`CoreHttp.words`), never in an exception's own, which name the host and can quote
+a header. A call whose argument holds a secret refuses one it can't read without the
+reader's own words, on both sides (`call_private`, `acrossPrivately`). The Kotlin types
+that hold one (`LidarrAt`, `SignedIn`) say only their name when printed.
+
+**What going wrong is called.** Where a request never got an answer the library says
+"Couldn't reach Lidarr." (or the service's name) and the app ends the sentence. Windows
+ends it with its HTTP library's own words; the phone with one of a dozen of its own that
+never name an address ("The connection was refused.", "It didn't answer in time.", "Its
+certificate isn't one this phone trusts."), and with why nothing may be sent at all when
+that is the case ("Offline mode is on.").
+
+**Not exposed:** `bulk`, which asks for many albums at once. It exists for the Spotify
+import, which the phone does not have.
+
+**What an answer that means harm can do**, each with its test in `CoreHttpTest`:
+
+- *A huge body.* Ten megabytes are read and then the read fails; nothing is kept. One
+  that never ends is the same. Squeezed bodies count by what they open out to.
+- *A slow one.* Each piece has thirty seconds and the library's own limit covers the
+  whole call where it sets one. Where it sets none, a body that comes a letter at a time
+  can hold one of the four looking threads until the screen that asked is left, which
+  cuts it off; the two changing threads are freed ten seconds after a stop; a renewal of
+  the sign-in has a minute in all. A body the library judges by its status alone is never
+  waited for.
+- *A redirect to the music server's address.* For Lidarr and the sign-in it is not
+  followed: the request with the key in it goes no further than where the person sent it.
+  The library does look once at where a redirect from Lidarr's address points, to find
+  the sign-in: that is one `GET` carrying nothing but the app's name, to an address chosen
+  by whoever answers there, and what comes back is read only for where *it* points. For
+  MusicBrainz and ListenBrainz a redirect is followed, carrying the app's name and
+  nothing else; there are no cookies to carry.
+- *A header that is not text.* Handed to the library as unreadable, which is what its
+  rules expect (a "come back in" that can't be read means a second, and is not passed
+  over for a later one that can).
 
 ### How it is tested
 

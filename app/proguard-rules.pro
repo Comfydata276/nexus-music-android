@@ -9,3 +9,14 @@
 # they have in Kotlin, and makes the exception it throws by name.
 -keepclasseswithmembers,includedescriptorclasses class org.medianexus.music.core.Core { native <methods>; }
 -keep class org.medianexus.music.core.CoreException { <init>(java.lang.String); }
+
+# The library's requests: the shared library calls up into this object by these names
+# (native/src/wire.rs), which nothing in Kotlin calls.
+-keep class org.medianexus.music.core.CoreHttp {
+    byte[] send(byte[]);
+    byte[] text(long);
+    byte[] read(long, int);
+    void close(long);
+    boolean pause(long, long);
+    void kept(long, byte[]);
+}

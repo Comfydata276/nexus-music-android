@@ -7,11 +7,15 @@
 //! the app that knows this library exists.
 //!
 //! Nothing here opens a connection, keeps a file, starts a thread or reads a clock: the
-//! core does none of those, and neither does this layer.
+//! core does none of those, and neither does this layer. What the core wants of the network
+//! (requests: `requests.rs`) it asks the app to fetch, through `wire.rs`.
 //!
 //! **What going wrong looks like.** An argument that isn't what the function takes, and a
 //! panic anywhere below, both reach Kotlin as one exception (`CoreException`) carrying the
 //! reason in words. A panic's place (file and line) goes to the phone's log.
+
+mod requests;
+mod wire;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -67,11 +71,25 @@ const EXCEPTION: &str = "org/medianexus/music/core/CoreException";
 
 /// One call from Kotlin: the argument read from its bytes, `act` run on it, the answer
 /// written back as bytes. Whatever goes wrong is thrown to Kotlin, and nothing is returned.
-fn call<In: DeserializeOwned, Out: Serialize>(mut env: JNIEnv, input: JByteArray, act: impl FnOnce(In) -> Result<Out, String>) -> jbyteArray {
+fn call<In: DeserializeOwned, Out: Serialize>(env: JNIEnv, input: JByteArray, act: impl FnOnce(In) -> Result<Out, String>) -> jbyteArray {
+    call_as(env, input, false, act)
+}
+
+/// The same, for a call whose argument holds something secret (a key, a token, a sign-in's
+/// code): an argument that can't be read is refused without the reader's own words, which
+/// can quote what it was reading.
+fn call_private<In: DeserializeOwned, Out: Serialize>(env: JNIEnv, input: JByteArray, act: impl FnOnce(In) -> Result<Out, String>) -> jbyteArray {
+    call_as(env, input, true, act)
+}
+
+fn call_as<In: DeserializeOwned, Out: Serialize>(mut env: JNIEnv, input: JByteArray, private: bool, act: impl FnOnce(In) -> Result<Out, String>) -> jbyteArray {
     log_panics();
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<jbyteArray, String> {
         let bytes = env.convert_byte_array(&input).map_err(|e| format!("The shared library couldn't be handed its argument: {e}"))?;
-        let given: In = serde_json::from_slice(&bytes).map_err(|e| format!("The shared library was handed something it doesn't take: {e}"))?;
+        let given: In = serde_json::from_slice(&bytes).map_err(|e| match private {
+            true => "The shared library was handed something it doesn't take.".to_string(),
+            false => format!("The shared library was handed something it doesn't take: {e}"),
+        })?;
         let answer = serde_json::to_vec(&act(given)?).map_err(|e| format!("The shared library's answer couldn't be written out: {e}"))?;
         Ok(env.byte_array_from_slice(&answer).map_err(|e| format!("The shared library's answer couldn't be handed back: {e}"))?.into_raw())
     }));

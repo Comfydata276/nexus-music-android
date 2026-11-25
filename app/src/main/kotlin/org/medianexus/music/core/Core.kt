@@ -29,6 +29,11 @@ import kotlinx.serialization.json.JsonNull
  * all it knows. A call is a few thousandths of a second at most, and most are made off the
  * main thread anyway; the one a screen makes as it draws is [notesDates].
  *
+ * The exception is requests, which want the network. The library still opens no connection:
+ * it asks the phone to make each request, through [CoreHttp], and waits for the answer. The
+ * functions that do are the `suspend` ones, under "Requests" below; they run on threads kept
+ * for them and can take as long as the network does.
+ *
  * One function here for each operation of the core the phone uses, under the name the core
  * has for it where it has one. What each decides is written where it is decided, in the
  * Windows repository's `core/src/` (`step.rs`, `notes.rs`, `handover.rs`); here is only what
@@ -329,6 +334,184 @@ object Core {
     /** `device_name`: the name this device saves the queue under. */
     fun deviceName(id: String): String = across(id, String.serializer(), String.serializer(), ::deviceName)
 
+    // ---- Requests: what waits on the network (the core's `gate.rs`, `lidarr.rs`, `musicbrainz.rs`) ----
+    //
+    // Each of these asks the library for something it gets from Lidarr, the sign-in in front
+    // of it or MusicBrainz, through the phone's own client for them ([CoreHttp], which is
+    // where to read how one is stopped). **They suspend**: the library's call runs on a
+    // thread kept for the purpose, never the caller's and never the main one, and cancelling
+    // the caller stops it.
+
+    /** Tells the library, once, which object makes its requests. */
+    private val wired: Unit by lazy {
+        load()
+        wire(CoreHttp)
+    }
+
+    @Serializable
+    private class Out<T>(val kind: String, val value: T? = null, val why: String = "")
+
+    /** One call that waits on the network: as [across], and its answer read as an [Outcome].
+     *  What it is handed and what it answers can hold a secret, so neither is ever quoted
+     *  in an exception's words. */
+    private fun <In, T> over(given: In, takes: KSerializer<In>, gives: KSerializer<T>, native: (ByteArray) -> ByteArray?): Outcome<T> {
+        wired
+        val out = acrossPrivately(given, takes, Out.serializer(gives), native)
+        return when (out.kind) {
+            "got" -> Outcome.Got(out.value ?: throw CoreException("The shared library's answer couldn't be read."))
+            "failed" -> Outcome.Failed(out.why)
+            "stopped" -> Outcome.Stopped
+            else -> throw CoreException("The shared library's answer couldn't be read.")
+        }
+    }
+
+    /** [across], for what can hold a secret: an answer that can't be read is not quoted. */
+    private fun <In, Out> acrossPrivately(given: In, takes: KSerializer<In>, gives: KSerializer<Out>, native: (ByteArray) -> ByteArray?): Out {
+        val answer = try {
+            load()
+            native(json.encodeToString(takes, given).encodeToByteArray())
+        } catch (e: UnsatisfiedLinkError) {
+            throw CoreException("The shared library isn't in this build of the app: ${e.message}")
+        } ?: throw CoreException("The shared library gave no answer.")
+        return try {
+            json.decodeFromString(gives, answer.decodeToString())
+        } catch (_: IllegalArgumentException) {
+            throw CoreException("The shared library's answer couldn't be read.")
+        }
+    }
+
+    @Serializable
+    private class GateFindIn(val operation: Long, val address: String)
+
+    /**
+     * `gate::find`: what answers at Lidarr's address. Null if it is Lidarr itself; otherwise
+     * the sign-in in front of it.
+     */
+    suspend fun gateFind(address: String): Outcome<SignInDoor?> = CoreHttp.looking { operation ->
+        wired
+        val out = acrossPrivately(GateFindIn(operation, address), GateFindIn.serializer(), Out.serializer(SignInDoor.serializer().nullable), ::gateFind)
+        when (out.kind) {
+            "got" -> Outcome.Got(out.value)
+            "failed" -> Outcome.Failed(out.why)
+            "stopped" -> Outcome.Stopped
+            else -> throw CoreException("The shared library's answer couldn't be read.")
+        }
+    }
+
+    @Serializable
+    private class GateLinkIn(val door: SignInDoor, val back: String, val state: String, val secret: String)
+
+    /** `gate::sign_in_link`: the page the browser is sent to. `back` is where the service
+     *  sends it back to with the code, `state` what it brings back with it, and `secret`
+     *  what only this app knows. */
+    fun gateLink(door: SignInDoor, back: String, state: String, secret: String): String =
+        acrossPrivately(GateLinkIn(door, back, state, secret), GateLinkIn.serializer(), String.serializer(), ::gateLink)
+
+    @Serializable
+    private class GateParamIn(val query: String, val name: String)
+
+    /** `gate::param`: one named value from the part of an address after the "?". */
+    fun gateParam(query: String, name: String): String? =
+        acrossPrivately(GateParamIn(query, name), GateParamIn.serializer(), String.serializer().nullable, ::gateParam)
+
+    @Serializable
+    private class GateFinishIn(val operation: Long, val door: SignInDoor, val code: String, val back: String, val secret: String)
+
+    /**
+     * `gate::finish`: collects the token once the browser has come back with `code`.
+     * **The caller has checked the browser's `state` itself**: a code that came with any
+     * other is someone else's and is never handed to this.
+     */
+    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String): Outcome<SignedIn> = CoreHttp.changing { operation ->
+        over(GateFinishIn(operation, door, code, back, secret), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
+    }
+
+    @Serializable
+    private class GateOpenIn(val door: SignInDoor, val token: String)
+
+    /**
+     * `gate::Session::new`: a sign-in that's been done, kept open in the library under the
+     * number handed back ([LidarrAt.session]). `keep` is called with the token each time
+     * the service replaces it, to put it away, and with "" when the service has stopped
+     * honouring it; it is called on one of the library's threads.
+     */
+    suspend fun gateOpen(door: SignInDoor, token: String, keep: (String) -> Unit): Long = CoreHttp.aside {
+        wired
+        acrossPrivately(GateOpenIn(door, token), GateOpenIn.serializer(), Long.serializer(), ::gateOpen).also { CoreHttp.keeping(it, keep) }
+    }
+
+    /** `gate::Session::close`: ends the sign-in here and hands back its token, for handing
+     *  back to the service ([gateGiveUp]); "" if it had none left. Waits for a renewal that
+     *  is under way, so that the token handed back is the newest. */
+    suspend fun gateClose(session: Long): String = CoreHttp.aside {
+        wired
+        acrossPrivately(session, Long.serializer(), String.serializer(), ::gateClose).also { CoreHttp.forget(session) }
+    }
+
+    @Serializable
+    private class GateGiveUpIn(val operation: Long, val service: String, val token: String)
+
+    /** `gate::give_up_token`: tells the service a token is no longer wanted. Best effort. */
+    suspend fun gateGiveUp(door: SignInDoor, token: String) {
+        CoreHttp.changing { operation ->
+            wired
+            acrossPrivately(GateGiveUpIn(operation, door.service, token), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
+        }
+    }
+
+    @Serializable
+    private class Of(val operation: Long, val lidarr: LidarrAt)
+
+    /** `Lidarr::version`: checks the address and the key (and the sign-in, if there is one)
+     *  by asking Lidarr which version it is. */
+    suspend fun lidarrVersion(lidarr: LidarrAt): Outcome<String> = CoreHttp.looking { operation ->
+        over(Of(operation, lidarr), Of.serializer(), String.serializer(), ::lidarrVersion)
+    }
+
+    @Serializable
+    private class RequestIn(val operation: Long, val lidarr: LidarrAt, val wanted: Offer)
+
+    /**
+     * `Lidarr::request`: puts an album (or an EP, a single, a soundtrack) on Lidarr's list
+     * and has Lidarr start looking for it. Can take a minute and a half. Stopped, it still
+     * puts back what it changed on Lidarr to do it.
+     */
+    suspend fun lidarrRequest(lidarr: LidarrAt, wanted: Offer): Outcome<Boolean> = CoreHttp.changing { operation ->
+        over(RequestIn(operation, lidarr, wanted), RequestIn.serializer(), Boolean.serializer(), ::lidarrRequest)
+    }
+
+    @Serializable
+    private class AddArtistIn(val operation: Long, val lidarr: LidarrAt, val artist: String, val name: String)
+
+    /** `Lidarr::add_artist`: has Lidarr get everything by an artist (`artist` is Lidarr's
+     *  name for them). Answers with how many of their albums were newly asked for; none for
+     *  an artist new to Lidarr, which learns their albums in its own time. */
+    suspend fun lidarrAddArtist(lidarr: LidarrAt, artist: String, name: String): Outcome<Int> = CoreHttp.changing { operation ->
+        over(AddArtistIn(operation, lidarr, artist, name), AddArtistIn.serializer(), Int.serializer(), ::lidarrAddArtist)
+    }
+
+    /** `Lidarr::pending`: what is on its way, those being fetched first. */
+    suspend fun lidarrPending(lidarr: LidarrAt): Outcome<List<Pending>> = CoreHttp.looking { operation ->
+        over(Of(operation, lidarr), Of.serializer(), ListSerializer(Pending.serializer()), ::lidarrPending)
+    }
+
+    @Serializable
+    private class CancelIn(val operation: Long, val lidarr: LidarrAt, val id: Long)
+
+    /** `Lidarr::cancel`: takes an album off Lidarr's list ([Pending.id]). */
+    suspend fun lidarrCancel(lidarr: LidarrAt, id: Long): Outcome<Boolean> = CoreHttp.changing { operation ->
+        over(CancelIn(operation, lidarr, id), CancelIn.serializer(), Boolean.serializer(), ::lidarrCancel)
+    }
+
+    @Serializable
+    private class TracksIn(val operation: Long, val album: String)
+
+    /** `MusicBrainz::album_tracks`: what is on an album (`album` is MusicBrainz's name for
+     *  it, which is Lidarr's too). */
+    suspend fun albumTracks(album: String): Outcome<List<TrackName>> = CoreHttp.looking { operation ->
+        over(TracksIn(operation, album), TracksIn.serializer(), ListSerializer(TrackName.serializer()), ::albumTracks)
+    }
+
     // ---- For the tests of the boundary itself ----
 
     /** The text handed across and back, read as text on the other side and written again. */
@@ -350,6 +533,47 @@ object Core {
         return find(bytes)
     }
 
+    /** One request made through the library's own way out, and what was made of its answer:
+     *  for the tests of the boundary ([CoreHttp]). `then` is what is done with the answer:
+     *  "text", "json", "drop" or "panic". */
+    @Serializable
+    internal class Probe(
+        val line: String = "lidarr", val nobodys: Boolean = false, val method: String = "GET", val url: String,
+        val headers: List<List<String>> = emptyList(), val body: String? = null, val patience: Long? = null, val pause: Long? = null, val then: String = "text",
+    )
+
+    @Serializable
+    internal class Probed(val waited: Boolean? = null, val status: Int = 0, val headers: List<List<String?>> = emptyList(), val body: String? = null, val unread: String? = null)
+
+    @Serializable
+    private class ProbeIn(
+        val operation: Long, val line: String, val nobodys: Boolean, val method: String, val url: String,
+        val headers: List<List<String>>, val body: String?, val patience: Long?, val pause: Long?, val then: String,
+    )
+
+    internal suspend fun wireProbe(probe: Probe, changing: Boolean = false): Outcome<Probed> {
+        val act = { operation: Long ->
+            val given = ProbeIn(operation, probe.line, probe.nobodys, probe.method, probe.url, probe.headers, probe.body, probe.patience, probe.pause, probe.then)
+            over(given, ProbeIn.serializer(), Probed.serializer(), ::wireProbe)
+        }
+        return if (changing) CoreHttp.changing(act) else CoreHttp.looking(act)
+    }
+
+    @JvmStatic private external fun wire(wire: Any)
+    @JvmStatic private external fun gateFind(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateLink(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateParam(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateFinish(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateOpen(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateClose(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateGiveUp(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrVersion(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrRequest(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrAddArtist(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrPending(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrCancel(input: ByteArray): ByteArray?
+    @JvmStatic private external fun albumTracks(input: ByteArray): ByteArray?
+    @JvmStatic private external fun wireProbe(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?
     @JvmStatic private external fun settle(input: ByteArray): ByteArray?
     @JvmStatic private external fun take(input: ByteArray): ByteArray?
