@@ -37,6 +37,8 @@ val buildCore = tasks.register<Exec>("buildCore") {
     description = "Builds the shared core (native/) for the phone, the emulator and this machine."
     val crate = rootProject.layout.projectDirectory.dir("native")
     inputs.files(crate.file("Cargo.toml"), crate.file("Cargo.lock"), crate.file("build"))
+    // (Which Rust it is built with is the image's: a change there builds it again.)
+    inputs.file(rootProject.layout.projectDirectory.file("docker/build.Dockerfile"))
     inputs.dir(crate.dir("src"))
     // (Working on the core and the phone at once: the core as it lies, see native/build.)
     inputs.property("local", coreLocal)
@@ -132,10 +134,22 @@ androidComponents {
     }
 }
 
+// A build against a core that isn't the pinned commit is for working on the two at once: it
+// is never the one that ships. Refused before anything of a release is put together,
+// whichever task was asked for (an APK, a bundle, or only the packaging of one).
+val refuseLocalCoreInARelease = tasks.register("refuseLocalCoreInARelease") {
+    val local = coreLocal
+    doLast {
+        if (local.get().isNotEmpty()) throw GradleException("NEXUS_CORE_LOCAL is set: a release build is made from the core at its pinned commit, never from a copy as it lies. Unset it.")
+    }
+}
+buildCore.configure { mustRunAfter(refuseLocalCoreInARelease) }
+
 // The shared core, into every build (see buildCore, above).
 android.sourceSets.getByName("main").jniLibs.directories.add(coreOut.get().dir("jniLibs").asFile.path)
 tasks.configureEach {
     if (name.startsWith("merge") && name.endsWith("JniLibFolders")) dependsOn(buildCore)
+    if (Regex("(merge|strip|package|bundle|sign|assemble)[A-Za-z]*Release[A-Za-z]*").matches(name)) dependsOn(refuseLocalCoreInARelease)
 }
 tasks.withType<Test>().configureEach {
     dependsOn(buildCore)
