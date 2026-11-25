@@ -187,6 +187,35 @@ class InStepContractTest {
         assertTrue(phone.notes.any { "couldn't be kept" in it })
     }
 
+    @Test
+    fun anExchangeWhoseWriteWasTakenAndCouldNotBeNotedHereHasNotFinished() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        phone.pin("mine")
+        val kept = phone.settingsFile.readText()
+        // The server takes the write; and from that moment the settings can't be written (a
+        // folder stands where the file is), so that the write was taken can't be noted.
+        server.gate = { what ->
+            if (what == "write") {
+                phone.settingsFile.delete()
+                File(phone.settingsFile, "in the way").mkdirs()
+            }
+        }
+        assertEquals("not done: what it relied on is not on the disk", InStep.Outcome.FAILED, phone.step(server).exchange())
+        assertEquals(1, server.writes.size)
+        assertTrue(phone.notes.any { "couldn't be noted" in it })
+        // The disk takes writes again (as it was when the write went: the pin tried). The
+        // next exchange makes the pin again over its own result, which alters nothing and
+        // writes nothing, and this time it is noted: done.
+        server.gate = {}
+        File(phone.settingsFile, "in the way").delete()
+        phone.settingsFile.delete()
+        phone.settingsFile.writeText(kept)
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(1, server.writes.size)
+        assertEquals(listOf("p1", "p2", "mine"), record(server).pins)
+    }
+
     // ---- step 7.1: the record as first found is kept before anything is sent -------------------
 
     @Test

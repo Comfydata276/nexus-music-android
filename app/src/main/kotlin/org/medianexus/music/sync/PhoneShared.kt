@@ -146,13 +146,14 @@ class PhoneShared(
         return if (kept) fits else null
     }
 
-    override suspend fun written(write: JsonElement) {
+    override suspend fun written(write: JsonElement): Boolean {
         val kept = settings.commit { now ->
             if (!Belongs.ready(now, account)) now else Chosen.with(now, Core.written(Chosen.choices(now), write)).also { settled = it.choices }
         }
         // (Not kept: the changes stay as tried, and the next exchange makes them again over
         // their own result, which alters nothing.)
         if (!kept) note("in step: what was shared couldn't be noted on the phone as shared; it will be offered again")
+        return kept
     }
 
     companion object {

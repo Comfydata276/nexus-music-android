@@ -107,7 +107,9 @@ class SettingsStore private constructor(
             val before = current.value
             val after = change(before)
             if (after == before) return@withLock true
-            if (!save(file, after)) {
+            // (Surely: something is about to be done on the strength of it, so the folder
+            // is synced too, as for the other writes the app relies on.)
+            if (!save(file, after, sure = true)) {
                 failing.value = true
                 return@withLock false
             }
@@ -172,8 +174,8 @@ class SettingsStore private constructor(
         }
 
         /** Writes the bytes whole or not at all; false if they couldn't be. */
-        private fun tryWrite(file: File, bytes: ByteArray): Boolean = try {
-            writeAtomically(file, bytes)
+        private fun tryWrite(file: File, bytes: ByteArray, sure: Boolean = false): Boolean = try {
+            writeAtomically(file, bytes, durable = sure)
             true
         } catch (_: IOException) {
             false
@@ -219,7 +221,7 @@ class SettingsStore private constructor(
 
         /** Writes the settings; false if they couldn't be. As on Windows, a failed write
          *  leaves the last good file in place. */
-        fun save(file: File, settings: Settings): Boolean =
-            tryWrite(file, json.encodeToString(Settings.serializer(), settings).toByteArray())
+        fun save(file: File, settings: Settings, sure: Boolean = false): Boolean =
+            tryWrite(file, json.encodeToString(Settings.serializer(), settings).toByteArray(), sure)
     }
 }

@@ -91,8 +91,9 @@ interface StepPhone {
     suspend fun sending(write: JsonElement): Boolean?
 
     /** Step 7.4: the server has answered that it took the write: what it carried is agreed,
-     *  and those changes are done with. Kept on the disk. */
-    suspend fun written(write: JsonElement)
+     *  and those changes are done with. Kept on the disk. False if it couldn't be kept: the
+     *  changes then stay as tried, and the exchange has not finished. */
+    suspend fun written(write: JsonElement): Boolean
 }
 
 /**
@@ -295,8 +296,9 @@ class InStep(
             // the phone has not yet kept that it has. In a release build, a null field read.)
             org.medianexus.music.downloads.CrashPoints.reached("step-sent")
             // Only now is what the write carried agreed, and its changes done with.
-            phone.written(write)
-            Outcome.DONE
+            // (Not kept: the exchange is not done. The changes stay as tried, and the next
+            // makes them again over their own result, which alters nothing.)
+            if (phone.written(write)) Outcome.DONE else Outcome.FAILED
         }
     }
 
