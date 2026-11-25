@@ -2336,6 +2336,9 @@ class PlaybackService : MediaLibraryService() {
                 if (controller.isTrusted && !namedTruly(controller)) "; its name is not its own" else "",
             now = caller == Caller.REFUSED,
         )
+        // Who signed a refused caller, on lines of their own (a fingerprint is longer than
+        // what is left of the line above): what letting it in by name and certificate needs.
+        if (caller == Caller.REFUSED) for (line in graph.callers.signedBy(controller.packageName, controller.uid)) graph.diagnostics.note(line, now = true)
     }
 
     private fun yes(on: Boolean) = if (on) "yes" else "no"

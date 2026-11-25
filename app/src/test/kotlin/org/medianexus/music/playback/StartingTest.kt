@@ -1,6 +1,10 @@
 package org.medianexus.music.playback
 
 import android.app.Notification
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.content.pm.Signature
+import android.content.pm.SigningInfo
 import android.os.Bundle
 import android.os.Looper
 import androidx.media3.common.C
@@ -338,6 +342,35 @@ class StartingTest {
         assertTrue(inside.callback.onConnect(inside.session, real).isAccepted)
         // And where the system has checked the name (Android 13 and later), nothing more is asked.
         assertTrue(inside.callback.onConnect(inside.session, car).isAccepted)
+    }
+
+    @Test
+    fun aRefusedCallerIsNotedWithTheCertificateItIsSignedWith() {
+        // A watch's phone-side plug-in: Android doesn't trust it with media, and it isn't a
+        // known host. Refused, and Diagnostics says what it is signed with, beside its name.
+        val certificate = "a watch plug-in's certificate".toByteArray()
+        val name = "com.example.watchplugin"
+        val manager = shadowOf(app.packageManager)
+        manager.installPackage(
+            PackageInfo().apply {
+                packageName = name
+                @Suppress("DEPRECATION")
+                signatures = arrayOf(Signature(certificate))
+                signingInfo = SigningInfo().also {
+                    org.robolectric.shadow.api.Shadow.extract<org.robolectric.shadows.ShadowSigningInfo>(it).setSignatures(arrayOf(Signature(certificate)))
+                }
+                applicationInfo = ApplicationInfo().apply { packageName = name; uid = 10_777 }
+            },
+        )
+        manager.setPackagesForUid(10_777, name)
+        val plugin = MediaSession.ControllerInfo.createTestOnlyControllerInfo(name, 4_777, 10_777, 1_000_000, 0, false, Bundle.EMPTY, true)
+        assertFalse(inside.callback.onConnect(inside.session, plugin).isAccepted)
+        val sha = java.security.MessageDigest.getInstance("SHA-256").digest(certificate).joinToString(":") { "%02x".format(it) }
+        assertTrue(noted().any { it.startsWith("connection from $name") && it.contains("refused") })
+        assertTrue(noted().toString(), noted().contains("refused caller $name is signed with SHA-256 $sha; signing history: no"))
+        // A caller let in is not looked up.
+        assertTrue(inside.callback.onConnect(inside.session, car).isAccepted)
+        assertFalse(noted().any { it.startsWith("refused caller com.example.car") })
     }
 
     // ---- What a car is told when the server says no ---------------------------------------------

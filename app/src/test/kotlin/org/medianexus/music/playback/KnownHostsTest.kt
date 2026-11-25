@@ -121,6 +121,10 @@ class KnownHostsTest {
         override fun signedWith(packageName: String, sha256: ByteArray) =
             apps.any { it.second == packageName && MessageDigest.getInstance("SHA-256").digest(it.third).contentEquals(sha256) }
         override fun trustedForMedia(packageName: String, pid: Int, uid: Int) = uid in trusts
+        /** Apps that carry a history of certificates rotated from. */
+        var rotated = emptySet<String>()
+        override fun signing(packageName: String) =
+            apps.filter { it.second == packageName }.map { it.third }.takeIf { it.isNotEmpty() }?.let { Callers.Signing(it, packageName in rotated) }
         override fun onPackageChanged(changed: (packageName: String) -> Unit) {
             told = changed
         }
@@ -253,5 +257,47 @@ class KnownHostsTest {
         // A known host is a car, not the app: it gets none of the app's own commands.
         assertFalse(Access.mayCustom(caller(trusted = false, knownHost = true), AppActions.CLEAR))
         assertTrue(Access.mayCustom(caller(trusted = false, knownHost = true), "org.medianexus.music.LIKE"))
+    }
+    /** Diagnostics says who a refused caller is signed by, so it can be let in by name and
+     *  certificate (a watch's phone-side plug-in): every certificate, the form Google's list
+     *  is written in, whether there is a history; and nothing for a name not the caller's. */
+    @Test
+    fun aRefusedCallerIsSaidToBeSignedByEachOfItsCertificates() {
+        val one = "the plug-in's certificate".toByteArray()
+        val other = "a second signer's certificate".toByteArray()
+        val phone = Phone(
+            listOf(
+                Triple(10_500, "com.example.plugin", one),
+                Triple(10_600, "com.example.twosigners", one),
+                Triple(10_600, "com.example.twosigners", other),
+            ),
+        )
+        val callers = Callers(phone, listed)
+        val colons = { bytes: ByteArray -> sha256(bytes).chunked(2).joinToString(":") }
+        assertEquals(
+            listOf("refused caller com.example.plugin is signed with SHA-256 ${colons(one)}; signing history: no"),
+            callers.signedBy("com.example.plugin", 10_500),
+        )
+        // Read back as the list reads a key: what is said is what would be listed.
+        assertEquals(sha256(one), KnownHosts.tidy(colons(one)))
+        phone.rotated = setOf("com.example.plugin")
+        assertTrue(callers.signedBy("com.example.plugin", 10_500).single().endsWith("; signing history: yes"))
+        assertEquals(
+            listOf(
+                "refused caller com.example.twosigners is signed with certificate 1 of 2, SHA-256 ${colons(one)}; signing history: no",
+                "refused caller com.example.twosigners is signed with certificate 2 of 2, SHA-256 ${colons(other)}; signing history: no",
+            ),
+            callers.signedBy("com.example.twosigners", 10_600),
+        )
+        // Every line fits in one of Diagnostics' (a fingerprint is 95 characters).
+        assertTrue(callers.signedBy("com.example.twosigners", 10_600).all { it.length <= org.medianexus.music.Diagnostics.MOST_CHARS })
+        // A name the caller only gave: another app's certificate says nothing of the caller.
+        assertEquals(
+            listOf("refused caller com.example.plugin: its signing certificate not looked up (the system doesn't say the name is the caller's)"),
+            callers.signedBy("com.example.plugin", 10_600),
+        )
+        assertTrue(callers.signedBy(null, 10_500).isEmpty())
+        // And it lets nobody in.
+        assertFalse(callers.standing("com.example.plugin", 1, 10_500).admitted)
     }
 }

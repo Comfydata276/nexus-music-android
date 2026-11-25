@@ -483,7 +483,14 @@ How it is built (M1a):
   small file, of what only the phone can say after a drive: each connection to the player
   (which app, by which protocol, whether Android trusts it, whether it is a known host, let
   in or refused, and whether a name was not its caller's own), who asked for covers and
-  what became of each (given, not given and why, refused), what started the player and
+  what became of each (given, not given and why, refused), for a caller refused either way
+  the SHA-256 of each certificate its package is signed with now and whether it has a
+  signing history (`Callers.signedBy`, a line of its own beside the package name, in the
+  colon-separated form Google's list of known hosts is written in, and only for a name the
+  system says is the caller's: what letting an app in by package and certificate, as the
+  known hosts are, needs; it lets nothing in. A signing certificate's fingerprint is public,
+  the same in every copy of the app, and identifies no person, only the app's publisher),
+  what started the player and
   whether and how soon Android let it into the foreground for each kind of request, a
   start that could not be made and why, audio focus refused straight after Play, what the
   app can tell of being heard each time playing begins (below), a start intent shaped

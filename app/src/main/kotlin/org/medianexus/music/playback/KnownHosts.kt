@@ -74,6 +74,11 @@ class KnownHosts(private val keys: Map<String, Set<String>>) {
         fun tidy(key: String): String? =
             key.filterNot { it == ':' || it.isWhitespace() }.lowercase().takeIf { it.length == 64 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
 
+        /** The SHA-256 of a certificate's bytes as lower-case hex pairs with colons between,
+         *  as Google's list writes a key (which [tidy] reads back). */
+        fun fingerprint(certificate: ByteArray): String =
+            java.security.MessageDigest.getInstance("SHA-256").digest(certificate).joinToString(":") { "%02x".format(it) }
+
         fun bytes(hex: String): ByteArray = ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
     }
 }
@@ -108,7 +113,15 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
         /** Has `changed` told, from now on, the name of each app that is installed, updated
          *  or removed. */
         fun onPackageChanged(changed: (packageName: String) -> Unit) {}
+
+        /** How the package is signed now, as the system says; null if it can't say. */
+        fun signing(packageName: String): Signing? = null
     }
+
+    /** The certificates an app is signed with now (each one's bytes; more than one only for
+     *  an app with several signers), and whether it carries a history of certificates it
+     *  has rotated from. */
+    class Signing(val certificates: List<ByteArray>, val history: Boolean)
 
     private class AndroidPhone(private val app: Context) : Phone {
         private val packages: PackageManager = app.packageManager
@@ -126,6 +139,16 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
         override fun trustedForMedia(packageName: String, pid: Int, uid: Int): Boolean =
             uid == android.os.Process.SYSTEM_UID ||
                 app.getSystemService(MediaSessionManager::class.java).isTrustedForMediaControl(MediaSessionManager.RemoteUserInfo(packageName, pid, uid))
+
+        override fun signing(packageName: String): Signing? = try {
+            @Suppress("DEPRECATION")
+            val info = packages.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
+            val now = info?.apkContentsSigners?.takeIf { it.isNotEmpty() }
+            if (info == null || now == null) null else Signing(now.map { it.toByteArray() }, !info.hasMultipleSigners() && info.hasPastSigningCertificates())
+        } catch (_: Exception) {
+            // (Not installed, or the package manager couldn't answer: not known.)
+            null
+        }
 
         // The system's own word that an app has come, changed or gone. (It tells an app only
         // about apps it may see: the known hosts are named in the manifest's <queries>.)
@@ -219,6 +242,40 @@ class Callers(private val phone: Phone, private val hosts: KnownHosts, private v
             phone.trustedForMedia(packageName, pid, uid)
         } catch (_: RuntimeException) {
             false
+        }
+    }
+
+    /**
+     * Who a refused caller is signed by, for Diagnostics: a line for each certificate its
+     * package is signed with now, beside its name, as the SHA-256 in hex pairs with colons
+     * between (the form Google's list of known hosts is written in), and whether it has a
+     * history of certificates rotated from. It is what letting an app in by package and
+     * certificate, as the known hosts are, needs to be known; it lets nobody in. A signing
+     * certificate's fingerprint is public (it is in every copy of the app, and the same on
+     * every phone) and identifies no person: only whoever publishes the app.
+     *
+     * Only for a name the system says is the caller's own: the certificate of a package the
+     * caller only named would say nothing about the caller.
+     */
+    fun signedBy(packageName: String?, uid: Int): List<String> {
+        if (packageName == null) return emptyList()
+        val who = "refused caller $packageName"
+        val own = try {
+            packageName in phone.packagesOf(uid)
+        } catch (_: RuntimeException) {
+            false
+        }
+        if (!own) return listOf("$who: its signing certificate not looked up (the system doesn't say the name is the caller's)")
+        val signing = try {
+            phone.signing(packageName)
+        } catch (_: RuntimeException) {
+            null
+        } ?: return listOf("$who: the system couldn't say what it is signed with")
+        val history = "signing history: ${if (signing.history) "yes" else "no"}"
+        val all = signing.certificates
+        return all.mapIndexed { i, certificate ->
+            val which = if (all.size > 1) "certificate ${i + 1} of ${all.size}, " else ""
+            "$who is signed with ${which}SHA-256 ${KnownHosts.fingerprint(certificate)}; $history"
         }
     }
 

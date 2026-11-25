@@ -137,6 +137,7 @@ class CoverProvider : ContentProvider() {
         val asker = Asker(name, standing) { graph.diagnostics.note(it) }
         if (!standing.admitted) {
             asker.noted("refused")
+            for (line in graph.callers.signedBy(name, uid)) graph.diagnostics.note(line)
             throw SecurityException("Covers are for the player's own callers")
         }
         return asker
