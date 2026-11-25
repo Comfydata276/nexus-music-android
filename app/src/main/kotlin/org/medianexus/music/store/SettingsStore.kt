@@ -107,7 +107,16 @@ class SettingsStore private constructor(
      * False if the file couldn't be written: then nothing has changed, here or on the disk.
      * Off the main thread.
      */
-    suspend fun commit(change: (Settings) -> Settings): Boolean = writing.withLock {
+    suspend fun commit(change: (Settings) -> Settings): Boolean {
+        waitingToCommit?.invoke()
+        return committed(change)
+    }
+
+    /** For a test: run as a checked write is about to wait its turn at the file (what
+     *  happens to the settings while it waits). */
+    @Volatile internal var waitingToCommit: (() -> Unit)? = null
+
+    private suspend fun committed(change: (Settings) -> Settings): Boolean = writing.withLock {
         while (true) {
             val before = current.value
             val after = counted(before, change(before))

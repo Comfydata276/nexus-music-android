@@ -68,6 +68,18 @@ class PhoneShared(
     @Volatile var settled: JsonElement? = null
         private set
 
+    override fun standing(): Long = settings.value.syncOffs
+
+    /**
+     * Whether an exchange that began at `began` may still change these settings: they are
+     * this account's, sharing is on, and it has not been switched off since the exchange
+     * began. **Asked inside the settings' writer, of the settings as they are at the moment
+     * of the change**: a commit can wait its turn at the file, and by then sharing may have
+     * been switched off (or off and on again). Then it changes nothing.
+     */
+    private fun leave(now: org.medianexus.music.store.Settings, began: Long): Boolean =
+        Belongs.ready(now, account) && now.sync && now.syncOffs == began
+
     override suspend fun device(): Device? {
         val now = settings.value
         // Not before the choices in the settings are this account's own, nor before its
@@ -98,14 +110,14 @@ class PhoneShared(
         log.flushed()
     }
 
-    override suspend fun take(plan: Plan, still: () -> Boolean): Boolean {
+    override suspend fun take(plan: Plan, began: Long, still: () -> Boolean): Boolean {
         // Only into settings that are still this account's: an exchange that comes back
         // after the account has gone changes nothing. Kept before they show.
         val kept = settings.commit { now ->
-            if (!Belongs.ready(now, account)) now else Chosen.with(now, Core.take(Chosen.choices(now), plan.take)).also { settled = it.choices }
+            if (!leave(now, began)) now else Chosen.with(now, Core.take(Chosen.choices(now), plan.take)).also { settled = it.choices }
         }
         if (!kept) return false
-        if (!Belongs.ready(settings.value, account) || !still()) return true
+        if (!leave(settings.value, began) || !still()) return true
         // (Each of these is on the disk when it returns, or throws.)
         if (added.take(plan.notes)) datesChanged()
         // Recently played: what is here now, with what the other devices played. (The
@@ -148,11 +160,11 @@ class PhoneShared(
         false
     }
 
-    override suspend fun sending(write: JsonElement): Boolean? {
+    override suspend fun sending(write: JsonElement, began: Long): Boolean? {
         var fits = false
         val kept = settings.commit { now ->
             fits = false
-            if (!Belongs.ready(now, account)) return@commit now
+            if (!leave(now, began)) return@commit now
             val out = Core.sending(Chosen.choices(now), write)
             fits = out.fits
             if (out.fits) now.copy(choices = out.choices).also { settled = it.choices } else now
@@ -160,9 +172,9 @@ class PhoneShared(
         return if (kept) fits else null
     }
 
-    override suspend fun written(write: JsonElement): Boolean {
+    override suspend fun written(write: JsonElement, began: Long): Boolean {
         val kept = settings.commit { now ->
-            if (!Belongs.ready(now, account)) now else Chosen.with(now, Core.written(Chosen.choices(now), write)).also { settled = it.choices }
+            if (!leave(now, began)) now else Chosen.with(now, Core.written(Chosen.choices(now), write)).also { settled = it.choices }
         }
         // (Not kept: the changes stay as tried, and the next exchange makes them again over
         // their own result, which alters nothing.)

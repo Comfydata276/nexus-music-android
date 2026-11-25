@@ -113,8 +113,8 @@ internal class PretendPhone(val root: File, val account: String, private val sco
     }
 
     /** Its exchange with `server`, as this phone's account. */
-    fun step(server: StepServer, may: () -> Boolean = { true }, clock: () -> Long = { PRETEND_NOW }, notes: MutableList<String> = this.notes, on: CoroutineScope = scope, standing: () -> Long = { 0 }) =
-        InStep(server, shared, username = "tester", account = "$account-${System.nanoTime()}", may = may, scope = on, clock = clock, pause = {}, note = { notes += it }, standing = standing)
+    fun step(server: StepServer, may: () -> Boolean = { true }, clock: () -> Long = { PRETEND_NOW }, notes: MutableList<String> = this.notes, on: CoroutineScope = scope) =
+        InStep(server, shared, username = "tester", account = "$account-${System.nanoTime()}", may = may, scope = on, clock = clock, pause = {}, note = { notes += it })
 
     /** The person does something on this phone to what is shared: kept, on the disk, before
      *  it shows (as `Graph.choose` does it). */

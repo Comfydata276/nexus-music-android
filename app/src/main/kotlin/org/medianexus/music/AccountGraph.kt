@@ -297,9 +297,6 @@ class AccountGraph(
             // (Asked again before each request that changes the server: still this account,
             // not let go, with sharing on.)
             phone, account.username, account.key, { scope.isActive && mayShare() }, scope, pause = pause, note = wiring?.note ?: {},
-            // (Switched off and on again is not the same "on": an exchange begun before is
-            // not given its leave back.)
-            standing = { settings.value.syncOffs },
         )
     }
 

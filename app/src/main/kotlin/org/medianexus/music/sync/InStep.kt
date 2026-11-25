@@ -58,6 +58,16 @@ interface StepPhone {
     suspend fun device(): Device?
 
     /**
+     * A number that moves on whenever sharing is switched off (the settings count it). An
+     * exchange has leave to go on only while it is the number it began with: switched off
+     * and on again while one is on its way is not the same "on". Each of the three things
+     * below that change the phone's settings is given the number the exchange began with,
+     * **and checks it where the change is committed**: they can wait their turn at the
+     * settings' file, and what was true when the exchange last asked may not be by then.
+     */
+    fun standing(): Long
+
+    /**
      * Step 5: the plays other devices have told of go into the phone's log, **on the
      * disk**, with everything else the log holds in memory (whether or not any is new).
      * Throws `IOException` if the phone couldn't: then the exchange stops, nothing is taken
@@ -73,7 +83,7 @@ interface StepPhone {
      * `still` is asked before each of the three is taken in (songs may have to be looked
      * up on the way): what an exchange that has lost its leave brought is not applied.
      */
-    suspend fun take(plan: Plan, still: () -> Boolean = { true }): Boolean
+    suspend fun take(plan: Plan, began: Long, still: () -> Boolean = { true }): Boolean
 
     /**
      * Step 7.1: the record's text as it was found is kept on the phone, once for this
@@ -90,12 +100,12 @@ interface StepPhone {
      * have taken a change back meanwhile), which then note, on the disk, that it is being
      * tried. Null if that couldn't be kept: then nothing is sent.
      */
-    suspend fun sending(write: JsonElement): Boolean?
+    suspend fun sending(write: JsonElement, began: Long): Boolean?
 
     /** Step 7.4: the server has answered that it took the write: what it carried is agreed,
      *  and those changes are done with. Kept on the disk. False if it couldn't be kept: the
      *  changes then stay as tried, and the exchange has not finished. */
-    suspend fun written(write: JsonElement): Boolean
+    suspend fun written(write: JsonElement, began: Long): Boolean
 }
 
 /**
@@ -131,12 +141,6 @@ class InStep(
     private val pause: suspend (Long) -> Unit = { delay(it) },
     /** Something for the Diagnostics page (no names, no addresses, nothing of the record). */
     private val note: (String) -> Unit = {},
-    /**
-     * A number that moves on whenever sharing is switched off. An exchange has leave to go
-     * on only while it is the number it began with: switched off and on again while one is
-     * on its way, [may] says yes again, and this says it is not the same yes.
-     */
-    private val standing: () -> Long = { 0 },
 ) {
     /** How an exchange ended. */
     enum class Outcome {
@@ -233,14 +237,14 @@ class InStep(
             // The leave this exchange has, from now to its last step: this account, sharing
             // on, **the same "on" as now**, and whoever asked still wanting it. Asked again
             // before everything it applies here and every request that changes the server.
-            val began = standing()
+            val began = phone.standing()
             val asker = kotlin.coroutines.coroutineContext[Job]
-            val still = { may() && standing() == began && asker?.isActive != false }
+            val still = { may() && phone.standing() == began && asker?.isActive != false }
             // (The playlist that holds the record, made by this exchange: what goes into
             // it is decided again, from the top, with it there.)
-            return once(still, made = null)
+            return once(began, still, made = null)
                 // (Its leave asked again before the read that follows making the playlist.)
-                ?: (if (still()) once(still, made = true) else Outcome.NOT_NOW)
+                ?: (if (still()) once(began, still, made = true) else Outcome.NOT_NOW)
                 ?: Outcome.FAILED
         } catch (e: CancellationException) {
             throw e
@@ -268,7 +272,7 @@ class InStep(
      * back while the server was making it); the steps are gone through again, once
      * (`made`), and that time nothing is made.
      */
-    private suspend fun once(still: () -> Boolean, made: Boolean?): Outcome? {
+    private suspend fun once(began: Long, still: () -> Boolean, made: Boolean?): Outcome? {
         // 1. Ask the server. Nothing of the phone's state is taken yet: what the person
         // does while these answers are on their way is in what is decided.
         val listed = server.playlists()
@@ -280,6 +284,9 @@ class InStep(
         if (!still()) return Outcome.NOT_NOW
         // 3. Decide, from what the phone holds now.
         val device = phone.device() ?: return Outcome.NOT_READ_YET
+        // (Reading the phone's own stores took a moment: asked again before anything of
+        // this exchange shows, the clock it measured included.)
+        if (!still()) return Outcome.NOT_NOW
         val playlist = read?.value?.let { Stated(it.id, it.name, it.owner, it.comment) }
         val settled = Core.settle(device, Answers(stated, playlist, read?.serverTime ?: listed.serverTime, received))
         if (settled.clock.wrong && !wrongClock.value) note("in step: this phone's clock and the server's disagree by more than five minutes; nothing is shared from here until they agree")
@@ -302,10 +309,13 @@ class InStep(
         phone.keep(plan.keepPlays, plan.keepSources)
         if (!still()) return Outcome.NOT_NOW
         // 6. Take in.
-        if (!phone.take(plan, still)) {
+        if (!phone.take(plan, began, still)) {
             note("in step: what other devices shared couldn't be kept on the phone; nothing was written, and it will be asked for again")
             return Outcome.FAILED
         }
+        // (Taking in waits its turn at the settings' file, and checks its leave there: if
+        // it had gone by then, nothing was taken in, and nothing more is done.)
+        if (!still()) return Outcome.NOT_NOW
         val held = plan.held?.let { held ->
             if (held.kind != "ClockWrong") note("in step: ${held.words}")
             when (held.kind) {
@@ -339,7 +349,9 @@ class InStep(
         // 7.2. The plan must still fit the choices, which are saved, as tried, before the
         // request is made.
         if (!still()) return Outcome.NOT_NOW
-        when (phone.sending(write)) {
+        val sent = phone.sending(write, began)
+        if (!still()) return Outcome.NOT_NOW
+        when (sent) {
             null -> return Outcome.FAILED
             false -> {
                 // A change the write carries was taken back meanwhile: from step 1 again.
@@ -365,7 +377,10 @@ class InStep(
             // makes them again over their own result, which alters nothing.
             if (!still()) return@withContext Outcome.NOT_NOW
             // (Not kept: the exchange is not done, and the same holds.)
-            if (phone.written(write)) Outcome.DONE else Outcome.FAILED
+            if (!phone.written(write, began)) return@withContext Outcome.FAILED
+            // (The note waited its turn at the settings' file, and checked the leave there:
+            // if it had gone by then, nothing was noted, and this is not "done".)
+            if (still()) Outcome.DONE else Outcome.NOT_NOW
         }
     }
 

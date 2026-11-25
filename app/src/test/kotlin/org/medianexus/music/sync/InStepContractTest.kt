@@ -445,20 +445,59 @@ class InStepContractTest {
     }
 
     @Test
+    fun whatAnExchangeAppliesIsCheckedWhereItIsCommitted() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        phone.pin("mine")
+        // Taking in what the PCs shared waits its turn at the settings' file; and while it
+        // waits, sharing is switched off. (Asked a moment before, the exchange had its
+        // leave: only the commit itself can know.)
+        var then: (() -> Unit)? = null
+        phone.settings.waitingToCommit = { then?.also { then = null }?.invoke() }
+        server.gate = { what -> if (what == "read") then = { phone.settings.update { it.copy(sync = false) } } }
+        assertEquals(InStep.Outcome.NOT_NOW, phone.step(server).exchange())
+        assertEquals("nothing of the PCs' was taken in while sharing was off", listOf("mine"), phone.pins)
+        assertTrue(server.writes.isEmpty())
+        // Switched on again. This time it is the note that the server took the write that
+        // waits its turn, and sharing goes off and straight on again while it waits: the
+        // exchange that was on its way has lost its leave, and notes nothing.
+        phone.settings.update { it.copy(sync = true) }
+        server.gate = { what ->
+            if (what == "write") then = {
+                phone.settings.update { it.copy(sync = false) }
+                phone.settings.update { it.copy(sync = true) }
+            }
+        }
+        assertEquals(InStep.Outcome.NOT_NOW, phone.step(server).exchange())
+        assertEquals(1, server.writes.size)
+        assertTrue("the pin stays as tried", phone.onDisk().contains("\"tried\": true"))
+        // The next exchange makes it again over its own result, and that is noted.
+        server.gate = {}
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(1, server.writes.size)
+        assertFalse(phone.onDisk().contains("\"tried\": true"))
+    }
+
+    @Test
     fun sharingSwitchedOffAndOnAgainDoesNotGiveAnExchangeBegunBeforeItsLeaveBack() = runBlocking {
         val server = PretendServer().apply { put("a", windows) }
         val phone = phone()
         phone.pin("mine")
-        // While the server is being asked, sharing is switched off, and on again. The
-        // exchange that was on its way was let go by the first, and stays let go.
-        var offs = 0L
-        server.gate = { what -> if (what == "read") offs++ }
-        assertEquals(InStep.Outcome.NOT_NOW, phone.step(server, standing = { offs }).exchange())
+        // While the server is being asked, sharing is switched off, and on again (in the
+        // settings themselves, which count each switching off). The exchange that was on
+        // its way was let go by the first, and stays let go.
+        server.gate = { what ->
+            if (what == "read") {
+                phone.settings.update { it.copy(sync = false) }
+                phone.settings.update { it.copy(sync = true) }
+            }
+        }
+        assertEquals(InStep.Outcome.NOT_NOW, phone.step(server).exchange())
         assertTrue(server.writes.isEmpty())
         assertEquals("nothing of it was taken in", listOf("mine"), phone.pins)
         // One begun since has its own.
         server.gate = {}
-        assertEquals(InStep.Outcome.DONE, phone.step(server, standing = { offs }).exchange())
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
         assertEquals(listOf("p1", "p2", "mine"), phone.pins)
     }
 
