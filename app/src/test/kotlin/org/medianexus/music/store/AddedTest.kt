@@ -91,21 +91,20 @@ class AddedTest {
             // An ordinary save has made up its mind to write, with the notes as they were
             // then; and at that moment an exchange takes in a date from another device.
             val took = java.util.concurrent.CompletableFuture<Boolean>()
-            val saving = java.util.concurrent.CountDownLatch(1)
+            val saved = java.util.concurrent.CountDownLatch(1)
+            added.afterSave = { saved.countDown() }
             added.duringSave = {
                 added.duringSave = null
                 kotlin.concurrent.thread { took.complete(added.take(theirs)) }
                 // (Long enough for the exchange to have written, if nothing makes it wait
                 // for this save: with one writer it waits, and this gives up waiting.)
                 runCatching { took.get(2, java.util.concurrent.TimeUnit.SECONDS) }
-                saving.countDown()
             }
             added.create("q", listOf("x"), 200)
             assertTrue(took.get(10, java.util.concurrent.TimeUnit.SECONDS))
-            // Once both have written (the save goes on to write as this is let go; a
-            // moment for it), the file has what was taken in, whichever asked first.
-            assertTrue(saving.await(10, java.util.concurrent.TimeUnit.SECONDS))
-            Thread.sleep(1_000)
+            // Once both have written (the take has returned; the save's own turn at the
+            // file is over), the file has what was taken in, whichever asked first.
+            assertTrue(saved.await(10, java.util.concurrent.TimeUnit.SECONDS))
             val onDisk = Added(file, null, Dispatchers.IO).let { it.dates("p", songs("s")).list() + it.dates("q", songs("x")).list() }
             assertEquals(listOf(5L, 200L), onDisk)
         } finally {

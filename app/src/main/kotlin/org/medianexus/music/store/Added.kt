@@ -80,8 +80,10 @@ class Added(
      *  between the two is due, and is written at the next change or the next exchange. */
     @Volatile private var dirty = 0L
     @Volatile private var written = 0L
-    /** For a test: run by an ordinary save once it has decided to write, before it does. */
+    /** For a test: run by an ordinary save once it has decided to write, before it does;
+     *  and when an ordinary save's turn is over, whatever it did. */
     @Volatile internal var duringSave: (() -> Unit)? = null
+    @Volatile internal var afterSave: (() -> Unit)? = null
 
     /** `mark`: [MARK] in a file written under the present rule for what gets a time (see
      *  the class); 0 in one from a build before it. */
@@ -292,6 +294,7 @@ class Added(
                     }
                 }
             }
+            afterSave?.invoke()
         }
         if (scope == null) write() else scope.launch(io) { write() }
     }
