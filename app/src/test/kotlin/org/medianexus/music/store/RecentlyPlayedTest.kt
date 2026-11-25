@@ -85,12 +85,68 @@ class RecentlyPlayedTest {
         assertTrue(file.readText().contains("\"old\""))
         openNow(history)
         assertEquals(listOf("new", "old"), history.ids())
-        // A file that can't be read is an empty list, never a reason to stop.
-        File(folder.root, "broken.json").writeText("[{\"song\":")
-        val broken = played(File(folder.root, "broken.json"))
-        openNow(broken)
-        assertTrue(broken.state.value.isEmpty())
-        assertFalse(broken.ids().contains("old"))
+    }
+
+    @Test
+    fun aListThatCouldNotBeReadIsNeverTakenForNoListAndNeverWrittenOver() {
+        val file = File(folder.root, "history.json")
+        val years = """[{"song":{"id":"old"},"at":5}]"""
+        file.writeText(years)
+        // It can't be read (the disk gave an error).
+        assertTrue(file.setReadable(false))
+        org.junit.Assume.assumeFalse("whoever runs this may read anything", runCatching { file.readBytes() }.isSuccess)
+        val notes = mutableListOf<String>()
+        val history = RecentlyPlayed(file, scope, io, note = { notes += it }) { clock }
+        openNow(history)
+        assertTrue(notes.any { "couldn't be read" in it })
+        // What is here is not the account's history: not shared, not merged, never written.
+        assertFalse(history.isOpen)
+        history.played(Song(id = "new"))
+        assertFalse(runBlocking { history.take(listOf(org.medianexus.music.core.Play("theirs", 9)), { emptyMap() }) })
+        assertEquals("the song playing still shows", listOf("new"), history.ids())
+        assertTrue(file.setReadable(true))
+        assertEquals("the file is exactly as it was", years, file.readText())
+        // The next start reads it.
+        val again = played(file)
+        openNow(again)
+        assertEquals(listOf("old"), again.ids())
+    }
+
+    @Test
+    fun aListThatReadsAndIsNoListIsKeptAsideBeforeAnythingIsWritten() {
+        val file = File(folder.root, "history.json")
+        file.writeText("[{\"song\":")
+        val history = played(file)
+        openNow(history)
+        // (Cut short, or not this app's: the history starts again from nothing, which is
+        // the account's, and what was there is kept beside it.)
+        assertTrue(history.isOpen && history.state.value.isEmpty())
+        assertFalse(File(folder.root, "history.json.damaged").exists())
+        history.played(Song(id = "new"))
+        assertEquals("[{\"song\":", File(folder.root, "history.json.damaged").readText())
+        assertTrue(file.readText().contains("\"new\""))
+    }
+
+    @Test
+    fun whatWasTakenInAndCouldNotBeWrittenIsStillDueAtTheNextTry() {
+        val dir = folder.newFolder("account")
+        val file = File(dir, "history.json")
+        file.writeText("""[{"song":{"id":"old"},"at":5}]""")
+        val history = played(file)
+        openNow(history)
+        val theirs = listOf(org.medianexus.music.core.Play("theirs", 9))
+        val songs: suspend (List<String>) -> Map<String, Song> = { ids -> ids.associateWith { Song(id = it) } }
+        // The disk won't take it: the exchange is told, and has failed.
+        assertTrue(dir.setWritable(false))
+        org.junit.Assume.assumeFalse("whoever runs this may write anywhere", runCatching { File(dir, "probe").writeText("") }.isSuccess)
+        assertTrue(runCatching { runBlocking { history.take(theirs, songs) } }.exceptionOrNull() is java.io.IOException)
+        assertTrue(file.readText().contains("\"old\"") && !file.readText().contains("theirs"))
+        // The same again, with nothing new to merge: it is still due, and is written now.
+        assertTrue(dir.setWritable(true))
+        runBlocking { history.take(theirs, songs) }
+        assertTrue("what was taken in is on the disk", file.readText().contains("\"theirs\""))
+        // (And again fails if the disk fails again, rather than saying all is well.)
+        history.played(Song(id = "now"))
     }
 
     /** Windows' `plays_from_two_devices_interleave`. */

@@ -209,7 +209,7 @@ class AccountGraph(
     val ratings: org.medianexus.music.library.Ratings = org.medianexus.music.library.Ratings(freshest, submit = { change, written -> submit(change, written) }, scope)
 
     /** The last hundred songs played (Windows' `history.json`). */
-    val recentlyPlayed = org.medianexus.music.store.RecentlyPlayed(File(account.dirs.data, "history.json"), scope, io)
+    val recentlyPlayed = org.medianexus.music.store.RecentlyPlayed(File(account.dirs.data, "history.json"), scope, io, note = wiring?.note ?: {})
 
     /** Every play that counted, and when, for "Your stats" and the mixes (Windows'
      *  `plays.log`; see [org.medianexus.music.store.PlayLog]). */
