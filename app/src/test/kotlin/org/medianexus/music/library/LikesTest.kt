@@ -32,6 +32,10 @@ import org.medianexus.music.store.PageSpec
  * test opens), so none depends on how quickly anything runs.
  */
 class LikesTest {
+    /** What a wait for another thread is given: a limit that ends only a test already failed
+     *  (each wait is on the thing itself). */
+    private val never = 120_000L
+
     @get:Rule val folder = TemporaryFolder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var now = 1_000L
@@ -52,7 +56,7 @@ class LikesTest {
         return Likes(pages, likedSpec, { target, id, liked, _ -> send(target, id, liked) }, scope, clock = { now }) to pages
     }
 
-    private suspend fun Likes.waitFor(set: Set<String>) = withTimeout(5_000) { liked.first { it == set } }
+    private suspend fun Likes.waitFor(set: Set<String>) = withTimeout(never) { liked.first { it == set } }
 
     @Test
     fun followsWhatTheServerSays() = runBlocking {
@@ -78,10 +82,10 @@ class LikesTest {
         // Before the server has answered: the heart, and Liked songs, newest first.
         assertTrue(likes.isLiked("b"))
         assertEquals(listOf("b", "a"), likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
-        assertEquals(Triple(StarTarget.SONG, "b", true), withTimeout(5_000) { sent.await() })
+        assertEquals(Triple(StarTarget.SONG, "b", true), withTimeout(never) { sent.await() })
         answer.complete(Unit)
         // Kept Liked songs gains it once the server has it.
-        withTimeout(5_000) {
+        withTimeout(never) {
             while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("b", "a")) kotlinx.coroutines.delay(10)
         }
         assertEquals(listOf("b", "a"), likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
@@ -96,7 +100,7 @@ class LikesTest {
         // Shown at once, while the server thinks about it.
         assertTrue(likes.isLiked("a"))
         answer.complete(Unit)
-        val refused = withTimeout(5_000) { refusal.await() }
+        val refused = withTimeout(never) { refusal.await() }
         assertEquals("a", refused.id)
         assertTrue(refused.liked)
         assertFalse(likes.isLiked("a"))
@@ -114,12 +118,12 @@ class LikesTest {
         likes.set(a, true)
         assertTrue(likes.isLiked("a"))
         // Only the first is on its way: the next waits for its answer.
-        withTimeout(5_000) { while (sent.size < 1) kotlinx.coroutines.delay(5) }
+        withTimeout(never) { while (sent.size < 1) kotlinx.coroutines.delay(5) }
         kotlinx.coroutines.delay(50)
         assertEquals(listOf(true), sent.toList())
         repeat(3) { answers.send(Unit) }
         likes.waitFor(setOf("a"))
-        withTimeout(5_000) { while (sent.size < 3) kotlinx.coroutines.delay(5) }
+        withTimeout(never) { while (sent.size < 3) kotlinx.coroutines.delay(5) }
         assertEquals(listOf(true, false, true), sent.toList())
         assertTrue(likes.isLiked("a"))
     }
@@ -138,12 +142,12 @@ class LikesTest {
         val slow = PageSpec("liked", Found.serializer()) { asked.complete(Unit); gate.await(); Found(songs = listOf(a, b)) }
         now += 1_000
         val refresh = scope.async { pages.fresh(slow) }
-        withTimeout(5_000) { asked.await() }
+        withTimeout(never) { asked.await() }
         // Meanwhile "b" is unliked, and the server takes it.
         now += 1_000
         likes.set(b, false)
         likes.waitFor(setOf("a"))
-        withTimeout(5_000) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(10) }
+        withTimeout(never) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(10) }
         now += 1_000
         gate.complete(Unit)
         refresh.await()
@@ -167,7 +171,7 @@ class LikesTest {
         server = Found(songs = listOf(b, a), albums = listOf(Album(id = "9")))
         now += 1_000
         pages.fresh(likedSpec)
-        withTimeout(5_000) { likes.state.first { "9" in it.albums } }
+        withTimeout(never) { likes.state.first { "9" in it.albums } }
         assertEquals(listOf("b", "a"), likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
         // Unliked there: a fresh Liked songs takes it away here.
         server = Found(songs = listOf(a))
@@ -185,7 +189,7 @@ class LikesTest {
         val album = Album(id = "al-1", name = "First Light")
         likes.toggleAlbum(album)
         assertTrue(likes.isAlbumLiked("al-1"))
-        assertEquals(Triple(StarTarget.ALBUM, "al-1", true), withTimeout(5_000) { sent.await() })
+        assertEquals(Triple(StarTarget.ALBUM, "al-1", true), withTimeout(never) { sent.await() })
         answer.complete(Unit)
         // An album page from before, saying it isn't, doesn't undo it.
         likes.heard(Found(), askedAt = 0)
@@ -211,12 +215,12 @@ class LikesTest {
         // The last tap's like still shows, at the head of Liked songs, and nothing is said
         // about a tap that has been overtaken.
         // (The second tap is sent only once the first has been dealt with.)
-        withTimeout(5_000) { while (calls.get() < 2) kotlinx.coroutines.delay(5) }
+        withTimeout(never) { while (calls.get() < 2) kotlinx.coroutines.delay(5) }
         assertTrue(likes.isLiked("a"))
         assertEquals(listOf("a"), likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
         answers.send(true)
         answers.send(true)
-        withTimeout(5_000) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(5) }
+        withTimeout(never) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(5) }
         assertTrue(likes.isLiked("a"))
         assertTrue(refusals.isEmpty())
         listening.cancel()
@@ -235,7 +239,7 @@ class LikesTest {
         answers.send(true)
         answers.send(false)
         likes.waitFor(setOf("a"))
-        withTimeout(5_000) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(5) }
+        withTimeout(never) { while (pages.kept(likedSpec)?.songs?.map { it.id } != listOf("a")) kotlinx.coroutines.delay(5) }
         assertEquals(listOf("a"), likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
     }
 
@@ -297,7 +301,7 @@ class LikesTest {
         // Two taps before anything is drawn again: two changes.
         assertTrue(likes.toggleAlbum(album))
         assertFalse(likes.toggleAlbum(album))
-        withTimeout(5_000) { while (sent.size < 2) kotlinx.coroutines.delay(5) }
+        withTimeout(never) { while (sent.size < 2) kotlinx.coroutines.delay(5) }
         assertEquals(listOf(true, false), sent.toList())
     }
 
@@ -317,11 +321,11 @@ class LikesTest {
         // "liked", so the like used to add no row of its own.)
         likes.set(a, true)
         assertTrue("a" in shown())
-        assertFalse(withTimeout(5_000) { sent.receive() })
+        assertFalse(withTimeout(never) { sent.receive() })
         // The server takes the unlike: kept Liked songs loses it, as the server now has it.
         answers.send(Unit)
         // The like is sent only once the unlike's turn is over, kept copy and all.
-        assertTrue(withTimeout(5_000) { sent.receive() })
+        assertTrue(withTimeout(never) { sent.receive() })
         assertFalse("a" in pages.kept(likedSpec)!!.songs.map { it.id })
         // What the person last asked for is a like: it is still there, all the while the
         // like is on its way. (It used to vanish until the like had gone through.)
@@ -331,7 +335,7 @@ class LikesTest {
             pages.changes.first { (key, value) -> key == "liked" && (value as Found).songs.any { it.id == "a" } }
         }
         answers.send(Unit)
-        withTimeout(5_000) { kept.await() }
+        withTimeout(never) { kept.await() }
         assertTrue("a" in shown())
         assertEquals(1, shown().count { it == "a" })
     }
@@ -346,11 +350,11 @@ class LikesTest {
         likes.heard(Found(songs = listOf(a, b)), askedAt = 0)
         likes.set(a, false)
         likes.set(a, true)
-        withTimeout(5_000) { sent.receive() }
+        withTimeout(never) { sent.receive() }
         // Liked songs as the server had it a moment ago (a still in it) arrives meanwhile.
         likes.heard(Found(songs = listOf(a, b)), askedAt = now)
         answers.send(Unit)
-        withTimeout(5_000) { sent.receive() }
+        withTimeout(never) { sent.receive() }
         assertTrue("a" in likes.songsOf(pages.kept(likedSpec))!!.map { it.id })
         answers.send(Unit)
     }

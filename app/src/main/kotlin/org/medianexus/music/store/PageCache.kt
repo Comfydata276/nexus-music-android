@@ -115,6 +115,9 @@ class PageCache(
 
     private val inFlight = ConcurrentHashMap<String, Deferred<Any?>>()
 
+    /** For tests: a page kept in memory waits here before it is written to disk. */
+    internal var beforeWrite: suspend (key: String) -> Unit = {}
+
     /** Every page as it is kept afresh (a fetch, or a change made here such as a like), with
      *  its key, in the order kept, none dropped. For whatever shows or plays a list to follow
      *  it. */
@@ -180,24 +183,36 @@ class PageCache(
         return withContext(io) { readFile(spec) }
     }
 
-    /** Asks the server for the page now (or joins a request for it already on its way) and
-     *  keeps the answer. Throws `ApiError` if the server can't be asked. If the page was
-     *  changed here while the server was being asked, that change stands, and is what is
-     *  given back. */
+    /**
+     * Asks the server for the page now (or joins a request for it already on its way) and
+     * keeps the answer. Throws `ApiError` if the server can't be asked. If the page was
+     * changed here while the server was being asked, that change stands, and is what is
+     * given back.
+     *
+     * A request is on its way until its answer has arrived and is kept in memory; writing it
+     * to disk is not part of it. Asked for from then on, the page is asked of the server
+     * again: joined while it was being written, a refresh was given the answer from before it
+     * was asked (a like made on another device, missed). The older answer, if its write comes
+     * last, does not overwrite the newer ([store] numbers each in turn).
+     */
     suspend fun <T> fresh(spec: PageSpec<T>): T {
-        val shared = inFlight.computeIfAbsent(spec.key) {
+        val shared = inFlight.computeIfAbsent(spec.key) { key ->
+            lateinit var self: Deferred<Any?>
             // On the cache's own scope: a caller that gives up (a screen closed, the car moved
             // on) doesn't cancel the request for anyone else, and the answer is kept anyway.
-            scope.async(io, start = CoroutineStart.LAZY) {
+            self = scope.async(io, start = CoroutineStart.LAZY) {
                 try {
-                    val since = versionOf(spec.key)
+                    val since = versionOf(key)
                     val askedAt = clock()
                     val value = spec.fetch()
-                    if (store(spec, value, since, askedAt)) value else kept(spec) ?: value
+                    val stored = store(spec, value, since, askedAt, kept = { inFlight.remove(key, self) })
+                    if (stored) value else kept(spec) ?: value
                 } finally {
-                    inFlight.remove(spec.key)
+                    // (This request's own: another may have taken its place since it ended.)
+                    inFlight.remove(key, self)
                 }
             }
+            self
         }
         shared.start()
         @Suppress("UNCHECKED_CAST")
@@ -353,9 +368,12 @@ class PageCache(
      * Keeps `value` as the page, as the newest change to it, and writes it to disk. With
      * `since`, only if the page hasn't changed since it stood at that number (what was begun
      * then is older than what has happened since): false if it has, and nothing is kept.
-     * `askedAt`, for an answer from the server: when it was asked for (see [heard]).
+     * `askedAt`, for an answer from the server: when it was asked for (see [heard]). `kept`
+     * is told once it is kept in memory, before it is written (see [fresh]). Each change is
+     * numbered as it is kept, and a write that comes after a newer one's is not made: an
+     * older answer never overwrites a newer, in memory or on disk.
      */
-    private suspend fun <T> store(spec: PageSpec<T>, value: T, since: Long?, askedAt: Long?): Boolean {
+    private suspend fun <T> store(spec: PageSpec<T>, value: T, since: Long?, askedAt: Long?, kept: () -> Unit = {}): Boolean {
         val slot = slotFor(spec.key)
         val mine = synchronized(state) {
             if (since != null && slot.version != since) return false
@@ -367,6 +385,9 @@ class PageCache(
             if (askedAt != null) heardNow.tryEmit(Heard(spec.key, value, askedAt))
             slot.version
         }
+        // Kept, and numbered: whatever is asked from now on is newer than this.
+        kept()
+        beforeWrite(spec.key)
         slot.disk.withLock {
             // A newer write that got here first has made this one pointless.
             if (slot.written < mine) {

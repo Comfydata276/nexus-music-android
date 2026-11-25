@@ -724,6 +724,18 @@ How it is built (M1a):
   effect where the work pauses, and this work doesn't.
 - **"Shuffle"** heads every album, playlist and Liked songs: it plays the whole list
   shuffled, and the list remembers (its own choice, whatever shuffle was set to before).
+- **A page asked for afresh asks the server**, unless a request for it is on its way
+  (`PageCache.fresh`): two asked for at once share one. A request ends the moment its answer
+  has arrived and is kept in memory; writing it to disk is not part of it. (It used to last
+  until the write was done, and a refresh asked for in that moment was given the answer from
+  before it, unasked of the server: a like made on another device was missed, and
+  `LikesTest` met it in the full suite.) Each answer is numbered as it is kept, and a write
+  that comes after a newer one's is not made, so an older answer never overwrites a newer
+  (`PageCacheTest.aRefreshAskedForOnceTheAnswerHasArrivedAsksTheServerAgain`,
+  `twoRefreshesAskedForAtOnceShareOneRequest`). No other cache joins a request until it is
+  written: a cover never changes; the library copy's check takes its turn and then asks for
+  itself; lyrics are fetched once a song; a playlist's own read path is reached through this
+  cache's request, so the change covers it.
 - **Everything comes from kept pages** first and is checked with the server afterwards; a
   changed page is announced to the car. With the server out of reach the whole tree still
   opens. Anything the car waits on is given up after seven seconds. A folder never fetched,

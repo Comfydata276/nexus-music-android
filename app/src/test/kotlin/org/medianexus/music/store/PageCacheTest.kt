@@ -355,4 +355,58 @@ class PageCacheTest {
             screen.shutdown()
         }
     }
+    // ---- A request ends when its answer arrives ----------------------------------------------
+
+    /** What a wait for another thread is given: a limit that ends only a test already failed. */
+    private val never = 120_000L
+
+    /**
+     * A refresh asked for once the last answer has arrived asks the server again, even while
+     * that answer is still being written to disk: writing it is not part of the request. (It
+     * used to join the request until the write was done, and was given the answer from before
+     * it was asked: a like made on another device was missed.) And the older answer, written
+     * last, does not overwrite the newer, in memory or on disk.
+     */
+    @Test
+    fun aRefreshAskedForOnceTheAnswerHasArrivedAsksTheServerAgain() = runBlocking {
+        val cache = cache()
+        val writes = AtomicInteger()
+        val held = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        // The first answer's write waits at the gate.
+        cache.beforeWrite = { if (writes.incrementAndGet() == 1) { held.complete(Unit); gate.await() } }
+        val asked = AtomicInteger()
+        val server = java.util.concurrent.atomic.AtomicReference(listOf("first"))
+        val page = spec { asked.incrementAndGet(); server.get() }
+        val first = scope.async { cache.fresh(page) }
+        withTimeout(never) { held.await() }
+        assertEquals(listOf("first"), cache.kept(page))
+        // It changes on the server; a refresh is asked for.
+        server.set(listOf("second"))
+        val second = withTimeout(never) { cache.fresh(page) }
+        assertEquals(listOf("second"), second)
+        assertEquals(2, asked.get())
+        // The first answer's write goes on now: it is the older, and is not written over the newer.
+        gate.complete(Unit)
+        withTimeout(never) { first.await() }
+        assertEquals(listOf("second"), cache.kept(page))
+        assertEquals(listOf("second"), cache().kept(page))
+    }
+
+    /** Two refreshes asked for at once share one request: nothing asks twice at once. */
+    @Test
+    fun twoRefreshesAskedForAtOnceShareOneRequest() = runBlocking {
+        val cache = cache()
+        val asked = AtomicInteger()
+        val out = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val page = spec { asked.incrementAndGet(); out.complete(Unit); gate.await(); listOf("one") }
+        val a = scope.async { cache.fresh(page) }
+        withTimeout(never) { out.await() }
+        val b = scope.async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { cache.fresh(page) }
+        gate.complete(Unit)
+        assertEquals(listOf("one"), withTimeout(never) { a.await() })
+        assertEquals(listOf("one"), withTimeout(never) { b.await() })
+        assertEquals(1, asked.get())
+    }
 }
