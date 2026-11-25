@@ -97,9 +97,39 @@ class AddedTest {
         added.record("p", listOf("b"), 200)
         val text = File(folder.root, "added.json").readText()
         assertTrue(text, text.contains("\"lists\":{\"p\":{") && text.contains("\"b\":{\"times\":[200],\"at\":200}") && text.contains("\"seen\":[\"p\"]"))
-        // A file that can't be read is not taken for notes, nor written over until there's a change.
-        File(folder.root, "broken.json").writeText("{not json")
-        assertEquals(listOf(0L), added("broken.json").dates("p", songs("a")).list())
+        // A file that holds something other than notes is not taken for notes; and before
+        // anything is written over it, it is kept, as it was found, beside the new one.
+        val broken = File(folder.root, "broken.json").apply { writeText("{not json") }
+        val fresh = added("broken.json")
+        assertEquals(listOf(0L), fresh.dates("p", songs("a")).list())
+        assertEquals("{not json", broken.readText())
+        fresh.record("p", listOf("a"), 300)
+        assertEquals("{not json", File(folder.root, "broken.json.damaged").readText())
+        assertTrue(broken.readText().contains("\"a\":{\"times\":[300],\"at\":300}"))
+    }
+
+    @Test
+    fun notesThatCouldNotBeReadAreNeverTakenForNoneAndNeverWrittenOver() {
+        val file = File(folder.root, "added.json")
+        added().apply { sawCopy("p", songs("a"), 100); record("p", listOf("b"), 200) }
+        val kept = file.readText()
+        // The file is there and can't be read (something else has it; the disk gave an error).
+        assertTrue(file.setReadable(false))
+        org.junit.Assume.assumeFalse("whoever runs this may read anything", runCatching { file.readBytes() }.isSuccess)
+        val notes = ArrayList<String>()
+        val added = Added(file, null, Dispatchers.IO, note = { notes += it })
+        // This run has no dates, says so, and writes nothing: not what it notices, not what
+        // the person adds, not what another device shares (which is refused, to be offered
+        // again, rather than written over the notes that are there).
+        assertEquals(listOf(0L), added.dates("p", songs("b")).list())
+        assertTrue(notes.any { "couldn't be read" in it })
+        added.sawCopy("p", songs("a", "b", "c"), 300)
+        added.record("p", listOf("d"), 400)
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { added.take(mapOf("p" to mapOf("e" to AddedNote(listOf(5), 5)))) }
+        assertTrue(file.setReadable(true))
+        assertEquals(kept, file.readText())
+        // The next start reads them as they were.
+        assertEquals(listOf(200L), added().dates("p", songs("b")).list())
     }
 
     @Test

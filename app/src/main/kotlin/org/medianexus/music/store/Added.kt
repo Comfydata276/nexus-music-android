@@ -71,6 +71,10 @@ class Added(
     private var lists = HashMap<String, Map<String, AddedNote>>()
     private var seen = HashSet<String>()
     private var loaded = false
+    /** The file is there and couldn't be read: it is not written to in this run. */
+    private var unreadable = false
+    /** The file holds something that isn't notes: kept aside before it is written over. */
+    private var damaged = false
     private val writing = Mutex()
     @Volatile private var dirty = 0L
 
@@ -84,14 +88,32 @@ class Added(
         if (loaded) return
         loaded = true
         if (!file.isFile && formerly?.isFile == true) formerly.renameTo(file)
-        val bytes = try { if (file.isFile) file.readBytes() else return } catch (_: java.io.IOException) { return }
+        // Whether there is a file is told by reading it: only "no such file" means there is
+        // none. One that is there and could not be read is **never taken for none**: it is
+        // left exactly as it is, and nothing is written to it in this run (the dates noted
+        // meanwhile are for this run's screens only).
+        val bytes = try {
+            java.nio.file.Files.readAllBytes(file.toPath())
+        } catch (_: java.nio.file.NoSuchFileException) {
+            return
+        } catch (_: java.io.IOException) {
+            unreadable = true
+            note("dates: the notes of when songs were added couldn't be read from the phone; they are left as they are, and nothing is written to them until they can be")
+            return
+        }
         val text = bytes.decodeToString()
         val stored = runCatching { json.decodeFromString(Stored.serializer(), text) }.getOrNull()?.takeIf { it.lists.isNotEmpty() || it.seen.isNotEmpty() }
             // The file as written before notes were shared: just the times.
             ?: runCatching { json.decodeFromString(OLD, text) }.getOrNull()?.let { old ->
                 Stored(old.mapValues { (_, songs) -> songs.mapValues { (_, times) -> AddedNote(times, 0) } }, old.keys)
             }
-            ?: return
+        if (stored == null) {
+            // It reads, and is no notes this app wrote (cut short, damaged): the notes start
+            // again, and the file as it was found is kept beside the new one, once, before
+            // anything is written over it.
+            damaged = text.isNotBlank() && runCatching { json.decodeFromString(Stored.serializer(), text) }.isFailure
+            return
+        }
         lists = HashMap(stored.lists)
         seen = HashSet(stored.seen)
         if (stored.mark < MARK) {
@@ -220,6 +242,8 @@ class Added(
         if (theirs.isEmpty()) return false
         val out = Core.notesTake(HashMap(lists), theirs)
         if (!out.changed) return false
+        if (unreadable) throw java.io.IOException("The notes of when songs were added can't be read on the phone, so nothing is written over them")
+        keepDamaged()
         writeAtomically(file, json.encodeToString(Stored.serializer(), Stored(out.lists, HashSet(seen), MARK)).toByteArray())
         lists = HashMap(out.lists)
         changes.value++
@@ -232,16 +256,28 @@ class Added(
      *  time, one write after another: a write that was overtaken is skipped. With no scope
      *  (tests), at once. */
     private fun save() {
+        // (Never over a file that couldn't be read.)
+        if (unreadable) return
         val stored = Stored(HashMap(lists), HashSet(seen), MARK)
         val number = ++dirty
         val write = {
             try {
+                keepDamaged()
                 writeAtomically(file, json.encodeToString(Stored.serializer(), stored).toByteArray())
             } catch (_: java.io.IOException) {
                 // Kept in memory; the next change writes it again.
             }
         }
         if (scope == null) write() else scope.launch(io) { writing.withLock { if (number == dirty) write() } }
+    }
+
+    /** A file that held something other than notes is kept as it was found, beside where
+     *  the new notes go, before the first write over it (and only then is it written over). */
+    @Throws(java.io.IOException::class)
+    private fun keepDamaged() {
+        if (!damaged) return
+        java.nio.file.Files.copy(file.toPath(), File(file.path + ".damaged").toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        damaged = false
     }
 
     companion object {

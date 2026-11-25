@@ -120,17 +120,50 @@ class PlayLogTest {
     }
 
     @Test
-    fun aFileThatCantBeReadIsNeverWrittenOver() {
+    fun aLogThatCouldNotBeReadIsNeverTakenForALogThatIsNotThere() {
+        val path = File(folder.root, "plays.log")
+        val beside = File(folder.root, "plays.log.new")
+        val years = "[\"a\",100]\n[\"b\",200,\"playlist:p\"]\n"
+        path.writeText(years)
+        // It can't be read (something else has it; the disk gave an error).
+        assertTrue(path.setReadable(false))
+        org.junit.Assume.assumeFalse("whoever runs this may read anything", runCatching { path.readBytes() }.isSuccess)
+        val notes = mutableListOf<String>()
+        val log = PlayLog(path, io) { notes += it }
+        runBlocking { log.open() }
+        // Said, not hidden; and nothing it couldn't read is counted.
+        assertTrue(notes.any { "couldn't be read" in it })
+        assertTrue(log.shared().isEmpty())
+        // A play made meanwhile, and plays another device tells of (one of them a play the
+        // log has, for all this run knows), are kept: beside the log, on the disk.
+        log.add("c", 300, "playlist:q")
+        runBlocking { log.absorb(listOf("a" to 100L, "d" to 400L), emptyList()) }
+        log.settle()
+        assertEquals(setOf("[\"c\",300,\"playlist:q\"]", "[\"a\",100]", "[\"d\",400]"), beside.readLines().toSet())
+        runBlocking { log.close().join() }
+        // The log is exactly as it was.
+        assertTrue(path.setReadable(true))
+        assertEquals(years, path.readText())
+        // The next start reads it, and what was kept beside it is joined to it: each play once.
+        val again = log(path)
+        again.settle()
+        assertEquals(listOf("a" to 100L, "b" to 200L, "c" to 300L, "d" to 400L), again.shared())
+        assertEquals(years + "[\"c\",300,\"playlist:q\"]\n[\"d\",400]\n", path.readText())
+        assertFalse(beside.exists())
+    }
+
+    @Test
+    fun whatIsThereAndIsNotAFileIsLeftAsItIs() {
         // A folder where the file should be: it is there, and can't be read as one.
         val path = File(folder.root, "plays.log").also { it.mkdirs() }
         val notes = mutableListOf<String>()
         val log = PlayLog(path, io) { notes += it }
         runBlocking { log.open() }
         log.add("a", 100)
-        // Said, not hidden.
-        assertTrue(runCatching { log.settle() }.exceptionOrNull() is java.io.IOException)
-        assertTrue(path.isDirectory)
+        log.settle()
+        assertTrue(path.isDirectory && path.list()!!.isEmpty())
         assertEquals(listOf("a" to 100L), log.shared())
+        assertEquals("[\"a\",100]\n", File(folder.root, "plays.log.new").readText())
         assertFalse(notes.isEmpty())
     }
 
