@@ -58,8 +58,8 @@ android {
         applicationId = "org.medianexus.music"
         minSdk = 31
         targetSdk = 37
-        versionCode = 6
-        versionName = "0.5.0"
+        versionCode = 7
+        versionName = "0.5.1"
         buildConfigField("boolean", "JAMS", jamsExist.toString())
         // The app carries a library of its own, compiled for these two kinds of processor
         // and no other (see "The shared core", below): an arm64 phone, and the x86_64
