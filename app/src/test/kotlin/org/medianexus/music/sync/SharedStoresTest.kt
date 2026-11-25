@@ -138,7 +138,7 @@ class SharedStoresTest {
         assertFalse(history.take(theirs) { error("nothing to ask") })
         assertEquals(2, told)
         // It survives a restart.
-        assertEquals(listOf("d", "c", "b", "a"), RecentlyPlayed.load(File(folder.root, "history.json")).map { it.song.id })
+        assertEquals(listOf("d", "c", "b", "a"), RecentlyPlayed.read(File(folder.root, "history.json")).first.map { it.song.id })
     }
 
     // ---- the queue -----------------------------------------------------------------------------------
