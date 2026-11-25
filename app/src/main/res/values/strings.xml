@@ -774,7 +774,6 @@
     <string name="request">Request</string>
     <string name="add_artist">Add artist</string>
     <string name="not_in_your_library">Not in your library</string>
-    <string name="requested">Requested</string>
     <!-- An album card beyond the library: its artist, then that it has been asked for. -->
     <string name="by_requested">%1$s • Requested</string>
     <!-- What a song beyond the library is on: an EP, by its name. -->

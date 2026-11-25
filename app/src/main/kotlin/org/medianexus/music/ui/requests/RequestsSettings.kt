@@ -21,7 +21,6 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
-import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,6 +74,7 @@ fun RequestsSettings() {
     val state = here.state
     val scope = rememberCoroutineScope()
     val activity = LocalActivity.current
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
     val colors = Theme.colors
 
     val title = stringResource(R.string.requests_on)
@@ -110,9 +110,11 @@ fun RequestsSettings() {
         val typed = address.text.toString()
         val secret = key.text.toString()
         key.clearText()
+        // (So the keyboard doesn't come back up over the box when the browser hands back.)
+        focus.clearFocus()
         scope.launch {
+            // What was typed stays in the field: an address turned down can be put right.
             val now = requests.connect(typed, secret)
-            address.setTextAndPlaceCursorAtEnd(requests.settings.value.address)
             // As on Windows: Connect pressed, and a sign-in found in front of Lidarr, goes
             // straight on to it.
             if (now is RequestsState.NeedsSignIn && now.why == null && !now.signedOut) signIn()

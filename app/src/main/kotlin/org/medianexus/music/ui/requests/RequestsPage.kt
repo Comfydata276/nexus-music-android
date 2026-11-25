@@ -139,7 +139,9 @@ fun RequestsPage() {
                                 }
                             }
                         }
-                        if (waiting.arrived.isEmpty() && pending.isEmpty() && waiting.empty.isNotEmpty()) {
+                        // Nothing on its way, or why Lidarr couldn't say (which is said under what has
+                        // arrived, too: that much is known on the phone).
+                        if (waiting.empty.isNotEmpty() && pending.isEmpty() && (waiting.arrived.isEmpty() || waiting.failed)) {
                             item(key = "empty", contentType = "said") { Said(waiting.empty, onRetry = if (waiting.failed) model::again else null) }
                         }
                     }
