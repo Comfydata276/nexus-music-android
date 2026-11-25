@@ -153,6 +153,11 @@ tasks.configureEach {
 }
 tasks.withType<Test>().configureEach {
     dependsOn(buildCore)
+    // The library the tests load is what they test: a change to it (native/src, or the
+    // commit of the Windows repository it is pinned to) runs them again. Handed over only
+    // as a path, it was no input of theirs, and after such a change Gradle said the tests
+    // were up to date, or took their last results from its cache.
+    inputs.dir(coreOut.map { it.dir("host") }).withPropertyName("sharedCoreForThisMachine").withPathSensitivity(PathSensitivity.RELATIVE)
     systemProperty("java.library.path", coreOut.get().dir("host").asFile.path)
 }
 androidComponents {
