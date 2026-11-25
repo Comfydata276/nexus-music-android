@@ -54,7 +54,11 @@ class Graph(context: Context) {
     /** Read here, at start-up, because the first frame needs the theme. The file is small. */
     val settings: SettingsStore = SettingsStore.open(File(context.filesDir, "settings.json"), scope, Dispatchers.IO)
 
-    private val chosen = kotlinx.coroutines.channels.Channel<org.medianexus.music.sync.Chosen.Did>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+    /** A tap, with the account it was made under; or a mark in the queue, for whoever
+     *  waits until everything tapped before it has been carried out. */
+    private class Tapped(val did: org.medianexus.music.sync.Chosen.Did?, val account: String, val reached: kotlinx.coroutines.CompletableDeferred<Unit>? = null)
+
+    private val chosen = kotlinx.coroutines.channels.Channel<Tapped>(kotlinx.coroutines.channels.Channel.UNLIMITED)
 
     /**
      * The person changed one of the choices that are shared between devices (a pin, a
@@ -65,7 +69,27 @@ class Graph(context: Context) {
      * the person is told as for any setting that couldn't be saved.
      */
     fun choose(did: org.medianexus.music.sync.Chosen.Did) {
-        chosen.trySend(did)
+        // **Under the account signed in at this moment**: by the time its turn comes
+        // another may have been taken on, and it is not that account's choice.
+        chosen.trySend(Tapped(did, (session.state.value as? SessionState.SignedIn)?.account?.key.orEmpty()))
+    }
+
+    /** Waits until everything tapped so far has been carried out (an account is not taken
+     *  on with the one before's taps still on their way). */
+    private suspend fun choicesSettled() {
+        val reached = kotlinx.coroutines.CompletableDeferred<Unit>()
+        chosen.trySend(Tapped(null, "", reached))
+        reached.await()
+    }
+
+    /** The shared choices in the settings are made `account`'s (see sync/Belongs.kt): what
+     *  was chosen under another account is put away with it first. False if that couldn't
+     *  be done: then they are still the other account's, and this one is not signed in. */
+    private val takeOn: suspend (String) -> Boolean = { account ->
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            choicesSettled()
+            org.medianexus.music.sync.Belongs.takeOn(settings, account, { key -> accountDirs(context.filesDir, context.cacheDir, key).data }) { diagnostics.note(it) }
+        }
     }
 
     val offline = OfflineSwitch(settings.value.offline)
@@ -79,6 +103,7 @@ class Graph(context: Context) {
         notices = notices,
         scope = scope,
         io = Dispatchers.IO,
+        takeOn = { key -> takeOn(key) },
     )
 
     /** The one writer of saved queues: it outlives the playback service and any account,
@@ -151,6 +176,8 @@ class Graph(context: Context) {
         // The pins, each list's choices and the theme's time in the settings are made this
         // account's own before anything of the account exists to read or share them: what
         // was chosen under another account is put away with it (see sync/Belongs.kt).
+        // (The session has done this already, before it said who is signed in, and signs
+        // nobody in if it can't be done. Here it finds them this account's, and does nothing.)
         org.medianexus.music.sync.Belongs.takeOn(settings, signedIn.account.key, { key -> accountDirs(context.filesDir, context.cacheDir, key).data }) { diagnostics.note(it) }
         AccountGraph(
             signedIn.account, signedIn.api,
@@ -343,7 +370,10 @@ class Graph(context: Context) {
             } catch (e: org.medianexus.music.core.CoreException) {
                 diagnostics.note("the shared library couldn't be loaded: ${e.message}")
             }
-            for (did in chosen) settings.commit { org.medianexus.music.sync.Chosen.made(it, did, System.currentTimeMillis() / 1000) { said -> diagnostics.note(said) } }
+            for (tapped in chosen) {
+                tapped.did?.let { did -> settings.commit { org.medianexus.music.sync.Chosen.made(it, did, tapped.account, System.currentTimeMillis() / 1000) { said -> diagnostics.note(said) } } }
+                tapped.reached?.complete(Unit)
+            }
         }
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }
         // Said once when writing starts to fail, and taken back once a write succeeds.

@@ -95,10 +95,10 @@ class SwitchedOffTest {
         reach.value = Reach()
         delay(300)
         // A pin, a list's shuffle and sort, the theme; a song started; a play that counted.
-        settings.commit { Chosen.made(it, Chosen.Did.Pin("p1", true), 1_000) }
-        settings.commit { Chosen.made(it, Chosen.Did.Shuffle("liked", true), 1_000) }
-        settings.commit { Chosen.made(it, Chosen.Did.Sort("liked", 1, false), 1_000) }
-        settings.commit { Chosen.made(it, Chosen.Did.Theme("Ocean"), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Pin("p1", true), "key", 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Shuffle("liked", true), "key", 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Sort("liked", 1, false), "key", 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Theme("Ocean"), "key", 1_000) }
         account.recentlyPlayed.played(Song(id = "s1", title = "One"))
         account.played("s1", 1_000_000_000L, "", report = false)
         // And it is asked outright.
@@ -164,15 +164,15 @@ class SwitchedOffTest {
         // exists in the build: the shared choices in the settings are that account's.)
         Belongs.takeOn(settings, "acct", { dirs.data })
         var account = account(settings, MutableStateFlow(Reach()), MutableStateFlow(true), dirs)
-        settings.commit { Chosen.made(it, Chosen.Did.Pin("p1", true), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Pin("p1", true), "key", 1_000) }
         // Shown at once.
         assertEquals(listOf("p1"), settings.value.pinnedPlaylists)
-        settings.commit { Chosen.made(it, Chosen.Did.Shuffle("liked", true), 1_000) }
-        settings.commit { Chosen.made(it, Chosen.Did.Sort("liked", 2, true), 1_000) }
-        settings.commit { Chosen.made(it, Chosen.Did.Theme("Ocean"), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Shuffle("liked", true), "key", 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Sort("liked", 2, true), "key", 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Theme("Ocean"), "key", 1_000) }
         // Pinned and unpinned over and over: the last word, once.
-        repeat(50) { settings.commit { s -> Chosen.made(s, Chosen.Did.Pin("p2", it % 2 == 0), 1_000) } }
-        settings.commit { Chosen.made(it, Chosen.Did.Pin("p3", true), 1_000) }
+        repeat(50) { settings.commit { s -> Chosen.made(s, Chosen.Did.Pin("p2", it % 2 == 0), "key", 1_000) } }
+        settings.commit { Chosen.made(it, Chosen.Did.Pin("p3", true), "key", 1_000) }
         assertEquals(listOf("p1", "p3"), settings.value.pinnedPlaylists)
         assertTrue(settings.flush())
         account.close()

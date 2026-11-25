@@ -215,7 +215,11 @@ fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String
                     enabled = !state.busy,
                 )
 
-                val error = state.error ?: if (state.settingsNotSaved) stringResource(R.string.sign_in_not_saved) else null
+                val error = state.error ?: when {
+                    state.settingsNotSaved -> stringResource(R.string.sign_in_not_saved)
+                    state.choicesNotPutAway -> stringResource(R.string.sign_in_choices_not_put_away)
+                    else -> null
+                }
                 error?.let {
                     val shown = if (state.suggestHttp) "$it ${stringResource(R.string.sign_in_try_http)}" else it
                     BasicText(

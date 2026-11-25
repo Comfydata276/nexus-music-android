@@ -535,6 +535,64 @@ class InStepContractTest {
         assertEquals(listOf("p1", "p2", "ones-own"), record(mine).pins)
     }
 
+    @Test
+    fun aChoiceBelongsToTheSignInItWasMadeUnder() = runBlocking {
+        // A pin tapped under one account, with the phone busy; before it is carried out,
+        // another account has been taken on. It is not made under that other account: not
+        // shown among its pins, and never sent into its record.
+        val root = File(folder.root, "two").apply { mkdirs() }
+        val first = PretendPhone(root, "a", scope)
+        first.pin("as-own")
+        first.stop()
+        val second = PretendPhone(root, "b", scope)
+        assertEquals("b", second.settings.value.sharedFor)
+        assertTrue(second.does(Chosen.Did.Pin("tapped-under-a", true), under = "a"))
+        assertTrue(second.does(Chosen.Did.Theme("Rose"), under = "a"))
+        assertFalse("tapped-under-a" in second.pins)
+        assertFalse(second.onDisk().contains("tapped-under-a"))
+        assertTrue(second.settings.value.theme != "Rose")
+        assertTrue(second.notes.any { "another account" in it })
+        val server = PretendServer()
+        assertEquals(InStep.Outcome.DONE, second.step(server).exchange())
+        assertTrue("b had nothing to say", server.made.isEmpty() && server.writes.isEmpty())
+        // What b itself does is b's.
+        second.pin("bs-own")
+        assertEquals(InStep.Outcome.DONE, second.step(server).exchange())
+        assertEquals(listOf("bs-own"), SharedText.read(server.comment(server.made.single())!!)!!.pins)
+    }
+
+    @Test
+    fun ifOneAccountsChoicesCannotBePutAwayTheNextIsNotTakenOnAndNothingIsLost() = runBlocking {
+        val root = File(folder.root, "stuck").apply { mkdirs() }
+        val first = PretendPhone(root, "a", scope)
+        first.pin("as-own")
+        first.stop()
+        val store = SettingsStore.open(File(root, "settings.json"), scope, Dispatchers.Unconfined)
+        // Where a's choices would be put away, the disk won't take them.
+        val away = File(root, "accounts/a/in-step.json")
+        away.mkdirs()
+        val notes = ArrayList<String>()
+        assertFalse(Belongs.takeOn(store, "b", { File(root, "accounts/$it") }) { notes += it })
+        // The settings are a's still, with what a had waiting.
+        assertEquals("a", store.value.sharedFor)
+        assertEquals(listOf("as-own"), store.value.pinnedPlaylists)
+        assertTrue(store.value.choices.toString().contains("as-own"))
+        assertTrue(notes.any { "couldn't be put away" in it })
+        // Once it can be: b is taken on, with nothing of a's; and a, signing in again,
+        // finds its pin still waiting to be shared.
+        away.delete()
+        assertTrue(Belongs.takeOn(store, "b", { File(root, "accounts/$it") }))
+        assertEquals("b" to emptyList<String>(), store.value.let { it.sharedFor to it.pinnedPlaylists })
+        assertTrue(Belongs.takeOn(store, "a", { File(root, "accounts/$it") }))
+        assertEquals(listOf("as-own"), store.value.pinnedPlaylists)
+        assertTrue(store.value.choices.toString().contains("as-own"))
+        // And an account whose own put-away choices can't be read is not taken on either:
+        // they are not taken for none, to be written over at the next change of account.
+        File(root, "accounts/b/in-step.json").let { it.delete(); it.mkdirs() }
+        assertFalse(Belongs.takeOn(store, "b", { File(root, "accounts/$it") }) { notes += it })
+        assertEquals("a", store.value.sharedFor)
+    }
+
     // ---- the upgrade from the build before the shared core ----------------------------------------
 
     @Test

@@ -43,6 +43,7 @@
     <string name="connecting">Connecting…</string>
     <string name="sign_in_unencrypted">Over plain HTTP your sign-in and your music can be read on the way. If your server has an https:// address, use that.</string>
     <string name="sign_in_not_saved">Couldn\'t save your settings on this phone, so you haven\'t been signed in. Try again.</string>
+    <string name="sign_in_choices_not_put_away">Couldn\'t put away the other account\'s pins and list choices on this phone, so you haven\'t been signed in. Try again.</string>
     <string name="sign_in_try_http">If your server really has no HTTPS, type http:// in front of the address.</string>
     <string name="password_kept">Your password is kept on this phone, sealed with a key that never leaves it.</string>
 

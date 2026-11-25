@@ -30,7 +30,7 @@ class CarWorkTest {
         // sync/Chosen.kt), beside how the queue plays overall.
         fun remembered(settings: Settings, shuffle: Boolean, repeat: Int, source: String, now: Long): Settings {
             val overall = Remembered.with(settings, shuffle, repeat)
-            return Remembered.listChoice(settings, shuffle, source)?.let { org.medianexus.music.sync.Chosen.made(overall, it, now) } ?: overall
+            return Remembered.listChoice(settings, shuffle, source)?.let { org.medianexus.music.sync.Chosen.made(overall, it, overall.sharedFor, now) } ?: overall
         }
         val after = remembered(before, shuffle = true, repeat = Repeat.OFF, source = "playlist:p1", now = 1_800_000_000)
         assertEquals(ListPrefs(shuffle = true, at = 1_800_000_000), after.lists["playlist:p1"])

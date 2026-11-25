@@ -103,8 +103,16 @@ object Belongs {
      * `dataOf` gives an account's own data folder). Off the main thread: it reads and writes
      * a small file, and asks the core. `note` is told what went wrong, for the Diagnostics
      * page.
+     *
+     * **False if it couldn't be done**, and then nothing has changed: the choices in the
+     * settings are still the account's they were, with whatever of them was waiting to be
+     * shared. That is when the other account's choices couldn't be put away on the phone
+     * (taken on all the same, this account would have shared them as its own, or they would
+     * have been lost), or this account's own, put away earlier, are there and couldn't be
+     * read (taken for none, they would be written over when it next gives way). Whoever
+     * asked must not go on as this account.
      */
-    fun takeOn(settings: SettingsStore, account: String, dataOf: (String) -> File, note: (String) -> Unit = {}) {
+    fun takeOn(settings: SettingsStore, account: String, dataOf: (String) -> File, note: (String) -> Unit = {}): Boolean {
         // First, what a build before this one left in the settings is brought under this
         // one's rules ([MARK]): once, whoever is signed in.
         try {
@@ -126,33 +134,26 @@ object Belongs {
             // Left as they were, to be tried again at the next start: until then nothing of
             // them is shared ([ready]).
             note("in step: the choices an earlier version kept couldn't be brought over (${e.message})")
-            return
+            return true
         }
         val before = settings.value
-        if (before.sharedFor == account) return
+        if (before.sharedFor == account) return true
         if (before.sharedFor.isEmpty()) {
             settings.update { if (it.sharedFor.isEmpty()) it.copy(sharedFor = account) else it }
-            if (settings.value.sharedFor == account) return
+            if (settings.value.sharedFor == account) return true
         }
-        // Put away with the account they belong to...
-        val leaving = settings.value
-        if (leaving.sharedFor != account && leaving.sharedFor.isNotEmpty()) {
-            val kept = Kept(leaving.pinnedPlaylists, leaving.lists, leaving.theme, leaving.choices, leaving.ownSorts, mark = MARK)
-            try {
-                val data = dataOf(leaving.sharedFor)
-                data.mkdirs()
-                writeAtomically(fileIn(data), json.encodeToString(Kept.serializer(), kept).toByteArray())
-            } catch (_: IOException) {
-                // They go all the same: left where they are, they would be shared into the
-                // next account's record. What was shared of them is still on that account's server.
-                note("in step: one account's pins and list choices couldn't be put away on the phone")
-            }
-        }
-        // ...and this account's own brought out; none kept is none chosen.
+        // This account's own, put away when it last gave way; none kept is none chosen. Read
+        // first: if they are there and can't be read, nothing is put away or taken on.
         val mine = try {
-            fileIn(dataOf(account)).takeIf { it.isFile }?.let { json.decodeFromString(Kept.serializer(), it.readText()) }
+            val kept = fileIn(dataOf(account))
+            try {
+                json.decodeFromString(Kept.serializer(), String(java.nio.file.Files.readAllBytes(kept.toPath()), Charsets.UTF_8))
+            } catch (_: java.nio.file.NoSuchFileException) {
+                null
+            }
         } catch (_: IOException) {
-            null
+            note("in step: this account's pins and list choices on the phone couldn't be read, so it wasn't taken on")
+            return false
         } catch (_: IllegalArgumentException) {
             note("in step: this account's pins and list choices on the phone couldn't be read")
             null
@@ -164,6 +165,20 @@ object Belongs {
                 kept.copy(choices = null, agreed = Agreed(), waiting = emptyList(), mark = MARK)
             }
         } ?: Kept()
+        // Put away with the account they belong to, surely: until they are, they stay.
+        val leaving = settings.value
+        if (leaving.sharedFor != account && leaving.sharedFor.isNotEmpty()) {
+            val kept = Kept(leaving.pinnedPlaylists, leaving.lists, leaving.theme, leaving.choices, leaving.ownSorts, mark = MARK)
+            try {
+                val data = dataOf(leaving.sharedFor)
+                data.mkdirs()
+                writeAtomically(fileIn(data), json.encodeToString(Kept.serializer(), kept).toByteArray(), durable = true)
+            } catch (_: IOException) {
+                note("in step: one account's pins and list choices couldn't be put away on the phone, so the other wasn't taken on")
+                return false
+            }
+        }
+        // ...and this account's own brought out.
         settings.update { now ->
             if (now.sharedFor == account) return@update now
             now.copy(
@@ -176,5 +191,6 @@ object Belongs {
                 ownSorts = mine.ownSorts,
             )
         }
+        return true
     }
 }

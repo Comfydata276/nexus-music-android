@@ -104,17 +104,27 @@ object Chosen {
     }
 
     /**
-     * The settings with what the person did made to them. It shows on the phone whatever
-     * else happens; and if it is something shared, and the shared choices belong to an
-     * account ([Settings.sharedFor]), the core keeps it as the change, to be made at the
-     * next exchange to whatever the server has then. Off the main thread (the core is
-     * asked). `note`: for the Diagnostics page, if the core couldn't be asked: the change
-     * then shows and is not shared.
+     * The settings with what the person did made to them. If it is something shared, and
+     * the shared choices belong to an account ([Settings.sharedFor]), the core keeps it as
+     * the change, to be made at the next exchange to whatever the server has then. Off the
+     * main thread (the core is asked). `note`: for the Diagnostics page, if the core
+     * couldn't be asked: the change then shows and is not shared.
+     *
+     * **A choice belongs to the sign-in it was made under.** `account` is who was signed in
+     * at the moment of the tap (empty for nobody), which may not be whose the settings are
+     * by the time it is carried out: taps wait their turn behind the settings' writes, and
+     * another account may have been taken on meanwhile. Then it is not made at all: these
+     * are another account's pins and choices, and made here it would show among them and
+     * go into that account's record with a fresh time.
      */
-    fun made(settings: Settings, did: Did, now: Long, note: (String) -> Unit = {}): Settings {
+    fun made(settings: Settings, did: Did, account: String, now: Long, note: (String) -> Unit = {}): Settings {
+        if (account != settings.sharedFor && (account.isNotEmpty() || shared(did) != null)) {
+            note("in step: a choice made as another account was taken on wasn't kept")
+            return settings
+        }
         val shown = here(settings, did, now)
         val change = shared(did) ?: return shown
-        val account = settings.sharedFor.ifEmpty { return shown }
+        if (account.isEmpty()) return shown
         return try {
             with(shown, Core.change(choices(settings), account, change).choices)
         } catch (e: CoreException) {

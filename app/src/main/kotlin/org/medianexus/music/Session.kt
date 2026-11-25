@@ -53,6 +53,9 @@ data class SignInState(
     /** The server said yes, but the settings naming the account couldn't be written, so
      *  nobody was signed in. */
     val settingsNotSaved: Boolean = false,
+    /** The server said yes, but the pins and choices of the account that was signed in
+     *  before couldn't be put away on the phone, so nobody was signed in. */
+    val choicesNotPutAway: Boolean = false,
 )
 
 /**
@@ -74,6 +77,10 @@ class Session(
     private val notices: Notices,
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher,
+    /** Makes the phone's shared choices (pins, list choices, the theme) this account's, by
+     *  its key, before it is said to be signed in: the account before's are put away first
+     *  (`sync/Belongs.kt`). False if that couldn't be done: then nobody is signed in. */
+    private val takeOn: suspend (key: String) -> Boolean = { true },
 ) {
     private val current = MutableStateFlow<SessionState>(SessionState.Restoring)
     val state: StateFlow<SessionState> = current.asStateFlow()
@@ -239,8 +246,17 @@ class Session(
                 // a sign-out asked for during either still wins. Its own step, queued behind
                 // this one, removes whatever password was saved here.
                 if (generation.get() != asked) return@inOrder
+                // The account before's choices are put away, and this one's brought out,
+                // before anyone is signed in and before the password is saved: if they
+                // can't be, this account would share them as its own.
+                val account = signedIn(client)
+                if (!takeOn(account.account.key)) {
+                    if (generation.get() == asked) signingIn.value = SignInState(choicesNotPutAway = true)
+                    return@inOrder
+                }
+                if (generation.get() != asked) return@inOrder
                 val kept = withContext(io) { vault.save(client.server, name, password) }
-                if (!publish(asked, signedIn(client))) return@inOrder
+                if (!publish(asked, account)) return@inOrder
                 if (!kept) notices.post(Notice.PasswordNotSaved)
                 if (unencryptedBeyondHome(client.server)) notices.post(Notice.SignedInWithoutEncryption)
                 signingIn.value = SignInState()

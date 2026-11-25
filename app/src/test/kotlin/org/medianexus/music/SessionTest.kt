@@ -82,12 +82,14 @@ class SessionTest {
         http: OkHttpClient = OkHttpClient(),
         vault: PasswordVault = PasswordVault(File(dir, "password.sealed"), PlainBox),
         offline: OfflineSwitch = OfflineSwitch(),
+        takeOn: suspend (String) -> Boolean = { true },
     ): Triple<Session, SettingsStore, Notices> {
         val settings = SettingsStore.open(File(dir, "settings.json"), scope, Dispatchers.IO)
         val notices = Notices()
         val session = Session(
             settings, vault, http, offline,
             { key -> accountDirs(File(dir, "files"), File(dir, "cache"), key) }, notices, scope, Dispatchers.IO,
+            takeOn = takeOn,
         )
         return Triple(session, settings, notices)
     }
@@ -271,6 +273,29 @@ class SessionTest {
         assertEquals(SessionState.SignedOut, session.state.value)
         assertFalse(File(vaultDir, "password.sealed").exists())
         assertFalse(Notice.SignOutFailed in notices.state.value)
+    }
+
+    @Test
+    fun anAccountThatCouldNotBeTakenOnIsNotSignedInAndNoPasswordIsSaved() = runBlocking {
+        // The choices of the account before it couldn't be put away on the phone: were this
+        // one signed in all the same, it would share them as its own, or they would be lost.
+        val dir = folder.newFolder()
+        val asked = ArrayList<String>()
+        var can = false
+        val (session, _, _) = session(dir, takeOn = { key -> asked += key; can })
+        withTimeout(5_000) { session.restored() }
+        session.signIn("http://127.0.0.1:${server.port}", "ada", "sesame")
+        val result = withTimeout(10_000) { session.settled() }
+        assertTrue(result.choicesNotPutAway)
+        assertEquals(SessionState.SignedOut, session.state.value)
+        assertFalse(File(dir, "password.sealed").exists())
+        assertEquals(1, asked.size)
+        // Once it can be, signing in works, and is asked for the same account.
+        can = true
+        session.signIn("http://127.0.0.1:${server.port}", "ada", "sesame")
+        assertFalse(withTimeout(10_000) { session.settled() }.choicesNotPutAway)
+        val now = session.state.value as SessionState.SignedIn
+        assertEquals(listOf(now.account.key, now.account.key), asked)
     }
 
     @Test

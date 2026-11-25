@@ -112,7 +112,7 @@ internal class PretendPhone(val root: File, val account: String, private val sco
 
     /** The person does something on this phone to what is shared: kept, on the disk, before
      *  it shows (as `Graph.choose` does it). */
-    fun does(did: Chosen.Did, now: Long = PRETEND_NOW): Boolean = runBlocking { settings.commit { Chosen.made(it, did, now) { said -> notes += said } } }
+    fun does(did: Chosen.Did, now: Long = PRETEND_NOW, under: String = account): Boolean = runBlocking { settings.commit { Chosen.made(it, did, under, now) { said -> notes += said } } }
 
     fun pin(id: String) = does(Chosen.Did.Pin(id, true))
     fun unpin(id: String) = does(Chosen.Did.Pin(id, false))
