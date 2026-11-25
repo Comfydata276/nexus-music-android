@@ -55,6 +55,13 @@ class PhoneShared(
     /** The dates on screen may have changed. */
     private val datesChanged: () -> Unit = {},
     private val note: (String) -> Unit = {},
+    /** Makes what was just done to a folder's list of files outlast a power cut, or throws
+     *  (`store/Files.kt`). Given, so that a test can make it fail. */
+    private val syncFolder: (File) -> Unit = { org.medianexus.music.store.syncDirOrFail(it) },
+    /** For a test: told the moments of keeping the first copy ("opened": the file beside
+     *  its place is there and empty; "written": it is whole and made sure of, and not yet
+     *  given its name), so that the app can be killed there. */
+    private val keeping: (String) -> Unit = {},
 ) : StepPhone {
     /** The core's choices as the last exchange left them in the settings: a difference from
      *  this is a change made here, to pass on. */
@@ -114,21 +121,27 @@ class PhoneShared(
             // The file is its own proof: it only ever comes to its name whole (below), and
             // is never opened for writing.
             part.delete()
+            // Its name is the folder's to keep, and a run that gave it its name may have
+            // stopped before the folder was made sure of: made sure of again, every time
+            // (it costs nothing), before anything is sent on the strength of it.
+            keptFirst.parentFile?.let { syncFolder(it) }
             true
         } else {
             keptFirst.parentFile?.mkdirs()
             // Written whole under another name beside its place, and made sure of there...
             FileChannel.open(part.toPath(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE).use { channel ->
+                keeping("opened")
                 val bytes = ByteBuffer.wrap(found.encodeToByteArray())
                 while (bytes.hasRemaining()) channel.write(bytes)
                 channel.force(true)
             }
+            keeping("written")
             // ...and only then given its name, if nothing has it: so whatever is at that
             // name is the whole record as it was found, or is not there. (One exchange at
             // a time for an account, in the whole process: nothing else makes it.)
             if (keptFirst.exists()) throw IOException("Something that is not the copy has its name")
             Files.move(part.toPath(), keptFirst.toPath(), StandardCopyOption.ATOMIC_MOVE)
-            keptFirst.parentFile?.let { org.medianexus.music.store.syncDirOrFail(it) }
+            keptFirst.parentFile?.let { syncFolder(it) }
             true
         }
     } catch (_: IOException) {

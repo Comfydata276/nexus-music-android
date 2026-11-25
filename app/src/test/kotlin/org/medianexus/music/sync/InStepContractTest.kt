@@ -236,21 +236,33 @@ class InStepContractTest {
         assertEquals(windows, phone.keptFirst.readText())
     }
 
+    /** The app killed: nothing after this moment is run. */
+    private class Killed : RuntimeException("killed")
+
     @Test
     fun aCopyCutShortByAKillIsNeverTakenForTheCopy() = runBlocking {
         val server = PretendServer().apply { put("a", windows) }
         val phone = phone()
         phone.pin("mine")
-        // The app was killed while it was keeping the copy: what it had written so far is
-        // under the name the copy is written under, never under the copy's own name.
         val part = File(phone.keptFirst.path + ".part")
-        part.parentFile.mkdirs()
-        part.writeText(windows.take(40))
+        // The app is killed while it is keeping the copy: first with the file opened and
+        // nothing in it yet, then with all of it written and not yet given its name.
+        for (moment in listOf("opened", "written")) {
+            phone.keeping = { if (it == moment) throw Killed() }
+            assertTrue(runCatching { phone.step(server).exchange() }.exceptionOrNull() is Killed)
+            // What it had written so far is under the other name. At the copy's own name
+            // there is nothing: and so nothing was sent.
+            assertTrue(moment, part.isFile)
+            assertFalse(moment, phone.keptFirst.exists())
+            assertTrue(moment, server.writes.isEmpty())
+            assertFalse("nothing was marked as tried", phone.onDisk().contains("\"tried\": true"))
+        }
+        // Started again: what the kill left counts for nothing and is gone; the whole
+        // record is kept before the write is made.
+        phone.keeping = {}
         var keptWhenSent: String? = null
         server.gate = { what -> if (what == "write") keptWhenSent = phone.keptFirst.takeIf { it.isFile }?.readText() }
         assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
-        // The half-written one counted for nothing: the whole record was kept before the
-        // write, and what the kill left is gone.
         assertEquals(windows, keptWhenSent)
         assertEquals(windows, phone.keptFirst.readText())
         assertFalse(part.exists())
@@ -260,6 +272,32 @@ class InStepContractTest {
         phone.pin("another")
         assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
         assertFalse(part.exists())
+        assertEquals(windows, phone.keptFirst.readText())
+    }
+
+    @Test
+    fun theKeptCopyCountsAsKeptOnlyOnceItsFolderHasBeenSynced() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        phone.pin("mine")
+        // The copy is written and given its name; and then the folder can't be synced: a
+        // power cut could still undo the naming. Nothing is sent.
+        var synced = 0
+        var failing = true
+        phone.syncFolder = { synced++; if (failing) throw java.io.IOException("The folder couldn't be synced") }
+        assertEquals(InStep.Outcome.FAILED, phone.step(server).exchange())
+        assertTrue(server.writes.isEmpty())
+        assertEquals(windows, phone.keptFirst.readText())
+        assertEquals(1, synced)
+        // Again, and still it can't: finding the file there is not enough. Nothing is sent.
+        assertEquals(InStep.Outcome.FAILED, phone.step(server).exchange())
+        assertTrue("a copy whose folder was never synced is not yet kept", server.writes.isEmpty())
+        assertEquals(2, synced)
+        // Once the folder syncs, the write is made.
+        failing = false
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(3, synced)
+        assertEquals(1, server.writes.size)
         assertEquals(windows, phone.keptFirst.readText())
     }
 

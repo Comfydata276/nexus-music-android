@@ -93,9 +93,15 @@ internal class PretendPhone(val root: File, val account: String, private val sco
     /** Where the record as first found is kept before this phone's first write. */
     val keptFirst = File(data, "shared-record-kept-$version.json")
     val notes = ArrayList<String>()
+    /** How the folder of the kept copy is made sure of (a test can make it fail), and what
+     *  happens at the moments of keeping the copy (a test can have the app killed there). */
+    var syncFolder: (File) -> Unit = { org.medianexus.music.store.syncDirOrFail(it) }
+    var keeping: (String) -> Unit = {}
+
     val shared = PhoneShared(
         settings, account, "tester", added, history, log, read = { read }, playlists = { playlists },
         songs = { ids -> ids.associateWith { Song(id = it, title = "Song $it") } }, keptFirst = keptFirst, note = { notes += it },
+        syncFolder = { syncFolder(it) }, keeping = { keeping(it) },
     )
 
     init {
