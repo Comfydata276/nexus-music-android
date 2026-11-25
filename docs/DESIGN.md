@@ -2647,8 +2647,10 @@ waits: one for each playlist ever pinned or unpinned, one each for a list's shuf
 sort, one for the theme, the last word on each. When the feature is switched on they are
 what goes out at the first exchange. And the notes of when songs were added are kept by the
 core's rules either way: "Date added" does not depend on the switch. `SwitchedOffTest`
-holds all of this; the feature's own tests switch it on for themselves
-(`InStepBuild.forTests`), and a debug build can be told to by the test rig
+holds all of this, and switches it off for itself, as the feature's own tests switch it on
+for themselves (`InStepBuild.forTests`), so that it goes on proving that off means off once
+the build has it on, and **the switch is the one line**; a debug build can be told to by the
+test rig
 (`sync/DebugStep.kt`), so its code goes on being tested and can be run whole on an emulator.
 
 - **What is shared, and where.** The pins, each list's shuffle and sort, the theme, when
@@ -2709,7 +2711,12 @@ the settings, where they change (`Settings.syncOffs`), so off and on again while
 is on its way is not the same "on", and does not give it its leave back. The leave is asked
 for (`still`) before **everything the exchange applies on the phone** (step 5, each of the
 three things step 6 takes in, the note that a write is being tried, the note that it was
-taken) as well as before each request that changes the server. An exchange that has lost
+taken) as well as before each request that changes the server, before the clock it measured
+is published, and before the read that follows making the playlist. **And each change to
+the settings checks it again where it is committed**, inside the settings' one writer and
+of the settings as they are at that moment (this account's, sharing on, the count the
+exchange began with: `PhoneShared.leave`): a commit can wait its turn at the file, and what
+was true when the exchange last asked may not be by then. An exchange that has lost
 it changes nothing more: what it brought is not applied, and if the server already has its
 write, nothing of that is noted here; the changes stay as tried, and the next exchange
 makes them again over their own result, which alters nothing.
@@ -2736,24 +2743,31 @@ makes them again over their own result, which alters nothing.
    said in Diagnostics, and the clock under the setting: "This phone's clock is wrong, so
    its changes aren't being shared."
 7. **Write**, if the plan has one.
-   1. The record's text as it was found is kept, once for the account and the version of
-      the app: `shared-record-kept-<version>.json` in the account's own data, made only if
-      it is not there, never opened for writing again. It is written whole under another
-      name beside its place (`….json.part`), made sure of there, and only then given its
-      own name, with the folder synced: so what is at the copy's name is the whole record
-      or nothing, whenever the app is killed. A file of the other name left by a kill is
-      cleared at the next exchange and never counts as the copy. If it can't be made
-      nothing is sent. (The Windows app makes its copy by creating the file at its name
-      and then writing it, and has the gap this closes.)
+   - **If no playlist holds the record yet, one is made, and that is all this pass does.**
+     Making it sends nothing of the person's, so nothing is marked as tried for it and
+     nothing is kept as "the record as found". The steps are then gone through again from
+     the first, once, with the playlist there (and its leave asked before that read), and
+     that decision is the only one: nothing is made a second time. (Marked before the
+     making, a change taken back while the server was making the playlist looked like one
+     sent and then undone, and the undoing was sent over what another device had put there
+     meanwhile.)
+   1. The record's text **as this decision read it** is kept, once for the account and the
+      version of the app: `shared-record-kept-<version>.json` in the account's own data,
+      made only if it is not there, never opened for writing again. It is written whole
+      under another name beside its place (`….json.part`), made sure of there, and only
+      then given its own name, with the folder synced: so what is at the copy's name is the
+      whole record or nothing, whenever the app is killed. A file of the other name left by
+      a kill is cleared at the next exchange and never counts as the copy. **Found already
+      there, its folder is synced again before anything is sent**: a run that gave it its
+      name may have stopped before the folder was made sure of. If any of it can't be done
+      nothing is sent. (The Windows app makes its copy by creating the file at its name and
+      then writing it, and has the gap this closes.)
    2. `Core.sending`: whether the plan still fits the choices (a change it carries may
       have been taken back meanwhile; then nothing is sent and the exchange starts again),
-      and the choices, with the changes marked as tried, written and made sure of.
-   3. Its leave asked immediately before each request: the playlist is made if there is
-      none; otherwise the text is written, with the account's own client. **Having made the
-      playlist, the exchange writes nothing into it on the strength of what was decided
-      before it existed**: it goes through the steps again from the first, once, with the
-      playlist there, and makes nothing that time (a change taken back while the server
-      was making it is then not written).
+      and the choices, with the changes marked as tried, written and made sure of. Only
+      now, with the write about to be sent, is anything marked.
+   3. Its leave asked immediately before the request: the text is written, with the
+      account's own client.
    4. Only when the server has answered, and the exchange still has its leave:
       `Core.written`, saved. If that can't be saved the exchange has **failed**, not
       finished. With no answer the changes stay as tried and the next exchange makes them
@@ -2782,7 +2796,14 @@ file has).
   before's choices can't be put away (surely), or this account's own, put away earlier, are
   there and can't be read, nothing is changed and nobody is signed in: the sign-in screen
   says so, and the password is not saved. (Taken on all the same, the new account would
-  have shared the other's choices as its own, or they would have been lost.)
+  have shared the other's choices as its own, or they would have been lost.) **A start
+  from the saved password goes through the same door** as a typed sign-in: the session
+  takes the account on before it says anyone is signed in, and nothing else does (the
+  account's own making no longer calls it). Put-away choices that *read and are not what
+  this app wrote* are not a refusal: they are moved to a name beside their place that
+  nothing ever writes to (`in-step.json.damaged`), Diagnostics says so, and the account
+  signs in with no choices. A failed read or write stays a refusal: trying again is the way
+  out, and a phone whose storage fails for good is beyond this app.
 - **What an earlier build left** (`Settings.stepMark`, `Belongs.MARK` = 2; `Core.adopt`).
   - *0.3.0, which kept nothing in step*: its pins, theme and list choices carried times
     made under no rule that survives, and belonged to no account. They stay the phone's
@@ -2854,6 +2875,11 @@ file has).
   be read is left exactly as it is, never written in that run, and what is in memory is
   then not the account's history (nothing is shared or merged; the song playing still
   shows); one that reads and is no list is kept beside its place before the first write.
+  **While it is unreadable the account makes no exchange at all**: a finished attempt to
+  read it is not the history, and an exchange would publish the little in memory and call
+  itself done. The server is not asked, Diagnostics says why once, and it is tried again at
+  the next start. (No list, and a list kept aside as damaged, are an empty history, and
+  the account's: those exchange as usual. The queue is another matter and is still shared.)
 - **A log of plays that could not be read is never taken for one that is not there**
   (`store/PlayLog.kt`). Only "no such file" is a new log. Any other failure to read it
   leaves the file untouched: the plays counted meanwhile are written to a file beside it
@@ -2883,9 +2909,10 @@ file has).
   read first, and the core says whether to save, with the clock **as that very read
   measured it**: not over a queue another device saved after this phone's last changed.
   **A save is for the queue as it is when it is sent**: the player has a number that moves
-  on at everything done to the queue or to playing it (a change, its place moving on, play
-  and pause, another device's put in its place); a save carries the number it was prepared
-  from and is sent only if it is still that number. (The queue's time is in whole seconds
+  on whenever what a save would carry has changed (the list; the song or the place in it by
+  a jump of any kind, a seek within the same second included; play and pause; another
+  device's put in its place) and not as a song simply plays on; a save carries the number it
+  was prepared from and is sent only if it is still that number. (The queue's time is in whole seconds
   and says nothing of a pause.) What is known of the phone's clock is one of three things
   (`InStep.ClockIs`): not measured yet in this run, right, or wrong. "Not measured" is not
   "right": nothing that compares times goes by it, and with the clock known to be wrong no
@@ -2900,7 +2927,12 @@ file has).
   person has changed since**: `QueueHere.replace` is given the place in that order and the
   queue's own time as they were when the look was decided, and puts nothing in the player
   if either has moved on; and it looks once more, by the player's number, when the queue is
-  ready to go in: of two made ready at once only the first to be ready goes in.
+  ready to go in: of two made ready at once only the first to be ready goes in. A look, and
+  "Continue here", have the count of switchings-off an exchange has: one that was getting a
+  queue ready when sharing went off, or off and on again, puts nothing in the player. And
+  **a look never holds its turn past the thing it waits for**: it waits for the phone's own
+  saved queue to be back, and when the service lets an account go that wait is finished as
+  abandoned, so whatever waited finds the account gone and does nothing.
 - **"Continue here" is a choice like any other** (B2). The tap takes its place in the order
   of choices, and by the time its queue is ready it is played only if nothing has taken a
   later place: a pause, a stop, something else to play, a change to the queue. A queue taken
@@ -2929,6 +2961,10 @@ server offers, and is written down where the rules are (the Windows repository's
   good by it: each device still holds what it wrote as agreed, with its time, and offers it
   again at its next look, where it is merged back in. The same holds for the saved queue,
   between the phone's look at it and its save (B1).
+- **A change to the queue in the instant between the last look at its number and the save
+  leaving the phone** is sent as it was looked at, and put right by the next save. (The same
+  kind of instant the Windows app accepts for an exchange: nothing can be checked after the
+  last check.)
 - **A write whose answer is lost, and the opposite then chosen on another device.** The
   phone's write reached the server and the phone never heard; before the phone next
   exchanges, a PC deliberately sets the opposite (unpins what the phone pinned). The phone's

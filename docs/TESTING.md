@@ -2248,6 +2248,17 @@ code, the tests run, and the code put back (25 November 2026, on the tree as it 
 | A save of the queue is sent if the time, the owner and the current song are as they were (`QueueStep.upload`) | `QueueStepTest.aSaveIsForTheQueueAsItIsWhenItIsSent` |
 | Looks at the server's queue do not take turns (`QueueStep.check`) | `QueueStepTest.looksTakeTurnsSoALaterOneIsNeverPutInBeforeAnEarlierOne` |
 | A queue ready to go in is not looked at once more (`QueueHere.replace`) | `ContinueHereTest.ofTwoQueuesMadeReadyAtOnceOnlyTheFirstToBeReadyGoesIn` |
+| Making the playlist marks the waiting changes as tried and keeps an (empty) copy first (`InStep.once`) | `InStepContractTest.makingThePlaylistSendsNothingOfThePersonsSoNothingIsMarkedOrKeptForIt` (the pin taken back while the playlist is made, and a PC's record with that pin appearing before the read that follows) |
+| The kept copy found at its name is taken for kept without its folder being synced again | `theKeptCopyCountsAsKeptOnlyOnceItsFolderHasBeenSynced` (the folder's sync made to fail) |
+| The kept copy is written at its own name | `aCopyCutShortByAKillIsNeverTakenForTheCopy` (the app killed inside the real write, opened and empty, and again whole and not yet named) |
+| A commit of what an exchange applies checks only whose the settings are (`PhoneShared`) | `whatAnExchangeAppliesIsCheckedWhereItIsCommitted` (the real setting switched off while the commit waits its turn; off and on while the last note waits), `sharingSwitchedOffAndOnAgainDoesNotGiveAnExchangeBegunBeforeItsLeaveBack` |
+| A finished attempt to read Recently played counts as read (`AccountGraph`) | `SwitchedOffTest.anAccountWhoseRecentlyPlayedCouldNotBeReadMakesNoExchange` (through the account itself, every trigger set off) |
+| A start from the saved password says who is signed in before the account is taken on (`Session`) | `GraphHandoffTest.theSavedPasswordStartTakesTheAccountOnBeforeAnyoneIsSignedInOrSignsNobodyIn` (through the app's own `Graph`, started again over the same files) |
+| Put-away choices that do not decode are taken for none (`Belongs.takeOn`) | `GraphHandoffTest.putAwayChoicesThatReadAndAreNoChoicesAreKeptAsideAndTheAccountSignsIn` |
+| An account is taken on without waiting for the taps made before it (`Graph.takeOn`) | `GraphHandoffTest.aTapStillOnItsWayWhenAnotherAccountSignsInIsCarriedOutForItsOwnAccountFirst` (the tap held at the settings' file) |
+| The queue's number does not move at a jump in position (`PlaybackService`) | `ContinueHereTest.theQueuesNumberMovesAtWhateverChangesWhatASaveWouldCarry` (the service's own number: a seek within the second, play, pause, another song, a song taken out) |
+| Letting an account go leaves the wait for its saved queue unfinished (`PlaybackService.leave`) | `ContinueHereTest.aLookWaitingForTheSavedQueueWhenTheServiceIsDestroyedGivesUpItsTurn` (the account's own look, the service destroyed mid-look, a later look) |
+| A look asks only whether sharing is on now (`QueueStep.check`) | `ContinueHereTest.aLookThatWasPreparingWhenSharingWentOffAndOnAgainAppliesNothing` |
 Not shown by taking code out, and said so: that the queue page's own taps take their place
 (`PlayerConnection.move`, `remove`, `clear` each begin with `Choices.take()`): the screens
 have no player to connect to in a unit test, so `ContinueHereTest` takes the place itself
@@ -2274,7 +2285,12 @@ purpose; Recently played and what was kept beside the log of plays, unreadable, 
 exactly as they are (`RecentlyPlayedTest`, `PlayLogTest`), and a history that could not be
 written stays due; saves of the queue take turns for an account, not a sign-in; a clock
 nobody has measured is not a clock that is right; an answer from the library the door has
-no name for is an error (`CoreTest`); every test of `sync/` has a time limit.
+no name for is an error (`CoreTest`); **with the one line `EXISTS = true` and nothing
+else changed, the whole suite and lint pass** (`SwitchedOffTest` switches the feature off
+for itself, and goes on proving that off means off); that a song simply playing on does not
+move the queue's number has no test (the service's player does not play in a unit test: it
+is the rule's wording in the code, and a save made while playing is prepared and sent in
+one go); every test of `sync/` has a time limit.
 
 **3. With PCs on the Windows app's code, through a real server** (`scripts/instep-check`,
 `InStepLiveTest`). The script starts a server of its own (`scripts/server --instance step`,
@@ -2408,13 +2424,29 @@ request held for more than thirty seconds is given up by the app, whose exchange
 fails and asks again at the next look: the made-and-undone choice and the kill were fitted
 inside that time.)
 
-**6. The whole app, after it** (25 November 2026; the code as it stands at the end of
-this work, `e0ec18c`, **with the feature off**; the reports are in `reports/a1/` in the
-cache).
+**The held write again, after the second review's round.** Its fixes are on the path of
+that run's steps 4 to 8, so those were made again (25 November 2026) on the release build
+of `53a17d6` with the line flipped, installed fresh, through the same gate, against a new
+record of 907 bytes from two PCs on 0.40.6's code. The app's first exchange read only, and
+left the record byte for byte. A playlist pinned with its menu: the first write was held;
+the kept copy was on the phone by then, the 907 bytes exactly, with no `.part` beside it;
+"Empty playlist" was pinned and unpinned while it was held; the server took the write, the
+app never heard, and was killed. The record then differed from the PCs' in its pins alone
+(theirs, with the phone's after them): theme, lists, dates and plays as they were, and no
+trace of the undone pin. After the kill the kept copy was unchanged and the phone's pin
+waited, marked as tried. Both PCs showed the same and wrote nothing. The app restarted,
+read, wrote nothing, and had nothing left waiting; a further round, nobody wrote. No crash,
+no "in step:" line.
 
-- The whole unit suite three times from nothing (`--no-build-cache --rerun-tasks`): 1,073
-  tests and none failed, each time (179, 189 and 130 s); seven passed over (the six of
+**6. The whole app, after it** (25 November 2026; the code as it stands at the end of
+this work, `53a17d6`, **with the feature off**; the reports are in `reports/a1/` in the
+cache, the last round's named `final2-…`).
+
+- The whole unit suite three times from nothing (`--no-build-cache --rerun-tasks`): 1,083
+  tests and none failed, each time (137, 130 and 131 s); seven passed over (the six of
   `InStepLiveTest`, which want their server, and one of `OrderOfChoicesTest`).
+- The same suite and lint **with the one line `EXISTS = true`** and nothing else changed:
+  passed (at `626767b`; the line was put back).
 - `scripts/check --release`: the debug build, the unit tests, lint and the release build,
   all passed. The release APK is 8,148,403 bytes (0.4.0: 6,693,594).
 - `scripts/instep-check`, the end-to-end check of section 3: all of it held.
