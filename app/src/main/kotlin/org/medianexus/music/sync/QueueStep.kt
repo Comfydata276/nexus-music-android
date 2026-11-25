@@ -118,6 +118,10 @@ class QueueStep(
     /** The setting itself is on, whether or not the server can be reached just now. With it
      *  off nothing is offered, and nothing of another device's is put in the player. */
     private val on: () -> Boolean = may,
+    /** A number that moves on whenever sharing is switched off (the settings count it): a
+     *  look, or "Continue here", that was getting a queue ready when it moved puts nothing
+     *  in the player, though sharing be on again by then. */
+    private val standing: () -> Long = { 0 },
     private val scope: CoroutineScope,
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
     private val pause: suspend (Long) -> Unit = { delay(it) },
@@ -233,6 +237,8 @@ class QueueStep(
      */
     suspend fun check() = looking.withLock {
         if (!may()) return@withLock
+        // (The "on" this look has: not one that comes after a switching off.)
+        val began = standing()
         try {
             val answer = saved()
             val theirs = theirsOf(answer, clock())
@@ -251,7 +257,7 @@ class QueueStep(
                     "take_up" -> looked.place?.let { place ->
                         // Taken up: there's nothing left to offer; and it is that device's
                         // still, not this phone's to save, until something is done to it here.
-                        if (player.replace(answer.value.songs, place.cursor, (place.position * 1000).toLong(), place.stamp, place.taken, choice = null, asOf = asOf, stampThen = mine.stamp, still = on)) offered(null)
+                        if (player.replace(answer.value.songs, place.cursor, (place.position * 1000).toLong(), place.stamp, place.taken, choice = null, asOf = asOf, stampThen = mine.stamp, still = { on() && standing() == began })) offered(null)
                     }
                     // This phone's queue is newer than what the server holds: its save is
                     // owed. (Unless one is already on its way.)
@@ -286,6 +292,7 @@ class QueueStep(
         val theirs = offer.value ?: return
         offer.value = null
         if (!on()) return
+        val began = standing()
         val asked = Choices.take()
         scope.launch {
             val place = try {
@@ -295,7 +302,7 @@ class QueueStep(
             }
             withContext(main) {
                 val player = here ?: return@withContext
-                player.replace(theirs.queue.songs, place.cursor, (place.position * 1000).toLong(), place.stamp, place.taken, choice = asked, asOf = asked, stampThen = player.stamp(), still = on)
+                player.replace(theirs.queue.songs, place.cursor, (place.position * 1000).toLong(), place.stamp, place.taken, choice = asked, asOf = asked, stampThen = player.stamp(), still = { on() && standing() == began })
             }
         }
     }

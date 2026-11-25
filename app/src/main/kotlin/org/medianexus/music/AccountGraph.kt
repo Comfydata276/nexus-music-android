@@ -318,7 +318,7 @@ class AccountGraph(
             account = account.key,
             // (Not while this phone's clock is wrong: a queue saved then would be told to
             // other devices as changed at a time that never was.)
-            may = { scope.isActive && mayShare() && step?.clockIs?.value != org.medianexus.music.sync.InStep.ClockIs.WRONG }, on = { settings.value.sync }, scope = scope, pause = pause, note = wiring?.note ?: {},
+            may = { scope.isActive && mayShare() && step?.clockIs?.value != org.medianexus.music.sync.InStep.ClockIs.WRONG }, on = { settings.value.sync }, standing = { settings.value.syncOffs }, scope = scope, pause = pause, note = wiring?.note ?: {},
         )
     }
 

@@ -138,7 +138,11 @@ class PlaybackService : MediaLibraryService() {
         /** The account's saved queue, for this service's turn at it: nothing is written to
          *  it until what was read from it is in the player (see [restore]). */
         val queue = KeptQueue(account.queueFiles, graph.queueSaver)
-        /** Done once the saved queue has been read and put back (see [restore]). */
+        /** Done once the saved queue has been read and put back (see [restore]); **or the
+         *  account has been let go** ([leave]), which finishes it as abandoned: whoever
+         *  waited then finds this is no longer the service's account, and does nothing.
+         *  (Never left unfinished: a wait on it would last for ever, and whatever turn the
+         *  waiter held with it.) */
         val restoring = CompletableDeferred<Unit>()
 
         /** When the queue ends, music like its last song carries on (see [AutoplayRunner]):
@@ -683,6 +687,11 @@ class PlaybackService : MediaLibraryService() {
     @androidx.annotation.VisibleForTesting
     internal fun inside() = Inside(player, exo, session, callback, watcher)
 
+    /** For a test: waited for before an account's saved queue is read and put back, so that
+     *  what happens while that is under way can be looked at. */
+    @androidx.annotation.VisibleForTesting
+    @Volatile internal var holdingRestore: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     /** Playback has begun and Media3's notification holds the foreground now (or the start
      *  came to nothing). The next start has a limit of its own. */
     private fun heldLongEnough() {
@@ -946,6 +955,7 @@ class PlaybackService : MediaLibraryService() {
      * the queue is never marked as put back.)
      */
     private suspend fun restore(era: Era) {
+        holdingRestore?.await()
         val saved = era.queue.read()
         if (saved != null) {
             // Made ready off the main thread: it can be thousands of songs.
@@ -1008,6 +1018,9 @@ class PlaybackService : MediaLibraryService() {
         passing.end()
         ahead.want(emptyList())
         old.scope.cancel()
+        // Whatever was waiting for this account's saved queue to be put back is let go: it
+        // is not going to be. (Each such wait then looks, and finds the account gone.)
+        old.restoring.complete(Unit)
         // Off the main thread: closing writes the cache's index.
         graph.scope.launch(Dispatchers.IO) { old.kept.close() }
     }
@@ -2605,6 +2618,7 @@ class PlaybackService : MediaLibraryService() {
         // The saved queue is put back when the account is taken on; wait for that rather
         // than read the file a second time.
         era.restoring.await()
+        if (this.era !== era) throw UnsupportedOperationException("The account this was for has gone")
         // ("Carry on" from a request that something newer has overtaken carries nothing on.)
         if (!player.stands(mine)) throw UnsupportedOperationException("Overtaken by a newer choice")
         player.stageCurrent()?.let { (items, start) -> return MediaItemsWithStartPosition(items, start, exo.currentPosition) }

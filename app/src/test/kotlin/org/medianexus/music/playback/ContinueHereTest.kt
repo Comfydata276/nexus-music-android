@@ -156,6 +156,85 @@ class ContinueHereTest {
         assertEquals(still, here().revision())
     }
 
+    /** What the server answers for the saved queue: one another device saved, just now. */
+    private fun savedElsewhere() = """"playQueue":{"current":"pc1","position":30000,"changed":"${java.time.Instant.now().plusSeconds(60)}","changedBy":"NexusMusic-0badc0de","entry":[""" +
+        (0..2).joinToString(",") { """{"id":"pc$it","title":"Theirs $it","duration":200}""" } + "]}"
+
+    /** Another account signs in while this service holds back the putting back of its saved
+     *  queue ([PlaybackService.holdingRestore]): the account's own look at the server's
+     *  queue, as the app makes it. */
+    private fun anotherAccountWithItsQueueStillBeingPutBack(held: kotlinx.coroutines.CompletableDeferred<Unit>): org.medianexus.music.sync.QueueStep {
+        service.holdingRestore = held
+        server.answers["getPlayQueue"] = savedElsewhere()
+        server.signIn(app, "second")
+        settle()
+        return app.graph.accounts.state.value!!.queueStep!!
+    }
+
+    /** Lets the main thread turn until `done`, or fails after thirty seconds. */
+    private fun turnUntil(what: String, done: () -> Boolean) {
+        val until = System.nanoTime() + 30_000_000_000L
+        while (!done()) {
+            settle()
+            check(System.nanoTime() < until) { "not in thirty seconds: $what" }
+            Thread.sleep(5)
+        }
+        settle()
+    }
+
+    @Test
+    fun aLookWaitingForTheSavedQueueWhenTheServiceIsDestroyedGivesUpItsTurn() {
+        val held = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val step = anotherAccountWithItsQueueStillBeingPutBack(held)
+        // A look finds another device's queue to take up, and waits for the phone's own to
+        // be back first...
+        val asked = server.asked.count { it.startsWith("getPlayQueue") }
+        val first = scope.async { step.check() }
+        turnUntil("the look has read the server") { server.asked.count { it.startsWith("getPlayQueue") } > asked }
+        repeat(20) { settle(); Thread.sleep(5) }
+        assertFalse("the look is waiting for the saved queue", first.isCompleted)
+        // ...when Android destroys the service. What it was waiting for will never come:
+        // the look gives up, does nothing, and lets its turn go.
+        service.onDestroy()
+        turnUntil("the look gave up") { first.isCompleted }
+        // A service again, and a later look: it has its turn, and takes the queue up.
+        service = Robolectric.buildService(PlaybackService::class.java).create().get()
+        service.foreground = Android()
+        inside = service.inside()
+        settle()
+        val later = scope.async { step.check() }
+        turnUntil("a later look ran") { later.isCompleted }
+        turnUntil("the queue was taken up") { inside.player.queue.current()?.id == "pc1" }
+    }
+
+    @Test
+    fun aLookThatWasPreparingWhenSharingWentOffAndOnAgainAppliesNothing() {
+        val held = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val step = anotherAccountWithItsQueueStillBeingPutBack(held)
+        val asked = server.asked.count { it.startsWith("getPlayQueue") }
+        val look = scope.async { step.check() }
+        turnUntil("the look has read the server") { server.asked.count { it.startsWith("getPlayQueue") } > asked }
+        repeat(20) { settle(); Thread.sleep(5) }
+        assertFalse(look.isCompleted)
+        // Sharing is switched off, and on again, while the queue it found is waiting to go
+        // in. It was let go by the first, and stays let go.
+        // (Switching on again asks for a look of its own, which is right. So that it is
+        // the first look that is seen here, the server has nothing saved from now on: only
+        // the look that had already read could put that queue in.)
+        server.answers.remove("getPlayQueue")
+        app.graph.settings.update { it.copy(sync = false) }
+        app.graph.settings.update { it.copy(sync = true) }
+        held.complete(Unit)
+        turnUntil("the look is done") { look.isCompleted }
+        repeat(40) { settle(); Thread.sleep(5) }
+        assertTrue("another device's queue went into the player after sharing had been switched off", inside.player.queue.isEmpty)
+        // A look begun since has its own leave.
+        server.answers["getPlayQueue"] = savedElsewhere()
+        val next = scope.async { step.check() }
+        turnUntil("the next look ran") { next.isCompleted }
+        turnUntil("the queue was taken up") { inside.player.queue.current()?.id == "pc1" }
+    }
+
     @Test
     fun ofTwoQueuesMadeReadyAtOnceOnlyTheFirstToBeReadyGoesIn() {
         inside.player.play(mine(), 1, "A list", playNow = false)
