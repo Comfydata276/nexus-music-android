@@ -65,7 +65,8 @@ class SwitchedOffTest {
         app.graph.playing = true
         settle()
         app.graph.playing = false
-        app.graph.session.signOut()
+        // (Signed out wholly before signing in again: the sign-in waits for its own objects.)
+        kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(120_000) { app.graph.session.signOut().join() } }
         settle()
         server.signIn(app)
         settle()
