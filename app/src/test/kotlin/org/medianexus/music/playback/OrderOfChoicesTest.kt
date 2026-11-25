@@ -258,4 +258,50 @@ class OrderOfChoicesTest {
         assertEquals("here0", inside.player.queue.current()?.id)
         assertEquals("not playing what the second Play asked for", true, inside.exo.playWhenReady)
     }
+    /** A Pause tapped on the phone takes its one place, at the tap: arriving, it takes no
+     *  other (it used to take two more, in the player and in its listener). */
+    @Test
+    fun aPauseTappedOnThePhoneTakesOnePlace() {
+        val inside = service.inside()
+        app.graph.player.play(List(3) { Song(id = "here$it", title = "Here $it") }, 0, "Loaded")
+        until("the list played") { inside.player.queue.current()?.id == "here0" && inside.exo.playWhenReady }
+        until("the screens see it playing") { app.graph.player.playing.value }
+        val before = Choices.latest
+        app.graph.player.playPause()
+        until("paused") { !inside.exo.playWhenReady }
+        settle()
+        assertEquals("a Pause tapped on the phone took other than one place", before + 1, Choices.latest)
+    }
+
+    /** A Pause from outside the app's screens (a car, a headset, the notification) takes its
+     *  one place when it arrives: a start the phone chose before it gives way. */
+    @Test
+    fun aPauseFromOutsideTakesItsPlaceWhenItArrives() {
+        val acted = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val inside = service.inside()
+        app.graph.player.play(List(2) { Song(id = "p$it", title = "P $it") }, 0, "Playing")
+        until("the list played") { inside.player.queue.current()?.id == "p0" && inside.exo.playWhenReady }
+        val gate = lookupOut(acted, "album")
+        val before = Choices.latest
+        controller.pause()
+        settle()
+        assertEquals("a Pause from outside took other than one place", before + 1, Choices.latest)
+        gate.complete(Unit)
+        settle()
+        assertEquals("a start went ahead after a Pause", emptyList<String>(), acted.toList())
+    }
+
+    /** The sleep timer's pause is a choice even when the music is already paused: a start
+     *  still being looked up gives way to it. */
+    @Test
+    fun theSleepTimerFiringWhilePausedTakesItsPlace() {
+        val acted = java.util.Collections.synchronizedList(mutableListOf<String>())
+        assertFalse(service.inside().exo.playWhenReady)
+        val gate = lookupOut(acted, "album")
+        app.graph.sleep.player!!.sleep()
+        settle()
+        gate.complete(Unit)
+        settle()
+        assertEquals("a start went ahead after the sleep timer's pause", emptyList<String>(), acted.toList())
+    }
 }

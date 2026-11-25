@@ -23,4 +23,18 @@ object Choices {
 
     /** Whether nothing has taken a place after `place`. */
     fun stands(place: Long): Boolean = last.get() == place
+
+    /** Play or Pause tapped on the app's screens, on its way to the player, its place taken. */
+    private val tapsOnTheWay = java.util.concurrent.atomic.AtomicInteger()
+
+    /** Play or Pause tapped on the app's screens: its one place, taken now, at the tap. It
+     *  takes no other when it reaches the player ([arrivedFromTap]). */
+    fun tapPlayPause(): Long {
+        tapsOnTheWay.incrementAndGet()
+        return take()
+    }
+
+    /** Play or Pause from the app's screens has reached the player: whether it was a tap
+     *  whose place was taken at the tap ([tapPlayPause]). One that wasn't takes its place now. */
+    fun arrivedFromTap(): Boolean = tapsOnTheWay.getAndUpdate { if (it > 0) it - 1 else 0 } > 0
 }

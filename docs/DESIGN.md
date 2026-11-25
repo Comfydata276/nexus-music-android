@@ -3030,7 +3030,13 @@ newest wins and a stop beats what was asked before it. The gaps the M3b review f
 closed by the same rule (`OrderOfChoicesTest`, in the real service, a case each):
 
 - **Resuming, Pause, and a tap on an entry of the queue** take their place at the tap
-  (`PlayerConnection.playPause`, `jump`).
+  (`PlayerConnection.playPause`, `jump`). A Play or Pause tapped takes no other when it reaches
+  the player (`Choices.tapPlayPause`, `arrivedFromTap`; `QueuePlayer.placeTakenAtTap`). A Pause
+  from outside the app's screens (a car, a headset, the notification) takes its one place as it
+  arrives (`QueuePlayer.handleSetPlayWhenReady`); the player's listener takes none for a pause
+  asked of the player, only for one it came to by itself or was put in by the service (the end
+  of the queue, the sound taken away, the server given up on). The sleep timer firing while
+  the music is already paused takes its place all the same.
 - **A Play from a list carries its tap's place** (`AppCommands.PLACE`) and the service plays
   it at that place (`QueuePlayer.playFor`) instead of taking a second one on delivery. As
   decided: anything that takes a later place before it lands (the sound taken away, a choice

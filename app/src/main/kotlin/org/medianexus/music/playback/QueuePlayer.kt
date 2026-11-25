@@ -155,7 +155,11 @@ class QueuePlayer(
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = followPlayer()
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (!playWhenReady) moved()
+                // A pause the player came to by itself or was put in by the service (the
+                // end of the queue, the sound taken away, the server given up on) takes its
+                // place here. One asked of this player ([handleSetPlayWhenReady]) has had its
+                // one place already, or took it at the tap: none more.
+                if (!playWhenReady && !asking) moved()
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -241,11 +245,27 @@ class QueuePlayer(
      *  session hold only the nearest of them). */
     val ahead: Int get() = (queue.order.size - queue.cursor - 1).coerceAtLeast(0)
 
+    /**
+     * Set by the playback service just before it carries out Play or Pause from the app's own
+     * screens, which took the choice's one place in the order of choices at the tap
+     * (`PlayerConnection.playPause`): arriving, it takes no other. Used up by the next
+     * [handleSetPlayWhenReady], and cleared by the service once the command has been carried
+     * out, in case it never reached this player.
+     */
+    var placeTakenAtTap = false
+
+    /** In [handleSetPlayWhenReady]: the listener's pause is that one's, not another. */
+    private var asking = false
+
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
         // A Pause is the person saying "not now", whatever the player was doing: it takes its
-        // place even when already paused, so a start still being looked up gives way to it
-        // (order of choices).
-        if (!playWhenReady) moved()
+        // one place even when already paused, so a start still being looked up gives way to it
+        // (order of choices). From a car, a headset or the notification, here as it arrives;
+        // from the app's screens, at the tap: a Play tapped just after it, with a later place,
+        // is not overtaken by its own earlier Pause arriving.
+        val tapped = placeTakenAtTap
+        placeTakenAtTap = false
+        if (!playWhenReady && !tapped) moved()
         if (playWhenReady) {
             if (!mayPlay()) return Futures.immediateVoidFuture()
             // A start that was refused left the player stopped (see refuseStart): a Play that
@@ -255,7 +275,12 @@ class QueuePlayer(
                 if (exo.playbackState == STATE_IDLE) exo.prepare()
             }
         }
-        return super.handleSetPlayWhenReady(playWhenReady)
+        asking = true
+        try {
+            return super.handleSetPlayWhenReady(playWhenReady)
+        } finally {
+            asking = false
+        }
     }
 
     /** Starts the player playing what it holds, from this class's own doing. */

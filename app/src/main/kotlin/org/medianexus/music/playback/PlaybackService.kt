@@ -747,7 +747,12 @@ class PlaybackService : MediaLibraryService() {
 
     /** The sleep timer's time is up: the music pauses, where it is, with the queue as it was. */
     private fun sleepNow() {
-        if (!exo.playWhenReady) return
+        // Its place in the order of choices all the same: a start still being looked up
+        // gives way to it, as to a Pause. (Playing, the pause takes it.)
+        if (!exo.playWhenReady) {
+            Choices.take()
+            return
+        }
         player.pause()
         graph.toasts.show(getString(R.string.sleep_paused))
     }
@@ -1932,7 +1937,14 @@ class PlaybackService : MediaLibraryService() {
             // ("Play that entry of the queue", by its place, from someone whose screen may
             // still show the places as they were a moment ago, is the player's to act on or
             // not: see QueuePlayer.placeIsSure.)
-            return if (Access.mayPlayer(caller, playerCommand)) SessionResult.RESULT_SUCCESS else SessionError.ERROR_PERMISSION_DENIED
+            if (!Access.mayPlayer(caller, playerCommand)) return SessionError.ERROR_PERMISSION_DENIED
+            // Play or Pause tapped on the app's own screens took its place at the tap; carried
+            // out now (straight after this, on this thread), it takes no other.
+            if (caller == Caller.OWN_INTERFACE && playerCommand == Player.COMMAND_PLAY_PAUSE && Choices.arrivedFromTap()) {
+                player.placeTakenAtTap = true
+                main.post { player.placeTakenAtTap = false }
+            }
+            return SessionResult.RESULT_SUCCESS
         }
 
         override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> {

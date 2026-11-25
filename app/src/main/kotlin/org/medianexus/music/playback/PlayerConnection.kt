@@ -433,8 +433,8 @@ class PlayerConnection(
     fun playPause() {
         steered.hands?.let { it.toggle(); return }
         // Resuming (or pausing) takes its place at the tap (order of choices): a lookup still
-        // out for something chosen before it gives way to it.
-        Choices.take()
+        // out for something chosen before it gives way to it. Arriving, it takes no other.
+        Choices.tapPlayPause()
         ownPlayPause()
     }
 
