@@ -1,12 +1,12 @@
 package org.medianexus.music.sync
 
 /**
- * Whether keeping in step with the person's other devices exists in this build. **It does
- * not, yet.** The code for it is built (this package; "Keep my devices in step" under
- * Settings, Account; the queue saved on the server and "Continue here"), and its rules are
- * no longer the phone's own: they are the shared core's, the same code the Windows app runs
- * (`core/Core.kt`, docs/DESIGN.md "The shared core"). It stays switched off until that has
- * been reviewed; until then nothing of it may run on a phone.
+ * Whether keeping in step with the person's other devices exists in this build. **It does,
+ * from 0.5.0.** ("Keep my devices in step" under Settings, Account; the queue saved on the
+ * server and "Continue here".) Its rules are not the phone's own: they are the shared
+ * core's, the same code the Windows app runs (`core/Core.kt`, docs/DESIGN.md "The shared
+ * core"). The switch stays, so that the whole of it can be taken out of a build again with
+ * one line, and so that the tests of what "off" means go on holding.
  *
  * With it off: the setting is not shown; the account makes no exchange, no saved queue and
  * no "Continue here" ([org.medianexus.music.AccountGraph.step] and `queueStep` are null), so
@@ -22,11 +22,11 @@ package org.medianexus.music.sync
  */
 object InStepBuild {
     /** The one switch, for the whole build. */
-    const val EXISTS = false
+    const val EXISTS = true
 
     /**
-     * Set only by tests: `true` by the tests of the feature itself, so that its code goes
-     * on being tested while it is switched off (the unit tests, and a debug build told to
+     * Set only by tests: `true` by the tests of the feature itself, so that its code is
+     * tested whatever the switch says (the unit tests, and a debug build told to
      * by the test rig, as it starts: `DebugStep`, which a release build has only an empty
      * version of); `false` by the tests of what "switched off" means, so that they go on
      * proving it once [EXISTS] is true. Null, as it always is in a release build: the

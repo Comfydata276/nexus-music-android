@@ -2633,8 +2633,9 @@ and `core/src/handover.rs`, and a second telling here would be a second place fo
 be wrong. What follows is the phone's own side: what it keeps, what it asks, and the order
 things are taken, checked and saved in, which is the half of the contract a caller owes.
 
-**Switched off in this build** (`sync/InStepBuild.kt`, one constant, `EXISTS = false`),
-until the phone's side has been reviewed as the Windows side was. With it off the setting is
+**Switched on from 0.5.0** (`sync/InStepBuild.kt`, one constant, `EXISTS = true`), after
+the phone's side was reviewed as the Windows side was; 0.4.0 shipped with it off, and the
+constant stays so that a build can be made without it. With it off the setting is
 not shown; the account has no exchange and no shared queue (`AccountGraph.step` and
 `queueStep` are null), so nothing starts one, schedules one or asks the server anything for
 one: the sync playlist is never looked for, read, made or written, and the server's saved
