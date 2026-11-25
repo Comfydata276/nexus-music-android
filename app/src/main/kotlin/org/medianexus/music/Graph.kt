@@ -54,6 +54,20 @@ class Graph(context: Context) {
     /** Read here, at start-up, because the first frame needs the theme. The file is small. */
     val settings: SettingsStore = SettingsStore.open(File(context.filesDir, "settings.json"), scope, Dispatchers.IO)
 
+    private val chosen = kotlinx.coroutines.channels.Channel<org.medianexus.music.sync.Chosen.Did>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+
+    /**
+     * The person changed one of the choices that are shared between devices (a pin, a
+     * list's shuffle or sort, the theme), on a screen or with the player. It is made off the
+     * main thread, in the order it was asked for, and **is on the disk before it shows as
+     * made** (`sync/Chosen.kt`: if it is something shared, the shared core keeps it as the
+     * change, for the account's other devices). If it couldn't be saved it isn't made, and
+     * the person is told as for any setting that couldn't be saved.
+     */
+    fun choose(did: org.medianexus.music.sync.Chosen.Did) {
+        chosen.trySend(did)
+    }
+
     val offline = OfflineSwitch(settings.value.offline)
 
     val session = Session(
@@ -320,6 +334,17 @@ class Graph(context: Context) {
         // A debug build logs what each download did (by song id; never an address).
         if (BuildConfig.DEBUG) org.medianexus.music.downloads.CrashPoints.log = { android.util.Log.d("NexusDownloads", it) }
         DebugHosts.load(context)
+        // The shared core, loaded now, off the main thread, so that it is there by the time
+        // anything asks (core/Core.kt). And the person's changes to what is shared, made in
+        // turn (see [choose]).
+        scope.launch(Dispatchers.IO) {
+            try {
+                org.medianexus.music.core.Core.warm()
+            } catch (e: org.medianexus.music.core.CoreException) {
+                diagnostics.note("the shared library couldn't be loaded: ${e.message}")
+            }
+            for (did in chosen) settings.commit { org.medianexus.music.sync.Chosen.made(it, did, System.currentTimeMillis() / 1000) { said -> diagnostics.note(said) } }
+        }
         settings.damage?.let { notices.post(Notice.SettingsDamaged(it)) }
         // Said once when writing starts to fail, and taken back once a write succeeds.
         scope.launch {

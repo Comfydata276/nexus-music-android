@@ -2,11 +2,11 @@ package org.medianexus.music.sync
 
 /**
  * Whether keeping in step with the person's other devices exists in this build. **It does
- * not.** The code for it is built (this package; "Keep my devices in step" under Settings,
- * Account; the queue saved on the server and "Continue here"), but it is not yet safe to let
- * it write into the record the person's PCs trust, and its rules are to be rewritten once, in
- * Rust shared with the Windows app, which will replace the Kotlin logic here. Until then
- * nothing of it may run on a phone.
+ * not, yet.** The code for it is built (this package; "Keep my devices in step" under
+ * Settings, Account; the queue saved on the server and "Continue here"), and its rules are
+ * no longer the phone's own: they are the shared core's, the same code the Windows app runs
+ * (`core/Core.kt`, docs/DESIGN.md "The shared core"). It stays switched off until that has
+ * been reviewed; until then nothing of it may run on a phone.
  *
  * With it off: the setting is not shown; the account makes no exchange, no saved queue and
  * no "Continue here" ([org.medianexus.music.AccountGraph.step] and `queueStep` are null), so
@@ -15,8 +15,10 @@ package org.medianexus.music.sync
  * queue is neither written nor read. What stays on whether or not it exists, because it
  * protects the person: the sync playlist is never listed, played, downloaded or edited here,
  * and its name is reserved ([PLAYLIST_NAME]). The pins, each list's choices and the theme are
- * the phone's own settings, as they always were (see [Changes]: what is shown is the
- * settings' own; the changes waiting to be shared simply wait).
+ * the phone's own settings, as they always were; a change to one is also kept, as the
+ * change, by the shared core ([Chosen]), where it simply waits for the day it is shared.
+ * And the notes of when songs were added to playlists are kept by the core's rules either
+ * way (`store/Added.kt`): "Date added" does not depend on this switch.
  */
 object InStepBuild {
     /** The one switch, for the whole build. */

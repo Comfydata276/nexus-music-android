@@ -41,6 +41,11 @@ data class SavedQueue(
      *  from, which it follows narrowed the same way. (Windows reads past a field it doesn't
      *  know, and isn't asked to follow it; not part of the queue's shape.) */
     @SerialName("list_filter") val listFilter: String = "",
+    /** Set while the queue is one taken up from another of the person's devices with nothing
+     *  done to it here since: when that device saved it, as the server said (the shared
+     *  core's `Here::taken`). Such a queue is that device's still, and is not this phone's
+     *  to save on the server; after a restart too. */
+    val taken: String? = null,
 ) {
     /**
      * Whether it holds together: a queue that doesn't (a file cut short, edited by hand) is
@@ -71,6 +76,8 @@ data class QueuePlace(
     val cursor: Int = 0,
     val position: Double = 0.0,
     val stamp: Long = 0,
+    /** As [SavedQueue.taken], as it stood when the place was written. */
+    val taken: String? = null,
 )
 
 /**
@@ -122,7 +129,7 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
         savedFilter = saved.listFilter
         val place = read(placeFile, QueuePlace.serializer())
         return if (place != null && place.shape == shape && place.cursor in saved.order.indices) {
-            saved.copy(cursor = place.cursor, position = place.position, stamp = maxOf(saved.stamp, place.stamp))
+            saved.copy(cursor = place.cursor, position = place.position, stamp = maxOf(saved.stamp, place.stamp), taken = place.taken)
         } else {
             saved
         }
@@ -159,7 +166,7 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
         }
         // The queue is there. Its place, if this can't be written, is the one saved in the
         // queue itself (an older place file names another queue, and is ignored for that).
-        writePlace(QueuePlace(shape, queue.cursor, queue.position, queue.stamp))
+        writePlace(QueuePlace(shape, queue.cursor, queue.position, queue.stamp, queue.taken))
         return true
     }
 
@@ -169,10 +176,10 @@ class QueueFiles(private val queueFile: File, private val placeFile: File) {
      * says so, unless the queue on disk is that very one: a place written beside any other
      * queue would put that queue back at a song it was never at.
      */
-    fun savePlace(token: Long, cursor: Int, position: Double, stamp: Long): Boolean {
+    fun savePlace(token: Long, cursor: Int, position: Double, stamp: Long, taken: String? = null): Boolean {
         val shape = savedShape ?: return false
         if (token == 0L || token != savedToken) return false
-        return writePlace(QueuePlace(shape, cursor, position, stamp))
+        return writePlace(QueuePlace(shape, cursor, position, stamp, taken))
     }
 
     private fun writePlace(place: QueuePlace): Boolean = try {
@@ -234,7 +241,7 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
      *  changed since it was last handed over) and where playback has got to in it. `token`
      *  names the hand-over of the whole queue that the place belongs to; `done` is told
      *  whether the whole queue was written. */
-    private class Waiting(val files: QueueFiles, val queue: SavedQueue?, val token: Long, val cursor: Int, val position: Double, val stamp: Long, val done: ((Boolean) -> Unit)?)
+    private class Waiting(val files: QueueFiles, val queue: SavedQueue?, val token: Long, val cursor: Int, val position: Double, val stamp: Long, val taken: String?, val done: ((Boolean) -> Unit)?)
 
     /** The newest of what hasn't been written yet, for each queue. */
     private val waiting = HashMap<String, Waiting>()
@@ -249,7 +256,7 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
      * whether it was written (not told if a newer snapshot took its place before its turn).
      */
     fun save(files: QueueFiles, queue: SavedQueue, token: Long = 0, done: ((Boolean) -> Unit)? = null) =
-        line(Waiting(files, queue, token, queue.cursor, queue.position, queue.stamp, done))
+        line(Waiting(files, queue, token, queue.cursor, queue.position, queue.stamp, queue.taken, done))
 
     /**
      * Asks for only the place to be written: the queue is as it was handed over under
@@ -257,7 +264,7 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
      * written with this place. If the queue on disk turns out not to be that one (its write
      * failed), nothing is written.
      */
-    fun savePlace(files: QueueFiles, token: Long, cursor: Int, position: Double, stamp: Long) = line(Waiting(files, null, token, cursor, position, stamp, null))
+    fun savePlace(files: QueueFiles, token: Long, cursor: Int, position: Double, stamp: Long, taken: String? = null) = line(Waiting(files, null, token, cursor, position, stamp, taken, null))
 
     private fun line(next: Waiting) {
         val alreadyInLine = synchronized(waiting) {
@@ -266,7 +273,7 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
                 // A place alone never takes the place of a queue still waiting to be written:
                 // it goes with it, if it is that queue's.
                 next.queue == null && before?.queue != null ->
-                    if (before.token == next.token) Waiting(before.files, before.queue, before.token, next.cursor, next.position, next.stamp, before.done) else before
+                    if (before.token == next.token) Waiting(before.files, before.queue, before.token, next.cursor, next.position, next.stamp, next.taken, before.done) else before
                 else -> {
                     // A snapshot that never got its turn was not written.
                     if (before?.queue != null) before.done?.invoke(false)
@@ -281,14 +288,14 @@ class QueueSaver(scope: CoroutineScope, io: CoroutineDispatcher) {
             val newest = synchronized(waiting) { waiting.remove(next.files.key) } ?: return@trySend
             if (newest.queue != null) {
                 val written = try {
-                    newest.files.save(newest.queue.copy(cursor = newest.cursor, position = newest.position, stamp = newest.stamp), newest.token)
+                    newest.files.save(newest.queue.copy(cursor = newest.cursor, position = newest.position, stamp = newest.stamp, taken = newest.taken), newest.token)
                 } catch (e: Throwable) {
                     newest.done?.invoke(false)
                     throw e
                 }
                 newest.done?.invoke(written)
             } else {
-                newest.files.savePlace(newest.token, newest.cursor, newest.position, newest.stamp)
+                newest.files.savePlace(newest.token, newest.cursor, newest.position, newest.stamp, newest.taken)
             }
         }
     }
@@ -368,7 +375,7 @@ class KeptQueue(private val files: QueueFiles, private val saver: QueueSaver) {
      * is handed over, which copies nothing, however long the queue; and the writer puts it
      * beside that queue or not at all ([QueueFiles.savePlace]).
      */
-    fun save(revision: Long, cursor: Int, position: Double, stamp: Long, snapshot: () -> SavedQueue): Boolean {
+    fun save(revision: Long, cursor: Int, position: Double, stamp: Long, taken: String? = null, snapshot: () -> SavedQueue): Boolean {
         if (!settled) return false
         if (revision != handedRevision || failedToken == token) {
             val mine = tokens.incrementAndGet()
@@ -376,7 +383,7 @@ class KeptQueue(private val files: QueueFiles, private val saver: QueueSaver) {
             handedRevision = revision
             saver.save(files, snapshot(), mine) { written -> if (!written) failedToken = mine }
         } else {
-            saver.savePlace(files, token, cursor, position, stamp)
+            saver.savePlace(files, token, cursor, position, stamp, taken)
         }
         return true
     }

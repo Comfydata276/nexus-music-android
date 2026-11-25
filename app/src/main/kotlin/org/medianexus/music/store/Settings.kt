@@ -20,17 +20,16 @@ data class ListPrefs(
 )
 
 /**
- * A change the person made on this phone to something shared between devices, kept as the
- * change and not as a new value: `what` is "pin" or "unpin" (`key`: the playlist), "shuffle"
- * (`key`: the list, `on`), "sort" (`key`: the list, `sort`, `descending`) or "theme" (`key`:
- * its name). See `sync/Changes.kt`.
+ * (As builds before the shared core kept it; read from their files once, see
+ * `sync/Belongs.kt`.) A change the person made on this phone to something shared between
+ * devices: `what` is "pin" or "unpin" (`key`: the playlist), "shuffle" (`key`: the list,
+ * `on`), "sort" (`key`: the list, `sort`, `descending`) or "theme" (`key`: its name).
  */
 @Serializable
 data class Waiting(val what: String = "", val key: String = "", val on: Boolean = false, val sort: Int = 0, val descending: Boolean = false)
 
-/** What this phone last agreed with the server, of the choices shared between devices: each
- *  with the time it has in the shared record. Never a time of the phone's own making, except
- *  as written to the server with the change that earned it. */
+/** (As builds before the shared core kept it; read from their files once.) What the phone
+ *  had last agreed with the server, of the choices shared between devices. */
 @Serializable
 data class Agreed(
     val pins: List<String> = emptyList(),
@@ -40,6 +39,11 @@ data class Agreed(
     val themeAt: Long = 0,
     val lists: Map<String, ListPrefs> = emptyMap(),
 )
+
+/** An order for a list that only the phone offers (the Windows app has no number for it):
+ *  the phone's own, kept apart from the list's shared choices (see [Settings.ownSorts]). */
+@Serializable
+data class OwnSort(val sort: Int = 0, val descending: Boolean = false)
 
 /** An equaliser curve saved under a name of the user's own. */
 @Serializable
@@ -128,20 +132,33 @@ data class Settings(
     val pinsAt: Long = 0,
     val themeAt: Long = 0,
     /**
-     * What this phone last agreed with the server for the account in [sharedFor], of the
-     * pins, the theme and each list's choices; and the person's changes to them made here
-     * since, still waiting to be shared. The pins, lists and theme above are what the phone
-     * shows: the agreed ones with the waiting changes on top (and, where nothing is agreed,
-     * whatever the phone has of its own). Only [agreed] and [waiting] are ever shared, and a
-     * waiting change gets a time only as it is written to the server (`sync/Changes.kt`).
+     * The choices shared between devices, for the account in [sharedFor], **as the shared
+     * core keeps them**: what this phone last agreed with the server (the pins, the theme,
+     * each list's choices, each with the record's own time for it), and the person's
+     * changes made here since, each as the change itself, still waiting to be shared. It is
+     * the core's own, kept here unread and handed back to it (`core/Core.kt`: `change`,
+     * `shown`, `take`, `sending`, `written`); null until a build with the core has had the
+     * settings. The pins, lists and theme above are what the phone shows: what the core says
+     * is shown for this account, and, where the record has said nothing yet, whatever the
+     * phone has of its own (`sync/Chosen.kt`).
      */
+    val choices: kotlinx.serialization.json.JsonElement? = null,
+    /**
+     * For a list the Windows app has too: an order only the phone offers, chosen here. It
+     * is the phone's own and is not among the list's shared choices, so a shuffle that
+     * arrives for the list (which changes those choices and nothing about the order) leaves
+     * it be; only a sort chosen on some device after it takes its place.
+     */
+    val ownSorts: Map<String, OwnSort> = emptyMap(),
+    /** (As builds before the shared core kept the shared choices: read once, then empty.) */
     val agreed: Agreed = Agreed(),
     val waiting: List<Waiting> = emptyList(),
     /**
-     * Which rules the shared choices above were written under: `sync/Belongs.kt`'s
-     * `MARK` once a build that keeps them as [agreed] and [waiting] has had them. 0 in a file
-     * from any build before that, whose pins, list choices and theme carry times put on by
-     * rules since thrown out: such a file's are demoted as it is first opened.
+     * Which rules the shared choices above are kept under (`sync/Belongs.kt`'s `MARK`): 2,
+     * the shared core's, in [choices]. 1 in a file from a build that kept them itself, as
+     * [agreed] and [waiting], which are brought under the core's as the file is first
+     * opened; 0 from any build before that, whose pins, list choices and theme carried times
+     * put on by rules since thrown out.
      */
     val stepMark: Int = 0,
     /** Which account the choices that are shared between devices belong to (its storage

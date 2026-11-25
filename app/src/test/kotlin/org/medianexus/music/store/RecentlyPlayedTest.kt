@@ -98,11 +98,14 @@ class RecentlyPlayedTest {
     fun playsFromTwoDevicesInterleave() {
         val here = listOf("c" to 30L, "a" to 10L)
         val there = listOf("d" to 40L, "b" to 20L, "a" to 10L)
-        val merged = RecentlyPlayed.mergeHistory(here, there)
+        // (The rule is the shared core's, asked through its one door.)
+        fun merge(a: List<Pair<String, Long>>, b: List<Pair<String, Long>>) =
+            org.medianexus.music.core.Core.history(a.map { org.medianexus.music.core.Play(it.first, it.second) }, b.map { org.medianexus.music.core.Play(it.first, it.second) }).map { it.song to it.at }
+        val merged = merge(here, there)
         assertEquals(listOf("d" to 40L, "c" to 30L, "b" to 20L, "a" to 10L), merged)
-        assertEquals(merged, RecentlyPlayed.mergeHistory(there, here))
+        assertEquals(merged, merge(there, here))
         // The same song on both devices back to back is one entry.
-        assertEquals(listOf("a" to 12L), RecentlyPlayed.mergeHistory(listOf("a" to 12L), listOf("a" to 10L)))
+        assertEquals(listOf("a" to 12L), merge(listOf("a" to 12L), listOf("a" to 10L)))
     }
 
     @Test

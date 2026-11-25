@@ -89,17 +89,20 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
     val isOpen: Boolean get() = opened
 
     /**
-     * Takes in what other devices have played (the history part of Windows' `take_shared`):
-     * both devices' plays, in order ([org.medianexus.music.sync.Merge.mergeHistory]).
-     * `songsOf` gives the songs for ids this phone hasn't met; a play whose song can't be had
-     * is left out here, as on Windows (it stays in the shared record). Returns whether
-     * anything changed. Nothing before the list on the phone has been read.
+     * Takes in what other devices have played: what is here **at this moment** and theirs,
+     * as one list (the shared core's `merge_history`: a song that started playing while the
+     * exchange was out is here, and stays). `songsOf` gives the songs for ids this phone
+     * hasn't met; a play whose song can't be had is left out here (it stays in the shared
+     * record). **On the disk before it returns**; throws `IOException` if it couldn't be
+     * written. Returns whether anything changed. Nothing before the list on the phone has
+     * been read. Off the main thread.
      */
-    suspend fun take(theirs: List<org.medianexus.music.sync.Play>, songsOf: suspend (List<String>) -> Map<String, Song>): Boolean {
-        if (!opened) return false
-        fun plays(list: List<Played>) = list.map { org.medianexus.music.sync.Play(it.song.id, it.at) }
+    @Throws(java.io.IOException::class)
+    suspend fun take(theirs: List<org.medianexus.music.core.Play>, songsOf: suspend (List<String>) -> Map<String, Song>): Boolean {
+        if (!opened || theirs.isEmpty()) return false
+        fun plays(list: List<Played>) = list.map { org.medianexus.music.core.Play(it.song.id, it.at) }
         val before = songs.value
-        val merged = org.medianexus.music.sync.Merge.mergeHistory(plays(before), theirs)
+        val merged = org.medianexus.music.core.Core.history(plays(before), theirs)
         if (merged == plays(before)) return false
         val known = HashMap<String, Song>()
         for (played in before) known.putIfAbsent(played.song.id, played.song)
@@ -110,11 +113,17 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
             // (Something may have started playing while the songs were looked up: merged
             // with what is here now, so that isn't lost.)
             for (played in now) known.putIfAbsent(played.song.id, played.song)
-            val list = org.medianexus.music.sync.Merge.mergeHistory(plays(now), theirs).mapNotNull { play -> known[play.song]?.let { Played(it, play.at) } }
+            val list = org.medianexus.music.core.Core.history(plays(now), theirs).mapNotNull { play -> known[play.song]?.let { Played(it, play.at) } }
             changed = list != now
             if (changed) list else now
         }
-        if (changed) save()
+        if (changed) {
+            // (Newer than any write still waiting its turn, which then has nothing to do.)
+            writing.withLock {
+                version++
+                kotlinx.coroutines.withContext(io) { writeAtomically(file) { out -> out.write(json.encodeToString(LIST, songs.value).toByteArray()) } }
+            }
+        }
         return changed
     }
 
@@ -147,12 +156,5 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
         } catch (_: Exception) {
             emptyList()
         }
-
-        /** Puts plays from two devices into one list, newest first (Windows' `merge_history`):
-         *  the same play once, the same song twice running as one stretch of listening, the
-         *  newest hundred. (The one port of it is [org.medianexus.music.sync.Merge].) */
-        fun mergeHistory(a: List<Pair<String, Long>>, b: List<Pair<String, Long>>): List<Pair<String, Long>> =
-            org.medianexus.music.sync.Merge.mergeHistory(a.map { org.medianexus.music.sync.Play(it.first, it.second) }, b.map { org.medianexus.music.sync.Play(it.first, it.second) })
-                .map { it.song to it.at }
     }
 }

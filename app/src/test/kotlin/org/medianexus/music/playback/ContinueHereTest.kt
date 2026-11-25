@@ -103,7 +103,7 @@ class ContinueHereTest {
         settle()
         // The tap takes its place; the queue is made ready; nothing else has happened.
         val tap = Choices.take()
-        assertTrue(wait { here().replace(theirs(), 1, 30_000, later(), choice = tap, still = { true }) })
+        assertTrue(wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = tap, asOf = tap, stampThen = 0, still = { true }) })
         settle()
         assertEquals("pc1", inside.player.queue.current()?.id)
         assertTrue(inside.exo.playWhenReady)
@@ -117,7 +117,7 @@ class ContinueHereTest {
         // picks something else): a later place in the order of choices.
         val tap = Choices.take()
         Choices.take()
-        assertFalse("played over a later choice", wait { here().replace(theirs(), 1, 30_000, later(), choice = tap, still = { true }) })
+        assertFalse("played over a later choice", wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = tap, asOf = tap, stampThen = 0, still = { true }) })
         settle()
         assertEquals("s1", inside.player.queue.current()?.id)
         assertFalse(inside.exo.playWhenReady)
@@ -129,9 +129,9 @@ class ContinueHereTest {
         settle()
         // "Continue here", and the setting off by the time its queue is ready.
         val tap = Choices.take()
-        assertFalse(wait { here().replace(theirs(), 1, 30_000, later(), choice = tap, still = { false }) })
+        assertFalse(wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = tap, asOf = tap, stampThen = 0, still = { false }) })
         // A queue taken up without being asked: the same.
-        assertFalse(wait { here().replace(theirs(), 1, 30_000, later(), choice = null, still = { false }) })
+        assertFalse(wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = Choices.latest, stampThen = here().stamp(), still = { false }) })
         settle()
         assertEquals("s1", inside.player.queue.current()?.id)
         assertFalse(inside.exo.playWhenReady)
@@ -144,7 +144,7 @@ class ContinueHereTest {
         val list = inside.player.prepare(mine(), 2, context = "A list", shuffle = false)
         val start = inside.player.beginStart()
         // Meanwhile a queue another device saved is taken up, paused.
-        assertTrue(wait { here().replace(theirs(), 1, 30_000, later(), choice = null, still = { true }) })
+        assertTrue(wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = Choices.latest, stampThen = here().stamp(), still = { true }) })
         settle()
         assertEquals("pc1", inside.player.queue.current()?.id)
         assertFalse(inside.exo.playWhenReady)

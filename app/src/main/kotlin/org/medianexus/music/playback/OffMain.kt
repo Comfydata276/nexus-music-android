@@ -46,13 +46,10 @@ object Remembered {
      * changed nothing overall, so that list's choice was never written, and the next time it
      * was started it played in order.
      */
-    fun with(settings: Settings, shuffle: Boolean, repeat: Int, source: String, nowSeconds: Long): Settings {
-        // (The list's own choice is kept as the change, for other devices: sync/Changes.kt.)
-        val listed = if (source.isNotEmpty() && (settings.lists[source]?.shuffle ?: false) != shuffle) {
-            org.medianexus.music.sync.Changes.shuffle(settings, source, shuffle, nowSeconds)
-        } else {
-            settings
-        }
-        return listed.copy(shuffle = shuffle, repeat = repeat)
-    }
+    fun with(settings: Settings, shuffle: Boolean, repeat: Int): Settings = settings.copy(shuffle = shuffle, repeat = repeat)
+
+    /** The list's own choice, if it is not what the list has: kept as the change, for the
+     *  account's other devices too (sync/Chosen.kt). */
+    fun listChoice(settings: Settings, shuffle: Boolean, source: String): org.medianexus.music.sync.Chosen.Did? =
+        if (source.isNotEmpty() && (settings.lists[source]?.shuffle ?: false) != shuffle) org.medianexus.music.sync.Chosen.Did.Shuffle(source, shuffle) else null
 }

@@ -529,7 +529,7 @@ class Queue internal constructor(order: MutableList<Int>) {
     }
 
     /** A copy of the queue as it stands, for saving. */
-    fun saved(position: Double, stamp: Long): SavedQueue = SavedQueue(
+    fun saved(position: Double, stamp: Long, taken: String? = null): SavedQueue = SavedQueue(
         // Two small arrays, not a song each: the songs are made one at a time as it is written.
         songs = songs.snapshot(),
         order = IntList(order),
@@ -539,6 +539,7 @@ class Queue internal constructor(order: MutableList<Int>) {
         source = source,
         origins = PlaceList(origins),
         stamp = stamp,
+        taken = taken,
         sourceList = sourceList.toList(),
         listFilter = filter,
     )

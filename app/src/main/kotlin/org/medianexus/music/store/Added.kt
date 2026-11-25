@@ -11,37 +11,37 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import org.medianexus.music.core.Core
+import org.medianexus.music.core.CoreException
+import org.medianexus.music.core.OnePlaylist
+import org.medianexus.music.core.OneTold
 import org.medianexus.music.net.Song
 
-/** What's known about one song in one playlist (Windows' `Note`): one time per copy of the
- *  song in the playlist, oldest first, in seconds (0 for "before the app was keeping
- *  track"; none once the song has been removed), and when this note last changed (0 for a
- *  note that only says "it was already there", which isn't worth sharing). */
-@Serializable
-data class AddedNote(val times: List<Long> = emptyList(), val at: Long = 0)
+/** What's known about one song in one playlist: the shared core's `Note` (one time per copy
+ *  of the song in the playlist, oldest first, in seconds; 0 for "before the app was keeping
+ *  track"; none once the song has been removed; and when this note last changed, 0 for a
+ *  note the phone only noticed, which is never shared). */
+typealias AddedNote = org.medianexus.music.core.Note
 
 /** Playlist id, then song id. */
 typealias AddedNotes = Map<String, Map<String, AddedNote>>
 
 /**
- * When songs were added to playlists, a port of the Windows app's `src/added.rs`, with its
- * file named and written as Windows' is (`playlist-added.json`: `lists` and `seen`; the
- * notes go between devices inside the sync milestone's own file, under `added`).
+ * When songs were added to playlists: the phone's keeping of the notes, in a file named and
+ * written as the Windows app's is (`playlist-added.json`: `lists` and `seen`; the notes go
+ * between devices inside the shared record, under `added`).
  *
  * The server doesn't record this, so the app keeps its own note. The first time it sees a
  * playlist, the songs already in it have no known date. From then on, a song that turns up in
  * the playlist is dated to when the app added it, or first saw it there. "Date added" sorts
  * by these, and by the day the song joined the library where there is no note.
  *
- * **What the phone tells other devices** (docs/DESIGN.md, "In step with other devices"): a
- * note with a time on it (`at` above 0) is shared, and on every device the newer note for a
- * song wins. So the phone puts a time on a note only for what the person did on this phone
- * ([changed], [create], [record]). What it merely notices in a copy of a playlist it has read
- * ([sawCopy]) is kept for its own "Date added" as a note with no time on it, which is never
- * shared and gives way to any dated note from another device; and a dated note is never
- * altered by what is noticed. (Windows dates what it notices with "now", in [observe], and
- * shares that: a PC that looks at a playlist late overwrites the date the song was really
- * added, on every device. That is ported for its tests, and the phone does not call it.)
+ * **Every rule about the notes is the shared core's** (`core/Core.kt`, the Windows
+ * repository's `core/src/notes.rs`): what a copy of a playlist that has merely been read
+ * changes ([sawCopy]: nothing that is shared), what the person's own change dates
+ * ([changed], [record], [create]), which copy of a song has which date ([dates]), what is
+ * worth sharing ([shared]) and how notes from other devices are taken in ([take]). What is
+ * here is the file, and when it is written.
  *
  * Safe from any thread. Written off the main thread, whole, the newest state each time; read
  * when first needed.
@@ -52,12 +52,14 @@ class Added(
     private val io: CoroutineDispatcher,
     /** Where an earlier version of the app kept it (`added.json`): moved to `file` when found. */
     private val formerly: File? = null,
+    /** Something for the Diagnostics page. */
+    private val note: (String) -> Unit = {},
 ) {
     /** Told when a dated note changed here, by the person's own doing: worth passing on to
      *  other devices. */
     @Volatile var changedHere: () -> Unit = {}
 
-    private var lists = HashMap<String, HashMap<String, AddedNote>>()
+    private var lists = HashMap<String, Map<String, AddedNote>>()
     private var seen = HashSet<String>()
     private var loaded = false
     private val writing = Mutex()
@@ -81,7 +83,7 @@ class Added(
                 Stored(old.mapValues { (_, songs) -> songs.mapValues { (_, times) -> AddedNote(times, 0) } }, old.keys)
             }
             ?: return
-        lists = HashMap(stored.lists.mapValues { HashMap(it.value) })
+        lists = HashMap(stored.lists)
         seen = HashSet(stored.seen)
         if (stored.mark < MARK) {
             // Written by a build that dated whatever it noticed in a playlist with the moment
@@ -89,179 +91,82 @@ class Added(
             // its notes were the person's own doing can't be told from the file, so none
             // keeps its time: all become what the phone merely saw, for its own "Date added",
             // and are never shared. (A note that only said "it went" says nothing then.)
-            for (notes in lists.values) {
-                notes.values.removeAll { it.times.isEmpty() }
-                for (entry in notes.entries) entry.setValue(entry.value.copy(at = 0))
-            }
+            for (entry in lists.entries) entry.setValue(entry.value.filterValues { it.times.isNotEmpty() }.mapValues { it.value.copy(at = 0) })
             save()
+        }
+    }
+
+    private fun one(playlist: String) = OnePlaylist(lists[playlist].orEmpty(), playlist in seen)
+
+    /** One playlist's notes as the core left them. Whether anything is different. */
+    private fun put(playlist: String, told: OneTold): Boolean {
+        val before = one(playlist)
+        if (told.notes.isEmpty()) lists.remove(playlist) else lists[playlist] = told.notes
+        if (told.seen) seen.add(playlist) else seen.remove(playlist)
+        return before.notes != told.notes || before.seen != told.seen
+    }
+
+    /** What the core does with one playlist's notes. If it can't be asked, the notes stay
+     *  as they are, and Diagnostics says so. */
+    private inline fun asked(what: String, act: () -> Unit) {
+        try {
+            act()
+        } catch (e: CoreException) {
+            note("dates: $what couldn't be noted (${e.message})")
         }
     }
 
     /**
      * A copy of a playlist has been read, from the server or the phone: the phone's own notes
      * are brought in step with it for "Date added", and nothing is put on record for other
-     * devices. A song that has turned up since the first look is dated `now` here, in a note
-     * with no time on it; one that has gone takes such a note with it. A note with a time on
-     * it (the person's own doing, or another device's word) is left exactly as it is,
-     * whatever the copy holds: it changes only by [changed] or by a newer note ([merge]).
+     * devices (the core's `Kept::notice`).
      */
     @Synchronized
     fun sawCopy(playlist: String, songs: List<Song>, now: Long) {
         load()
-        val counts = LinkedHashMap<String, Int>()
-        for (song in songs) counts[song.id] = (counts[song.id] ?: 0) + 1
-        val firstLook = seen.add(playlist)
-        val notes = lists.getOrPut(playlist) { HashMap() }
-        var changed = firstLook
-        for (id in notes.keys.filter { it !in counts }) {
-            if (notes.getValue(id).at == 0L) {
-                notes.remove(id)
-                changed = true
-            }
-        }
-        for ((id, count) in counts) {
-            val note = notes[id]
-            if (note != null && (note.at != 0L || note.times.size == count)) continue
-            val times = note?.times.orEmpty()
-            notes[id] = AddedNote(
-                // On the first look, copies nothing is known about go in front, as the oldest.
-                if (firstLook) (List((count - times.size).coerceAtLeast(0)) { 0L } + times).take(count)
-                else if (times.size < count) times + List(count - times.size) { now } else times.take(count),
-                at = 0,
-            )
-            changed = true
-        }
-        if (changed) save()
+        asked("a playlist as read") { if (put(playlist, Core.notesNotice(one(playlist), songs.map { it.id }, now))) save() }
     }
 
     /**
-     * The person changed a playlist on this phone: it held `before` (song ids, as read from
-     * the server just before the change) and holds `after`. Each song there are now more or
-     * fewer copies of gets a note dated `now`, as Windows' `observe` and `record` would give
-     * it: a copy added is dated now; a song taken out leaves its note, emptied, so other
-     * devices hear that it went (unless nothing was known of it). Songs the change didn't
-     * touch are not looked at.
+     * The person changed a playlist on this phone, and the server has taken the change: it
+     * held `before` (song ids, as the change was worked out from) and the change made it
+     * `after` (**worked out, not read back**: a later read can show another device's change
+     * too, which is not this phone's to date). For a change that took songs out, `removed`
+     * says where in `before` they were, so that it is those copies' dates that go. The
+     * core's `Kept::changed` and `Kept::edited`.
      */
-    fun changed(playlist: String, before: List<String>, after: List<String>, now: Long) {
-        val told = synchronized(this) {
+    fun changed(playlist: String, before: List<String>, after: List<String>, now: Long, removed: List<Int>? = null) {
+        var told = false
+        synchronized(this) {
             load()
-            val was = before.groupingBy { it }.eachCount()
-            val isNow = after.groupingBy { it }.eachCount()
-            val notes = lists.getOrPut(playlist) { HashMap() }
-            var any = false
-            var dated = false
-            for (id in was.keys + isNow.keys) {
-                val had = was[id] ?: 0
-                val has = isNow[id] ?: 0
-                if (had == has) continue
-                any = true
-                val note = notes[id]
-                // The note as it stands for the copies that were there: a dated note is not
-                // altered by what is noticed (see the class), so it may be out of step.
-                // Copies nothing is known of go in front, as the oldest.
-                val times = (note?.times.orEmpty()).let { if (it.size < had) List(had - it.size) { 0L } + it else it.take(had) }
-                if (has == 0) {
-                    if (note == null || note.at == 0L) {
-                        notes.remove(id)
-                    } else {
-                        notes[id] = AddedNote(emptyList(), now)
-                        dated = true
-                    }
-                } else {
-                    notes[id] = AddedNote(if (times.size < has) times + List(has - times.size) { now } else times.take(has), now)
-                    dated = true
-                }
+            asked("a change to a playlist") {
+                val out = Core.notesChanged(one(playlist), before, after, removed, now)
+                if (put(playlist, out)) save()
+                told = out.told
             }
-            if (any) save()
-            dated
         }
         if (told) changedHere()
     }
 
-    /**
-     * Brings the notes for a playlist in step with the songs now in it, as just read from the
-     * server (Windows' `observe`). Songs it didn't have before are dated `now`, unless this is
-     * the first look at the playlist. Returns whether anything worth sharing changed.
-     *
-     * Windows' own, ported with its tests. **The phone does not call it for a copy it has
-     * merely read** (see the class): that is [sawCopy].
-     */
-    @Synchronized
-    fun observe(playlist: String, songs: List<Song>, now: Long): Boolean {
-        load()
-        val counts = LinkedHashMap<String, Int>()
-        for (song in songs) counts[song.id] = (counts[song.id] ?: 0) + 1
-        val firstLook = seen.add(playlist)
-        val notes = lists.getOrPut(playlist) { HashMap() }
-        var changed = firstLook
-        var shared = false
-        // Songs that have gone: a dated note stays, emptied, so other devices hear of it.
-        val gone = notes.keys.filter { it !in counts }
-        for (id in gone) {
-            changed = true
-            val note = notes.getValue(id)
-            if (note.at == 0L) {
-                notes.remove(id)
-                continue
-            }
-            val kept = if (note.times.isNotEmpty()) {
-                shared = true
-                AddedNote(emptyList(), now)
-            } else {
-                note
-            }
-            if (now - kept.at < KEEP_REMOVED) notes[id] = kept else notes.remove(id)
-        }
-        for ((id, count) in counts) {
-            val known = id in notes
-            val note = notes[id] ?: AddedNote()
-            if (note.times.size == count) {
-                notes[id] = note
-                continue
-            }
-            changed = true
-            var times = note.times
-            times = if (firstLook) {
-                // Copies nothing is known about go in front, as the oldest.
-                (List((count - times.size).coerceAtLeast(0)) { 0L } + times).take(count)
-            } else {
-                if (times.size < count) times + List(count - times.size) { now } else times.take(count)
-            }
-            val at = if (known || !firstLook) {
-                shared = true
-                now
-            } else {
-                note.at
-            }
-            notes[id] = AddedNote(times, at)
-        }
-        if (changed) save()
-        return shared
-    }
-
-    /** Notes songs the app has just added to a playlist (Windows' `record`). */
-    @Synchronized
+    /** Notes songs the app has just added to a playlist (the core's `Kept::added`). */
     fun record(playlist: String, ids: List<String>, now: Long) {
-        load()
-        val notes = lists.getOrPut(playlist) { HashMap() }
-        for (id in ids) {
-            val note = notes[id] ?: AddedNote()
-            notes[id] = AddedNote(note.times + now, now)
+        synchronized(this) {
+            load()
+            asked("songs added to a playlist") { if (put(playlist, Core.notesAdded(one(playlist), ids, fresh = false, now))) save() }
         }
-        save()
         if (ids.isNotEmpty()) changedHere()
     }
 
-    /** Notes a playlist the app has just created with these songs in it (`create`). */
-    @Synchronized
+    /** Notes a playlist the app has just created with these songs in it (`Kept::create`). */
     fun create(playlist: String, ids: List<String>, now: Long) {
-        load()
-        lists.remove(playlist)
-        seen.add(playlist)
-        record(playlist, ids, now)
+        synchronized(this) {
+            load()
+            asked("a new playlist") { if (put(playlist, Core.notesAdded(OnePlaylist(), ids, fresh = true, now))) save() }
+        }
+        if (ids.isNotEmpty()) changedHere()
     }
 
-    /** A playlist has gone (`forget`). */
+    /** A playlist has gone: nothing is kept about it. */
     @Synchronized
     fun forget(playlist: String) {
         load()
@@ -270,55 +175,51 @@ class Added(
     }
 
     /** The time each of these songs was added to the playlist, in the same order; 0 where it
-     *  isn't known (`dates`). */
+     *  isn't known (the core's `Kept::dates`). */
     @Synchronized
     fun dates(playlist: String, songs: List<Song>): LongArray {
         load()
-        val notes = lists[playlist]
-        val seenCopies = HashMap<String, Int>()
-        return LongArray(songs.size) { i ->
-            val id = songs[i].id
-            val copy = (seenCopies[id] ?: 0) + 1
-            seenCopies[id] = copy
-            notes?.get(id)?.times?.getOrNull(copy - 1) ?: 0
+        val notes = lists[playlist]?.takeIf { it.isNotEmpty() } ?: return LongArray(songs.size)
+        return try {
+            Core.notesDates(notes, songs.map { it.id }).toLongArray().takeIf { it.size == songs.size } ?: LongArray(songs.size)
+        } catch (_: CoreException) {
+            LongArray(songs.size)
         }
     }
 
     /** The notes worth sharing with other devices: the dated ones, for playlists that still
-     *  exist (when `playlists` lists them) (`shared`). */
+     *  exist (when `playlists` lists them) (the core's `Kept::shared`). */
     @Synchronized
     fun shared(playlists: Set<String>? = null): AddedNotes {
         load()
-        return lists.filterKeys { playlists == null || it in playlists }
-            .mapValues { (_, notes) -> notes.filterValues { it.at > 0 } }
-            .filterValues { it.isNotEmpty() }
+        return Core.notesShared(HashMap(lists), playlists)
     }
 
-    /** Takes in notes from other devices: for each song, the newer note wins. Returns whether
-     *  anything changed here (`merge`). */
+    /**
+     * Takes in notes from other devices (the core's `notes::take`), **and has them on the
+     * disk before it returns**: an exchange is done only when what it took in is kept.
+     * Returns whether anything changed here. Throws `IOException` if the file couldn't be
+     * written: then the notes are as they were. Off the main thread.
+     */
     @Synchronized
-    fun merge(theirs: AddedNotes): Boolean {
+    @Throws(java.io.IOException::class)
+    fun take(theirs: AddedNotes): Boolean {
         load()
-        var changed = false
-        for ((playlist, notes) in theirs) {
-            val mine = lists.getOrPut(playlist) { HashMap() }
-            for ((id, note) in notes) {
-                val have = mine[id]
-                if (have == null || note.at > have.at) {
-                    mine[id] = note
-                    changed = true
-                }
-            }
-        }
-        if (changed) save()
-        return changed
+        if (theirs.isEmpty()) return false
+        val out = Core.notesTake(HashMap(lists), theirs)
+        if (!out.changed) return false
+        writeAtomically(file, json.encodeToString(Stored.serializer(), Stored(out.lists, HashSet(seen), MARK)).toByteArray())
+        lists = HashMap(out.lists)
+        // (What is on the disk is newer than any write still waiting its turn.)
+        dirty++
+        return true
     }
 
     /** Written off the caller's thread (always off the main one), the newest state each
      *  time, one write after another: a write that was overtaken is skipped. With no scope
      *  (tests), at once. */
     private fun save() {
-        val stored = Stored(lists.mapValues { HashMap(it.value) }, HashSet(seen), MARK)
+        val stored = Stored(HashMap(lists), HashSet(seen), MARK)
         val number = ++dirty
         val write = {
             try {
@@ -331,30 +232,11 @@ class Added(
     }
 
     companion object {
-        /** A removed song's note is kept this long, so other devices hear that it went. */
-        const val KEEP_REMOVED = 90 * 24 * 3600L
-
         /** The rule a file's notes were given their times under: 1, only the person's own
          *  changes on this phone are dated. */
         private const val MARK = 1
 
         private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
         private val OLD = MapSerializer(String.serializer(), MapSerializer(String.serializer(), ListSerializer(Long.serializer())))
-
-        /** Combines two sets of shared notes: for each song, the newer one; word that a song was
-         *  removed is dropped once it has had long enough to get round (`merge_notes`). */
-        fun mergeNotes(a: AddedNotes, b: AddedNotes, now: Long): AddedNotes {
-            val out = HashMap<String, HashMap<String, AddedNote>>()
-            for ((playlist, notes) in a) out[playlist] = HashMap(notes)
-            for ((playlist, notes) in b) {
-                val mine = out.getOrPut(playlist) { HashMap() }
-                for ((id, note) in notes) {
-                    val have = mine[id]
-                    if (have == null || note.at > have.at) mine[id] = note
-                }
-            }
-            for (notes in out.values) notes.values.removeAll { it.times.isEmpty() && now - it.at >= KEEP_REMOVED }
-            return out.filterValues { it.isNotEmpty() }
-        }
     }
 }

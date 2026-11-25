@@ -21,7 +21,14 @@ use jni::sys::jbyteArray;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use nexus_core::step::{self, Found, Stated};
+use std::collections::{HashMap, HashSet};
+
+use nexus_core::handover::{self, Clock, First, Here, Place, Save, Saved, Then};
+use nexus_core::model::{PlayQueue, Song};
+use nexus_core::notes::{self, Kept, Note, Notes};
+use nexus_core::playlists::{Edit, spot};
+use nexus_core::step::{self, Agreed, Answers, Change, Choices, Device, Found, Outcome, Stated, Take, Write};
+use nexus_core::sync::{self, ListPrefs};
 
 // ---- what a panic looks like ----------------------------------------------------------------
 
@@ -107,6 +114,637 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_find<'l>(env: JNIEnv<
             Found::NotStated => FindOut { kind: "not_stated", id: String::new() },
         })
     })
+}
+
+// ---- keeping devices in step: an exchange ---------------------------------------------------
+//
+// The steps an app follows around these are numbered at the top of the core's `step.rs`;
+// the phone's side of them is `sync/InStep.kt`. What the phone only hands back unread (the
+// choices it keeps, a plan's `take` and `write`) crosses as the core's own JSON for it.
+
+type Plays = Vec<(String, i64)>;
+type Sources = Vec<(String, i64, String)>;
+
+#[derive(Deserialize)]
+struct SettleIn {
+    username: String,
+    /// The sign-in, exactly: the server's address and the username.
+    account: String,
+    choices: Choices,
+    /// The phone's dated notes (`notes_shared`).
+    notes: Notes,
+    /// Recently played, newest first.
+    history: Plays,
+    /// Plays from the phone's log: **every play at least as new as its 500th newest**, in
+    /// any order, and where those made from a playlist were made from. The newest are
+    /// chosen here, by the core's rule; the phone only spares carrying its whole log across.
+    plays: Plays,
+    play_sources: Sources,
+    listed: Vec<Stated>,
+    playlist: Option<Stated>,
+    /// The server's clock as its last answer gave it, and the phone's as that arrived.
+    date: Option<i64>,
+    received: i64,
+}
+
+/// Why, as a name the phone can tell kinds apart by and as words to show.
+#[derive(Serialize)]
+struct Said {
+    kind: String,
+    words: &'static str,
+}
+
+#[derive(Serialize)]
+struct ClockOut {
+    /// The server gave a time to compare with.
+    measured: bool,
+    /// The phone's clock is more than five minutes from the server's.
+    wrong: bool,
+}
+
+fn clock_out(clock: Clock) -> ClockOut {
+    ClockOut { measured: matches!(clock, Clock::Offset(_)), wrong: clock.wrong() }
+}
+
+#[derive(Serialize)]
+struct PlanOut {
+    /// Step 5: to be in the phone's log, on disk, before anything else is done.
+    keep_plays: Plays,
+    keep_sources: Sources,
+    /// Step 6: for `take`, unread; and what of it the phone's own stores take in.
+    take: Take,
+    notes: Notes,
+    history: Plays,
+    held: Option<Said>,
+    /// Step 7: for `sending` and `written`, unread; and what of it the phone sends.
+    write: Option<Write>,
+    write_into: Option<String>,
+    write_text: String,
+    write_found: String,
+}
+
+#[derive(Serialize)]
+struct SettleOut {
+    clock: ClockOut,
+    stop: Option<Said>,
+    plan: Option<PlanOut>,
+}
+
+/// `nexus_core::step::settle`, with `clock` beside it (steps 2 to 4).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_settle<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: SettleIn| {
+        let plays = sync::newest_plays(given.plays.iter());
+        let newest: HashSet<(&str, i64)> = plays.iter().map(|(song, at)| (song.as_str(), *at)).collect();
+        let play_sources = given.play_sources.into_iter().filter(|(song, at, _)| newest.contains(&(song.as_str(), *at))).collect();
+        let device = Device { username: given.username, account: given.account, choices: given.choices, notes: given.notes, history: given.history, plays, play_sources };
+        let answers = Answers { listed: given.listed, playlist: given.playlist, date: given.date, received: given.received };
+        let clock = clock_out(step::clock(&answers));
+        Ok(match step::settle(&device, &answers) {
+            Outcome::Stop(stop) => SettleOut { clock, stop: Some(Said { kind: format!("{stop:?}"), words: stop.words() }), plan: None },
+            Outcome::Go(plan) => {
+                let plan = *plan;
+                let (write_into, write_text, write_found) = plan.write.as_ref().map(|write| (write.into.clone(), write.text.clone(), write.found.clone())).unwrap_or_default();
+                let out = PlanOut {
+                    keep_plays: plan.keep.plays,
+                    keep_sources: plan.keep.sources,
+                    notes: plan.take.notes.clone(),
+                    history: plan.take.history.clone(),
+                    take: plan.take,
+                    held: plan.held.map(|held| Said { kind: format!("{held:?}"), words: held.words() }),
+                    write: plan.write,
+                    write_into,
+                    write_text,
+                    write_found,
+                };
+                SettleOut { clock, stop: None, plan: Some(out) }
+            }
+        })
+    })
+}
+
+#[derive(Deserialize)]
+struct TakeIn {
+    choices: Choices,
+    take: Take,
+}
+
+/// `Choices::take` (step 6).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_take<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |mut given: TakeIn| {
+        given.choices.take(&given.take);
+        Ok(given.choices)
+    })
+}
+
+#[derive(Deserialize)]
+struct WriteIn {
+    choices: Choices,
+    write: Write,
+}
+
+#[derive(Serialize)]
+struct SendingOut {
+    choices: Choices,
+    /// The write still fits the choices it was made from, and may be sent.
+    fits: bool,
+}
+
+/// `Choices::sending` (step 7.2).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_sending<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |mut given: WriteIn| {
+        let fits = given.choices.sending(&given.write);
+        Ok(SendingOut { choices: given.choices, fits })
+    })
+}
+
+/// `Choices::written` (step 7.4).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_written<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |mut given: WriteIn| {
+        given.choices.written(&given.write);
+        Ok(given.choices)
+    })
+}
+
+/// Something the person changed, as the phone names it.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ChangeIn {
+    Pin { id: String },
+    Unpin { id: String },
+    Shuffle { key: String, on: bool },
+    Sort { key: String, sort: usize, descending: bool },
+    Usual { key: String },
+    Theme { name: String },
+}
+
+impl From<ChangeIn> for Change {
+    fn from(change: ChangeIn) -> Change {
+        match change {
+            ChangeIn::Pin { id } => Change::Pin(id),
+            ChangeIn::Unpin { id } => Change::Unpin(id),
+            ChangeIn::Shuffle { key, on } => Change::Shuffle { key, on },
+            ChangeIn::Sort { key, sort, descending } => Change::Sort { key, sort, descending },
+            ChangeIn::Usual { key } => Change::Usual { key },
+            ChangeIn::Theme { name } => Change::Theme(name),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ChangeArgs {
+    choices: Choices,
+    account: String,
+    change: ChangeIn,
+}
+
+#[derive(Serialize)]
+struct ChangeOut {
+    choices: Choices,
+    /// Something now shown differs.
+    changed: bool,
+}
+
+/// `Choices::change`: the person changed something shared.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_change<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |mut given: ChangeArgs| {
+        let changed = given.choices.change(&given.account, given.change.into());
+        Ok(ChangeOut { choices: given.choices, changed })
+    })
+}
+
+#[derive(Deserialize)]
+struct ShownIn {
+    choices: Choices,
+    account: String,
+}
+
+#[derive(Serialize)]
+struct ShownOut {
+    pins: Vec<String>,
+    /// The record has said something about the pins (they have a time, or there are some
+    /// agreed). Until it has, the phone's own pins are nobody's but the phone's.
+    pins_said: bool,
+    /// Empty when no theme is agreed and none is waiting.
+    theme: String,
+    lists: HashMap<String, PrefsOut>,
+}
+
+/// One list's choices, as the phone holds them: the order is a number that fits in 31 bits
+/// there (the orders there are number a handful; a record can hold any number).
+#[derive(Serialize)]
+struct PrefsOut {
+    shuffle: bool,
+    sort: i32,
+    descending: bool,
+    sort_chosen: bool,
+    at: i64,
+}
+
+impl From<ListPrefs> for PrefsOut {
+    fn from(prefs: ListPrefs) -> PrefsOut {
+        PrefsOut { shuffle: prefs.shuffle, sort: i32::try_from(prefs.sort).unwrap_or(i32::MAX), descending: prefs.descending, sort_chosen: prefs.sort_chosen, at: prefs.at }
+    }
+}
+
+/// `Choices::shown`: what was agreed, with this account's waiting changes on top.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_shown<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: ShownIn| {
+        let shown = given.choices.shown(&given.account);
+        let agreed = &given.choices.agreed;
+        Ok(ShownOut { pins_said: agreed.pins_at != 0 || !agreed.pins.is_empty(), pins: shown.pins, theme: shown.theme, lists: shown.lists.into_iter().map(|(key, prefs)| (key, prefs.into())).collect() })
+    })
+}
+
+/// A change as builds of the phone app before the shared core kept it.
+#[derive(Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+struct Formerly {
+    what: String,
+    key: String,
+    on: bool,
+    sort: i64,
+    descending: bool,
+}
+
+#[derive(Deserialize)]
+struct AdoptIn {
+    /// What was agreed with the server, each with the record's own time for it.
+    agreed: Agreed,
+    /// The changes still waiting, oldest first.
+    waiting: Vec<Formerly>,
+    account: String,
+    /// The times on `agreed` were put there by rules since thrown out (a build that stamped
+    /// whole values with "now"): each choice is kept, as chosen "long ago", so that it is
+    /// offered and loses to anything chosen since on any device. `usual_theme` is the theme
+    /// nobody chose.
+    demote: bool,
+    usual_theme: String,
+}
+
+/// The choices a build from before the shared core kept (what it had agreed, and the
+/// changes still waiting, as it wrote them), as the core keeps them: agreed as it was, and
+/// each waiting change made again, in order, under the account. Done once, at the upgrade.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_adopt<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: AdoptIn| {
+        let agreed = if given.demote {
+            let lists = given.agreed.lists.iter().map(|(key, prefs)| (key.clone(), ListPrefs { at: 0, ..*prefs })).collect();
+            Agreed::from_stamped(&given.agreed.pins, 0, &given.agreed.theme, 0, &lists, &given.usual_theme)
+        } else {
+            given.agreed
+        };
+        let mut choices = Choices { agreed, ..Default::default() };
+        for was in given.waiting {
+            let change = match was.what.as_str() {
+                "pin" => Change::Pin(was.key),
+                "unpin" => Change::Unpin(was.key),
+                "shuffle" => Change::Shuffle { key: was.key, on: was.on },
+                "sort" if was.sort >= 0 => Change::Sort { key: was.key, sort: was.sort as usize, descending: was.descending },
+                "theme" => Change::Theme(was.key),
+                // (Nothing an earlier build wrote.)
+                _ => continue,
+            };
+            choices.change(&given.account, change);
+        }
+        Ok(choices)
+    })
+}
+
+#[derive(Deserialize)]
+struct HistoryIn {
+    mine: Plays,
+    theirs: Plays,
+}
+
+/// `sync::merge_history`: Recently played here and as another device has it, as one.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_history<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: HistoryIn| Ok(sync::merge_history(&given.mine, &given.theirs)))
+}
+
+#[derive(Serialize)]
+struct Names {
+    playlist: &'static str,
+    reserved: &'static str,
+    history_length: usize,
+    plays_shared: usize,
+}
+
+/// What the phone has to know by name: the record's playlist (it is never listed, played or
+/// edited there), what to say when that name is asked for, and the two lengths.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_names<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |_: ()| Ok(Names { playlist: sync::PLAYLIST_NAME, reserved: step::RESERVED, history_length: sync::HISTORY_LENGTH, plays_shared: sync::PLAYS_SHARED }))
+}
+
+/// `step::reserved`: whether a playlist of the person's own may not have this name.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_reserved<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |name: String| Ok(step::reserved(&name)))
+}
+
+// ---- when songs were added to playlists -------------------------------------------------------
+//
+// The phone keeps the notes (`store/Added.kt`); every rule about them is the core's
+// (`notes::Kept`). A call about one playlist carries that playlist's notes and nothing else:
+// the core's functions touch only the playlist they are given.
+
+const ONE: &str = "p";
+
+#[derive(Deserialize, Serialize, Default)]
+#[serde(default)]
+struct One {
+    /// By song id.
+    notes: HashMap<String, Note>,
+    /// The phone has looked at this playlist before.
+    seen: bool,
+}
+
+impl One {
+    fn kept(self) -> Kept {
+        let mut kept = Kept::default();
+        if !self.notes.is_empty() {
+            kept.lists.insert(ONE.to_string(), self.notes);
+        }
+        if self.seen {
+            kept.seen.insert(ONE.to_string());
+        }
+        kept
+    }
+
+    fn of(mut kept: Kept) -> One {
+        One { notes: kept.lists.remove(ONE).unwrap_or_default(), seen: kept.seen.contains(ONE) }
+    }
+}
+
+#[derive(Serialize)]
+struct OneOut {
+    #[serde(flatten)]
+    one: One,
+    /// `notice`: something changed, to be saved. The others: something worth sharing did.
+    told: bool,
+}
+
+#[derive(Deserialize)]
+struct NoticeIn {
+    #[serde(flatten)]
+    one: One,
+    ids: Vec<String>,
+    now: i64,
+}
+
+/// `Kept::notice`: a copy of the playlist has been read.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_notesNotice<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: NoticeIn| {
+        let mut kept = given.one.kept();
+        let ids: Vec<&str> = given.ids.iter().map(String::as_str).collect();
+        let told = kept.notice(ONE, &ids, given.now);
+        Ok(OneOut { one: One::of(kept), told })
+    })
+}
+
+#[derive(Deserialize)]
+struct ChangedIn {
+    #[serde(flatten)]
+    one: One,
+    /// The playlist as the change was worked out from, and what the change made of it.
+    before: Vec<String>,
+    after: Vec<String>,
+    /// For a change that took songs out: where in `before` they were. (Then `after` is not
+    /// looked at: which copies went is what counts.)
+    removed: Option<Vec<usize>>,
+    now: i64,
+}
+
+/// `Kept::changed`, or `Kept::edited` for a removal: the person changed the playlist here,
+/// and the server has taken the change.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_notesChanged<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: ChangedIn| {
+        let mut kept = given.one.kept();
+        let told = match given.removed {
+            Some(places) => kept.edited(ONE, &given.before, &Edit::Remove(places.iter().filter_map(|&place| spot(&given.before, place)).collect()), given.now),
+            None => kept.changed(ONE, &given.before, &given.after, given.now),
+        };
+        Ok(OneOut { one: One::of(kept), told })
+    })
+}
+
+#[derive(Deserialize)]
+struct AddedIn {
+    #[serde(flatten)]
+    one: One,
+    ids: Vec<String>,
+    /// The playlist has just been made by the app, with these songs in it.
+    fresh: bool,
+    now: i64,
+}
+
+/// `Kept::added`, or `Kept::create`: songs the app has just added to the playlist.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_notesAdded<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: AddedIn| {
+        let mut kept = given.one.kept();
+        if given.fresh { kept.create(ONE, &given.ids, given.now) } else { kept.added(ONE, &given.ids, given.now) }
+        Ok(OneOut { one: One::of(kept), told: !given.ids.is_empty() })
+    })
+}
+
+#[derive(Deserialize)]
+struct DatesIn {
+    notes: HashMap<String, Note>,
+    ids: Vec<String>,
+}
+
+/// `Kept::dates`: when each of these songs was added, in order; 0 where it isn't known.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_notesDates<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: DatesIn| {
+        let kept = One { notes: given.notes, seen: true }.kept();
+        let ids: Vec<&str> = given.ids.iter().map(String::as_str).collect();
+        Ok(kept.dates(ONE, &ids))
+    })
+}
+
+#[derive(Deserialize)]
+struct SharedIn {
+    lists: Notes,
+    /// The playlists that still exist, if the phone has a list of them.
+    playlists: Option<Vec<String>>,
+}
+
+/// `Kept::shared`: the notes worth sharing with other devices.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_notesShared<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: SharedIn| {
+        let kept = Kept { lists: given.lists, ..Default::default() };
+        let known: Option<HashSet<&str>> = given.playlists.as_ref().map(|ids| ids.iter().map(String::as_str).collect());
+        Ok(kept.shared(known.as_ref()))
+    })
+}
+
+#[derive(Deserialize)]
+struct NotesTakeIn {
+    lists: Notes,
+    theirs: Notes,
+}
+
+#[derive(Serialize)]
+struct NotesTakeOut {
+    lists: Notes,
+    changed: bool,
+}
+
+/// `notes::take`: notes from other devices taken in.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_notesTake<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |mut given: NotesTakeIn| {
+        let changed = notes::take(&mut given.lists, &given.theirs);
+        Ok(NotesTakeOut { lists: given.lists, changed })
+    })
+}
+
+// ---- the play queue between devices -----------------------------------------------------------
+//
+// The steps for a save and for a look are numbered at the top of the core's `handover.rs`;
+// the phone's side of them is `sync/QueueStep.kt`.
+
+/// A song of a queue, as far as these rules look at one.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct QueueSong {
+    id: String,
+    /// In seconds.
+    duration: u32,
+    /// A radio station: not something another device could pick up by id.
+    radio: bool,
+}
+
+impl QueueSong {
+    fn song(&self) -> Song {
+        Song { id: self.id.clone(), duration: self.duration, radio_url: if self.radio { "radio".into() } else { String::new() }, ..Default::default() }
+    }
+}
+
+/// The server's saved queue, as it answered.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Theirs {
+    songs: Vec<QueueSong>,
+    current: String,
+    /// Milliseconds into that song.
+    position: u64,
+    changed: String,
+    changed_by: String,
+    /// The server's clock as that answer gave it, and the phone's as it arrived.
+    date: Option<i64>,
+    received: i64,
+}
+
+impl Theirs {
+    fn queue(&self) -> PlayQueue {
+        PlayQueue { songs: self.songs.iter().map(QueueSong::song).collect(), current: self.current.clone(), position: self.position, changed: self.changed.clone(), changed_by: self.changed_by.clone() }
+    }
+
+    /// The phone's clock beside the server's, as measured by this very read.
+    fn clock(&self) -> Clock {
+        Clock::measured(self.date, self.received)
+    }
+}
+
+#[derive(Deserialize)]
+struct WindowIn {
+    /// The queue in the order it plays.
+    songs: Vec<QueueSong>,
+    cursor: usize,
+    /// Seconds into the current song.
+    position: f64,
+}
+
+/// `handover::window`: what of a queue is saved on the server.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_queueWindow<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: WindowIn| -> Result<Option<Saved>, String> {
+        let songs: Vec<Song> = given.songs.iter().map(QueueSong::song).collect();
+        Ok(handover::window(&songs.iter().collect::<Vec<_>>(), given.cursor, given.position))
+    })
+}
+
+/// `handover::first`: whether a save begins by reading the server's saved queue.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_queueFirst<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |here: Here| Ok(match handover::first(&here) { First::Read => "read", First::Save => "save" }))
+}
+
+#[derive(Deserialize)]
+struct SaveIn {
+    theirs: Theirs,
+    here: Here,
+}
+
+/// `handover::save`: whether this device's queue is still the newest thing that happened.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_queueSave<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: SaveIn| {
+        Ok(match handover::save(&given.theirs.queue(), &given.here, given.theirs.clock()) {
+            Save::Save => "save",
+            Save::NotNewest => "not_newest",
+            Save::NotNow => "not_now",
+        })
+    })
+}
+
+#[derive(Deserialize)]
+struct LookIn {
+    theirs: Theirs,
+    here: Here,
+    /// The phone's clock.
+    now: i64,
+}
+
+#[derive(Serialize)]
+struct LookOut {
+    /// The song of the server's queue to offer as "Continue here" (its place there).
+    offer: Option<usize>,
+    /// "nothing", "take_up" (with `place`) or "save".
+    then: &'static str,
+    place: Option<Place>,
+    clock: ClockOut,
+}
+
+/// `handover::look`: what a look at the server's saved queue leads to.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_queueLook<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: LookIn| {
+        let clock = given.theirs.clock();
+        let looked = handover::look(&given.theirs.queue(), &given.here, clock, given.now);
+        let (then, place) = match looked.then {
+            Then::Nothing => ("nothing", None),
+            Then::TakeUp(place) => ("take_up", Some(place)),
+            Then::Save => ("save", None),
+        };
+        Ok(LookOut { offer: looked.offer, then, place, clock: clock_out(clock) })
+    })
+}
+
+/// `handover::place`: where to pick a saved queue up ("Continue here").
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_queuePlace<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |theirs: Theirs| Ok(handover::place(&theirs.queue(), theirs.clock())))
+}
+
+/// `handover::device_name`: the name this device saves the queue under.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_deviceName<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |id: String| Ok(handover::device_name(&id)))
 }
 
 // ---- for the tests of the boundary itself ------------------------------------------------------

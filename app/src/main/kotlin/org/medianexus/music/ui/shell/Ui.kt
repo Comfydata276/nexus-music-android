@@ -76,8 +76,8 @@ class Ui(val graph: Graph, val navigator: Navigator) {
      *  `remember_track_sort`), with when it was chosen. */
     fun rememberSort(key: String, view: org.medianexus.music.library.ListView) {
         if (key.isEmpty()) return
-        // (Kept as the change, for other devices: see sync/Changes.kt.)
-        graph.settings.update { s -> org.medianexus.music.sync.Changes.sort(s, key, view.sort, view.descending, System.currentTimeMillis() / 1000) }
+        // (Kept as the change, for other devices: see sync/Chosen.kt.)
+        graph.choose(org.medianexus.music.sync.Chosen.Did.Sort(key, view.sort, view.descending))
     }
 
     /** The shuffle button on a list's page: sets whether that list plays shuffled, without
@@ -89,7 +89,7 @@ class Ui(val graph: Graph, val navigator: Navigator) {
             return
         }
         val on = !(graph.settings.value.lists[key]?.shuffle ?: false)
-        graph.settings.update { s -> org.medianexus.music.sync.Changes.shuffle(s, key, on, System.currentTimeMillis() / 1000) }
+        graph.choose(org.medianexus.music.sync.Chosen.Did.Shuffle(key, on))
     }
 }
 

@@ -430,6 +430,13 @@ class Subsonic private constructor(
     /** The play queue last saved on the server; empty if there isn't one. */
     suspend fun playQueue(): PlayQueue = call("getPlayQueue", emptyList(), "playQueue", PlayQueue.serializer(), ::PlayQueue)
 
+    /** The saved queue, and the server's clock as it answered: the phone's clock is set
+     *  beside it by that very answer when the queue's time is compared (sync/QueueStep.kt). */
+    suspend fun playQueueTimed(): Timed<PlayQueue> {
+        val answer = request("getPlayQueue", emptyList(), "playQueue", PlayQueue.serializer())
+        return Timed(answer.value?.takeIf { answer.present } ?: PlayQueue(), answer.date?.let(::httpDate))
+    }
+
     suspend fun renamePlaylist(id: String, name: String) {
         request("updatePlaylist", listOf("playlistId" to id, "name" to name))
     }

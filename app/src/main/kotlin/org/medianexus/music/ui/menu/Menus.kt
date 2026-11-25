@@ -208,7 +208,7 @@ fun openCardMenu(ui: Ui, card: org.medianexus.music.ui.parts.CardData) {
 fun Ui.togglePin(id: String) {
     // Kept as the change ("pin this", "unpin this"), to be made to the pins as the server
     // has them at the next exchange: never as a new list of pins with the time on it.
-    graph.settings.update { s -> org.medianexus.music.sync.Changes.pin(s, id, on = id !in s.pinnedPlaylists) }
+    graph.choose(org.medianexus.music.sync.Chosen.Did.Pin(id, on = id !in graph.settings.value.pinnedPlaylists))
 }
 
 // ---- Playlists: the picker, new, rename, delete, the warning before adding ------------------

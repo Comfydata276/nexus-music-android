@@ -80,15 +80,23 @@ internal class PretendServer(val owner: String = "tester") : StepServer {
  * `root`, as the app keeps them. Made again over the same folder, it is the phone after its
  * process was killed and started again: whatever reached the disk, and nothing else.
  */
-internal class PretendPhone(val root: File, val account: String, private val scope: CoroutineScope, var read: Boolean = true) {
+internal class PretendPhone(val root: File, val account: String, private val scope: CoroutineScope, var read: Boolean = true, version: String = "9.9.9") {
     private val io = Dispatchers.Unconfined
-    val settings = SettingsStore.open(File(root, "settings.json"), scope, io)
-    private val data = File(root, "accounts/$account").apply { mkdirs() }
+    val settingsFile = File(root, "settings.json")
+    val settings = SettingsStore.open(settingsFile, scope, io)
+    val data = File(root, "accounts/$account").apply { mkdirs() }
     val added = Added(File(data, "playlist-added.json"), null, io)
     val history = RecentlyPlayed(File(data, "history.json"), scope, io) { PRETEND_NOW }
     val log = PlayLog(File(data, "plays.log"), io)
     var playlists: Set<String>? = null
-    val shared = PhoneShared(settings, account, added, history, log, read = { read }, playlists = { playlists }, songs = { ids -> ids.associateWith { Song(id = it, title = "Song $it") } })
+
+    /** Where the record as first found is kept before this phone's first write. */
+    val keptFirst = File(data, "shared-record-kept-$version.json")
+    val notes = ArrayList<String>()
+    val shared = PhoneShared(
+        settings, account, "tester", added, history, log, read = { read }, playlists = { playlists },
+        songs = { ids -> ids.associateWith { Song(id = it, title = "Song $it") } }, keptFirst = keptFirst, note = { notes += it },
+    )
 
     init {
         Belongs.takeOn(settings, account, { File(root, "accounts/$it").apply { mkdirs() } })
@@ -99,11 +107,20 @@ internal class PretendPhone(val root: File, val account: String, private val sco
     }
 
     /** Its exchange with `server`, as this phone's account. */
-    fun step(server: StepServer, may: () -> Boolean = { true }, clock: () -> Long = { PRETEND_NOW }, notes: MutableList<String> = ArrayList()) =
-        InStep(server, shared, username = "tester", account = "$account-${System.nanoTime()}", may = may, scope = scope, clock = clock, pause = {}, note = { notes += it })
+    fun step(server: StepServer, may: () -> Boolean = { true }, clock: () -> Long = { PRETEND_NOW }, notes: MutableList<String> = this.notes, on: CoroutineScope = scope) =
+        InStep(server, shared, username = "tester", account = "$account-${System.nanoTime()}", may = may, scope = on, clock = clock, pause = {}, note = { notes += it })
 
-    /** The person does something to the settings on this phone. */
-    fun does(change: (org.medianexus.music.store.Settings) -> org.medianexus.music.store.Settings) = settings.update(change)
+    /** The person does something on this phone to what is shared: kept, on the disk, before
+     *  it shows (as `Graph.choose` does it). */
+    fun does(did: Chosen.Did, now: Long = PRETEND_NOW): Boolean = runBlocking { settings.commit { Chosen.made(it, did, now) { said -> notes += said } } }
+
+    fun pin(id: String) = does(Chosen.Did.Pin(id, true))
+    fun unpin(id: String) = does(Chosen.Did.Pin(id, false))
+
+    val pins: List<String> get() = settings.value.pinnedPlaylists
+
+    /** The settings as they are on the disk at this moment, as text. */
+    fun onDisk(): String = settingsFile.readText()
 
     /** The process ends: the log lets its file go (what it had been given is on the disk). */
     fun stop() = runBlocking {
@@ -112,10 +129,11 @@ internal class PretendPhone(val root: File, val account: String, private val sco
     }
 }
 
-/** A pretend player for the tests of the shared queue: what it would save, when its queue
- *  last changed, and every queue put in its place. */
-internal class PretendPlayer(var playing: Boolean = false, var current: String? = "mine", var stamp: Long = 0) : QueueHere {
-    var queue: QueueUpload? = QueueUpload(listOf("mine", "next"), "mine", 5_000)
+/** A pretend player for the tests of the shared queue: its queue, when that last changed,
+ *  and every queue put in its place. */
+internal class PretendPlayer(var playing: Boolean = false, var current: String? = "mine", var stamp: Long = 0, var taken: String? = null) : QueueHere {
+    var songs: List<String>? = listOf("mine", "next")
+    var positionSeconds = 5.0
     val replaced = ArrayList<String>()
 
     /** What `replace` answers: whether the player took the queue. */
@@ -127,17 +145,24 @@ internal class PretendPlayer(var playing: Boolean = false, var current: String? 
     /** Something that happens while a queue is being made ready. */
     var meanwhile: () -> Unit = {}
 
-    override fun upload() = queue
+    override fun queue() = songs?.let { ids -> QueueNow(ids.map { org.medianexus.music.core.QueueSong(it, 200) }, ids.indexOf(current).coerceAtLeast(0), positionSeconds) }
     override fun currentId() = current
     override fun playing() = playing
     override fun stamp() = stamp
-    override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, choice: Long?, still: () -> Boolean): Boolean {
+    override fun taken() = taken
+    override suspend fun replace(songs: List<Song>, cursor: Int, positionMs: Long, stamp: Long, taken: String, choice: Long?, asOf: Long, stampThen: Long, still: () -> Boolean): Boolean {
         meanwhile()
+        // (As the playback service: not if the person has done anything to the queue since
+        // it was decided to take this one up.)
+        if (choice == null && (this.stamp != stampThen || !org.medianexus.music.playback.Choices.stands(asOf))) return false
         if (!takes || !still()) return false
         choices += choice
         replaced += "${songs.map { it.id }} at $cursor, $positionMs ms, ${if (choice != null) "playing" else "paused"}"
-        queue = QueueUpload(songs.map { it.id }, songs[cursor].id, positionMs)
+        this.songs = songs.map { it.id }
+        current = songs[cursor].id
+        positionSeconds = positionMs / 1000.0
         this.stamp = stamp
+        this.taken = taken.takeIf { choice == null }
         return true
     }
 }

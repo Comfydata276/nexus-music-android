@@ -114,9 +114,9 @@ private fun Appearance(graph: Graph) {
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     SettingRow(stringResource(R.string.theme), stringResource(R.string.theme_detail), stacked = true) {
         ThemeSwatches(settings.theme) { name ->
-            // Chosen here: shown at once, and kept as the change for the account's other
-            // devices (sync/Changes.kt).
-            graph.settings.update { org.medianexus.music.sync.Changes.theme(it, name) }
+            // Chosen here: kept as the change for the account's other devices, and shown
+            // once it is kept (sync/Chosen.kt).
+            graph.choose(org.medianexus.music.sync.Chosen.Did.Theme(name))
         }
     }
 }

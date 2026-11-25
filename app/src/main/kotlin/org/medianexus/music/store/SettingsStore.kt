@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -53,6 +54,9 @@ class SettingsStore private constructor(
 
     private val failing = MutableStateFlow(false)
 
+    /** The file's writes, one at a time: the writer's, and a checked write's ([commit]). */
+    private val writing = kotlinx.coroutines.sync.Mutex()
+
     /** Whether the last write failed. A failed write leaves the last good file in place (as
      *  on Windows) and is tried again at the next change; the app tells the person. */
     val saveFailed: StateFlow<Boolean> = failing.asStateFlow()
@@ -63,7 +67,9 @@ class SettingsStore private constructor(
                 // The number first, then the settings: what's written is never older than
                 // the number it's noted under.
                 val number = changes.get()
-                val saved = save(file, current.value)
+                // (Not while a checked write is being made: an older copy must not be put
+                // over it.)
+                val saved = writing.withLock { save(file, current.value) }
                 val before = outcome.value
                 outcome.value = if (saved) Outcome(written = number, tries = before.tries + 1) else before.copy(failed = number, tries = before.tries + 1)
                 failing.value = !saved
@@ -87,6 +93,31 @@ class SettingsStore private constructor(
             changes.incrementAndGet()
             wake.trySend(Unit)
         }
+    }
+
+    /**
+     * Changes the settings **and has them on the disk before the change shows**: for a
+     * change that must not be lost once the person has seen it made (one that waits to be
+     * shared with their other devices), and for what an exchange with the server took in.
+     * False if the file couldn't be written: then nothing has changed, here or on the disk.
+     * Off the main thread.
+     */
+    suspend fun commit(change: (Settings) -> Settings): Boolean = writing.withLock {
+        while (true) {
+            val before = current.value
+            val after = change(before)
+            if (after == before) return@withLock true
+            if (!save(file, after)) {
+                failing.value = true
+                return@withLock false
+            }
+            // (Something else changed meanwhile, by `update`: made again on top of that.)
+            if (current.compareAndSet(before, after)) break
+        }
+        // (Whatever `update` changed while this was writing is still to be written.)
+        changes.incrementAndGet()
+        wake.trySend(Unit)
+        true
     }
 
     /**

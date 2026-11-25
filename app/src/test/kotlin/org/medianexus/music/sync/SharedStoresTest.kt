@@ -16,6 +16,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.medianexus.music.core.Core
+import org.medianexus.music.core.Play
+import org.medianexus.music.core.QueueSong
 import org.medianexus.music.library.Library
 import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.OfflineSwitch
@@ -65,7 +68,7 @@ class SharedStoresTest {
         assertTrue(added.shared().isEmpty())
         assertEquals(0, told)
         // The PC that added it says when: that is taken, over what was noticed.
-        assertTrue(added.merge(mapOf("p" to mapOf("c" to AddedNote(listOf(150), 150)))))
+        assertTrue(added.take(mapOf("p" to mapOf("c" to AddedNote(listOf(150), 150)))))
         assertEquals(listOf(0L, 0L, 150L, 200L), added.dates("p", songs("a", "b", "c", "a")).toList())
         // A song noticed gone: a note of the phone's own goes with it; another device's dated
         // note is left exactly as it is (the phone's copy may only be an old one).
@@ -88,18 +91,20 @@ class SharedStoresTest {
         assertEquals(mapOf("p" to mapOf("c" to AddedNote(listOf(200), 200), "a" to AddedNote(listOf(0, 200), 200))), added.shared())
         assertEquals(1, told)
         // Taken out on this phone: the note stays, emptied, so other devices hear that it went;
-        // one of two copies gone keeps the older date. A song nothing was known of leaves no note.
+        // one of two copies gone keeps the older date. A song this phone had no date for is
+        // word that it went too: the record may have a date for it that this phone has not
+        // heard of, and the exchange passes the word on only if it has (the shared core).
         added.changed("p", listOf("a", "b", "c", "a"), listOf("a"), 300)
-        assertEquals(mapOf("p" to mapOf("c" to AddedNote(emptyList(), 300), "a" to AddedNote(listOf(0), 300))), added.shared())
+        assertEquals(mapOf("p" to mapOf("c" to AddedNote(emptyList(), 300), "a" to AddedNote(listOf(0), 300), "b" to AddedNote(emptyList(), 300))), added.shared())
         assertEquals(2, told)
         // A song the change didn't touch is not looked at, whatever its note says.
-        added.merge(mapOf("p" to mapOf("z" to AddedNote(listOf(50), 50))))
+        added.take(mapOf("p" to mapOf("z" to AddedNote(listOf(50), 50))))
         added.changed("p", listOf("a"), listOf("a", "d"), 400)
         assertEquals(AddedNote(listOf(50), 50), added.shared().getValue("p")["z"])
         assertEquals(AddedNote(listOf(400), 400), added.shared().getValue("p")["d"])
         // Put back after being taken out elsewhere (its dated note was left as it was, out of
         // step): dated afresh, not with the day it was first added.
-        added.merge(mapOf("p" to mapOf("old" to AddedNote(listOf(10), 10))))
+        added.take(mapOf("p" to mapOf("old" to AddedNote(listOf(10), 10))))
         added.changed("p", listOf("a", "d"), listOf("a", "d", "old"), 500)
         assertEquals(AddedNote(listOf(500), 500), added.shared().getValue("p")["old"])
         // A change that changes no song (a move) says nothing.
@@ -138,56 +143,25 @@ class SharedStoresTest {
 
     // ---- the queue -----------------------------------------------------------------------------------
 
-    private fun queue(vararg ids: String, current: String, position: Long = 0, changed: String, by: String = "NexusMusic-0badc0de") =
-        PlayQueue(ids.map { Song(id = it, title = "T$it", artist = "Someone", duration = 200) }, current, position, changed, by)
-
     @Test
     fun aLongQueueIsPassedOnAsFiftyBehindAndFourHundredAndFiftyAhead() {
-        val songs = (0 until 2_000).map { Song(id = "s$it", radioUrl = if (it == 1_010) "http://radio.example/stream" else "") }
-        val upload = QueueShare.window(songs.size, 1_000, { songs[it] }, 12.6)!!
-        assertEquals("s1000" to 12_600L, upload.current to upload.positionMs)
+        // (The shared core's rule, asked as the phone asks it: the queue in the order it plays.)
+        val songs = (0 until 2_000).map { QueueSong("s$it", radio = it == 1_010) }
+        val upload = Core.queueWindow(songs, 1_000, 12.6)!!
+        assertEquals("s1000" to 12_600L, upload.current to upload.position)
         // (A station among them isn't something another device could pick up by id.)
         assertEquals(499, upload.ids.size)
         assertEquals("s950" to "s1449", upload.ids.first() to upload.ids.last())
         assertFalse("s1010" in upload.ids)
         // Near the start, and a short queue.
-        assertEquals(455, QueueShare.window(songs.size, 5, { songs[it] }, 0.0)!!.ids.size)
-        assertEquals(listOf("s0", "s1", "s2"), QueueShare.window(3, 1, { songs[it] }, -4.0)!!.let { assertEquals(0L, it.positionMs); it.ids })
+        assertEquals(455, Core.queueWindow(songs, 5, 0.0)!!.ids.size)
+        assertEquals(listOf("s0", "s1", "s2"), Core.queueWindow(songs.take(3), 1, -4.0)!!.let { assertEquals(0L, it.position); it.ids })
         // Nothing playing, or a station: nothing is saved.
-        assertNull(QueueShare.window(0, 0, { songs[it] }, 0.0))
-        assertNull(QueueShare.window(songs.size, 1_010, { songs[it] }, 0.0))
-    }
-
-    @Test
-    fun aQueueFromAnotherDeviceIsTakenUpOfferedOrLeftAsWindowsDoes() {
-        val mine = "NexusMusic-11112222"
-        val now = 86_400L + 100
-        val theirs = queue("a", "b", "c", current = "b", position = 30_000, changed = "1970-01-02T00:00:00Z")
-        assertEquals(86_400L, QueueShare.changedAt(theirs))
-        // Taken up, paused, only if another device changed it after anything was done here,
-        // and nothing is playing here.
-        assertTrue(QueueShare.adopted(theirs, mine, stamp = 86_399, playing = false))
-        assertFalse(QueueShare.adopted(theirs, mine, stamp = 86_400, playing = false))
-        assertFalse(QueueShare.adopted(theirs, mine, stamp = 0, playing = true))
-        assertFalse(QueueShare.adopted(theirs.copy(changedBy = mine), mine, stamp = 0, playing = false))
-        assertFalse(QueueShare.adopted(theirs.copy(songs = emptyList()), mine, stamp = 0, playing = false))
-        // Offered as "Continue here" for half an hour, unless it is this device's own or the
-        // song is the one here already.
-        assertTrue(QueueShare.offered(theirs, mine, currentId = "z", now = now))
-        assertTrue(QueueShare.offered(theirs, mine, currentId = null, now = now))
-        assertFalse(QueueShare.offered(theirs, mine, currentId = "b", now = now))
-        assertFalse(QueueShare.offered(theirs.copy(changedBy = mine), mine, currentId = "z", now = now))
-        assertFalse(QueueShare.offered(theirs, mine, currentId = "z", now = 86_400L + 30 * 60))
-        assertTrue(QueueShare.offered(theirs, mine, currentId = "z", now = 86_400L + 30 * 60 - 1))
-        // (A queue saved "after now", by a clock that is ahead, is not offered.)
-        assertFalse(QueueShare.offered(theirs, mine, currentId = "z", now = 86_399))
-        // Picked up where it had got to; from the start of a song that had all but ended, and
-        // at the first song if the one it names isn't among them.
-        assertEquals(1 to 30_000L, QueueShare.place(theirs))
-        assertEquals(1 to 0L, QueueShare.place(theirs.copy(position = 199_000)))
-        assertEquals(0 to 30_000L, QueueShare.place(theirs.copy(current = "gone")))
-        assertEquals("NexusMusic-0000beef", QueueShare.deviceName("0000beef"))
-        assertTrue(Regex("[0-9a-f]{8}").matches(QueueShare.newDeviceId()))
+        assertNull(Core.queueWindow(emptyList(), 0, 0.0))
+        assertNull(Core.queueWindow(songs, 1_010, 0.0))
+        // The name a device saves under, and the id it is made from.
+        assertEquals("NexusMusic-0000beef", Core.deviceName("0000beef"))
+        assertTrue(Regex("[0-9a-f]{8}").matches(newDeviceId()))
     }
 
     // ---- the playlist that holds the record is never among the playlists ---------------------------

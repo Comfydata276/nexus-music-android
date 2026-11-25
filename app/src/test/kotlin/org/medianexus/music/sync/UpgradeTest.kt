@@ -23,12 +23,16 @@ import org.medianexus.music.store.ListPrefs
  * (`instep-upgrade/`: see its ABOUT.txt).
  */
 class UpgradeTest {
-    /** No test here may wait for ever (see InStepTest). */
+    /** No test here may wait for ever (see InStepContractTest). */
     @get:Rule val limit: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(60)
 
     @get:Rule val folder = TemporaryFolder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private val phones = ArrayList<PretendPhone>()
+
+    /** The shared core's "long ago": the time of a choice that had none, so that it is
+     *  offered and loses to anything chosen since. */
+    private val LONG_AGO = 1L
 
     @After
     fun stop() {
@@ -52,7 +56,7 @@ class UpgradeTest {
      *  the day the second song really was added, long before the phone looked. */
     private val pc = Shared(
         layout = 1, pins = listOf("pc-pin"), pinsAt = 1_790_000_000, theme = "Ember", themeAt = 1_790_000_100,
-        lists = mapOf("playlist:pl-a" to SharedPrefs(shuffle = false, sort = 3u, descending = true, sortChosen = true, at = 1_790_000_200)),
+        lists = mapOf("playlist:pl-a" to SharedPrefs(shuffle = false, sort = 3, descending = true, sortChosen = true, at = 1_790_000_200)),
         added = mapOf("pl-a" to mapOf("s2" to SharedNote(listOf(1_780_000_000), 1_780_000_000))),
     )
 
@@ -63,7 +67,6 @@ class UpgradeTest {
         val phone = upgraded()
         // What it holds, it still shows; none of it is anything it has to say.
         assertEquals(listOf("pl-a") to "Rose", phone.settings.value.let { it.pinnedPlaylists to it.theme })
-        assertEquals(Shared(layout = 1), phone.shared.record())
         assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
         // Nothing written: not its pin over the PC's, not its theme, not its shuffle over the
         // PC's sort, and not "the second song was added when I looked" over the day it was.
@@ -97,7 +100,7 @@ class UpgradeTest {
         assertTrue(phone.added.shared().isEmpty())
         // What the person does from here on is theirs: pinned now, it goes into the record,
         // added to nothing, with the time of the exchange.
-        phone.does { Changes.pin(it, "new", on = true) }
+        phone.pin("new")
         assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
         val record = SharedText.read(server.comment(server.made.single())!!)!!
         assertEquals(Shared(layout = 1, pins = listOf("new"), pinsAt = PRETEND_NOW), record)
@@ -111,18 +114,23 @@ class UpgradeTest {
         val owned: (String) -> String = { it.replace("\"sync\": true,", "\"sync\": true,\n    \"shared_for\": \"a\",") }
         val server = PretendServer().apply { put("r", SharedText.write(pc)) }
         val phone = upgraded(settings = owned)
-        assertEquals(listOf("pl-a") to LONG_AGO, phone.shared.record()!!.let { it.pins to it.pinsAt })
-        assertEquals("Rose" to LONG_AGO, phone.shared.record()!!.let { it.theme to it.themeAt })
+        assertEquals(listOf("pl-a") to "Rose", phone.settings.value.let { it.pinnedPlaylists to it.theme })
         assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
         // The PC's pins, theme and sort stand; only the list the PC had nothing for is added.
         val record = SharedText.read(server.comment("r")!!)!!
-        assertEquals(pc.copy(lists = pc.lists + ("liked" to SharedPrefs(sort = 2u, descending = true, sortChosen = true, at = LONG_AGO))), record)
+        assertEquals(pc.copy(lists = pc.lists + ("liked" to SharedPrefs(sort = 2, descending = true, sortChosen = true, at = LONG_AGO))), record)
         // The same put away with an account by that build, and brought out by this one.
         val other = upgraded(account = "b")
         File(other.root, "accounts/a").mkdirs()
         File(other.root, "accounts/a/in-step.json").writeText("""{"pinnedPlaylists":["old"],"pinsAt":1795000100,"lists":{"songs":{"sort":1,"at":1795000000}},"theme":"Ocean","themeAt":1795000200}""")
         other.stop()
         val back = PretendPhone(other.root, "a", scope).also { phones += it }
-        assertEquals(Shared(layout = 1, pins = listOf("old"), pinsAt = LONG_AGO, theme = "Ocean", themeAt = LONG_AGO, lists = mapOf("songs" to SharedPrefs(sort = 1u, at = LONG_AGO))), back.shared.record())
+        // (What it has to say is what it writes where nothing has been said yet.)
+        val empty = PretendServer()
+        assertEquals(InStep.Outcome.DONE, back.step(empty).exchange())
+        assertEquals(
+            Shared(layout = 1, pins = listOf("old"), pinsAt = LONG_AGO, theme = "Ocean", themeAt = LONG_AGO, lists = mapOf("songs" to SharedPrefs(sort = 1, at = LONG_AGO))),
+            SharedText.read(empty.comment(empty.made.single())!!),
+        )
     }
 }

@@ -1,152 +1,40 @@
 package org.medianexus.music.sync
 
+import java.io.File
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.StandardOpenOption
+import java.util.PriorityQueue
+import kotlinx.serialization.json.JsonElement
+import org.medianexus.music.core.Core
+import org.medianexus.music.core.Device
+import org.medianexus.music.core.Plan
+import org.medianexus.music.core.Play
+import org.medianexus.music.core.PlayFrom
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.Added
-import org.medianexus.music.store.AddedNote
-import org.medianexus.music.store.ListPrefs
 import org.medianexus.music.store.PlayLog
 import org.medianexus.music.store.Plays
 import org.medianexus.music.store.RecentlyPlayed
-import org.medianexus.music.store.Settings
-import org.medianexus.music.store.Waiting
 import org.medianexus.music.store.SettingsStore
 
 /**
- * What goes between the phone's own stores and the shared record, each way, as plain
- * functions: what the phone has to say ([choices], [plays]) and what it takes in ([taken]).
- * Windows' `shared_here` and `take_shared`, with the phone's rules about what it may say
- * (docs/DESIGN.md, "In step with other devices", has the table).
- */
-object Sharing {
-    /** The themes the Windows app has, by the names it knows them by (`THEMES` in its
-     *  src/config.rs). A name outside these is never written to the record. */
-    val WINDOWS_THEMES = setOf("Violet", "Green", "Ember", "Ocean", "Rose", "Graphite")
-
-    /** The orders the Windows app has for a list of songs (`TRACK_SORTS`): 0 to this. */
-    const val WINDOWS_SORT_MOST = 5
-
-    /**
-     * Whether a list's key is one the Windows app has too, meaning the same list: its route
-     * keys for a playlist, an album, an artist, a genre, Liked songs, the Songs page, the
-     * downloads and a "Made for you" mix. The phone's own keys (a downloaded album or
-     * playlist as the downloads have it, a song's radio) stay on the phone, and so does a mix
-     * made to rules of one's own: its id is only this device's, and names another mix, or
-     * none, on any other.
-     */
-    fun windowsKey(key: String): Boolean = when {
-        key == "liked" || key == "songs" || key == "downloads" -> true
-        key.startsWith("mix:rule:") -> false
-        else -> listOf("playlist:", "album:", "artist:", "genre:", "mix:").any { key.startsWith(it) && key.length > it.length }
-    }
-
-    /** One list's choices as shared, or null if they are the phone's alone: a key Windows
-     *  doesn't have, or an order it has no number for. */
-    fun prefs(key: String, prefs: ListPrefs): SharedPrefs? =
-        if (!windowsKey(key) || prefs.sort !in 0..WINDOWS_SORT_MOST) null
-        else SharedPrefs(prefs.shuffle, prefs.sort.toULong(), prefs.descending, prefs.sortChosen, prefs.at)
-
-    /**
-     * The settings' part of what the phone has to share: the pins, the theme and each list's
-     * choices **as last agreed with the server**, each with the time it has there. Not what
-     * the phone shows: the person's changes since are not in this, and are made to the
-     * record itself at the exchange ([Changes.onto]). So nothing here carries a time of the
-     * phone's own making, and a phone that has agreed nothing yet has nothing to say.
-     */
-    fun choices(settings: Settings): Shared {
-        val agreed = settings.agreed
-        val lists = HashMap<String, SharedPrefs>()
-        for ((key, mine) in agreed.lists) prefs(key, mine)?.let { lists[key] = it }
-        val theme = agreed.theme in WINDOWS_THEMES
-        return Shared(layout = LAYOUT, pins = agreed.pins, pinsAt = agreed.pinsAt, theme = if (theme) agreed.theme else "", themeAt = if (theme) agreed.themeAt else 0, lists = lists)
-    }
-
-    /**
-     * The latest plays of the log as they are shared: newest first, each once, with where
-     * those made from a playlist were made from. From one reading of the log (`log` is the
-     * log as it stood at one moment), and **only its end is read**: the log may hold 200,000
-     * plays, and an exchange that changes nothing must not copy them all to find the last
-     * [PLAYS_SHARED]. As Windows: the last [PLAYS_SHARED] lines, sorted; one source for a
-     * song and a second, the one noted last.
-     */
-    fun plays(log: Plays): Pair<List<Play>, List<PlayFrom>> {
-        val latest = ArrayList<Play>(minOf(log.size, PLAYS_SHARED))
-        val from = LinkedHashMap<Play, String>()
-        for (i in log.size - 1 downTo maxOf(0, log.size - PLAYS_SHARED)) {
-            val play = Play(log.song(i), log.at(i))
-            latest += play
-            log.from(i).let { if (it.isNotEmpty()) from.putIfAbsent(play, it) }
-        }
-        val plays = Merge.mergePlays(latest, emptyList())
-        val kept = plays.toHashSet()
-        return plays to from.filterKeys { it in kept }.map { (play, source) -> PlayFrom(play.song, play.at, source) }
-    }
-
-    /**
-     * The settings with what came back from the server taken in (Windows' `take_shared`):
-     * what is agreed becomes the record's, where the record's is newer; the changes that
-     * were made to the record before it was written (`applied`) are forgotten; and what the
-     * phone shows is the agreed with the changes still waiting on top. "Still waiting" is
-     * read from the settings at this moment: a change made while the exchange was out is
-     * among them, and stays, on screen and to be shared.
-     */
-    fun taken(settings: Settings, theirs: Shared, applied: List<Waiting> = emptyList()): Settings {
-        val before = settings.agreed
-        var agreed = before
-        if (Merge.pinsNewer(theirs.pinsAt, theirs.pins, before.pinsAt, before.pins)) agreed = agreed.copy(pins = theirs.pins, pinsAt = theirs.pinsAt)
-        // A theme this phone doesn't have is left for the devices that do.
-        if (theirs.theme in WINDOWS_THEMES && Merge.themeNewer(theirs.themeAt, theirs.theme, before.themeAt, before.theme)) {
-            agreed = agreed.copy(theme = theirs.theme, themeAt = theirs.themeAt)
-        }
-        var lists: HashMap<String, ListPrefs>? = null
-        for ((key, prefs) in theirs.lists) {
-            val mine = before.lists[key]
-            val shared = mine?.let { SharedPrefs(it.shuffle, it.sort.coerceAtLeast(0).toULong(), it.descending, it.sortChosen, it.at) }
-            if (shared == null || Merge.rank(prefs, shared) > 0) {
-                (lists ?: HashMap(before.lists).also { lists = it })[key] =
-                    ListPrefs(prefs.shuffle, minOf(prefs.sort, Int.MAX_VALUE.toULong()).toInt(), prefs.descending, prefs.sortChosen, prefs.at)
-            }
-        }
-        lists?.let { agreed = agreed.copy(lists = it) }
-        // Each change that was applied is gone, once: one made again meanwhile still waits.
-        val waiting = ArrayList(settings.waiting)
-        for (change in applied) waiting.remove(change)
-
-        // What the phone shows. Where the record says nothing (no pins and no time on them, a
-        // list it has no entry for, no theme), what the phone has of its own stays.
-        var out = settings.copy(agreed = agreed, waiting = waiting)
-        if (agreed.pins.isNotEmpty() || agreed.pinsAt != 0L) out = out.copy(pinnedPlaylists = Changes.shown(agreed.pins, waiting))
-        if (agreed.theme.isNotEmpty()) out = out.copy(theme = waiting.lastOrNull { it.what == Changes.THEME }?.key ?: agreed.theme)
-        if (agreed.lists.isNotEmpty()) {
-            val shown = HashMap(settings.lists)
-            for ((key, prefs) in agreed.lists) {
-                val here = settings.lists[key]
-                // An order only the phone offers is the phone's own choice for that list: it
-                // stays unless the one arriving was chosen after it.
-                val own = here != null && here.sort !in 0..WINDOWS_SORT_MOST && prefs.at <= here.at
-                val made = Changes.shown(prefs, key, waiting)
-                shown[key] = if (own) made.copy(sort = here!!.sort, descending = here.descending, sortChosen = here.sortChosen, at = here.at) else made
-            }
-            out = out.copy(lists = shown)
-        }
-        return out
-    }
-
-    fun notes(notes: Map<String, Map<String, AddedNote>>): Map<String, Map<String, SharedNote>> =
-        notes.mapValues { (_, songs) -> songs.mapValues { (_, note) -> SharedNote(note.times, note.at) } }
-
-    fun added(notes: Map<String, Map<String, SharedNote>>): Map<String, Map<String, AddedNote>> =
-        notes.mapValues { (_, songs) -> songs.mapValues { (_, note) -> AddedNote(note.times, note.at) } }
-}
-
-/**
- * The phone's side of an exchange, over its own stores ([StepPhone]): the settings (for the
- * pins, the theme and each list's choices), the notes of when songs were added, Recently
- * played, and the log of plays.
+ * The phone's side of an exchange, over its own stores ([StepPhone]): the settings (which
+ * hold the shared core's choices for the account), the notes of when songs were added,
+ * Recently played, and the log of plays. No rule about what is shared is here: the core has
+ * them; this is what is read from the phone's stores, and what is kept in them, at each of
+ * the core's steps.
  */
 class PhoneShared(
     private val settings: SettingsStore,
-    /** The account's key on the phone: the shared choices in the settings must be its own. */
+    /** The account's key on the phone: the shared choices in the settings must be its own,
+     *  and the changes made here wait under it and are only ever sent for it. (It is a hash
+     *  of exactly the server's address and the username: two accounts never share one.) */
     private val account: String,
+    /** The account's name on the server. */
+    private val username: String,
     private val added: Added,
     private val history: RecentlyPlayed,
     private val log: PlayLog,
@@ -157,10 +45,22 @@ class PhoneShared(
     private val playlists: suspend () -> Set<String>?,
     /** The songs with these ids, for the ones that can be found. */
     private val songs: suspend (List<String>) -> Map<String, Song>,
+    /**
+     * Where the record's text is kept as this version first found it, before the first
+     * write this version makes: a file in the account's own data, named for the version.
+     * (One for each account, then, and for each version that writes.)
+     */
+    private val keptFirst: File,
     /** The dates on screen may have changed. */
     private val datesChanged: () -> Unit = {},
+    private val note: (String) -> Unit = {},
 ) : StepPhone {
-    override suspend fun record(): Shared? {
+    /** The core's choices as the last exchange left them in the settings: a difference from
+     *  this is a change made here, to pass on. */
+    @Volatile var settled: JsonElement? = null
+        private set
+
+    override suspend fun device(): Device? {
         val now = settings.value
         // Not before the choices in the settings are this account's own, nor before its
         // history and its log have been read from the phone: an empty list that means "not
@@ -170,24 +70,19 @@ class PhoneShared(
         // Before the playlists have loaded there's no telling which still exist.
         val known = playlists()?.takeIf { it.isNotEmpty() }
         // (The plays and their sources from one and the same moment of the log.)
-        val (plays, sources) = Sharing.plays(log.state.value)
-        return Sharing.choices(now).copy(
-            added = Sharing.notes(added.shared(known)),
+        val (plays, sources) = newest(log.state.value)
+        return Device(
+            username = username, account = account, choices = Chosen.choices(now),
+            notes = added.shared(known),
             history = history.state.value.map { Play(it.song.id, it.at) },
-            plays = plays,
-            playSources = sources,
+            plays = plays, playSources = sources,
         )
     }
 
-    /** What is waiting in the settings as the last exchange left it: a change to it since
-     *  is one made here, to pass on. */
-    @Volatile var settled: List<Waiting> = emptyList()
-        private set
-
-    override suspend fun keep(theirs: Shared) {
+    override suspend fun keep(plays: List<Play>, sources: List<PlayFrom>) {
         if (!Belongs.ready(settings.value, account)) return
         // Plays counted on other devices go into this one's log, so the stats cover them all.
-        log.absorb(theirs.plays.map { it.song to it.at }, theirs.playSources.map { Triple(it.song, it.at, it.from) })
+        log.absorb(plays.map { it.song to it.at }, sources.map { Triple(it.song, it.at, it.from) })
         // On the disk, with everything else the log holds in memory, or this throws: every
         // time, whether or not anything was new. (Asked only when something was new, a write
         // that failed left the plays in memory; the next exchange then found them "already
@@ -195,22 +90,96 @@ class PhoneShared(
         log.flushed()
     }
 
-    override fun withChanges(merged: Shared, now: Long): Changed {
-        val waiting = settings.value.let { if (Belongs.ready(it, account)) it.waiting else emptyList() }
-        return Changed(Changes.onto(merged, waiting, now), waiting)
+    override suspend fun take(plan: Plan): Boolean {
+        // Only into settings that are still this account's: an exchange that comes back
+        // after the account has gone changes nothing. Kept before they show.
+        val kept = settings.commit { now ->
+            if (!Belongs.ready(now, account)) now else Chosen.with(now, Core.take(Chosen.choices(now), plan.take)).also { settled = it.choices }
+        }
+        if (!kept) return false
+        if (!Belongs.ready(settings.value, account)) return true
+        // (Each of these is on the disk when it returns, or throws.)
+        if (added.take(plan.notes)) datesChanged()
+        // Recently played: what is here now, with what the other devices played.
+        history.take(plan.history, songs)
+        return true
     }
 
-    override suspend fun take(theirs: Shared, applied: List<Waiting>) {
-        // Only into settings that are still this account's: an exchange that comes back
-        // after the account has gone changes nothing.
-        settings.update {
-            if (!Belongs.ready(it, account)) return@update it
-            // (Noted before the settings change, so whoever follows them sees it was this.)
-            Sharing.taken(it, theirs, applied).also { taken -> settled = taken.waiting }
+    override fun keepFirst(found: String): Boolean = try {
+        keptFirst.parentFile?.mkdirs()
+        // Made only if it isn't there, and never opened for writing again.
+        FileChannel.open(keptFirst.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { channel ->
+            val bytes = ByteBuffer.wrap(found.encodeToByteArray())
+            try {
+                while (bytes.hasRemaining()) channel.write(bytes)
+                channel.force(true)
+            } catch (e: IOException) {
+                // (This call's own file, made a moment ago and not what was found: it must
+                // not pass for the copy.)
+                runCatching { keptFirst.delete() }
+                throw e
+            }
         }
-        if (!Belongs.ready(settings.value, account)) return
-        if (added.merge(Sharing.added(theirs.added))) datesChanged()
-        // Recently played: both devices' plays, in order.
-        history.take(theirs.history, songs)
+        true
+    } catch (_: FileAlreadyExistsException) {
+        // The file is its own proof.
+        keptFirst.isFile
+    } catch (_: IOException) {
+        false
+    }
+
+    override suspend fun sending(write: JsonElement): Boolean? {
+        var fits = false
+        val kept = settings.commit { now ->
+            fits = false
+            if (!Belongs.ready(now, account)) return@commit now
+            val out = Core.sending(Chosen.choices(now), write)
+            fits = out.fits
+            if (out.fits) now.copy(choices = out.choices).also { settled = it.choices } else now
+        }
+        return if (kept) fits else null
+    }
+
+    override suspend fun written(write: JsonElement) {
+        val kept = settings.commit { now ->
+            if (!Belongs.ready(now, account)) now else Chosen.with(now, Core.written(Chosen.choices(now), write)).also { settled = it.choices }
+        }
+        // (Not kept: the changes stay as tried, and the next exchange makes them again over
+        // their own result, which alters nothing.)
+        if (!kept) note("in step: what was shared couldn't be noted on the phone as shared; it will be offered again")
+    }
+
+    companion object {
+        /** How many of the log's plays are shared (the core's `PLAYS_SHARED`; `CoreNamesTest`
+         *  holds this to the core's own). */
+        const val PLAYS_SHARED = 500
+
+        /**
+         * The plays of the log that could be among its newest [PLAYS_SHARED]: **every play at
+         * least as new as the 500th newest**, with where those made from a playlist were made
+         * from. Which of them are the newest, each once, is the core's to say ([Core.settle]);
+         * this only spares carrying a log of 200,000 plays across to it at every exchange.
+         * From one reading of the log (`log` is the log as it stood at one moment).
+         */
+        fun newest(log: Plays): Pair<List<Play>, List<PlayFrom>> {
+            var from = Long.MIN_VALUE
+            if (log.size > PLAYS_SHARED) {
+                // The 500th greatest time: the least of the 500 greatest.
+                val greatest = PriorityQueue<Long>(PLAYS_SHARED + 1)
+                for (i in 0 until log.size) {
+                    greatest.add(log.at(i))
+                    if (greatest.size > PLAYS_SHARED) greatest.poll()
+                }
+                from = greatest.peek() ?: Long.MIN_VALUE
+            }
+            val plays = ArrayList<Play>(minOf(log.size, PLAYS_SHARED))
+            val sources = ArrayList<PlayFrom>()
+            for (i in 0 until log.size) {
+                if (log.at(i) < from) continue
+                plays += Play(log.song(i), log.at(i))
+                log.from(i).let { if (it.isNotEmpty()) sources += PlayFrom(log.song(i), log.at(i), it) }
+            }
+            return plays to sources
+        }
     }
 }

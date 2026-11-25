@@ -359,7 +359,11 @@ class Playlists(
                     } catch (_: ApiError) {
                         null
                     }
-                    added?.changed(id, now!!.songs.map { it.id }, (after?.songs ?: (now.songs + appended)).map { it.id }, clock() / 1000)
+                    // The person's own change, dated now: **the songs this change added,
+                    // worked out, not what the playlist is read back as**. A song another
+                    // device added between the two reads is in the copy read back, and is
+                    // not this phone's to date. (The page shows the copy read back.)
+                    added?.changed(id, now!!.songs.map { it.id }, (now.songs + appended).map { it.id }, clock() / 1000)
                     if (after != null) keep(after)
                     change.result = Adding.Added(after?.songs?.mapTo(HashSet()) { it.id })
                 }
@@ -371,7 +375,8 @@ class Playlists(
                     val after = applied(now!!, change)
                     // The person's own change: the songs it added or took out are dated now,
                     // for other devices too (before the page is told, which only notices).
-                    added?.changed(id, now.songs.map { it.id }, after.songs.map { it.id }, clock() / 1000)
+                    // (For songs taken out, which copies: it is those copies' dates that go.)
+                    added?.changed(id, now.songs.map { it.id }, after.songs.map { it.id }, clock() / 1000, removed = (change as? Change.Remove)?.rows)
                     keep(after)
                     if (!flight.undo && change is Change.ByPosition) {
                         val undo = PlaylistUndo(id, after, now.songs, clock())

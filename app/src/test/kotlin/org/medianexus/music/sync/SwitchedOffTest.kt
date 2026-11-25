@@ -14,6 +14,7 @@ import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -94,10 +95,10 @@ class SwitchedOffTest {
         reach.value = Reach()
         delay(300)
         // A pin, a list's shuffle and sort, the theme; a song started; a play that counted.
-        settings.update { Changes.pin(it, "p1", true) }
-        settings.update { Changes.shuffle(it, "liked", true, 1_000) }
-        settings.update { Changes.sort(it, "liked", 1, false, 1_000) }
-        settings.update { Changes.theme(it, "Ocean") }
+        settings.commit { Chosen.made(it, Chosen.Did.Pin("p1", true), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Shuffle("liked", true), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Sort("liked", 1, false), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Theme("Ocean"), 1_000) }
         account.recentlyPlayed.played(Song(id = "s1", title = "One"))
         account.played("s1", 1_000_000_000L, "", report = false)
         // And it is asked outright.
@@ -159,16 +160,19 @@ class SwitchedOffTest {
         val dirs = AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))
         val run = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         var settings = SettingsStore.open(file, run, Dispatchers.IO)
+        // (As the app does when an account is signed in, whether or not keeping in step
+        // exists in the build: the shared choices in the settings are that account's.)
+        Belongs.takeOn(settings, "acct", { dirs.data })
         var account = account(settings, MutableStateFlow(Reach()), MutableStateFlow(true), dirs)
-        settings.update { Changes.pin(it, "p1", true) }
+        settings.commit { Chosen.made(it, Chosen.Did.Pin("p1", true), 1_000) }
         // Shown at once.
         assertEquals(listOf("p1"), settings.value.pinnedPlaylists)
-        settings.update { Changes.shuffle(it, "liked", true, 1_000) }
-        settings.update { Changes.sort(it, "liked", 2, true, 1_000) }
-        settings.update { Changes.theme(it, "Ocean") }
+        settings.commit { Chosen.made(it, Chosen.Did.Shuffle("liked", true), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Sort("liked", 2, true), 1_000) }
+        settings.commit { Chosen.made(it, Chosen.Did.Theme("Ocean"), 1_000) }
         // Pinned and unpinned over and over: the last word, once.
-        repeat(50) { settings.update { s -> Changes.pin(s, "p2", it % 2 == 0) } }
-        settings.update { Changes.pin(it, "p3", true) }
+        repeat(50) { settings.commit { s -> Chosen.made(s, Chosen.Did.Pin("p2", it % 2 == 0), 1_000) } }
+        settings.commit { Chosen.made(it, Chosen.Did.Pin("p3", true), 1_000) }
         assertEquals(listOf("p1", "p3"), settings.value.pinnedPlaylists)
         assertTrue(settings.flush())
         account.close()
@@ -185,8 +189,12 @@ class SwitchedOffTest {
             assertEquals(2, settings.value.lists["liked"]?.sort)
             assertEquals(true, settings.value.lists["liked"]?.descending)
             assertEquals("Ocean", settings.value.theme)
-            // p1, p2, p3; the list's shuffle and its sort; the theme.
-            assertEquals(6, settings.value.waiting.size)
+            // And each is kept as the change, by the shared core, for the day it is shared:
+            // p1 and p3, the list's shuffle and its sort, the theme. (p2, pinned and unpinned
+            // again before anything was sent, is no change at all.)
+            val kept = settings.value.choices.toString()
+            for (word in listOf("p1", "p3", "liked", "Ocean")) assertTrue(word, word in kept)
+            assertFalse("p2" in kept)
             account.close()
         } finally {
             again.cancel()

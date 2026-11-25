@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.medianexus.music.downloads.Catalogue
 import org.medianexus.music.downloads.Downloads
@@ -179,7 +180,7 @@ class AccountGraph(
     /** When songs were added to playlists, as far as this phone has seen (Windows'
      *  `playlist-added.json`, the name it has there; kept as `added.json` before): "Date
      *  added" sorts by it. */
-    val added = org.medianexus.music.store.Added(File(account.dirs.data, "playlist-added.json"), scope, io, formerly = File(account.dirs.data, "added.json"))
+    val added = org.medianexus.music.store.Added(File(account.dirs.data, "playlist-added.json"), scope, io, formerly = File(account.dirs.data, "added.json"), note = wiring?.note ?: {})
 
     /** Changes to the account's playlists, and how a playlist is shown while they are on
      *  their way (see [org.medianexus.music.library.Playlists]). */
@@ -256,10 +257,15 @@ class AccountGraph(
      *  where keeping in step doesn't exist ([org.medianexus.music.sync.InStepBuild]). */
     private val shared: org.medianexus.music.sync.PhoneShared? = wiring?.settingsStore?.takeIf { org.medianexus.music.sync.InStepBuild.on }?.let { store ->
         org.medianexus.music.sync.PhoneShared(
-            store, account.key, added, recentlyPlayed, playLog,
+            store, account.key, account.username, added, recentlyPlayed, playLog,
             read = { historyRead.isCompleted },
             playlists = { pages.kept(library.playlists())?.mapTo(HashSet()) { it.id } },
             songs = ::songsById,
+            // The record as this version first finds it, kept before its first write: with
+            // the account's own data, so there is one for each account, and named for the
+            // version, so there is one for each version that writes.
+            keptFirst = File(account.dirs.data, "shared-record-kept-${org.medianexus.music.BuildConfig.VERSION_NAME}.json"),
+            note = wiring?.note ?: {},
         )
     }
 
@@ -288,7 +294,9 @@ class AccountGraph(
                 override suspend fun create(name: String) = api.once().createPlaylist(name, emptyList()).id
                 override suspend fun setComment(id: String, comment: String) = api.setPlaylistComment(id, comment)
             },
-            phone, account.username, account.key, ::mayShare, scope, pause = pause, note = wiring?.note ?: {},
+            // (Asked again before each request that changes the server: still this account,
+            // not let go, with sharing on.)
+            phone, account.username, account.key, { scope.isActive && mayShare() }, scope, pause = pause, note = wiring?.note ?: {},
         )
     }
 
@@ -297,16 +305,16 @@ class AccountGraph(
      *  [step] is: the queue is then neither saved on the server nor read from it. */
     val queueStep: org.medianexus.music.sync.QueueStep? = wiring?.settingsStore?.takeIf { org.medianexus.music.sync.InStepBuild.on }?.let { store ->
         org.medianexus.music.sync.QueueStep(
-            save = { device, upload -> api.savePlayQueue(device, upload.ids, upload.current, upload.positionMs) },
-            saved = { api.playQueue() },
-            device = {
+            save = { device, upload -> api.savePlayQueue(device, upload.ids, upload.current, upload.position) },
+            saved = { api.playQueueTimed() },
+            deviceId = {
                 // A made-up name for this device, made the first time it is wanted.
-                if (store.value.deviceId.isEmpty()) store.update { if (it.deviceId.isEmpty()) it.copy(deviceId = org.medianexus.music.sync.QueueShare.newDeviceId()) else it }
-                org.medianexus.music.sync.QueueShare.deviceName(store.value.deviceId)
+                if (store.value.deviceId.isEmpty()) store.update { if (it.deviceId.isEmpty()) it.copy(deviceId = org.medianexus.music.sync.newDeviceId()) else it }
+                store.value.deviceId
             },
             // (Not while this phone's clock is wrong: a queue saved then would be told to
             // other devices as changed at a time that never was.)
-            may = { mayShare() && step?.clockWrong?.value != true }, on = { settings.value.sync }, scope = scope, pause = pause,
+            may = { scope.isActive && mayShare() && step?.clockWrong?.value != true }, on = { settings.value.sync }, scope = scope, pause = pause, note = wiring?.note ?: {},
         )
     }
 
@@ -416,9 +424,11 @@ class AccountGraph(
             added.changedHere = { step.shareSoon() }
             recentlyPlayed.changedHere = { step.shareSoon() }
             scope.launch {
-                settings.map { if (org.medianexus.music.sync.Belongs.ready(it, account.key)) it.waiting else null }
+                // (The shared core's choices as the settings hold them: when they are not as
+                // the last exchange left them, the person has changed something here.)
+                settings.map { if (org.medianexus.music.sync.Belongs.ready(it, account.key)) it.choices else null }
                     .distinctUntilChanged().drop(1)
-                    .collect { now -> if (!now.isNullOrEmpty() && now != shared?.settled) step.shareSoon() }
+                    .collect { now -> if (now != null && now != shared?.settled) step.shareSoon() }
             }
             // The server back, or sharing switched on: a look at once. Switched off, what
             // another device was playing is no longer offered.

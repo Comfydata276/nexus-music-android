@@ -70,7 +70,7 @@ class JamApp(private val app: Context, private val graph: Graph, steered: Steere
     override fun device(): Pair<String, String> {
         var settings = graph.settings.value
         if (settings.deviceId.isEmpty()) {
-            val made = org.medianexus.music.sync.QueueShare.newDeviceId()
+            val made = org.medianexus.music.sync.newDeviceId()
             graph.settings.update { if (it.deviceId.isEmpty()) it.copy(deviceId = made) else it }
             settings = graph.settings.value
         }

@@ -26,22 +26,28 @@ class CarWorkTest {
         // to be written, and that playlist played in order the next time it was started.
         val before = Settings(shuffle = true, repeat = Repeat.OFF)
         assertTrue(Remembered.differs(before, shuffle = true, repeat = Repeat.OFF, source = "playlist:p1"))
-        val after = Remembered.with(before, shuffle = true, repeat = Repeat.OFF, source = "playlist:p1", nowSeconds = 1_800_000_000)
+        // The list's own choice is what is remembered (as a change, for other devices too:
+        // sync/Chosen.kt), beside how the queue plays overall.
+        fun remembered(settings: Settings, shuffle: Boolean, repeat: Int, source: String, now: Long): Settings {
+            val overall = Remembered.with(settings, shuffle, repeat)
+            return Remembered.listChoice(settings, shuffle, source)?.let { org.medianexus.music.sync.Chosen.made(overall, it, now) } ?: overall
+        }
+        val after = remembered(before, shuffle = true, repeat = Repeat.OFF, source = "playlist:p1", now = 1_800_000_000)
         assertEquals(ListPrefs(shuffle = true, at = 1_800_000_000), after.lists["playlist:p1"])
         assertTrue(after.shuffle)
         // Remembered: nothing more to write while it plays on.
         assertFalse(Remembered.differs(after, shuffle = true, repeat = Repeat.OFF, source = "playlist:p1"))
         // A list played in order when its own choice was shuffle is told so too.
-        val off = Remembered.with(after, shuffle = false, repeat = Repeat.OFF, source = "playlist:p1", nowSeconds = 1_800_000_100)
+        val off = remembered(after, shuffle = false, repeat = Repeat.OFF, source = "playlist:p1", now = 1_800_000_100)
         assertEquals(false, off.lists["playlist:p1"]!!.shuffle)
         // What it had chosen besides (its sort) is kept.
         val sorted = Settings(shuffle = true, lists = mapOf("album:a" to ListPrefs(sort = 3, descending = true, sortChosen = true)))
-        assertEquals(ListPrefs(shuffle = true, sort = 3, descending = true, sortChosen = true, at = 5), Remembered.with(sorted, true, Repeat.OFF, "album:a", 5).lists["album:a"])
+        assertEquals(ListPrefs(shuffle = true, sort = 3, descending = true, sortChosen = true, at = 5), remembered(sorted, true, Repeat.OFF, "album:a", 5).lists["album:a"])
         // A list never shuffled, played in order: nothing to remember. Nor for songs that
         // came from no list.
         assertFalse(Remembered.differs(Settings(), shuffle = false, repeat = Repeat.OFF, source = "playlist:p2"))
-        assertTrue(Remembered.with(Settings(), true, Repeat.ALL, source = "", nowSeconds = 5).lists.isEmpty())
-        assertEquals(Repeat.ALL, Remembered.with(Settings(), true, Repeat.ALL, source = "", nowSeconds = 5).repeat)
+        assertTrue(remembered(Settings(), true, Repeat.ALL, source = "", now = 5).lists.isEmpty())
+        assertEquals(Repeat.ALL, remembered(Settings(), true, Repeat.ALL, source = "", now = 5).repeat)
     }
 
     // ---- Work for the car, off the main thread ----------------------------------------------------

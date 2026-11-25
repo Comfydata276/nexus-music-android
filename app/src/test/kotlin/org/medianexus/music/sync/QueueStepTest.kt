@@ -18,8 +18,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.medianexus.music.core.QueueSaved
 import org.medianexus.music.net.PlayQueue
 import org.medianexus.music.net.Song
+import org.medianexus.music.net.Timed
 import org.medianexus.music.playback.Choices
 
 /**
@@ -28,7 +30,7 @@ import org.medianexus.music.playback.Choices
  * list of what was saved.
  */
 class QueueStepTest {
-    /** No test here may wait for ever (see InStepTest). */
+    /** No test here may wait for ever (see InStepContractTest). */
     @get:Rule val limit: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(60)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -42,28 +44,31 @@ class QueueStepTest {
     /** The server's saved queue, and every save made to it, in the order it took them. */
     private inner class Server {
         var queue = PlayQueue()
-        val saves = ArrayList<QueueUpload>()
+        val saves = ArrayList<QueueSaved>()
         var asked = 0
 
+        /** The server's own clock, as its answers give it. */
+        var time: Long? = DAY + 700
+
         /** Held as a save, or a read, goes through. */
-        var onSave: suspend (QueueUpload) -> Unit = {}
+        var onSave: suspend (QueueSaved) -> Unit = {}
         var onRead: suspend () -> Unit = {}
 
         fun savedBy(device: String, at: String, vararg ids: String, current: String = ids[0], position: Long = 0) {
             queue = PlayQueue(ids.map { Song(id = it, title = "T$it", artist = "Someone", duration = 200) }, current, position, at, device)
         }
 
-        suspend fun save(device: String, upload: QueueUpload) {
+        suspend fun save(device: String, upload: QueueSaved) {
             onSave(upload)
             saves += upload
             // (The server puts its own clock on it: "now", whenever that is.)
-            queue = PlayQueue(upload.ids.map { Song(id = it) }, upload.current, upload.positionMs, "1970-01-02T00:10:00Z", device)
+            queue = PlayQueue(upload.ids.map { Song(id = it) }, upload.current, upload.position, "1970-01-02T00:10:00Z", device)
         }
 
-        suspend fun saved(): PlayQueue {
+        suspend fun saved(): Timed<PlayQueue> {
             asked++
             onRead()
-            return queue
+            return Timed(queue, time)
         }
     }
 
@@ -86,7 +91,7 @@ class QueueStepTest {
     private val main = Main()
 
     private fun step(server: Server, player: PretendPlayer?, now: Long = DAY + 700) =
-        QueueStep(save = server::save, saved = server::saved, device = { me }, may = { on && reached }, on = { on }, scope = scope, clock = { now }, pause = {}, onMain = main).also { it.here = player }
+        QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, may = { on && reached }, on = { on }, scope = scope, clock = { now }, pause = {}, onMain = main).also { it.here = player }
 
     // ---- saving: only if it is still the newest thing that happened --------------------------------
 
@@ -104,7 +109,7 @@ class QueueStepTest {
         // One the PC saved before the change here is older than it: the phone's is saved.
         server.savedBy(pc, "1970-01-02T00:04:59Z", "a", "b")
         step.changedHere()
-        assertEquals(listOf(player.queue), server.saves)
+        assertEquals(listOf(QueueSaved(listOf("mine", "next"), "mine", 5_000)), server.saves)
         // And its own, read back, is no reason not to save again.
         player.stamp = DAY + 310
         step.changedHere()
@@ -126,9 +131,11 @@ class QueueStepTest {
         server.onSave = { going.complete(Unit); held.await() }
         step.changedHere()
         going.await()
-        val first = player.queue!!
-        val second = QueueUpload(listOf("other"), "other", 0)
-        player.queue = second
+        val first = QueueSaved(listOf("mine", "next"), "mine", 5_000)
+        val second = QueueSaved(listOf("other"), "other", 0)
+        player.songs = listOf("other")
+        player.current = "other"
+        player.positionSeconds = 0.0
         player.stamp = DAY + 301
         server.onSave = {}
         step.changedHere()
@@ -148,7 +155,7 @@ class QueueStepTest {
         val player = PretendPlayer(stamp = DAY + 100)
         // A save has been asked for, and is waiting out its three seconds...
         val waits = ArrayList<CompletableDeferred<Unit>>()
-        val step = QueueStep(save = server::save, saved = server::saved, device = { me }, may = { on }, scope = scope, clock = { DAY + 700 },
+        val step = QueueStep(save = server::save, saved = server::saved, deviceId = { "feedf00d" }, may = { on }, scope = scope, clock = { DAY + 700 },
             pause = { CompletableDeferred<Unit>().also { waits += it }.await() }, onMain = main).also { it.here = player }
         step.changedHere()
         // ...when the PC's queue, saved later than anything done here, is taken up.
@@ -160,8 +167,12 @@ class QueueStepTest {
         yield()
         assertTrue(server.saves.isEmpty())
         assertEquals(pc, server.queue.changedBy)
+        // And it is still the PC's after a restart: what says so is kept with the queue.
+        assertEquals("1970-01-02T00:10:00Z", player.taken)
         // Played on here, it is this phone's to save.
         player.stamp = DAY + 660
+        player.taken = null
+        player.playing = true
         step.progressed()
         waits.forEach { it.complete(Unit) }
         yield()
@@ -186,10 +197,11 @@ class QueueStepTest {
         busyStep.check()
         assertTrue(busy.replaced.isEmpty())
         assertEquals("Tb", busyStep.elsewhere.value?.title)
-        // No player at all (the playback service isn't up): noted, for when there is one.
+        // No player at all (the playback service isn't up): there is nothing to take the
+        // queue up or to offer it to. It is looked at again when there is one.
         val none = step(server, null)
         none.check()
-        assertEquals("Tb", none.elsewhere.value?.title)
+        assertNull(none.elsewhere.value)
     }
 
     // ---- "Continue here" is a choice like any other ---------------------------------------------------
@@ -218,6 +230,8 @@ class QueueStepTest {
         // And the offer is gone once taken.
         assertNull(step.elsewhere.value)
         // The server out of reach is no reason to refuse it: the songs may be on the phone.
+        // (The person has gone back to something of their own, and it is offered again.)
+        player.current = "mine"
         step.check()
         reached = false
         step.continueHere()

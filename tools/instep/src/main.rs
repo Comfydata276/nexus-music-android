@@ -1,10 +1,10 @@
 //! The Windows app's code for keeping devices in step, run here.
 //!
-//!   instep cases <file>      writes what Windows' `merge`, `merge_history`, `merge_plays`,
-//!                            `merge_notes` and serde make of a list of inputs: the cases the
-//!                            phone's Kotlin is held to (app/src/test/resources/instep-cases.json)
-//!   instep reads <file>      the other way: reads texts the phone's Kotlin wrote, and says
-//!                            whether Windows reads each back to the record it was written from
+//!   instep cases <file>      writes what the Windows app's library decides for a list of
+//!                            inputs (an exchange: what a device holds and what the server
+//!                            answered; a run of the person's changes): the cases the phone's
+//!                            door to that same library is held to
+//!                            (app/src/test/resources/instep-cases.json; cases.rs)
 //!   instep pc ...            plays the PC: Windows' own `exchange`, against a server
 //!   instep peek ...          the sync playlist and its comment, byte for byte, changing nothing
 //!   instep plant ...         puts a text of your choosing in the comment (an unreadable one,
@@ -47,6 +47,8 @@ mod playlists {
 }
 #[cfg(stepped)]
 mod household;
+#[cfg(stepped)]
+mod cases;
 
 use serde_json::{Value, json};
 use sync::Shared;
@@ -56,8 +58,8 @@ fn main() {
     let mode = args.first().map(String::as_str).unwrap_or("");
     let rest = &args[args.len().min(1)..];
     let status = match mode {
-        "cases" => cases(rest.first().expect("the file to write")),
-        "reads" => reads(rest.first().expect("the file to read")),
+        #[cfg(stepped)]
+        "cases" => cases::cases(rest.first().expect("the file to write")),
         #[cfg(not(stepped))]
         "pc" => pc(&Options::of(rest)),
         #[cfg(not(stepped))]
@@ -89,88 +91,6 @@ const KEEP_REMOVED: i64 = 90 * 24 * 3600;
 
 fn record(text: &str) -> Shared {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("a case's input isn't a record: {e}\n{text}"))
-}
-
-fn cases(path: &str) -> i32 {
-    let (version, history_length, plays_shared, queue_behind, queue_ahead, long_ago) = sync::TOOL_LIMITS;
-    let mut out = serde_json::Map::new();
-    out.insert("about".into(), json!("Written by tools/instep from the Windows app's own source (src/sync.rs, src/added.rs, src/config.rs). Not edited by hand: run tools/instep/run cases to write it again."));
-    out.insert("limits".into(), json!({
-        "version": version, "history_length": history_length, "plays_shared": plays_shared,
-        "queue_behind": queue_behind, "queue_ahead": queue_ahead, "long_ago": long_ago,
-        "keep_removed": KEEP_REMOVED, "playlist_name": sync::PLAYLIST_NAME, "now": NOW,
-    }));
-
-    // What serde makes of a text: the record, or nothing (which Windows takes for "nothing
-    // shared yet", and writes over).
-    let reads: Vec<Value> = read_texts()
-        .into_iter()
-        .map(|(name, text)| {
-            let read = serde_json::from_str::<Shared>(&text);
-            json!({ "name": name, "text": text, "record": read.as_ref().ok().map(|shared| serde_json::to_value(shared).unwrap()), "error": read.err().map(|e| e.to_string()) })
-        })
-        .collect();
-    out.insert("reads".into(), reads.into());
-
-    // What serde writes for a record, byte for byte. Only records with at most one entry in
-    // each map: Rust writes a map's entries in no particular order.
-    let writes: Vec<Value> = write_records()
-        .into_iter()
-        .map(|(name, text)| {
-            let shared = record(text);
-            json!({ "name": name, "record": serde_json::to_value(&shared).unwrap(), "text": serde_json::to_string(&shared).unwrap() })
-        })
-        .collect();
-    out.insert("writes".into(), writes.into());
-
-    let merges: Vec<Value> = merge_pairs()
-        .into_iter()
-        .map(|(name, a, b, now)| {
-            let (a, b) = (record(&a), record(&b));
-            let merged = sync::merge(&a, &b, now);
-            let other = sync::merge(&b, &a, now);
-            json!({
-                "name": name, "now": now,
-                "a": serde_json::to_value(&a).unwrap(), "b": serde_json::to_value(&b).unwrap(),
-                "merged": serde_json::to_value(&merged).unwrap(),
-                "merged_other_way": serde_json::to_value(&other).unwrap(),
-                // What `exchange` asks before writing: does merging this device's record
-                // (a) into the server's (b) add anything?
-                "writes_back": merged != b,
-                "same_both_ways": merged == other,
-            })
-        })
-        .collect();
-    out.insert("merges".into(), merges.into());
-
-    let histories: Vec<Value> = play_lists()
-        .into_iter()
-        .map(|(name, a, b)| {
-            json!({
-                "name": name, "a": a, "b": b,
-                "history": sync::merge_history(&a, &b), "history_other_way": sync::merge_history(&b, &a),
-                "plays": sync::merge_plays(&a, &b), "plays_other_way": sync::merge_plays(&b, &a),
-            })
-        })
-        .collect();
-    out.insert("plays".into(), histories.into());
-
-    let notes: Vec<Value> = note_pairs()
-        .into_iter()
-        .map(|(name, a, b, now)| {
-            let a: added::Notes = serde_json::from_str(a).unwrap();
-            let b: added::Notes = serde_json::from_str(b).unwrap();
-            json!({ "name": name, "now": now, "a": a, "b": b, "merged": added::merge_notes(&a, &b, now), "merged_other_way": added::merge_notes(&b, &a, now) })
-        })
-        .collect();
-    out.insert("notes".into(), notes.into());
-
-    // One section to a line: small enough to keep in the repository, and a change to one
-    // section shows as one line changed.
-    let lines: Vec<String> = out.iter().map(|(name, value)| format!("{}:{}", serde_json::to_string(name).unwrap(), serde_json::to_string(value).unwrap())).collect();
-    std::fs::write(path, format!("{{\n{}\n}}\n", lines.join(",\n"))).unwrap();
-    println!("wrote {path}");
-    0
 }
 
 /// Texts a comment might hold, and what is awkward about each.
@@ -280,29 +200,6 @@ fn read_texts() -> Vec<(&'static str, String)> {
     texts
 }
 
-/// Records whose text, as serde writes it, has only one possible order.
-fn write_records() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("nothing at all", "{}"),
-        ("the layout alone", r#"{"nexus_music_sync":1}"#),
-        (
-            "one of everything",
-            r#"{"nexus_music_sync":1,"pins":["p1","p2"],"pins_at":1700000000,"theme":"Ember","theme_at":1700000001,
-                "lists":{"playlist:abc":{"shuffle":true,"sort":5,"descending":true,"sort_chosen":true,"at":1700000002}},
-                "added":{"abc":{"s1":{"times":[0,1700000003],"at":1700000003}}},
-                "history":[["s2",1700000005],["s1",1700000004]],
-                "plays":[["s2",1700000005],["s1",1700000004],["s1",1700000004]],
-                "play_sources":[["s2",1700000005,"playlist:abc"]]}"#,
-        ),
-        (
-            "text that needs escaping",
-            "{\"pins\":[\"a\\\"b\\\\c/d\",\"line\\nbreak\\ttab\\r\\b\\f\",\"\\u0000\\u0001\\u001f\\u007f\",\"caf\u{e9} \u{4e2d}\u{6587} \u{1F3B5} \u{10000} \u{FFFF}\",\"\"],\"theme\":\"<>&'\u{2028}\u{2029}\"}",
-        ),
-        ("the furthest numbers", r#"{"nexus_music_sync":4294967295,"pins_at":-9223372036854775808,"theme_at":9223372036854775807,"lists":{"k":{"sort":18446744073709551615,"at":-1}},"added":{"p":{"s":{"times":[-9223372036854775808,0,9223372036854775807],"at":1}}},"history":[["a",-1]]}"#),
-        ("empty keys and ids", r#"{"pins":[""],"lists":{"":{"at":1}},"added":{"":{"":{"times":[],"at":0}}},"history":[["",0]],"plays":[["",0]],"play_sources":[["",0,""]]}"#),
-    ]
-}
-
 fn plays_text(plays: &[(String, i64)]) -> String {
     serde_json::to_string(plays).unwrap()
 }
@@ -382,64 +279,6 @@ fn merge_pairs() -> Vec<(&'static str, String, String, i64)> {
     tied.extend([("b".to_string(), 5), ("a".to_string(), 5), ("c".to_string(), 5)]);
     pairs.push(("the last place among the plays, at one time", at_limits(&[], &tied, &[("a".into(), 5, "playlist:p".into()), ("b".into(), 5, "playlist:p".into())]), "{}".into(), NOW));
     pairs
-}
-
-/// Lists of plays to merge as history and as plays: (what it is about, one device's, the other's).
-fn play_lists() -> Vec<(&'static str, Vec<(String, i64)>, Vec<(String, i64)>)> {
-    let plays = |entries: &[(&str, i64)]| -> Vec<(String, i64)> { entries.iter().map(|(id, at)| (id.to_string(), *at)).collect() };
-    vec![
-        ("nothing", vec![], vec![]),
-        ("one side only", plays(&[("a", 3), ("b", 2), ("a", 1)]), vec![]),
-        ("Windows' history test", plays(&[("c", 30), ("a", 10)]), plays(&[("d", 40), ("b", 20), ("a", 10)])),
-        ("Windows' history test: back to back", plays(&[("a", 12)]), plays(&[("a", 10)])),
-        ("Windows' plays test", plays(&[("a", 30), ("a", 20), ("b", 10)]), plays(&[("c", 40), ("a", 20)])),
-        ("equal times, by id", plays(&[("b", 5), ("B", 5), ("a", 5), ("", 5)]), plays(&[("ab", 5), ("a", 5), ("Z", 5)])),
-        ("the same play three times over", plays(&[("a", 5), ("a", 5), ("a", 5)]), plays(&[("a", 5)])),
-        ("one song with others between at one time", plays(&[("a", 9), ("b", 9), ("a", 8), ("a", 7), ("b", 7), ("a", 6)]), plays(&[("a", 9), ("c", 8)])),
-        ("ids outside the basic plane at one time", plays(&[("\u{FFFF}", 1), ("\u{1F3B5}", 1), ("z", 1), ("\u{E000}", 1)]), plays(&[("\u{10000}", 1), ("\u{FF5E}", 1), ("\u{D7FF}", 1)])),
-        ("ids that begin one another", plays(&[("ab", 2), ("a", 2), ("abc", 2)]), plays(&[("b", 2), ("", 2)])),
-        ("times before 1970", plays(&[("a", -1), ("b", -2)]), plays(&[("c", 0), ("d", -9_223_372_036_854_775_808)])),
-        ("more than a hundred, more than five hundred", (0..700).map(|i| (format!("s{}", i % 3), 10_000 - i)).collect(), (0..700).map(|i| (format!("t{}", i % 50), 10_000 - i)).collect()),
-    ]
-}
-
-/// Notes to merge: (what it is about, one device's, the other's, now).
-fn note_pairs() -> Vec<(&'static str, &'static str, &'static str, i64)> {
-    vec![
-        ("nothing", "{}", "{}", NOW),
-        ("one side only", r#"{"p":{"s":{"times":[5],"at":5}}}"#, "{}", NOW),
-        ("the newer note wins", r#"{"p":{"s":{"times":[5],"at":5}}}"#, r#"{"p":{"s":{"times":[6],"at":6}}}"#, NOW),
-        ("as old as each other", r#"{"p":{"s":{"times":[5],"at":5}}}"#, r#"{"p":{"s":{"times":[4],"at":5}}}"#, NOW),
-        ("an empty playlist's entry is dropped", r#"{"p":{},"q":{"s":{"times":[1],"at":1}}}"#, r#"{"r":{}}"#, NOW),
-        ("a removal still passed on", r#"{"p":{"s":{"times":[],"at":1794999999}}}"#, r#"{"p":{"s":{"times":[5],"at":5}}}"#, NOW),
-        ("a removal forgotten takes the playlist with it", r#"{"p":{"s":{"times":[],"at":5}}}"#, "{}", NOW),
-        ("a removal forgotten leaves the rest", r#"{"p":{"s":{"times":[],"at":5},"t":{"times":[0,9],"at":9}}}"#, r#"{"p":{"s":{"times":[3],"at":4}}}"#, NOW),
-        ("merged at the very start of time", r#"{"p":{"s":{"times":[],"at":5}}}"#, "{}", 0),
-    ]
-}
-
-// ---- reading what the phone wrote -----------------------------------------------------------
-
-/// `[{"name":…, "text":…, "record":{…}}, …]`: each text must read, with Windows' code, as the
-/// record beside it, and survive being written by Windows and read again.
-fn reads(path: &str) -> i32 {
-    let list: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(path).expect("the file")).expect("a list of cases");
-    let mut failed = 0;
-    for case in &list {
-        let name = case["name"].as_str().unwrap_or("?");
-        let text = case["text"].as_str().expect("text");
-        let wanted: Shared = serde_json::from_value(case["record"].clone()).expect("record");
-        let ok = match serde_json::from_str::<Shared>(text) {
-            Ok(read) => read == wanted && serde_json::from_str::<Shared>(&serde_json::to_string(&read).unwrap()).unwrap() == wanted,
-            Err(_) => false,
-        };
-        if !ok {
-            failed += 1;
-            println!("FAIL  {name}");
-        }
-    }
-    println!("{} texts written by the phone, {} read back by Windows' code to the same record, {failed} not", list.len(), list.len() - failed);
-    if failed == 0 { 0 } else { 1 }
 }
 
 // ---- playing the PC -------------------------------------------------------------------------

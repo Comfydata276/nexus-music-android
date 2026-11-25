@@ -10,7 +10,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.medianexus.music.net.Song
 
-/** The tests of src/added.rs, ported with it. */
+/** The phone's keeping of when songs were added: its file, and when it is written. (The
+ *  rules about the notes are the shared core's.) */
 class AddedTest {
     @get:Rule val folder = TemporaryFolder()
 
@@ -21,54 +22,38 @@ class AddedTest {
     private fun LongArray.list() = toList()
 
     @Test
-    fun datesSongsAddedAfterTheFirstLook() {
+    fun whatIsNoticedAndWhatIsAddedSurviveARestart() {
         val added = added()
-        // Songs already there on the first look have no date, and nothing to share.
-        assertFalse(added.observe("p", songs("a", "b"), 100))
-        assertEquals(listOf(0L, 0L), added.dates("p", songs("a", "b")).list())
-        assertTrue(added.shared().isEmpty())
-        // One that turns up later is dated to when it was seen; a second copy gets its own.
-        assertTrue(added.observe("p", songs("a", "b", "c", "a"), 200))
-        assertEquals(listOf(0L, 0L, 200L, 200L), added.dates("p", songs("a", "b", "c", "a")).list())
-        // Songs the app adds itself are dated at once, and looking again changes nothing.
+        // (What each of these does to the notes is the shared core's rule, tested there:
+        // here, that the phone hands it the playlist's notes and keeps what comes back.)
+        added.sawCopy("p", songs("a", "b"), 100)
+        added.sawCopy("p", songs("a", "b", "c"), 200)
         added.record("p", listOf("d"), 300)
-        assertFalse(added.observe("p", songs("a", "b", "c", "a", "d"), 400))
-        assertEquals(listOf(300L, 200L, 0L, 0L, 200L), added.dates("p", songs("d", "c", "a", "b", "a")).list())
-        // Removed songs are forgotten, so adding one again dates it afresh.
-        added.observe("p", songs("a", "b"), 500)
-        added.observe("p", songs("a", "b", "c"), 600)
-        assertEquals(listOf(0L, 0L, 600L), added.dates("p", songs("a", "b", "c")).list())
-        // It survives a restart.
-        assertEquals(listOf(0L, 0L, 600L), added().dates("p", songs("a", "b", "c")).list())
-        // A song added to a playlist not yet looked at keeps its date through the first look.
-        added.record("q", listOf("a"), 700)
-        added.observe("q", songs("x", "a", "a"), 800)
-        assertEquals(listOf(0L, 0L, 700L), added.dates("q", songs("x", "a", "a")).list())
+        assertEquals(listOf(300L, 200L, 0L, 0L), added.dates("p", songs("d", "c", "a", "b")).list())
+        // Only the song the app added itself is anything to tell other devices.
+        assertEquals(mapOf("p" to mapOf("d" to AddedNote(listOf(300), 300))), added.shared())
+        assertEquals(listOf(300L, 200L, 0L, 0L), added().dates("p", songs("d", "c", "a", "b")).list())
+        // A playlist that has gone: nothing is kept about it.
+        added.forget("p")
+        assertEquals(listOf(0L), added().dates("p", songs("d")).list())
     }
 
     @Test
-    fun notesTravelBetweenDevices() {
-        val a = added("a.json")
-        val b = added("b.json")
-        a.observe("p", songs("x", "y"), 100)
-        a.record("p", listOf("z"), 200)
-        // The other device hears of the dated song before it ever opens the playlist...
-        assertTrue(b.merge(a.shared()))
-        assertFalse(b.merge(a.shared()))
-        // ...so its first look keeps that date, and has nothing new to say.
-        assertFalse(b.observe("p", songs("x", "y", "z"), 300))
-        assertEquals(listOf(0L, 0L, 200L), b.dates("p", songs("x", "y", "z")).list())
-        // A removal seen on one device reaches the other, and a later re-add is dated anew.
-        assertTrue(b.observe("p", songs("x", "y"), 400))
-        assertTrue(a.merge(b.shared()))
-        assertTrue(a.observe("p", songs("x", "y", "z"), 500))
-        assertEquals(listOf(0L, 0L, 500L), a.dates("p", songs("x", "y", "z")).list())
-        // Notes for playlists that no longer exist aren't passed on.
-        assertTrue(a.shared(setOf("other")).isEmpty())
-        // Combining is the same whichever way round, and old removals drop out in time.
-        val (notesA, notesB) = a.shared() to b.shared()
-        assertEquals(Added.mergeNotes(notesA, notesB, 600), Added.mergeNotes(notesB, notesA, 600))
-        assertTrue(Added.mergeNotes(b.shared(), emptyMap(), 400 + Added.KEEP_REMOVED + 1).isEmpty())
+    fun notesTakenInFromOtherDevicesAreOnTheDiskWhenTheyAreTaken() {
+        val added = added()
+        added.sawCopy("p", songs("a"), 100)
+        assertTrue(added.take(mapOf("p" to mapOf("s" to AddedNote(listOf(5), 5)))))
+        // Read back from the file as a phone started again reads it: nothing was waited for.
+        assertEquals(listOf(5L), added().dates("p", songs("s")).list())
+        // Taken again, nothing changes.
+        assertFalse(added.take(mapOf("p" to mapOf("s" to AddedNote(listOf(5), 5)))))
+        // The file can't be written (a folder stands where it is): that is an error, and the
+        // notes are as they were, so that they are offered and taken again.
+        val file = File(folder.root, "added.json")
+        file.delete()
+        File(file, "in the way").mkdirs()
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { added.take(mapOf("p" to mapOf("t" to AddedNote(listOf(9), 9)))) }
+        assertEquals(listOf(0L), added.dates("p", songs("t")).list())
     }
 
     @Test
@@ -77,14 +62,14 @@ class AddedTest {
         val added = added()
         assertEquals(listOf(0L, 0L, 250L), added.dates("p", songs("a", "b", "b")).list())
         // It counts as looked at, so a new song is dated.
-        added.observe("p", songs("a", "b", "b", "c"), 300)
+        added.sawCopy("p", songs("a", "b", "b", "c"), 300)
         assertEquals(listOf(300L), added.dates("p", songs("c")).list())
     }
 
     @Test
     fun writesTheFileWindowsReads() {
         val added = added()
-        added.observe("p", songs("a"), 100)
+        added.sawCopy("p", songs("a"), 100)
         added.record("p", listOf("b"), 200)
         val text = File(folder.root, "added.json").readText()
         assertTrue(text, text.contains("\"lists\":{\"p\":{") && text.contains("\"b\":{\"times\":[200],\"at\":200}") && text.contains("\"seen\":[\"p\"]"))
@@ -98,8 +83,8 @@ class AddedTest {
         // Windows keeps it as playlist-added.json; the phone kept it as added.json at first.
         val old = java.io.File(folder.root, "added.json")
         val earlier = Added(old, null, kotlinx.coroutines.Dispatchers.Unconfined)
-        earlier.observe("p", listOf(org.medianexus.music.net.Song(id = "a")), 100)
-        earlier.observe("p", listOf(org.medianexus.music.net.Song(id = "a"), org.medianexus.music.net.Song(id = "b")), 200)
+        earlier.sawCopy("p", listOf(org.medianexus.music.net.Song(id = "a")), 100)
+        earlier.sawCopy("p", listOf(org.medianexus.music.net.Song(id = "a"), org.medianexus.music.net.Song(id = "b")), 200)
         val now = java.io.File(folder.root, "playlist-added.json")
         val added = Added(now, null, kotlinx.coroutines.Dispatchers.Unconfined, formerly = old)
         org.junit.Assert.assertArrayEquals(longArrayOf(0, 200), added.dates("p", listOf(org.medianexus.music.net.Song(id = "a"), org.medianexus.music.net.Song(id = "b"))))

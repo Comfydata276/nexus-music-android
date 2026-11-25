@@ -1,14 +1,16 @@
 # instep: the Windows app's in-step code, run here
 
 The phone writes into a record the Windows app reads and trusts (the comment of the playlist
-"Nexus Music sync"). This tool is how the phone's Kotlin is held to what Windows itself does:
-it **is** the Windows code, compiled from the Windows repository's source where it lies
-(`../nexus-music/src`, read-only, by path), not a copy of it.
+"Nexus Music sync"). The rules for that are the Windows app's library, which the phone app
+now carries too (docs/DESIGN.md, "The shared core"); there is no Kotlin copy of them left to
+hold to anything. This tool **is** the Windows code, compiled from the Windows repository's
+source where it lies (`../nexus-music/src` and `core/`, read-only, by path), not a copy of
+it: it writes the cases that show the phone's door to the library loses nothing, and it
+plays the PCs in the end-to-end checks.
 
 | What | How |
 |---|---|
-| The cases the Kotlin is held to | `tools/instep/run cases` writes `app/src/test/resources/instep-cases.json`: what Windows' `merge`, `merge_history`, `merge_plays`, `merge_notes` and serde (reading a text, writing a record) make of a list of inputs. `InStepCasesTest` holds the Kotlin to every one. |
-| The other direction | The same test writes the texts the Kotlin produced to `app/build/instep/kotlin-wrote.json`; `tools/instep/run reads /work/app/build/instep/kotlin-wrote.json` has Windows' code read each one back and says whether it is the record Windows made. |
+| The cases the phone's door to the library is held to | `tools/instep/run cases` writes `app/src/test/resources/instep-cases.json`: for a list of awkward inputs (what a device holds and what the server answered; runs of the person's changes), what the Windows app's library decides. The phone carries that same library at a pinned commit; `CoreCasesTest` hands the same inputs through the phone's one door to it (`core/Core.kt`) and must get the same answers. See `src/cases.rs`. |
 | Playing the PC | `tools/instep/run pc --server … --user … --password … --state <file>` makes one exchange with a server exactly as the Windows app does (its own `exchange`, `find_or_create` and API client), with `<file>` as what that PC holds. `peek` shows the playlist's comment byte for byte and changes nothing; `plant` puts a text of your choosing there; `queue-save` and `queue-get` are the server's saved queue as Windows saves and reads it. `scripts/instep-check` runs the whole end-to-end check with it (docs/TESTING.md). |
 
 | A household on mixed versions | `scripts/instep-check --mixed` builds this tool twice, from the Windows code under test (`NEXUS_WINDOWS_SRC`) and from 0.40.4's source, and runs `instep household`: two devices on the new code and a PC on 0.40.4 against a real server, saying a line at a time what each did. `ok` lines are what the new code must do; `old` lines are what a PC on 0.40.4 goes on doing until it is updated. See `src/household.rs`. |
@@ -17,8 +19,8 @@ it **is** the Windows code, compiled from the Windows repository's source where 
 in its `src/sync.rs`), and a build of this tool from such a checkout has `pc` and
 `pc-looks`. After it the exchange is decided in the Windows app's library
 (`nexus_core::step`), which the phone is to share; a build from such a checkout has
-`household` instead, and drives that code in the library's own numbered steps, with the
-Windows app's own asking of the server (`sync::read`, `sync::send`). `cases`, `reads`, `peek`, `plant` and the queue modes are in both.
+`household` and `cases` instead, and drives that code in the library's own numbered steps, with the
+Windows app's own asking of the server (`sync::read`, `sync::send`). `peek`, `plant` and the queue modes are in both.
 
 **What is compiled** (see `build.rs`): `subsonic.rs`, `added.rs` and `plays.rs` whole;
 `sync.rs` from its top down to `impl Controller` (the record, the merges, `exchange`); from
@@ -46,7 +48,9 @@ with.
 `Cargo.toml`): the Windows files carry the Windows app's tests, which need the rest of that
 app and are run there. What this tool checks, it checks by running.
 
-**When the Windows code changes**: run `tools/instep/run cases` and the unit tests. A case
-that no longer matches is a difference between the two apps: fix the Kotlin, or raise it.
-New awkward inputs go in `src/main.rs` (`read_texts`, `merge_pairs`, `play_lists`,
-`note_pairs`), never into the JSON by hand.
+**When the Windows library changes**: run `tools/instep/run cases` and the unit tests. A case
+that no longer matches means the Windows checkout decides differently from the library the
+phone has pinned: move the phone's pin to the Windows release that has the change (`rev` in
+`native/Cargo.toml`), or, if the phone's door is what differs, fix the door. New awkward
+inputs go in `src/main.rs` (`read_texts`, `merge_pairs`) and `src/cases.rs`, never into the
+JSON by hand.
