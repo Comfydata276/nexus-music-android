@@ -92,6 +92,7 @@ fun HomePage() {
             org.medianexus.music.ui.parts.CardData(org.medianexus.music.ui.parts.CardKind.MIX, mix.id, org.medianexus.music.ui.mixes.MixText.title(res, mix), org.medianexus.music.ui.mixes.MixText.about(res, mix), mix.cardCover)
         }
     }
+    val here = org.medianexus.music.ui.requests.requestsHere()
     val nothingYet = feeds.all { it.value == null } && downloaded.isEmpty()
     // As on Windows, what was played lately is what the page can't do without; the rest are
     // extras whose failure doesn't blank it. Offline, not reaching the server is what offline
@@ -138,18 +139,28 @@ fun HomePage() {
                     if (made.isNotEmpty()) item(key = "made", contentType = "shelf") {
                         Shelf(stringResource(R.string.made_for_you), made, onOpen = { ui.open(it) })
                     }
-                    items(shelves, key = { it.title }, contentType = { "shelf" }) { shelf ->
-                        Shelf(
-                            stringResource(shelf.title),
-                            remember(shelf.albums) { shelf.albums.map { it.card() } },
-                            onOpen = { ui.open(it) },
-                            onShowAll = shelf.showAll?.let { sort -> { ui.open(Route.Albums(sort)) } },
-                        )
-                    }
+                    // "Artists you might like" (requests) goes after what was added and played
+                    // lately, as on Windows; only while requests are connected.
+                    val split = shelves.indexOfLast { it.title == R.string.recently_added || it.title == R.string.recently_played } + 1
+                    items(shelves.take(split), key = { it.title }, contentType = { "shelf" }) { shelf -> HomeShelfRow(shelf) }
+                    if (here?.connected == true) item(key = "discover", contentType = "shelf") { org.medianexus.music.ui.requests.ArtistsYouMightLike(here) }
+                    items(shelves.drop(split), key = { it.title }, contentType = { "shelf" }) { shelf -> HomeShelfRow(shelf) }
                 }
             }
         }
     }
+}
+
+/** One of Home's shelves of albums. */
+@Composable
+private fun HomeShelfRow(shelf: HomeShelf) {
+    val ui = LocalUi.current
+    Shelf(
+        stringResource(shelf.title),
+        remember(shelf.albums) { shelf.albums.map { it.card() } },
+        onOpen = { ui.open(it) },
+        onShowAll = shelf.showAll?.let { sort -> { ui.open(Route.Albums(sort)) } },
+    )
 }
 
 /** The quick tiles: two to a line, two lines, as Windows shows them on a narrow window. */

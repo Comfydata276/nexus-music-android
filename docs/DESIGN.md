@@ -2119,6 +2119,64 @@ What is the phone's own:
   (`core::bulk`), which the phone has no screen for. A note made by the Windows app with
   songs to put into playlists is never here; the field is carried untouched if it ever is.
 
+### Requests: the screens (M7b)
+
+The screens call `Requests` and `RequestsPages` and nothing else of requests (`ui/requests/`);
+the sentences for where the connection stands are the library's `Words`. Every caption,
+heading and sentence that comes back is shown as it comes. Labels the library doesn't give
+(the section headings, "Request", "Add artist", "Arrived", "Like <name>", the settings'
+own words) are the Windows app's, in `strings.xml`.
+
+- **Settings, Requests**, between Storage and Jam as Windows' chips have it: the switch ("Ask
+  for music that isn't in your library", Windows' words, which say that MusicBrainz is sent
+  what is searched for and ListenBrainz which artists and songs came up), "Singles and EPs
+  too", then Lidarr's address, the key (a field whose placeholder is `keyHint()`, never the
+  key), and Windows' box: where the connection stands in the library's sentence, live, with
+  its coloured dot, and the one thing to do next (Connect; Sign in with browser; Cancel
+  while the browser is open; Try again), and Sign out when signed in. Connect that finds a
+  sign-in goes straight on to it, as on Windows. What is typed is never saved with the
+  screen's state. The browser is opened from the app's own activity; the shell tells the
+  connection each time the app's screen is in front again (`cameBack`).
+- **Search, "Not in your library"** (`OutsideSearch`): under the library's own results, which
+  never wait for it, while requests are connected and offline mode is off. It waits 450 ms
+  for the typing to pause; typing again, clearing the box, leaving the search or the app
+  going to the background stops the look; anything the library hands over for a look that
+  has been left is dropped. A look that finished is kept in memory for the connection it was
+  made under, and shown again, not asked again, when the search comes back to the same
+  words. Under "All", Windows' layout: the first four songs with "Show all", then the
+  artists and albums as shelves; under a chip, that kind in full. A song's row opens the
+  album's page; its button, and the button on an album's card, ask.
+- **An artist and an album beyond the library** (`OutsideArtistPage`, `OutsideAlbumPage`):
+  the header the library's pages have, with the web cover; the artist's most played asked
+  after the page is shown, room kept for them meanwhile; albums as the library's artist page
+  shows them, the library's own opening as the library's; the album's songs listed as an
+  album's are, with nothing to play or queue.
+- **Asking** (`Asker`): the library's question as a sheet (Windows' prompt), then the line
+  said meanwhile, then how it went as a passing note, "Requests" on it when it went through.
+  In the screen's own scope: leaving cancels it, and once Lidarr has begun to be changed
+  `RequestsPages` sees it through. After anything asked, the pages that show music beyond
+  the library ask again (`Ui.requestsChanged`), to say "Requested".
+- **The Requests page**: from Library (a row while requests are on) and from an arrival's
+  note. Arrived as cards of the library's own albums, then "On their way (n)"; one is taken
+  off by its "…" or a swipe, as the queue's songs are. Pulled down it asks again, and every
+  half minute while on screen, as Windows does.
+- **Home, "Artists you might like"**, after Recently played, only while connected; asked
+  (`suggest()`) when the row is about to be drawn.
+- **Arrival news** is collected in one place, the shell, while the app is in front, and said
+  as a passing note with "Requests" on it; the note adds nothing in words.
+- **Keyed to the account and the connection** (`RequestsHere.key`: the account, and the
+  address, sign-in and who is signed in there): when it changes, a screen drops what it had
+  and asks again.
+- **Covers that are web addresses** (`WebCovers`, `CoverRule`): a client of their own (no
+  cookies, interceptors, proxy or anything of the music server's), a disk cache of their own
+  (24 MB), 4 MB at most per picture, and a rule for where they may come from: `https://`, or
+  exactly Lidarr's own scheme, host and port; never a loopback, link-local or private
+  address unless it is that Lidarr's (a number judged at once, a name when it is looked up);
+  never the music server's origin; redirects judged the same, five at most. A cover turned
+  away is the placeholder.
+- **Not in the car.** Nothing of requests is in Android Auto's tree, its search or its voice
+  commands: no browsing music the library doesn't have, and no asking, while driving.
+
 ### How it is tested
 
 Against the real library, on the JVM, in the ordinary unit suite: the build makes the same

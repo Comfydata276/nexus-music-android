@@ -766,4 +766,38 @@
     <string name="stats_top_genres">Top genres</string>
     <string name="stats_top_playlists">Top playlists</string>
     <string name="stats_figure">%1$s %2$s</string>
+
+    <!-- Requests (M7b): asking Lidarr for music that isn't in the library. The words here are the
+         Windows app's own (its pages and settings); every sentence that comes back from the shared
+         library (a caption, a question, how something went) is shown as it comes and is not here. -->
+    <string name="requests">Requests</string>
+    <string name="request">Request</string>
+    <string name="add_artist">Add artist</string>
+    <string name="not_in_your_library">Not in your library</string>
+    <string name="requested">Requested</string>
+    <!-- An album card beyond the library: its artist, then that it has been asked for. -->
+    <string name="by_requested">%1$s • Requested</string>
+    <!-- What a song beyond the library is on: an EP, by its name. -->
+    <string name="offer_on_ep">%1$s (EP)</string>
+    <string name="request_named">Request “%1$s”</string>
+    <string name="asked_for_named">“%1$s” has been asked for</string>
+    <string name="arrived">Arrived</string>
+    <string name="take_off_the_list">Take off the list</string>
+    <string name="artists_you_might_like">Artists you might like</string>
+    <string name="like_named">Like %1$s</string>
+    <string name="requests_on">Ask for music that isn\'t in your library</string>
+    <string name="requests_on_detail">For people who run Lidarr beside their music server. Search gains a “Not in your library” section; asking for something there puts it on Lidarr\'s list, and the Requests page shows what\'s on its way. Songs and track lists are looked up at MusicBrainz, which is sent what you search for. How much each is played comes from ListenBrainz, which is told which artists and songs came up.</string>
+    <string name="requests_singles">Singles and EPs too</string>
+    <string name="requests_singles_detail">A song that never came out on an album is offered on its single or EP, and artists\' pages list those as well. Asking for one has Lidarr list that artist\'s singles and EPs alongside their albums; only what you ask for is fetched.</string>
+    <string name="lidarr_address">Lidarr\'s address</string>
+    <string name="lidarr_address_hint">https://lidarr.example.org</string>
+    <string name="lidarr_key">API key</string>
+    <string name="lidarr_key_label">Lidarr API key</string>
+    <string name="lidarr_key_hint">In Lidarr: Settings, General</string>
+    <string name="requests_connect">Connect</string>
+    <string name="sign_in_with_browser">Sign in with browser</string>
+    <!-- Windows: "… This PC keeps a token …". -->
+    <string name="requests_signed_in_as">Signed in as %1$s at %2$s. This phone keeps a token from that sign-in, not your password.</string>
+    <string name="requests_signed_in_at">Signed in at %1$s. This phone keeps a token from that sign-in, not your password.</string>
+    <string name="requests_sign_in_note">You sign in on its own page, in your browser. Your password isn\'t typed into this app or kept by it.</string>
 </resources>

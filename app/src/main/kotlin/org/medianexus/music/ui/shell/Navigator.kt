@@ -55,6 +55,14 @@ sealed interface Route {
     @Serializable data class Stats(val period: Int = org.medianexus.music.library.Stats.TODAY) : Route
     /** Jams (from Library, Connect and the strip): `link` is one another app handed over. */
     @Serializable data class Jam(val link: String = "") : Route
+    /** Requests: an artist as the wider world knows them (Lidarr's name for them), with what
+     *  the card or row it was opened from said of them. */
+    @Serializable data class OutsideArtist(val id: String, val name: String = "", val cover: String = "") : Route
+    /** Requests: an album that isn't in the library, by Lidarr's name for it. */
+    @Serializable data class OutsideAlbum(val id: String, val title: String = "", val artist: String = "", val cover: String = "") : Route
+    /** Requests: what has arrived lately and what is on its way (from Library, and from the
+     *  news of an arrival). */
+    @Serializable data object Requests : Route
 
     /** The key the Windows app files the page under ("album:<id>"): where its list's
      *  choices are remembered, and what a queue started from it is said to come from. */
@@ -123,6 +131,8 @@ class Navigator private constructor(saved: Saved?) {
     fun open(route: Route) {
         // No way to jams in a build where they don't exist (jam/JamBuild).
         if (route is Route.Jam && !org.medianexus.music.jam.JamBuild.on) return
+        // Nor to requests where they don't (requests/RequestsBuild).
+        if ((route is Route.OutsideArtist || route is Route.OutsideAlbum || route is Route.Requests) && !org.medianexus.music.requests.RequestsBuild.on) return
         motion = Motion.PUSH
         stacks.getValue(tab) += Place(route, next++)
     }

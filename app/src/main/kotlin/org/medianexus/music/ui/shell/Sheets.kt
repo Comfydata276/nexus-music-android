@@ -55,8 +55,10 @@ sealed interface Sheet {
     /** Where the app stands with the server, and the way out. */
     data object Offline : Sheet
 
-    /** Something that can't be taken back, said and asked (Windows' prompt). */
-    data class Confirm(val title: String, val detail: String, val confirm: String, val onConfirm: () -> Unit) : Sheet
+    /** Something said and asked (Windows' prompt): by default something that can't be taken
+     *  back, its button in the danger colour; otherwise (`danger` false: asking Lidarr for an
+     *  album) the accent's. */
+    data class Confirm(val title: String, val detail: String, val confirm: String, val danger: Boolean = true, val onConfirm: () -> Unit) : Sheet
 
     /** The orders a list can be shown in (Windows' "Sort by" menu): the one in use marked,
      *  with which way it runs. `ownOrder` is what the list's own order is called. */
@@ -169,7 +171,7 @@ fun SheetHost(sheet: Sheet, onClose: () -> Unit) {
                     // phone, goes under it rather than being cut short.)
                     androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(stringResource(R.string.cancel), onClick = { choose {} })
-                        TextButton(sheet.confirm, danger = true, onClick = { choose(sheet.onConfirm) })
+                        TextButton(sheet.confirm, danger = sheet.danger, primary = !sheet.danger, onClick = { choose(sheet.onConfirm) })
                     }
                 }
             }

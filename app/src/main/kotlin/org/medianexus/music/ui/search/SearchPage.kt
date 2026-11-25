@@ -62,6 +62,7 @@ import org.medianexus.music.ui.shell.open
 import org.medianexus.music.ui.shell.rememberPageFeed
 import org.medianexus.music.ui.theme.Theme
 import org.medianexus.music.ui.downloads.rowMark
+import org.medianexus.music.ui.requests.notInYourLibrary
 
 /**
  * Search, its own tab on the phone: results as the words are typed, in the Windows
@@ -114,6 +115,12 @@ fun SearchPage() {
     val kinds = listOf(R.string.search_all, R.string.songs, R.string.artists, R.string.albums, R.string.playlists).map { stringResource(it) }
 
     val maxWidthOfPage = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() }
+    // "Not in your library" (requests): a look of its own beyond the library, for the words in
+    // the box, which the library's own results never wait for.
+    val here = org.medianexus.music.ui.requests.requestsHere()
+    val outside = org.medianexus.music.ui.requests.rememberOutsideSearch(here, box.text.toString())
+    val look by (outside?.state ?: NO_LOOK).collectAsStateWithLifecycle()
+    val asker = here?.let { org.medianexus.music.ui.requests.rememberAsker(it) }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.windowInsetsPadding(WindowInsets.statusBars).padding(start = Theme.dimens.pagePad, end = Theme.dimens.pagePad, top = 8.dp, bottom = 4.dp)) {
             Field(
@@ -174,10 +181,15 @@ fun SearchPage() {
         }
         val liked = likedSongs()
         val error = state.error?.takeIf { state.query == typed.trim() && !(offline && it is org.medianexus.music.net.ApiError.Network) }
+        // What is found beyond the library is shown only for the words in the box, and under
+        // a chip only if there is something of that kind (or it is still being looked for).
+        val chosen = SearchKind.entries[kind]
+        val beyond = look.takeIf { outside != null && it.query.isNotEmpty() && it.query == typed.trim() && chosen != SearchKind.PLAYLISTS }
+            ?.takeIf { it.looking || chosen == SearchKind.ALL || it.found?.let { found -> found.songs.isNotEmpty() && chosen == SearchKind.SONGS || found.artists.isNotEmpty() && chosen == SearchKind.ARTISTS || found.albums.isNotEmpty() && chosen == SearchKind.ALBUMS } == true }
         when {
             view == null && error != null -> PageStatus(PageState.Error(error.message.orEmpty()), onRetry = model::retry)
             view == null -> SkeletonRows()
-            view.isEmpty -> PageStatus(
+            view.isEmpty && beyond == null -> PageStatus(
                 PageState.Empty(
                     when {
                         offline -> res.getString(R.string.search_nothing_phone, state.query)
@@ -242,6 +254,17 @@ fun SearchPage() {
                         item(key = "playlists", contentType = "shelf") { Shelf(stringResource(R.string.playlists), cards, onOpen = { ui.open(it) }) }
                     }
                 }
+                if (beyond != null) {
+                    // (Nothing of the library's matched: said, as on Windows, above what is beyond it.)
+                    if (view.isEmpty && chosen == SearchKind.ALL) item(key = "nothing-here", contentType = "empty") {
+                        androidx.compose.foundation.text.BasicText(
+                            res.getString(R.string.search_nothing, state.query),
+                            Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 12.dp),
+                            style = Theme.type.body.copy(color = Theme.colors.muted),
+                        )
+                    }
+                    notInYourLibrary(beyond, chosen, columns, ruled = !view.isEmpty, asker = asker, onShowAllSongs = { kind = SearchKind.SONGS.ordinal })
+                }
             }
         }
     }
@@ -302,6 +325,9 @@ private fun Genres() {
         }
     }
 }
+
+/** No look beyond the library (requests off, not connected, or offline mode on). */
+private val NO_LOOK = kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.ui.requests.OutsideSearch.State())
 
 /** How much a search asks for, as Windows does (24 artists, 36 albums, 60 songs). */
 private val LIMITS = SearchLimits(artists = 24, albums = 36, songs = 60)

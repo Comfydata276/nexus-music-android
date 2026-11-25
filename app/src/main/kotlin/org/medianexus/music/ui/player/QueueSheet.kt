@@ -367,7 +367,7 @@ private fun SongLine(
 
 /** A song that can be swiped sideways out of the queue. */
 @Composable
-private fun SwipeAway(key: String, onGone: () -> Unit, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+internal fun SwipeAway(key: String, onGone: () -> Unit, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val colors = Theme.colors
     val scope = rememberCoroutineScope()
     val shift = remember(key) { Animatable(0f) }

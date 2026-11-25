@@ -57,6 +57,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.runtime.rememberDecoratedNavEntries
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
@@ -114,6 +115,7 @@ fun Shell(graph: Graph) {
     LaunchedEffect(song == null, reported) { if (song == null && reported) ui.nowPlaying = false }
     // A jam's link another app handed over: the jam page, with it in the box.
     if (org.medianexus.music.jam.JamBuild.on) LaunchedEffect(ui) { graph.jamLinkArrived.collect { link -> if (link != null) { graph.jamLinkArrived.value = null; ui.open(Route.Jam(link)) } } }
+    if (org.medianexus.music.requests.RequestsBuild.on) RequestsNews(ui)
 
     androidx.compose.runtime.CompositionLocalProvider(
         LocalUi provides ui,
@@ -250,6 +252,38 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
         Route.Licences -> org.medianexus.music.ui.settings.LicencesPage(onBack = navigator::back)
         // (No route reaches it where jams don't exist; one that somehow did shows nothing.)
         is Route.Jam -> if (org.medianexus.music.jam.JamBuild.on) org.medianexus.music.ui.jam.JamPage(route.link, onBack = navigator::back)
+        // (The same for requests: requests/RequestsBuild.)
+        is Route.OutsideArtist -> if (org.medianexus.music.requests.RequestsBuild.on) org.medianexus.music.ui.requests.OutsideArtistPage(route)
+        is Route.OutsideAlbum -> if (org.medianexus.music.requests.RequestsBuild.on) org.medianexus.music.ui.requests.OutsideAlbumPage(route)
+        Route.Requests -> if (org.medianexus.music.requests.RequestsBuild.on) org.medianexus.music.ui.requests.RequestsPage()
+    }
+}
+
+/**
+ * Requests, for as long as the app's screens are up: **the one place arrival news is said**,
+ * where every passing note is (each sentence is handed over once, to one listener: the last
+ * eight wait while nobody listens, the app in the background included), with "Requests" on
+ * the note as the way to see it; it belongs to the account signed in, and goes with it. And
+ * each time the app's screen is in front again, the connection is told, so that a sign-in
+ * whose browser tab was closed is given up (`Requests.cameBack`).
+ */
+@Composable
+private fun RequestsNews(ui: Ui) {
+    val account = ui.account
+    val pages = account?.requestsPages
+    val res = androidx.compose.ui.platform.LocalResources.current
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    if (pages != null) LaunchedEffect(pages, lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            pages.news.collect { said ->
+                ui.graph.toasts.show(said, res.getString(R.string.requests)) { ui.open(Route.Requests) }
+                ui.requestsChanged()
+            }
+        }
+    }
+    androidx.lifecycle.compose.LifecycleResumeEffect(account) {
+        account?.requests?.cameBack()
+        onPauseOrDispose {}
     }
 }
 

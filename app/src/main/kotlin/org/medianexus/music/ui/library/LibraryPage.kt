@@ -158,6 +158,7 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
         (if (phone != null) onPhone else feed.value)
             ?.sortedWith(compareBy<Playlist> { pinned.indexOf(it.id).let { at -> if (at < 0) Int.MAX_VALUE else at } }.thenBy { it.name.lowercase() })
     }
+    val requestsOn = org.medianexus.music.ui.requests.requestsHere()?.settings?.on == true
     Refreshable(feed.refreshing, feed::refresh) {
         // Offline, a failure to reach the server is what offline is: the title bar's pill
         // says it once.
@@ -206,6 +207,16 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                         Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
                         contentAlignment = Alignment.Center,
                     ) { Icon(R.drawable.ic_chart_no_axes_column, size = 24.dp, tint = Theme.colors.muted) }
+                }
+            }
+            // Requests (Windows' sidebar has it after Your stats): what was asked of Lidarr, and
+            // what is on its way. Only while requests are switched on.
+            if (requestsOn) item(key = "requests", contentType = "row") {
+                ListRow(stringResource(R.string.requests), "", onClick = { ui.open(Route.Requests) }) {
+                    Box(
+                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(R.drawable.ic_circle_arrow_down, size = 24.dp, tint = Theme.colors.muted) }
                 }
             }
             // A new playlist (Windows' "+" beside Playlists), with nothing in it yet.
