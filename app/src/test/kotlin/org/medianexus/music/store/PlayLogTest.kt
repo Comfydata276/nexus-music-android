@@ -120,6 +120,50 @@ class PlayLogTest {
     }
 
     @Test
+    fun whatWasKeptBesideTheLogAndCannotBeReadIsLeftAsItIsToo() {
+        val path = File(folder.root, "plays.log")
+        val beside = File(folder.root, "plays.log.new")
+        val second = File(folder.root, "plays.log.new.2")
+        val years = "[\"a\",100]\n"
+        val meanwhile = "[\"b\",200]\n[\"c\",300,\"playlist:p\"]\n"
+        path.writeText(years)
+        beside.writeText(meanwhile)
+        // Neither can be read: the log, and what an earlier run kept beside it.
+        assertTrue(path.setReadable(false) && beside.setReadable(false))
+        org.junit.Assume.assumeFalse("whoever runs this may read anything", runCatching { beside.readBytes() }.isSuccess)
+        val notes = mutableListOf<String>()
+        val log = PlayLog(path, io) { notes += it }
+        runBlocking { log.open() }
+        assertTrue(notes.any { "beside the log" in it && "couldn't be read" in it })
+        // With nothing new to keep, nothing is written anywhere.
+        log.settle()
+        assertFalse(second.exists())
+        // A play made meanwhile is kept, in a second file: not over the first.
+        log.add("d", 400)
+        log.settle()
+        assertEquals(listOf("[\"d\",400]"), second.readLines())
+        runBlocking { log.close().join() }
+        assertTrue(path.setReadable(true) && beside.setReadable(true))
+        assertEquals(years, path.readText())
+        assertEquals("what was kept beside the log is exactly as it was", meanwhile, beside.readText())
+        // The log readable and the first of them still not: the second is joined to the
+        // log, and the first is still there, untouched.
+        assertTrue(beside.setReadable(false))
+        val next = log(path)
+        next.settle()
+        assertEquals(listOf("a" to 100L, "d" to 400L), next.shared())
+        runBlocking { next.close().join() }
+        assertFalse(second.exists())
+        assertTrue(beside.setReadable(true))
+        assertEquals(meanwhile, beside.readText())
+        // And once it can be read, it is joined too: each play once.
+        val last = log(path)
+        last.settle()
+        assertEquals(listOf("a" to 100L, "d" to 400L, "b" to 200L, "c" to 300L), last.shared())
+        assertFalse(beside.exists())
+    }
+
+    @Test
     fun aLogThatCouldNotBeReadIsNeverTakenForALogThatIsNotThere() {
         val path = File(folder.root, "plays.log")
         val beside = File(folder.root, "plays.log.new")

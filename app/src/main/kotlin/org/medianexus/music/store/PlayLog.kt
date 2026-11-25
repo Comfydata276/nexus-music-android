@@ -123,7 +123,10 @@ class Plays internal constructor(
  * not by a check first) leaves it exactly as it is, and nothing is written to it in that
  * run. What is played meanwhile, and what other devices tell of, is kept in a file beside
  * it (`plays.log.new`), whole, and joined to the log, each play once, the next time the log
- * reads; Diagnostics says so. [flushed] says when a write failed.
+ * reads; Diagnostics says so. [flushed] says when a write failed. **The same holds for that
+ * file**: if it is there and can't be read, it is left exactly as it is, and this run's
+ * plays go to a second (`plays.log.new.2`); each is joined to the log, and goes, in a run
+ * that could read both it and the log.
  *
  * **One owner of the file at a time.** A log holds its file from [open] to [close]: the lock
  * its writes are made under is taken as it opens and let go only once it has closed, with
@@ -167,6 +170,14 @@ class PlayLog(
     private var unreadable = false
     /** Where plays are kept while the log itself can't be read; joined to it when it can. */
     private val aside = File(file.path + ".new")
+    /** Where they are kept if what is at [aside] can't be read either: that is left exactly
+     *  as it is too, and never written over. */
+    private val asideSecond = File(file.path + ".new.2")
+    /** Which of the two this run writes to: the first that it could read (or that isn't
+     *  there). Null if neither could be read: then there is nowhere, and it is said. */
+    private var asideHere: File? = aside
+    /** Those of the two that were read, and so go once the log has what they held. */
+    private var asidesRead: List<File> = emptyList()
     /** The plays that were beside the log have been put after its own, in memory: once the
      *  file has them, the file beside it goes. */
     private var joining = false
@@ -227,14 +238,19 @@ class PlayLog(
                     }
                 }
                 // What an earlier run kept beside a log it couldn't read.
-                val beside = withContext(io) {
-                    try {
-                        readLog(aside)?.plays
-                    } catch (_: IOException) {
-                        note("plays: what was kept beside the log on the phone couldn't be read; it is left where it is")
-                        null
+                // (One that can't be read is left exactly as it is, like the log: it is
+                // never taken for one that isn't there, and never written over.)
+                val besides = withContext(io) {
+                    listOf(aside, asideSecond).map { kept ->
+                        kept to try {
+                            Result.success(readLog(kept)?.plays)
+                        } catch (e: IOException) {
+                            note("plays: what was kept beside the log on the phone couldn't be read; it is left exactly as it is")
+                            Result.failure(e)
+                        }
                     }
                 }
+                val beside = besides.flatMap { (_, read) -> read.getOrNull().orEmpty() }
                 synchronized(this) {
                     // What was noted before the file had been read goes after what is in it.
                     val early = List(size) { Triple(names[songs[it]]!!, ats[it], froms[it].let { f -> if (f < 0) "" else names[f]!! }) }
@@ -246,12 +262,14 @@ class PlayLog(
                     // Joined to the log, each play once (a play another device told of while
                     // the log couldn't be read may be one the log has); or, if the log still
                     // can't be read, held with this run's, to be written beside it again.
-                    if (!beside.isNullOrEmpty()) {
+                    if (beside.isNotEmpty()) {
                         val have = HashSet<Pair<String, Long>>(size * 2)
                         for (i in 0 until size) have += names[songs[i]]!! to ats[i]
                         for ((song, at, from) in beside) if (have.add(song to at)) put(song, at, from)
                     }
-                    joining = beside != null && !unreadable
+                    asidesRead = besides.filter { (_, read) -> read.getOrNull() != null }.map { it.first }
+                    asideHere = besides.firstOrNull { (_, read) -> read.isSuccess }?.first
+                    joining = asidesRead.isNotEmpty() && !unreadable
                     // A log started afresh is written whole.
                     rewrite = read == null
                     good = read?.good ?: 0
@@ -538,7 +556,9 @@ class PlayLog(
     /** The log has everything this log holds, what was kept beside it included: the file
      *  beside it goes. (Under this log's lock.) */
     private fun joined() {
-        if (joining && (aside.delete() || !aside.exists())) joining = false
+        if (!joining) return
+        asidesRead = asidesRead.filter { kept -> !kept.delete() && kept.exists() }
+        if (asidesRead.isEmpty()) joining = false
     }
 
     /**
@@ -548,6 +568,13 @@ class PlayLog(
      */
     private fun writeAside(): Boolean {
         val plays = current.value
+        val aside = asideHere ?: run {
+            // Neither file beside the log could be read, and neither is written over.
+            if (plays.size == 0) return true
+            if (!failedSaid) note("plays: there is nowhere on the phone to keep what is played while its log can't be read")
+            failedSaid = true
+            return false
+        }
         if (plays.size == 0 && !aside.exists()) return true
         return try {
             writeAtomically(aside, durable = true) { out ->
