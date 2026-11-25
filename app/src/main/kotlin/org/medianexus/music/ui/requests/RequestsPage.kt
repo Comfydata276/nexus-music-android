@@ -20,7 +20,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
@@ -33,7 +32,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import org.medianexus.music.R
 import org.medianexus.music.core.Pending
 import org.medianexus.music.ui.parts.IconButton
@@ -74,27 +72,15 @@ fun RequestsPage() {
     }
     val state by model.state.collectAsStateWithLifecycle()
     val waiting = state.value
-    val scope = rememberCoroutineScope()
-    // Taken off the list here and not yet answered: not shown meanwhile. (Lidarr's number for
-    // each: the page's own rows, which belong to this connection.)
-    val going = remember(here.key) { mutableStateListOf<Long>() }
+    val asker = rememberAsker(here)
+    // Being taken off the list (from this page or before it was left): not shown meanwhile.
+    // Once Lidarr has taken it off, not shown either, until the page has asked again.
+    // (Lidarr's numbers for them: the page's own rows, which belong to this connection.)
+    val going by UnderWay.of(here.account).going.collectAsStateWithLifecycle()
+    val taken = remember(here.key) { mutableStateListOf<Long>() }
+    LaunchedEffect(waiting) { taken.clear() }
 
-    fun takeOff(album: Pending) {
-        if (album.id in going) return
-        going += album.id
-        scope.launch {
-            try {
-                val said = pages.cancel(album.id, album.title)
-                ui.toast(said.words)
-                if (said.done) {
-                    ui.requestsChanged()
-                    model.again()
-                }
-            } finally {
-                going -= album.id
-            }
-        }
-    }
+    fun takeOff(album: Pending) = asker.takeOff(album.id, album.title) { done -> if (done) taken += album.id }
 
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)
@@ -111,7 +97,7 @@ fun RequestsPage() {
                                 ArrivedRow(asked, about, onOpen = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) })
                             }
                         }
-                        val pending = waiting.pending.filter { (album, _) -> album.id !in going }
+                        val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id) !in going && album.id !in taken }
                         if (waiting.heading.isNotEmpty() && pending.isNotEmpty()) {
                             item(key = "pending-title", contentType = "title") { SectionTitle(waiting.heading) }
                             items(pending, key = { (album, _) -> "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->

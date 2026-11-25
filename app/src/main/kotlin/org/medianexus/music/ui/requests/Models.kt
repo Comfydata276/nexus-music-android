@@ -15,9 +15,9 @@ import org.medianexus.music.requests.Found
 // What the screens of requests hold while they are shown, as plain Kotlin so it can be
 // tested on its own. Each asks only while its `run` runs, which the screen does for as long
 // as it is on screen and the app is in front: leaving it cancels what it asked for (the
-// requests in flight are cut off, and nothing is delivered). Asking for an album and adding
-// an artist are not here: they are done in the screen's own scope, and what happens to them
-// once Lidarr has begun to be changed is `RequestsPages`' (see `Ask.kt`).
+// requests in flight are cut off, and nothing is delivered). Asking for an album, adding an
+// artist and taking one off the list are not looks, and are not here: they outlive the page
+// (see `Asker` in `Here.kt`).
 
 /**
  * "Not in your library" under a search: what is found beyond the library for the words in

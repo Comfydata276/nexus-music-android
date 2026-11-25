@@ -2205,11 +2205,15 @@ own words) are the Windows app's, in `strings.xml`.
   after the page is shown, room kept for them meanwhile; albums as the library's artist page
   shows them, the library's own opening as the library's; the album's songs listed as an
   album's are, with nothing to play or queue.
-- **Asking** (`Asker`): the library's question as a sheet (Windows' prompt), then the line
-  said meanwhile, then how it went as a passing note, "Requests" on it when it went through.
-  In the screen's own scope: leaving cancels it, and once Lidarr has begun to be changed
-  `RequestsPages` sees it through. After anything asked, the pages that show music beyond
-  the library ask again (`Ui.requestsChanged`), to say "Requested".
+- **Asking is not a look** (`Asker`). The library's question is a sheet (Windows' prompt),
+  asked in the page's scope. What the person then confirms (asking for an album, adding an
+  artist, taking one off the list) runs in the account's own scope: leaving the page neither
+  cancels it nor loses its sentence, which is said as a passing note wherever the person is,
+  with "Requests" on it where Windows points there ("already asked for", "Added …"). A
+  second press of the same thing while the first is under way does nothing (`UnderWay`, per
+  account), and the Requests page hides a row being taken off until Lidarr has answered.
+  After anything asked, the pages that show music beyond the library ask again
+  (`Ui.requestsChanged`), to say "Requested".
 - **The Requests page**: from Library (a row while requests are on) and from an arrival's
   note. Arrived as rows of the library's own albums (small cover, title, the library's line
   whole over two lines), then "On their way (n)"; one is taken

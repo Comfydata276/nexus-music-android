@@ -26,9 +26,9 @@ import org.medianexus.music.requests.Said
 
 /**
  * The screens of requests as they hold what they show (`Models.kt`) and as they ask
- * (`Asker`): what each asks and when, and that **leaving a screen cancels what it asked
- * for**. (That a request which has begun to change Lidarr is seen through all the same is
- * `RequestsPages`' own, and its test's: `RequestsPagesTest`.)
+ * (`Asker`): what each asks and when; that **leaving a screen cancels what it looked for**;
+ * and that **asking is not a look**: what the person confirmed outlives the page that asked,
+ * is done once, and is said wherever the person is.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RequestsScreensTest {
@@ -304,8 +304,8 @@ class RequestsScreensTest {
 
     private open class Ops(val asked: Asking = Asking.Ask("Ask for this album?", "“Paper Tides” by Quillon Vane will go on Lidarr's list.")) : AskOps {
         val calls = mutableListOf<String>()
-        var stopped = false
-        var hold = false
+        /** Held until opened, while set. */
+        var gate: CompletableDeferred<Unit>? = null
 
         override suspend fun asking(album: String, title: String, by: String, song: String, kind: String): Asking {
             calls += "asking $album $title $by $song $kind"
@@ -316,13 +316,7 @@ class RequestsScreensTest {
 
         override suspend fun request(album: String, title: String, song: String): Said {
             calls += "request $album $title $song"
-            if (hold) {
-                try {
-                    awaitCancellation()
-                } finally {
-                    stopped = true
-                }
-            }
+            gate?.await()
             return Said(true, "Asked for “$title”. It'll be in your library once it arrives.")
         }
 
@@ -332,17 +326,23 @@ class RequestsScreensTest {
 
         override suspend fun addArtist(id: String, name: String): Said {
             calls += "add $id $name"
+            gate?.await()
             return Said(true, "Added $name. Their albums are on Lidarr's list")
+        }
+
+        override suspend fun cancel(id: Long, title: String): Said {
+            calls += "cancel $id $title"
+            gate?.await()
+            return Said(true, "“$title” is off the list")
         }
     }
 
     @Test
-    fun askingPutsTheQuestionFirstThenAsksAndSaysHowItWentWithTheWayIn() = runTest {
+    fun askingPutsTheQuestionFirstThenAsksAndSaysHowItWent() = runTest {
         val ops = Ops()
         val show = Seen()
-        val asker = Asker(backgroundScope, ops, show)
-        var done = 0
-        asker.album("rg-pt", "Paper Tides", "Quillon Vane", song = "Low Water", kind = "EP", done = { done++ })
+        val asker = Asker(backgroundScope, backgroundScope, ops, show, UnderWay())
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane", song = "Low Water", kind = "EP")
         runCurrent()
         assertEquals(listOf("asking rg-pt Paper Tides Quillon Vane Low Water EP"), ops.calls)
         assertEquals(AskShow.Button.REQUEST, show.question?.third)
@@ -350,16 +350,16 @@ class RequestsScreensTest {
         show.yes!!()
         runCurrent()
         assertEquals("request rg-pt Paper Tides Low Water", ops.calls.last())
-        assertEquals(listOf("Asking for “Paper Tides”…" to false, "Asked for “Paper Tides”. It'll be in your library once it arrives." to true), show.said)
+        // (As on Windows, "Asked for …" doesn't point to Requests; "already" and "Added" do.)
+        assertEquals(listOf("Asking for “Paper Tides”…" to false, "Asked for “Paper Tides”. It'll be in your library once it arrives." to false), show.said)
         assertEquals(1, show.changes)
-        assertEquals(1, done)
     }
 
     @Test
     fun somethingAskedForAlreadyIsSaidNotAskedAgain() = runTest {
         val ops = Ops(Asking.Already("“Paper Tides” has been asked for already."))
         val show = Seen()
-        Asker(backgroundScope, ops, show).album("rg-pt", "Paper Tides", "Quillon Vane")
+        Asker(backgroundScope, backgroundScope, ops, show, UnderWay()).album("rg-pt", "Paper Tides", "Quillon Vane")
         runCurrent()
         assertNull(show.question)
         assertEquals(listOf("“Paper Tides” has been asked for already." to true), show.said)
@@ -367,30 +367,81 @@ class RequestsScreensTest {
     }
 
     @Test
-    fun leavingTheScreenCancelsTheAskAndSaysNothingAfterwards() = runTest {
-        val ops = Ops().apply { hold = true }
+    fun leavingThePageMidAskTheAskCompletesOnceAndItsSentenceIsSaid() = runTest {
+        val ops = Ops().apply { gate = CompletableDeferred() }
         val show = Seen()
-        val screen = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
-        val asker = Asker(screen, ops, show)
+        val page = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
+        val asker = Asker(page, backgroundScope, ops, show, UnderWay())
         asker.album("rg-pt", "Paper Tides", "Quillon Vane")
         runCurrent()
         show.yes!!()
         runCurrent()
         assertEquals(listOf("Asking for “Paper Tides”…" to false), show.said)
-        screen.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        // The page is left while Lidarr is being asked.
+        page.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
         runCurrent()
-        // The call was the screen's: cancelled with it (what RequestsPages then does with a
-        // request that has begun to change Lidarr is its own).
-        assertTrue(ops.stopped)
-        assertEquals(1, show.said.size)
-        assertEquals(0, show.changes)
+        ops.gate!!.complete(Unit)
+        runCurrent()
+        assertEquals(1, ops.calls.count { it.startsWith("request") })
+        assertEquals("Asked for “Paper Tides”. It'll be in your library once it arrives." to false, show.said.last())
+        assertEquals(1, show.changes)
+    }
+
+    @Test
+    fun aSecondPressWhileTheFirstIsUnderWayDoesNothing() = runTest {
+        val ops = Ops().apply { gate = CompletableDeferred() }
+        val show = Seen()
+        val underWay = UnderWay()
+        val asker = Asker(backgroundScope, backgroundScope, ops, show, underWay)
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane")
+        runCurrent()
+        val yes = show.yes!!
+        yes()
+        runCurrent()
+        // Pressed again, from this page or another (the same account's), while it goes on.
+        show.question = null
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane")
+        Asker(backgroundScope, backgroundScope, ops, show, underWay).album("rg-pt", "Paper Tides", "Quillon Vane")
+        yes()
+        runCurrent()
+        assertNull("not asked again", show.question)
+        assertEquals(1, ops.calls.count { it.startsWith("asking") })
+        assertEquals(1, ops.calls.count { it.startsWith("request") })
+        ops.gate!!.complete(Unit)
+        runCurrent()
+        assertTrue(underWay.going.value.isEmpty())
+        // Once it has finished, it can be pressed again (and the library says "already").
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane")
+        runCurrent()
+        assertEquals(2, ops.calls.count { it.startsWith("asking") })
+    }
+
+    @Test
+    fun takingOneOffTheListOutlivesThePageAndIsDoneOnce() = runTest {
+        val ops = Ops().apply { gate = CompletableDeferred() }
+        val show = Seen()
+        val underWay = UnderWay()
+        val page = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
+        val asker = Asker(page, backgroundScope, ops, show, underWay)
+        var heard: Boolean? = null
+        asker.takeOff(7, "Night Ferry") { heard = it }
+        asker.takeOff(7, "Night Ferry")
+        runCurrent()
+        assertEquals(setOf(UnderWay.offList(7)), underWay.going.value)
+        page.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        ops.gate!!.complete(Unit)
+        runCurrent()
+        assertEquals(listOf("cancel 7 Night Ferry"), ops.calls)
+        assertEquals(listOf("“Night Ferry” is off the list" to false), show.said)
+        assertEquals(true, heard)
+        assertTrue(underWay.going.value.isEmpty())
     }
 
     @Test
     fun addingAnArtistEndsTheLibrarysSentenceAndOnlyWhenThereIsSomethingToAdd() = runTest {
         val ops = Ops()
         val show = Seen()
-        val asker = Asker(backgroundScope, ops, show)
+        val asker = Asker(backgroundScope, backgroundScope, ops, show, UnderWay())
         asker.artist("qv", "Quillon Vane", open = 0)
         runCurrent()
         assertNull("nothing to ask for: no question", show.question)
@@ -404,12 +455,12 @@ class RequestsScreensTest {
     }
 
     @Test
-    fun aRefusalIsSaidAsTheLibrarySaysItWithNoWayIn() = runTest {
+    fun aRefusalIsSaidAsTheLibrarySaysIt() = runTest {
         val ops = object : Ops() {
             override suspend fun request(album: String, title: String, song: String) = Said(false, "Couldn't reach Lidarr. The connection was refused.")
         }
         val show = Seen()
-        Asker(backgroundScope, ops, show).album("rg-pt", "Paper Tides", "Quillon Vane")
+        Asker(backgroundScope, backgroundScope, ops, show, UnderWay()).album("rg-pt", "Paper Tides", "Quillon Vane")
         runCurrent()
         show.yes!!()
         runCurrent()
