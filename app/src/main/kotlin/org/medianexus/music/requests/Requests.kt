@@ -658,3 +658,27 @@ class Requests internal constructor(
                 .joinToString("").trim().replace(Regex(" {2,}"), " ").take(NAME_LENGTH).trim()
     }
 }
+
+/**
+ * Where the connection stands, **in the library's own sentence**, for the screens (which call
+ * nothing in `core/`): "Connected to Lidarr 2.12.4.", "Lidarr is behind the sign-in at …",
+ * "Finish signing in at … in your browser." and the rest. Empty when requests are off, and
+ * where the library has no sentence yet: what is kept can't be read. A sign-in the app was
+ * stopped in the middle of is said as any sign-in still to be made, until the library has a
+ * sentence of its own for it. (Added for the screens, M7b.)
+ */
+fun Requests.says(state: RequestsState): String = when (state) {
+    RequestsState.Off -> ""
+    RequestsState.NotConnected -> Words.notConnected
+    RequestsState.KeyForgotten -> Words.keyForgotten
+    RequestsState.Connecting -> Words.checking
+    is RequestsState.Connected -> Words.connected(state.version)
+    is RequestsState.NeedsSignIn -> when {
+        state.signedOut -> Words.signedOut(state.host)
+        state.why != null -> state.why
+        else -> Words.behindSignIn(state.host)
+    }
+    is RequestsState.SigningIn -> Words.finishInBrowser(state.host)
+    is RequestsState.Unreachable -> state.why
+    RequestsState.CantRead -> ""
+}

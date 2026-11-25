@@ -41,9 +41,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.medianexus.music.R
-import org.medianexus.music.core.Words
 import org.medianexus.music.requests.BrowserTab
 import org.medianexus.music.requests.RequestsState
+import org.medianexus.music.requests.says
 import org.medianexus.music.ui.parts.Field
 import org.medianexus.music.ui.parts.LinkText
 import org.medianexus.music.ui.parts.TextButton
@@ -145,7 +145,8 @@ fun RequestsSettings() {
             }
 
             // Where things stand, and the one thing to do next (Windows' box under the fields).
-            val (standing, says) = remember(state) { says(state) }
+            val standing = standing(state)
+            val says = remember(state) { requests.says(state) }
             val waiting = state is RequestsState.SigningIn
             val signedInAs = (state as? RequestsState.Connected)?.signedInAs
             Column(
@@ -199,24 +200,13 @@ fun RequestsSettings() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(colors.line))
 }
 
-/** Where the connection stands, in the library's own sentence. */
-private fun says(state: RequestsState): Pair<Standing, String> = when (state) {
-    RequestsState.Off -> Standing.NONE to ""
-    RequestsState.NotConnected -> Standing.NONE to Words.notConnected
-    RequestsState.KeyForgotten -> Standing.NONE to Words.keyForgotten
-    RequestsState.Connecting -> Standing.WAITING to Words.checking
-    is RequestsState.Connected -> Standing.GOOD to Words.connected(state.version)
-    is RequestsState.NeedsSignIn -> Standing.SIGN_IN to when {
-        state.signedOut -> Words.signedOut(state.host)
-        state.why != null -> state.why
-        // (Interrupted, the app stopped behind the browser: the library has no sentence of
-        // its own for it yet, so it is said as any sign-in still to be made.)
-        else -> Words.behindSignIn(state.host)
-    }
-    is RequestsState.SigningIn -> Standing.WAITING to Words.finishInBrowser(state.host)
-    is RequestsState.Unreachable -> Standing.BAD to state.why
-    // (What is kept can't be read: the library has no sentence for it.)
-    RequestsState.CantRead -> Standing.BAD to ""
+/** Which colour the dot beside the sentence is, as Windows' marker has it. */
+private fun standing(state: RequestsState): Standing = when (state) {
+    RequestsState.Off, RequestsState.NotConnected, RequestsState.KeyForgotten -> Standing.NONE
+    RequestsState.Connecting, is RequestsState.SigningIn -> Standing.WAITING
+    is RequestsState.Connected -> Standing.GOOD
+    is RequestsState.NeedsSignIn -> Standing.SIGN_IN
+    is RequestsState.Unreachable, RequestsState.CantRead -> Standing.BAD
 }
 
 /**
