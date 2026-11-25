@@ -274,6 +274,35 @@ class SeekBeforeReadyTest {
     }
 
     @Test
+    fun clearingWhatIsToComeOnAQueueTakenUpIsThePersonsDoingAndIsKeptAtOnce() {
+        // "Clear" and "Clear queue" on the queue screen, as on the Windows app's: what is to
+        // come is emptied, and the song playing stays. Sent as the screens send it.
+        val screens = screens()
+        assertTrue(wait { here().replace(theirs(), 0, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = Choices.latest, stampThen = here().stamp(), still = { true }) })
+        settle()
+        assertEquals("2026-01-01T00:00:00Z", here().taken())
+        assertEquals(2, inside.player.ahead)
+
+        screens.clear(queued = false)
+        until("what was to come is gone") { inside.player.ahead == 0 }
+        assertEquals("pc0", inside.player.queue.current()?.id)
+        // The person's own doing: this phone's queue from the tap, by this phone's clock.
+        assertNull("the queue is still the other device's", here().taken())
+        assertTrue(here().stamp() in now() - 5..now() + 1)
+        // Kept as it now stands, for the next run.
+        val file = kept()!!
+        assertEquals(listOf("pc0"), file.order.map { file.songs[it].id })
+        assertNull(file.taken)
+        // And the other device's next save is offered, not put in its place.
+        server.answers["getPlayQueue"] = savedElsewhere()
+        val step = app.graph.accounts.state.value!!.queueStep!!
+        val looking = scope.async { step.check() }
+        until("the look ran") { looking.isCompleted }
+        assertEquals("Theirs 2", step.elsewhere.value?.title)
+        assertEquals(0, inside.player.ahead)
+    }
+
+    @Test
     fun previousIsNotThereToPressOnAStationWithNothingBeforeIt() {
         val screens = screens()
         val connecting = MediaController.Builder(app, inside.session.token).buildAsync()

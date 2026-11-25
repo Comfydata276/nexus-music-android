@@ -3233,6 +3233,11 @@ server offers, and is written down where the rules are (the Windows repository's
     (`PlayerConnection.canPrevious`). Seeking, and forward and back, are there for a song
     and never for a station. With nothing in the player there is nothing to skip or seek,
     and nothing on any screen offers it.
+  - **"Clear" and "Clear queue" empty what is to come, and the song playing stays**, as on
+    the Windows app (the same two words in the same place: "Clear queue" over the songs
+    queued by hand, "Clear" over the rest; neither app has an Undo for it, and neither can
+    leave the player with nothing in it). It is the person's doing like any other: the
+    queue is this phone's own from the tap and is kept as it then stands.
   - **A test of something a person does goes through a real controller**
     (`SeekBeforeReadyTest`: the screens' own connection, and an outside app's). Calling the
     service's callback and the player directly, as `ContinueHereTest` does for the claim,
