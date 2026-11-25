@@ -29,6 +29,13 @@ scripts/dx ./gradlew --no-daemon :app:lintDebug            # lint
 scripts/dx ./gradlew --no-daemon :app:assembleRelease      # shrunk build: the one to measure
 ```
 
+Every one of those first builds the shared core, the Rust library the app carries
+(`native/`, from the Windows repository's `core/` at a pinned commit: docs/DESIGN.md, "The
+shared core"), and fails if it can't. The image has Rust for it: one built before the
+shared core must be built again, with the line above. Rules that every app on an account
+must follow to the letter go in that core, in the Windows repository, never in Kotlin
+here; the app reaches it only through `core/Core.kt`.
+
 The machine has 12 GB of memory and 8 GB of swap, and is shared with other agents and their
 emulators. Gradle builds take turns by themselves (`scripts/dx`); always `--no-daemon`, and
 do not raise the memory settings in `gradle.properties`.
@@ -36,7 +43,8 @@ do not raise the memory settings in `gradle.properties`.
 ## Finishing a piece of work
 
 - The debug build, unit tests and lint pass. Say plainly if anything does not.
-- New logic that was ported from the Windows app has its tests ported with it.
+- New logic that was ported from the Windows app has its tests ported with it. (Logic the
+  two apps must share to the letter is not ported: see the shared core, above.)
 - Commit with a message that says what changed and why, in the style of the Windows
   repository's history.
 - Report: what you built, what you checked and how, what you left out, and anything the

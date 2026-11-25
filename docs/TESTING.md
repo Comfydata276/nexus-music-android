@@ -2178,228 +2178,216 @@ release APK 6,583,390 bytes), and the whole suite twice in a row with `--no-buil
 which failed in M5b's runs, passed in all three: the fault in the app it met was fixed in
 8e0ce28.)
 
-## In step with other devices (M5a): what was checked
+## In step with other devices: what was checked
 
-The phone writes into a record the Windows app on the person's PCs reads and trusts. Three
-kinds of check, from the narrowest to the widest. All of it as it stands after the M5a fixes
-(an adversarial review against the Windows code; the letters are its items, docs/DESIGN.md).
+The phone writes into a record the Windows app on the person's PCs reads and trusts. Its
+rules are no longer the phone's own: they are the shared core's, the same compiled code the
+Windows app runs (docs/DESIGN.md, "The shared core"), and they are tested where they are
+written, in the Windows repository. What is checked here is everything that is the phone's:
+that nothing is lost or changed on the way through its one door to the library; that its
+own side of an exchange takes, checks and saves things in the order the core's contract
+says; and that the whole of it, with PCs on the Windows app's code, keeps a real server's
+record right. Five kinds of check, from the narrowest to the widest. **The feature is
+switched off in the build** (`sync/InStepBuild.kt`); every check of it forces it on, in the
+tests by `InStepBuild.forTests` and on the emulator by a debug build's `DebugStep`.
 
-**1. Against cases the Windows code wrote** (`tools/instep`, `InStepCasesTest`).
-`tools/instep/run cases` compiles the Windows app's own source (src/sync.rs down to `impl
-Controller`, added.rs, plays.rs, subsonic.rs, three items of config.rs: by path, read-only,
-built outside both repositories, in the Windows app's build image `nexus-music-dev`) and
-writes `app/src/test/resources/instep-cases.json`: what serde makes of 93 texts (read as a
-record, or not), what serde_json writes for 6 records (byte for byte), what `merge` gives for
-51 pairs (both ways round, and whether it would be written back), `merge_history` and
-`merge_plays` for 12 pairs of lists, `merge_notes` for 9. Among them: equal times, the same
-play from two devices, ids and names outside the basic plane (which sort differently by
-bytes and by UTF-16 units), missing and extra fields (at the top, and inside a list's choices
-and a note), a field twice, numbers as text, with a fraction, `-0`, at and past the ends of
-64 bits, a record written as a list, half a pair of escapes, escapes whose digits are
-full-width or another script's (serde refuses them; Java's own reading of a digit takes
-them), a byte order mark, a record at and past the limits (100 in history, 500 plays), the
-second a removal is forgotten. The Kotlin is held to every one. **The other way**: the test
-writes what the Kotlin produced for each pair to `app/build/instep/kotlin-wrote.json`, and
-`tools/instep/run reads /work/app/build/instep/kotlin-wrote.json` has the Windows code read
-each back: 51 of 51 to the record Windows itself made. When the Windows code changes, run
-`tools/instep/run cases` and the tests again: a case that no longer matches is a difference
-between the two apps.
+**1. The door, against the Windows library's own answers** (`core/CoreTest`,
+`core/CoreCasesTest`; `tools/instep/run cases`). The unit tests load the library itself,
+built for this machine by the same step that builds it for phones (`native/build`), so
+every run of the suite runs the real rules. `CoreTest`: text crosses exactly whatever is in
+it; a panic in the library is a `CoreException` with its words, and the next call works;
+something the library doesn't take is an exception with the reason. `CoreCasesTest` is the
+proof that the phone and the Windows app decide alike: `tools/instep` compiles the Windows
+checkout's own library and writes `app/src/test/resources/instep-cases.json`, what that
+library decides for 210 exchanges (what a device holds and what the server answered: 184
+texts that are not a record, 14 that go on, of which 10 write, 3 held for a later layout, 3
+for a wrong clock, and stops for a disagreement, a time out of range, an owner not stated, a
+record moved) and for 9 runs of the person's changes (18 steps: a pin taken back before it
+was sent, the same pin twice, a list's shuffle then its sort, themes, odd text), with what
+is then shown to the account and to another. The same inputs go through the phone's door to
+the library the phone carries, pinned at a commit, and every answer must be the same, field
+for field, with the write carried out as the phone carries it out (`take`, `sending`,
+`written`). When the Windows library changes: `tools/instep/run cases`, and a case that no
+longer matches means the pin must move.
 
-**2. The rules, each with its code taken out.** `InStepTest` is the exchange against a
-pretend server that counts every question and write, with a gate before each;
-`StaleBaseTest` and `UpgradeTest` are a phone over its real stores in a folder
-(`PretendPhone`: made again over the same folder, it is the phone after its process was
-killed); `PhoneSharedTest`, `SharedStoresTest`, `InFrontTest`; `QueueStepTest` is the queue
-against a server of two functions; `playback/ContinueHereTest` is the playback service itself
-(Robolectric). Each line is a change made to a scratch copy of the code, and the test that
-then failed (and passes with the code as it is). All of them were run again on the code as it
-stands at the end of the fixes.
+**2. The phone's own side, each rule with its code taken out.** `sync/InStepContractTest`
+is the exchange over a phone's real stores in a folder (`PretendPhone`: made again over the
+same folder, it is the phone after its process was killed) against a pretend server with a
+gate before each answer; `UpgradeTest`, `SharedStoresTest`, `SwitchedOffTest`,
+`InFrontTest`; `QueueStepTest` is the queue against a server of two functions;
+`playback/ContinueHereTest` is the playback service itself (Robolectric); `store/AddedTest`,
+`store/PlayLogTest`, `store/RecentlyPlayedTest`. Each line below is a change made to the
+code, the tests run, and the code put back (25 November 2026, on the tree as it stands):
 
 | The rule's code taken out | The test that fails |
 |---|---|
-| **A1.** The waiting changes are made to what the phone holds before the merge, not to the server's value after it (`InStep.once`) | `StaleBaseTest.aPinMadeBeforeThePCsPinsWereReadIsAddedToThemNotPutInTheirPlace` (the reviewer's case: the PC has [A, B]; the phone's first read is held at a gate; C is pinned; the process is killed and started again; the PC must end with [A, B, C]), `aShuffleTappedBeforeTheListsChoicesArrivedLeavesItsSortAlone`, and four more there |
-| **A2.** Settings that belong to no account are given to the account that opens them, with the times they carry (`Belongs.takeOn`) | `UpgradeTest.anUpgradedPhoneLeavesThePCsDatesAndChoicesAsTheyWere`, `anUpgradedPhoneMakesNoRecordOutOfWhatItHeld`, `PhoneSharedTest.whatThePhoneHeldBeforeItCouldKeepInStepIsItsOwnAndNobodysRecord`, and three more |
-| **A2.** A file of notes with no mark keeps the times in it (`Added`, reading its file) | all three of `UpgradeTest` |
-| **A3.** A playlist whose owner the server doesn't state is taken for the account's (`InStep.isOurs`) | `InStepTest.aServerThatLeavesOutTheOwnerIsNotTakenToMeanThePlaylistIsOursAndEmpty` |
-| **A3.** A comment left out of an answer that states the owner stops the exchange (as A3 was first built) | `InStepTest.anEmptyCommentTheServerLeavesOutOfItsAnswerIsAnEmptyOne` |
-| **A3.** A record is made, or an empty one filled, whether or not the phone has anything to say (`InStep.once`) | `InStepTest.aPhoneWithNothingToSayMakesNoRecordAndFillsNoEmptyOne`, `UpgradeTest.anUpgradedPhoneMakesNoRecordOutOfWhatItHeld` |
-| **A4.** A record with a field nobody knows inside a list's choices or a note is merged and written like any other (`KotlinSettler`) | `InStepTest.aRecordThePhoneCouldNotWriteBackWholeIsReadAndNotWritten` |
-| **A4.** Anything Java takes for a digit is one in a `\u` escape (`SharedText`) | `InStepCasesTest.onlyThePlainSixteenDigitsAreDigitsInAnEscape`, `aTextIsReadAsWindowsReadsItOrNotAtAll` |
-| **A4.** A comment of spaces is "nothing shared yet" (`KotlinSettler`) | `InStepTest.aCommentThatIsNotARecordIsLeftAloneAndSaidInDiagnostics` |
-| **A5.** The clocks may be a thousand times further apart (`InStep.CLOCK_SLACK_SECONDS`) | `InStepTest.aPhoneWhoseClockDisagreesWithTheServersTakesInAndSharesNothing` |
-| **A6.** The highest id is used, not the lowest (`InStep.once`) | `InStepTest.theLowestIdThatIsOursIsUsedAtEveryExchangeNotOneRemembered`, `thePlaylistIsFoundByNameAndOwnerTheLowestIdOfSeveral` |
-| **A6.** The id found once is remembered and used from then on (`InStep.once`) | `InStepTest.theLowestIdThatIsOursIsUsedAtEveryExchangeNotOneRemembered` |
-| **A6.** The name is anyone's to use (`Playlists.reserved`) | `SharedStoresTest.aPlaylistOfThePersonsOwnCannotTakeTheReservedName` |
-| **B1.** The queue is saved without a look at what another device saved since (`QueueStep.upload`) | `QueueStepTest.aQueueAnotherDeviceSavedSinceIsNotSavedOver` |
-| **B1.** Saves don't take turns (`QueueStep.saving`) | `QueueStepTest.savesGoOneAtATimeInTheOrderAsked` |
-| **B1.** A queue taken up from another device is the phone's to save at once (`QueueStep.tookUp`) | `QueueStepTest.aQueueTakenUpFromAnotherDeviceIsNotSavedAsThePhonesOwn` |
-| **B2.** "Continue here" is played whatever was chosen after its tap (`PlaybackService`, `QueueHere.replace`) | `ContinueHereTest.continueHereGivesWayToAnythingChosenAfterItsTap` |
-| **B2.** Its place is taken when its queue is ready, not at the tap (`QueueStep.continueHere`) | `QueueStepTest.continueHereTakesItsPlaceInTheOrderOfChoicesAtTheTap` |
-| **B2.** A queue taken up unasked takes a place in the order of choices (`PlaybackService`) | `ContinueHereTest.aQueueTakenUpUnaskedIsNobodysChoiceAndOvertakesNothing` |
-| **B2.** The setting is not asked again as a queue goes into the player (`PlaybackService`); nor when the server's answer arrives, nor as an offer is noted; nor at the tap; nor for a queue taken up unasked (`QueueStep`): four changes | `ContinueHereTest.nothingIsPutInThePlayerOnceTheSettingIsOff`; `QueueStepTest.onceTheSettingIsOffNothingIsOfferedAndAnAnswerOnItsWayIsNotUsed` for each of the other three |
-| **C1.** The log is not made sure of on the disk at each exchange (`PhoneShared.keep`) | `StaleBaseTest.playsThePhoneCouldNotWriteDownAreNotCountedAsTakenIn` |
-| **C1.** What came is kept after the record is written back, not before (`InStep.once`) | `InStepTest.nothingIsWrittenBackUntilWhatCameIsKept`, and the one above |
-| **C1.** A play already in the log is not given a source that arrives later; a write already under way counts as having written it (`PlayLog`): two changes | `StaleBaseTest.aPlayAlreadyHereIsGivenTheSourceThatArrivesLater`, for each |
-| **C2.** The whole log is read, not its last five hundred lines (`Sharing.plays`) | `PhoneSharedTest.onlyTheLatestFiveHundredPlaysAreShared` |
-| **C2.** The minute's timer runs whether or not the screens are in front (`AccountGraph`) | `InFrontTest.theMinutesTimerRunsOnlyWhileTheScreensAreInFront` |
-| **C3.** An order only the phone offers gives way to any sort that arrives, newer or not (`Sharing.taken`) | `PhoneSharedTest.anOrderOnlyThePhoneOffersStaysUnlessTheOneArrivingIsNewer` |
-| **C3.** What is taken in does not reach the lists the screens read (`Sharing.taken`) | `PhoneSharedTest.aSortArrivingFromAnotherDeviceIsTheOneAnOpenListReads`, and four more |
-| An exchange is made before Recently played and the log have been read (`PhoneShared.record`) | `PhoneSharedTest.nothingIsSharedBeforeItHasBeenReadFromThePhoneForThisAccount` |
-| A comment that can't be read is taken for "nothing shared yet", as Windows takes it (`KotlinSettler`) | `InStepTest.aCommentThatIsNotARecordIsLeftAloneAndSaidInDiagnostics` |
-| A later layout is merged and written like any other (`KotlinSettler`) | `InStepTest.aRecordInALaterLayoutIsReadAndNeverWritten` |
-| A sort, or a list, that the phone alone has waits to be shared, and is (`Changes`, `Sharing.prefs`) | `PhoneSharedTest.aSortOrAListThePhoneAloneHasIsNotShared`, and two more |
-| A theme Windows has no name for is taken in (`Sharing.taken`) | `PhoneSharedTest.aThemeThePhoneDoesNotHaveIsLeftForTheDevicesThatDo` |
-| What the phone notices in a playlist is dated now, as Windows dates it (`Added.sawCopy`) | `SharedStoresTest.whatThePhoneOnlyNoticesInAPlaylistIsNeverPutOnRecord`, `whatThePersonChangesHereIsDatedNow` |
-| The choices in the settings are anyone's, whoever is signed in (`Belongs.ready`) | `PhoneSharedTest.nothingChosenUnderOneAccountIsSharedIntoAnothersRecord`, `nothingIsSharedBeforeItHasBeenReadFromThePhoneForThisAccount` |
-| Two exchanges for one account may run at once (`InStep.turnOf`) | `InStepTest.aSecondExchangeWaitsForNothingAndAnotherFollowsTheFirst` |
-| Whether to write is asked of this device's own record, not the server's (`KotlinSettler`) | `InStepTest.fieldsThisVersionDoesNotKnowAreWrittenBackAsTheyWere`, `aChangeMadeHereDuringAnExchangeIsNeitherLostNorSentStale`, and sixteen more |
-| The record is written without asking again whether sharing is still on (`InStep.once`) | `InStepTest.thePlaylistIsMadeOnlyWhenTheServerSaysThereIsNoneAndSharingIsOn` |
-| The sync playlist is listed with the rest (`Library.playlists`) | `SharedStoresTest.theSyncPlaylistIsNeverListedAndCannotBeOpened` |
-| Text is compared as Kotlin compares it, by UTF-16 units (`SharedText.bytewise`) | `InStepCasesTest.textComparesByBytesAsRustDoes`, `twoRecordsMergeAsWindowsMergesThem`, `historyAndPlaysMergeAsWindowsMergesThem` |
-| A number with a leading nought is read as one (`SharedText`) | `InStepCasesTest.aTextIsReadAsWindowsReadsItOrNotAtAll` |
+| What the phone holds is taken before the server is asked, not once its answers are in hand (`InStep.once`, steps 1 to 3) | `InStepContractTest.aChangeMadeWhileTheServerIsBeingAskedIsInWhatIsDecided`, `aChangeTakenBackWhileTheServerIsBeingAskedIsNeverSent` |
+| The plays that came are not put on the disk before anything is taken in (step 5) | `nothingIsTakenInOrWrittenUntilThePlaysThatCameAreOnTheDisk`, `whatIsTakenInIsOnTheDiskWhenTheExchangeIsDone`, `aFreshPhoneLeavesThePCsRecordExactlyAsItIs` |
+| An exchange goes on although what it took in could not be kept (step 6, `PhoneShared.take`) | `ifWhatCameCannotBeKeptTheExchangeHasFailedAndNothingIsWritten` |
+| A change to the settings shows before it is on the disk (`SettingsStore.commit`) | `aCheckedWriteOfTheSettingsIsOnTheDiskBeforeItShowsOrIsNotMade`, and the one above |
+| The record as found is not kept before the first write (step 7.1) | `theRecordAsFoundIsKeptBeforeTheFirstWriteAndNeverWrittenAgain`, `anEmptyRecordIsKeptAsAnEmptyFile`, `ifTheCopyCannotBeKeptNothingIsSent`, `aPhoneFromTheBuildBeforeTheSharedCoreKeepsWhatItHadAgreedAndWhatWasWaiting` |
+| The kept copy is written over if it is there (`PhoneShared.keepFirst`) | `theRecordAsFoundIsKeptBeforeTheFirstWriteAndNeverWrittenAgain`, `anEmptyRecordIsKeptAsAnEmptyFile` |
+| The write is sent without asking again whether this is still the account, with sharing on (step 7.3) | `eachRequestThatChangesTheServerIsAskedAboutFirst` |
+| An exchange that is let go drops its write half-way (steps 7.3 and 7.4 no longer run to their answer) | `anExchangeLetGoIsStillOnItsWayUntilItsWriteHasAnswered` |
+| An order only the phone offers is not kept apart from the list's shared choices (`Chosen.show`) | `anOrderOnlyThePhoneOffersIsNotDisplacedByAShuffleAloneButIsByALaterSort` |
+| The last 500 lines of the log are offered, not every play that could be among the newest 500 (`PhoneShared.newest`) | `everyPlayThatCouldBeAmongTheNewestIsOfferedHoweverTheLogIsOrdered` (it passed with this change at first: the test's plays went into the log in one go, which orders them; they now go in as they would arrive) |
+| A queue taken up unasked is put in whatever was done to the queue since it was decided on (`QueueHere.replace`: the queue's own time) | `ContinueHereTest.aChangeToTheQueueOnAScreenTakesItsPlaceAndIsNotReplacedByAQueueOnItsWay` |
+| The same, by the order of choices: it acts for the newest place at the moment it is put in, not at the moment it was decided on | the same test (with only the early look at the order taken out, nothing fails: the place it acts for is looked at again as it goes in, and that is the rule) |
+| A date arriving does not move `Added.version` on | `AddedTest.aListSortedByDateAddedIsArrangedAgainWhenADateArrivesAndNoOtherListIs` |
+| Any failure to read the log of plays is "no log yet" (`PlayLog.readLog`) | `PlayLogTest.aLogThatCouldNotBeReadIsNeverTakenForALogThatIsNotThere`, `whatIsThereAndIsNotAFileIsLeftAsItIs` |
 
-Each batch of these was run in a scratch copy, never in the shared checkout. (Three changes
-first tried made no test fail. Two were bad changes, not weak tests: writing this device's own
-record in place of the merge still converges, because each device holds the merge by then;
-and a number "with a fraction let through" was still refused two lines on. The third was a
-weak test: reading the whole log gave the same five hundred plays, so nothing failed; the
-test's log now has its latest time on its first line.) **Every test of `sync/` has a time
-limit**: one of these changes made a test wait for ever, and the run held the machine's one
-turn at building for 52 minutes before it was noticed. (`ContinueHereTest` has none from
-JUnit, which would run it off the main thread the service must be made on: each of its waits
-has a limit of its own.)
+Not shown by taking code out, and said so: that the queue page's own taps take their place
+(`PlayerConnection.move`, `remove`, `clear` each begin with `Choices.take()`): the screens
+have no player to connect to in a unit test, so `ContinueHereTest` takes the place itself
+where the tap would. (On the release build on the emulator a row was moved and the queue
+cleared from the queue page, and both did what they did before.) That an open list page is drawn again when
+`Added.version` moves is two lines of Compose (`SongListPage.rememberShown`), with a test
+of the key it depends on (`AddedTest`) and none of the page.
 
-**The page itself has no test of its own for C3**: that a list page reads its order from the
-settings each time it is drawn is two lines of Compose (`SongListPage`, `SongsPage`), seen on
-the emulator; the tests are of what the settings then hold.
+Also in those tests: a fresh phone's first exchange leaves a PC's record exactly as it is
+and writes no kept copy; an exchange before the phone has read its own stores asks nothing
+of them and sends nothing; the account or the setting going while the server is being asked
+drops what comes back; a second exchange asked for meanwhile waits for nothing and another
+follows the first; a clock five minutes out takes in and shares nothing; what the core
+stops at is left as it is and said in Diagnostics; a phone with nothing to say makes no
+record and fills no empty one; what only the phone has (a list or a theme Windows doesn't)
+is not shared; nothing chosen under one account is in another's record; a phone from the
+build before the shared core keeps what it had agreed and what was waiting; 0.3.0's files
+(`UpgradeTest`) give a PC's record nothing to write; every test of `sync/` has a time limit.
 
-Also in those tests, not by taking code out: a fresh phone's record against a PC's gives
-nothing to write, and what it then holds gives nothing to write either; a write that reached
-the server and got no answer is not made again and the record ends the same; a change made
-here while an exchange is out stays on the screen, and goes with the next; a change is
-forgotten only once it has been written; changes made with sharing off are made to the
-server's value when it is switched on; two devices' exchanges crossed in every order of their
-reads and writes (six orders, each step held at a gate) hold the merge after one more look
-each; fields the phone doesn't know are written back as they were; nothing chosen under one
-account is in another's record, and signing back in finds one's own.
-
-**3. With the Windows code, through a real server** (`scripts/instep-check`,
+**3. With PCs on the Windows app's code, through a real server** (`scripts/instep-check`,
 `InStepLiveTest`). The script starts a server of its own (`scripts/server --instance step`,
-port 4536, wiped first), builds `tools/instep` and runs the tests with both: on one side the
-phone's real client, exchange and stores (everything below its screens and its player), on
-the other the Windows app's own `exchange`, `find_or_create` and API client, taking turns.
-Each test begins with no sync playlist on the server. Run 25 November 2026 on the code as it
-stands after the fixes (Navidrome 0.64.2), all of it held:
+port 4536, wiped first), lays out the Windows commit the phone's library is pinned to
+(0.40.5) and builds `tools/instep` from it, and runs the tests with both: on one side the
+phone's real client, exchange, stores and library (everything below its screens and its
+player), on the other `instep pc`, which is the Windows app's own asking of the server and
+that library's exchange, with what each PC holds kept in a file and what the person does on
+it given as options. Each test begins with no sync playlist on the server. Run 25 November
+2026 (Navidrome 0.64.2), all of it held:
 
-1. Sharing off on the phone: nothing read, made or written (no sync playlist appears).
-2. The PC exchanges first: pins, a theme, a list's choices, a date added, history, plays.
-3. **A phone freshly installed exchanges: the comment is the 715 characters the Windows code
-   wrote, exactly**; the phone has the pins, the theme, the list's sort, the history with
-   its songs looked up, the plays and their source in its log; a second exchange writes
-   nothing.
-4. The phone unpins: the PC's next exchange has it unpinned and writes nothing. The PC pins:
-   the phone shows it.
-5. A play made on each is in the other once (and after two more rounds, still once); the
-   phone has nothing to add to what the PC holds.
-6. **A second fresh phone, against that fuller record: unchanged, byte for byte.**
-7. A comment that isn't a record: the phone leaves it exactly as it is (the Windows code,
-   next, writes over it).
-8. A record in layout 2: read by the phone (its pins taken), not written.
-9. The second account: with nothing to say it makes no playlist; a pin made under it goes
-   into a record of its own; the first's is unchanged; each sees one sync playlist.
-10. Two sync playlists: the phone uses the one the Windows code uses, the lowest id, a phone
-    that had been exchanging with the higher one included.
-11. The queue: saved by the Windows code, it is taken up, paused, at the PC's song and place
-    by a phone that isn't playing, and offered to one that is ("Continue here" then plays
-    it). **A phone whose queue last changed before the PC saved its own asks the server
-    first and does not save over it** (B1). The phone's own, played on since, is saved and
-    read back by the Windows code under the phone's name, and is neither taken up nor
-    offered to the phone itself.
-12. **A1, end to end.** The PC has two playlists pinned on the server. A phone's first read
-    is held; a third is pinned on it (all it can show is that one); its process is killed
-    and started again over the same files. After its exchange and the PC's, **the PC holds
-    all three, and so does the phone.**
-13. **A2: a phone upgraded from the build before** (the files kept in
-    `app/src/test/resources/instep-upgrade`, real ids put in: a pin, a theme and two lists'
-    choices with that build's times on them, all later than the PC's, and a note dating a
-    song to the moment that build looked). Two exchanges: **the record is the 382 characters
-    the Windows code wrote, exactly; the PC's next exchange writes nothing** and holds what
-    it held. The phone has the PC's pins, theme and sort, its own sort where the PC said
-    nothing, and the PC's date for the song.
-14. **A3: a server that leaves out a playlist's owner and comment** (the real server's
-    answers with those two fields taken out on the way, as Navidrome sends them to a client
-    it is told to say little to). A phone with nothing of its own, and one with a pin:
-    "not stated", nothing read into the phone, **the record unchanged byte for byte, no
-    second playlist made**, one line in Diagnostics. The server saying both again, the pin
-    goes on top of the PC's two. And the real server itself, asked for a sync playlist just
-    made: **it states the owner and leaves the empty comment out** (the test fails if a
-    later Navidrome doesn't, which would mean the rule can be the simpler one); a phone
-    with nothing to say leaves it empty, one with a pin fills it, in place.
-15. **A5: a phone whose clock is an hour ahead, then an hour behind**, by the `Date` on the
-    real server's own answers, with a pin waiting: "clock wrong" at each exchange, said once
-    in Diagnostics, the PC's pins taken in and shown with the waiting pin on top, **the
-    record unchanged byte for byte**. The clock right: the pin goes, on top of the PC's.
+1. A PC writes a record full of its own: two pins, a theme, a list's sort and another's
+   shuffle, a song's date, two plays and where one was played from. A second PC has nothing
+   to add. **A phone that has never kept in step exchanges, twice: the comment is the 717
+   characters the PC wrote, byte for byte**, and the phone has kept no copy (it wrote
+   nothing); it shows the PC's pins, theme, sort, shuffle, date and plays.
+2. A pin and a play on the phone: the kept copy is then the record as the phone first found
+   it; the first PC has the pin and three plays and writes nothing. The second PC unpins one
+   of the first's: the phone and the first PC show it unpinned, and the first PC's theme,
+   sort, shuffle and date are as it wrote them.
+3. Everyone looks again: nobody writes, and the record is byte for byte the same; one sync
+   playlist.
+4. **A pin made while the phone's first read is on its way**, and the process killed: the
+   phone, started again over the same files, shows its pin; after its exchange the PC holds
+   its two with the phone's third, and so does the phone.
+5. **A phone with 0.4.0's files**, as that build wrote them (its mark, the account they were
+   taken on for, nothing agreed, a pin, a shuffle and a theme waiting): after one exchange
+   the PC's pin and sort stand, the phone's three changes are on top, and the kept copy is
+   the record as it was.
+6. **The reviewer's case**: the phone pins; the server takes the write; the answer never
+   reaches the phone and its process is killed. The PC sees the pin and unpins it. The
+   phone, started again, makes the pin again on top of the unpin: known, accepted and
+   written down (docs/DESIGN.md, "Known, and accepted"). What the test holds is that this
+   is all that happens: the one pin, the PC's theme untouched, nothing left as tried.
+7. A server whose answers leave out a playlist's owner and comment (the real server's, with
+   the two fields taken out on the way): "not stated" for a phone with nothing of its own
+   and for one with a pin, nothing read in, **the record unchanged byte for byte, no second
+   playlist**, one line in Diagnostics; the server saying both again, the pin goes on top
+   of the PC's. And a sync playlist just made, its comment empty: Navidrome states the owner
+   and leaves the empty comment out (the test fails if a later Navidrome doesn't); a phone
+   with nothing to say leaves it empty, one with a pin fills it in place, and its kept copy
+   is an empty file.
+8. A phone whose clock is an hour ahead, then an hour behind, with a pin waiting: "clock
+   wrong" at each exchange, said once, the PC's pins taken in with the waiting pin shown on
+   top, the record unchanged byte for byte. The clock right: the pin goes on top.
 
-**On the emulator** (Android 12, `phone31`, the oldest version supported; the release build;
-the check's own server; the Windows code as the PC through `tools/instep`), 25 November 2026,
-for what only a screen shows:
+`scripts/instep-check --mixed` (a household with a PC still on 0.40.4) is as it was.
 
-- Signed in with the PC's record already there (two playlists pinned, Ocean, one playlist
-  sorted by title): **the comment unchanged byte for byte after the app's own first
-  exchange**; both playlists pinned at the top of Library's; that playlist's page in title
-  order; the app in Ocean.
-- **A list that is open shows the sort it now has (C3).** With that playlist's page open, the
-  PC changes its sort to Duration, longest first. The app brought back to the front: the open
-  page is in that order (0:40, 0:36, 0:35) and its sort button says "Duration".
-- **The name is reserved (A6).** "Rename" on a playlist, to "Nexus Music sync": "Nexus Music
-  keeps that name for itself, for keeping your devices in step. Choose another."; the
-  playlist keeps its name on the phone and on the server.
-- **A clock that is wrong (A5).** The emulator's clock set an hour ahead: Settings, Account,
-  under "Keep my devices in step", ends "This phone's clock is wrong, so its changes aren't
-  being shared." A playlist pinned on the phone then shows as pinned, and six seconds later
-  the comment on the server is unchanged, byte for byte. Meanwhile the PC pins a third. The
-  clock put right: the phone and the PC both hold the PC's three with the phone's after them.
-  **Found doing this, and fixed:** after the clock went back, bringing the app to the front
-  did not look at the server until the minute's timer came round ("not within ten seconds of
-  the last look", and the last look was an hour in the future). On the rebuilt app the
-  sentence is gone, and a change the PC made meanwhile is on the screen, six seconds after
-  the app comes to the front.
-- **"Continue here" (B2, B1).** With the phone playing a playlist, the PC saves a queue of
-  three songs, at the second, ten seconds in. Back at the front the queue sheet shows "Playing
-  on another device", the song, "Continue here"; tapped, that song plays from where the PC had
-  it with the PC's next after it, and the card goes; the saved queue on the server is then the
-  phone's own (`NexusMusic-<its id>`), beginning with the PC's three songs. The PC saves
-  another and it is offered; **"Keep my devices in step" switched off: the card is gone, and
-  does not come back** when the app next comes to the front.
+**4. On the emulator, forced on** (Android 16, `phone36`; the debug build, told
+`DebugControl --es instep on`; the check's own server; the PCs through `tools/instep pc`
+from the pinned commit), 25 November 2026. The evidence is in
+`shots/a1-phone-adopts-core/` in the cache (`INDEX.md`).
 
-Not tried on the emulator, because a hand can't be that quick: a pause in the moment between
-the tap on "Continue here" and its queue being ready (`ContinueHereTest` holds the two
-apart).
+- **The first exchange.** A PC's record on the server (718 bytes: two pins, Ocean, a sort, a
+  shuffle, a date, two plays). The app installed fresh and signed in: after its own first
+  exchange, and a second, **the comment is those 718 bytes**, and no copy of it kept on the
+  phone (it wrote nothing); Library shows the two playlists pinned and Recently played with the PC's
+  two songs, in Ocean.
+- **A pin, there and back.** "Pin to top" in a playlist's menu: the PC has it at its next
+  exchange and writes nothing; the kept copy on the phone
+  (`files/accounts/<key>/shared-record-kept-<version>.json`) is the 718 bytes. The second PC
+  unpins one: the app brought to the front shows it unpinned. Everyone looks again: nobody
+  writes.
+- **The library made to panic** (`--es core panic`): "CoreException: The shared library
+  stopped: a panic the test rig asked for; and then the library answered "still here""; the
+  log has the panic with its place in `src/lib.rs` (tag `nexus-core`); the same process, and
+  an exchange straight after ends DONE.
+- **The lost answer** (`--es killat step-sent`, then a pin): the process dies with the
+  server holding the pin, and the phone's settings holding it as tried. The PC sees it and
+  unpins it. The app started again: the pin is made again on top, nothing else changed,
+  nothing left waiting, and a further exchange writes nothing. As accepted.
+- **The upgrade from 0.4.0.** A debug build of 0.4.0's commit installed and signed in; a
+  playlist pinned and Rose chosen on it (its settings then hold both as waiting, mark 1).
+  A PC writes its record (293 bytes: a pin, Ember, a sort). This build installed over it and
+  started: the pins are the PC's with the phone's after it, the theme the phone's, the PC's
+  sort as it was; the kept copy is the 293 bytes; mark 2, nothing waiting; a further
+  exchange writes nothing. **Note what this means for a real phone**: the theme chosen on
+  0.4.0, before the PC chose its own, is the one every device ends with (docs/DESIGN.md,
+  "What an earlier build left").
+- **The queue.** Saved by the PC (three songs, the second, ten seconds in): the app brought
+  to the front takes it up, paused, at that song and place (not within ten seconds of its
+  last look, when it does not look). With the phone playing Liked songs and the PC saving
+  another: not taken up; the queue sheet shows "Playing on another device", the song,
+  "Continue here"; tapped, the PC's song plays from 20.00 s and its next follows, and the
+  server's saved queue is then the phone's own.
+- No crash or "not responding" report in the run.
 
-**The whole app, after it** (25 November 2026; on what was committed then, exported away
-from the shared checkout, where two other engineers were at work). `scripts/check
---release`: the debug build, 1,045 unit tests (none failed; five passed over, those of
-`InStepLiveTest`, which want their server), lint and the release build, 6,886,870 bytes. The
-whole unit-test suite three times from nothing (`--no-build-cache --rerun-tasks`): 1,045 and
-none failed, each time. Two earlier runs that day, for the record: one failed lint on a file
-of another milestone's (`jam/Wire.kt`, since put right there); and in one run of the suite
-out of nine `LikesTest.aLikeMadeOnAnotherDeviceShowsEverywhereAfterARefresh` ran out of its
-five seconds (not a test of this work; it passed the other eight). The car check
-(`scripts/carcheck`) was not run again for the fixes: the car's own tests are in the suite.
+**The whole app, after it** (25 November 2026; the tree as it stands at the end of this
+work, **with the feature off**; the reports are in `reports/a1/` in the cache).
 
-**What none of this shows**, and only real PCs can: two real PCs and the phone over days
-(clocks that drift within the five minutes allowed, a PC asleep for a week, the record at its
-limits in a real library); **a PC on 0.40.2 doing to the record what the phone no longer
-does** (an offline PC's pin replacing every device's pins; a PC that looks at a playlist late
-putting today on its songs: the Windows code is unchanged, and the newer value still wins);
-that the Windows app's *screens* take what the phone wrote as they take another PC's (the
-tool is its exchange and its reading, not its window); "Continue here" on a real PC from a
-queue the phone saved, and the reverse with real music, and a real PC saving its queue
-between the phone's look and its save; a Navidrome really set to say little to this client
-(the check takes the two fields out of a full answer; the setting may leave out more); a
-Navidrome behind a proxy that limits the size of a request (the record goes as a form of up
-to some tens of KB); the record after an older Windows version (before 0.40, which drops the
-plays) has written it.
+- The whole unit suite three times from nothing (`--no-build-cache --rerun-tasks`): 1,046
+  tests and none failed, each time (115, 131 and 119 s); seven passed over (the six of
+  `InStepLiveTest`, which want their server, and one of `OrderOfChoicesTest`).
+- `scripts/check --release`: the debug build, the unit tests, lint and the release build,
+  all passed.
+- The car check on that release build (Android 16, `scripts/carcheck org.medianexus.music
+  --nexus`): online, 48 passed, none failed, one warning (the empty playlist); with the
+  server stopped, `--mode offline`, 24 passed, none failed, the same warning. 0.4.0's own
+  APK, checked in the same session against the same server: 48, none and one, **item for
+  item the same**. (0.4.0's release was recorded as 51 and 24, against a server with more
+  in it.)
+- `scripts/measure`, beside 0.4.0's own APK on the same emulator and server, each installed
+  afresh, signed in, Liked songs downloaded and played once. The machine was shared with
+  another engineer's builds for part of it, so each run has the machine's load beside it:
+
+  | | 0.4.0 (082dfdb) | This build |
+  |---|---|---|
+  | APK | 6,693,594 bytes | 8,122,683 bytes (+1,429,089) |
+  | Installed code | 6.6 MB | 8.0 MB |
+  | Cold start, quiet machine (median of five; fastest to slowest) | 748 ms (690 to 859); 803 ms (739 to 884) | 790 ms (751 to 934); 784 ms (748 to 970) |
+  | Cold start, machine busy (load 7) | 1,296 ms | 1,335 ms |
+  | Idle, ten seconds after opening | 69.7 to 77.3 MB over six runs | 68.8 to 73.7 MB over four |
+  | Playing, ten seconds in | 83.5 to 90.4 MB | 84.5 to 88.4 MB |
+
+  **Nothing but the size has moved by more than one run of a build differs from the next.**
+  The size is the two libraries, which the APK holds uncompressed as it holds everything:
+  659,400 bytes for arm64 and 751,256 for x86_64 (the emulators' kind; a phone uses the
+  first only), and 38,828 bytes more of compiled Kotlin (the door and its types, less the
+  rules that went); less two small libraries of AndroidX's for kinds of processor the app
+  is no longer built for.
+
+**What none of this shows**, and only a real phone and real PCs can: the library on an
+arm64 phone at all (the emulator is x86_64; the arm64 library is built by the same step and
+checked to be in the APK, and has never been loaded); two real PCs and the phone over days
+(clocks that drift within the five minutes allowed, a PC asleep for a week, the record at
+its limits in a real library); that the Windows app's *screens* take what the phone wrote
+as they take another PC's (the tool is its exchange and its asking, not its window);
+"Continue here" on a real PC from a queue the phone saved, and a real PC saving its queue
+between the phone's look and its save; what the person's own phone does at its first
+exchange with the changes it has had waiting since 0.4.0 (above); a Navidrome really set to
+say little to this client; a Navidrome behind a proxy that limits the size of a request;
+the cost of a call into the library on a real phone's main thread while a list is drawn
+(`Added.dates` asks the core for a playlist's dates as a list sorted by date added is
+arranged: not measured, on the emulator or on a phone).
 
 ## Jams and linked devices (M6): what was checked
 

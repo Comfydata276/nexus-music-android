@@ -1759,6 +1759,20 @@ release for an update of themselves. A commit is all the phone ever names.
 builds against `../nexus-music/core` as it lies (read-only; the pinned commit and the lock
 file are left alone). A release build refuses to be made that way.
 
+### What it costs
+
+- **The build image**: 1.35 GB before, 2.96 GB with Rust and its standard library for the
+  two Android targets (`docker images`). The NDK is not in the image: 2.4 GB beside the
+  SDK in the cache folder, fetched once.
+- **The build**: the library for all three targets takes 15 seconds from nothing (with the
+  crates already fetched) and 4 when nothing of it has changed, before Gradle's own work.
+- **The APK**: 659,400 bytes for the arm64 library and 751,256 for the x86_64, held
+  uncompressed like the rest of it: the release APK went from 6,693,594 bytes (0.4.0) to
+  8,122,683. A phone uses the arm64 one. The x86_64 one is there so that the build that
+  ships is the build the emulators check; an APK for phones alone would be 751 KB smaller.
+- **At run time**: nothing that shows in cold start or in memory beside 0.4.0
+  (docs/TESTING.md, "In step with other devices").
+
 ### Which devices
 
 arm64 phones, and the x86_64 emulators the test rig runs. **32-bit ARM is not supported**:
@@ -2580,382 +2594,302 @@ Known, and accepted (the M5b fixes):
   repeat's sake, which follows Recently played): not worth splitting the mixes by what each
   depends on.
 
-How it is built (M5a, in step with the person's other devices):
+How it is built (M5a, in step with the person's other devices; its rules the shared core's
+since the phone took the core on):
 
 Everything the phone had written to the server before this was the phone's own. This writes
 into a record the Windows app on the person's PCs reads and trusts, where the newer value wins
 on every device: a phone that puts "now" on something the person did not change overwrites
-the real thing everywhere, and the PCs cannot defend themselves. So the rules below come
-before any feature, and each has a test that fails with the rule's code taken out
-(docs/TESTING.md, "In step with other devices"). They are as they stand after an adversarial
-review against the Windows code (the M5a fixes); the letter after a rule is its item there.
+the real thing everywhere, and the PCs cannot defend themselves.
 
-**Switched off in this build** (`sync/InStepBuild.kt`, one constant, `EXISTS = false`). Two
-reviews judged it not yet safe to let write into the record the person's PCs trust, and its
-rules are to be rewritten once, in Rust shared with the Windows app, which will replace the
-Kotlin logic here. Until then nothing of it runs on a phone. With it off the setting is not
-shown; the account has no exchange and no shared queue (`AccountGraph.step` and `queueStep`
-are null), so nothing starts one, schedules one or asks the server anything for one: the sync
-playlist is never looked for, read, made or written, and the server's saved queue is neither
-saved nor read; "Continue here" is never offered. What stays on, because it protects the
-person whether or not the feature exists: the sync playlist is never listed, played,
-downloaded or edited on the phone, and its name is reserved. The pins, each list's choices
-and the theme are plain local settings: what the phone shows is the settings' own, at once,
-and kept across a restart. Their changes waiting to be shared are never shared, and so never
-forgotten, but they do not grow without end: one for each playlist ever pinned or unpinned,
-one each for a list's shuffle and its sort (lists Windows also has), and one for the theme,
-the last word on each. When the feature is switched on they are what goes out at the first
-exchange. `SwitchedOffTest` holds all of this; the feature's own tests switch it on for
-themselves (`InStepBuild.forTests`), so its code goes on being tested.
+**The rules are not the phone's.** They were first written here in Kotlin, as a port of the
+Windows app's, and held to it case by case. Two reviews found that not safe enough, and the
+rules were then written once, in the Windows repository's `core/` (`step.rs`, `record.rs`,
+`notes.rs`, `handover.rs`, `time.rs`, `sync.rs`), which both apps now run: the same compiled
+code, at the commit `native/Cargo.toml` names ("The shared core", above). The Kotlin copies
+are gone (`Settle.kt`, `Merge.kt`, `Changes.kt`, `Shared.kt`). **This document no longer says
+what the rules are**: how two records are put together, what a change does to what the
+server has, what is read as a record and what is left alone, which playlist holds it, when
+nothing may be written. They are said, with their tests, at the top of `core/src/step.rs`
+and `core/src/handover.rs`, and a second telling here would be a second place for them to
+be wrong. What follows is the phone's own side: what it keeps, what it asks, and the order
+things are taken, checked and saved in, which is the half of the contract a caller owes.
 
-- **What is shared, and where** (a port of the Windows app's src/sync.rs). The pins, each
-  list's shuffle and sort, the theme, when songs were added to playlists, Recently played and
-  the latest 500 plays live as text in the comment of one playlist, "Nexus Music sync"
-  (`sync/Shared.kt`: Windows' `Shared`, field for field). The play queue and the place in it go
+**Switched off in this build** (`sync/InStepBuild.kt`, one constant, `EXISTS = false`),
+until the phone's side has been reviewed as the Windows side was. With it off the setting is
+not shown; the account has no exchange and no shared queue (`AccountGraph.step` and
+`queueStep` are null), so nothing starts one, schedules one or asks the server anything for
+one: the sync playlist is never looked for, read, made or written, and the server's saved
+queue is neither saved nor read; "Continue here" is never offered. What stays on, because it
+protects the person whether or not the feature exists: the sync playlist is never listed,
+played, downloaded or edited on the phone, and its name is reserved. The pins, each list's
+choices and the theme are the phone's settings, shown at once and kept across a restart; a
+change to one is also handed to the core, which keeps it as the change (below), where it
+waits: one for each playlist ever pinned or unpinned, one each for a list's shuffle and its
+sort, one for the theme, the last word on each. When the feature is switched on they are
+what goes out at the first exchange. And the notes of when songs were added are kept by the
+core's rules either way: "Date added" does not depend on the switch. `SwitchedOffTest`
+holds all of this; the feature's own tests switch it on for themselves
+(`InStepBuild.forTests`), and a debug build can be told to by the test rig
+(`sync/DebugStep.kt`), so its code goes on being tested and can be run whole on an emulator.
+
+- **What is shared, and where.** The pins, each list's shuffle and sort, the theme, when
+  songs were added to playlists, Recently played and the latest 500 plays live as text in
+  the comment of one playlist, "Nexus Music sync". The play queue and the place in it go
   through the server's own saved queue. Both under one setting, "Keep my devices in step"
   (Settings, Account: where Windows has it, in Windows' words; on unless switched off). Off,
   the phone neither reads nor writes any of it, and makes no playlist.
-- **One function puts the two records together** (`sync/Settle.kt`: `Settler.settle(server
-  text, this phone's record as text, now)` gives the record to hold and whether to write it).
-  Nothing else in the app knows how it is done, so that it can be the Windows app's own Rust
-  compiled into the phone app if that is decided: one object to replace. Behind it now is a
-  Kotlin port (`sync/Merge.kt`), which is not trusted on its ported tests alone: `tools/instep`
-  compiles the Windows source itself (by path, read-only) and writes what `merge`,
-  `merge_history`, `merge_plays`, `merge_notes` and serde make of 93 texts and 51 pairs of
-  records, and the Kotlin is held to every one (`InStepCasesTest`); the same tool reads back
-  what the Kotlin wrote, and plays the PC in an end-to-end exchange.
-- **Read neither more kindly nor more strictly than Windows** (`SharedText`). A general JSON
-  reader differs from serde both ways: it takes `"12"` and `1e3` for a number, a field named
-  twice, half a pair of escapes; and it would refuse what serde reads (a record written as a
-  list of its fields in order). Either difference matters: a text the phone reads and
-  Windows can't is one Windows would overwrite; a text Windows reads and the phone can't is
-  one the phone would never exchange with again. So the reader is the app's own, written
-  against what serde does and held to the Rust-written cases. Text is compared by its bytes,
-  as Rust compares it (Kotlin compares UTF-16 units, which orders some characters
-  differently), and a list's choices in Windows' order of fields. In a `\u` escape only the
-  sixteen plain digits are digits, as serde has it (Java's own reading of a digit also takes
-  the full-width ones and those of other scripts).
-- **Written byte for byte as serde_json writes it**: the same field names and order, whole
-  numbers, pairs and triples as lists, only the quote, the backslash and control characters
-  escaped; a map's entries by key (Windows writes them in no particular order).
+- **What the phone keeps of it** (`store/Settings.kt`):
+  - `choices`: the core's own `Choices` (what was last agreed with the server, each item
+    with the record's time, and the changes still waiting, each under the account it was
+    made for), kept as the JSON the core handed back and handed to it again unread. Nothing
+    in the app looks inside.
+  - `pinnedPlaylists`, `lists`, `theme`: what the screens show: what the core says is shown
+    (`Core.shown`), and, where the record has said nothing yet (no pins and no time on them,
+    no entry for a list, no theme), whatever the phone has of its own (`sync/Chosen.kt`).
+  - `ownSorts`: an order only the phone offers, for a list the Windows app has too, kept
+    apart from that list's shared choices, so that a shuffle arriving for the list does not
+    displace it; a sort chosen on any device after it does. (None today: the phone offers
+    Windows' six. The place is there for the day it offers a seventh.)
+  - Beside the settings: the dated notes of when songs were added (`store/Added.kt`, by the
+    core's `notes` rules, a playlist at a time), Recently played (`store/RecentlyPlayed.kt`,
+    merged by `Core.history`), the log of plays (`store/PlayLog.kt`).
+- **What the phone may say** (`Chosen`). Only what the Windows app understands is handed to
+  the core as a change: a pin; a shuffle or a sort for a list under a key Windows has too
+  (`playlist:<id>`, `album:<id>`, `artist:<id>`, `genre:<name>`, `liked`, `songs`,
+  `downloads`, `mix:<id>`; not `downloads:…`, a song's `radio`, or a mix made to rules of
+  one's own, whose id is this device's alone), the sort one of Windows' six by number; a
+  theme by one of Windows' six names. Anything else shows on the phone and is the phone's
+  alone. A theme the phone doesn't have, arriving, is left for the devices that do.
+- **A change is on the disk before it counts as made.** Every screen that changes one of
+  these calls `Graph.choose` with what the person did (`Chosen.Did`: a pin, a shuffle, a
+  sort, a theme). The changes are made one at a time, in the order they were asked for, off
+  the main thread: the core is asked what the choices become (`Core.change`, under the
+  account the choices belong to), and the settings are written and made sure of
+  (`SettingsStore.commit`) **before** the change shows anywhere. If the write fails the
+  change does not show, and the app says its settings could not be saved (`saveFailed`). The places
+  that call it: "Pin to top" / "Unpin" in a playlist's menu; a theme swatch; the sort sheet;
+  a list page's shuffle button; the shuffle button pressed while the list plays (the app's,
+  the notification's, a car's); "Shuffle" at the top of a list in the car.
 
-**The rules that keep the PCs safe.**
+**The exchange, step by step** (`sync/InStep.kt`, `once`; the numbers are the contract's).
+One at a time for an account in the whole process (by the account's key: signing out and
+straight back in makes a second set of objects while the first may still be on its way). An
+exchange that has been let go (the account signed out, sharing switched off) is still in
+flight until its requests have answered, and the next waits for it: the two requests that
+change the server run to their answer whatever has become of whoever asked.
 
-1. **A change made on this phone is kept as the change, and becomes a value with a time on
-   it only at an exchange, on top of what the server has then** (A1). Between devices each
-   item (the pins, the theme, one list's choices) is a whole value and a time, and the newer
-   wins everywhere. A phone that has not read what the PCs have (new, offline, its first read
-   still on its way, sharing just switched on) holds none of it: if pinning one playlist
-   there made "the pins" the list of that one, stamped now, every PC's pins would become that
-   one; and a shuffle tapped before a list's choices had arrived would go out with a sort of
-   nothing under one time, and the PC's sort for that list would be gone. So the settings
-   hold three things (`store/Settings.kt`):
+1. **Ask.** The list of playlists; `Core.find` says which holds the record (or that the
+   server did not say whose they are, which stops here with a line in Diagnostics); that
+   playlist. **Nothing of the phone's state has been taken yet.**
+2. **With both answers in hand**: still this account, the setting still on (`may`). The
+   clock is read from the answers (the `Date` header and the moment each arrived).
+3. **Decide.** `StepPhone.device()`: what the phone holds *now*: the core's choices, the
+   account (below), the dated notes, Recently played, the plays at least as new as the
+   500th newest in the log (`PhoneShared.newest`). Null while any of it has not been read
+   from the phone for this account: then there is no exchange. `Core.settle` gives a stop
+   with its words, or a plan.
+4. **A stop** is said in Diagnostics, in the core's words, and nothing else happens.
+5. **Keep.** The plan's plays go into the log **on the disk**, with every play the phone
+   has counted and not yet written (`PhoneShared.keep`, `PlayLog`). If the disk won't take
+   them the exchange has failed: nothing is taken in, nothing written, Diagnostics says so.
+6. **Take in** (`PhoneShared.take`). The choices (`Core.take`) are written and made sure of
+   before they show; the notes; Recently played, which is the core's merge of what the
+   phone has at that moment with what the plan brought. Each must reach the disk: one that
+   does not fails the exchange before anything is sent. What the plan says is held (the
+   clock wrong, a later layout, more in the record than this version knows, too large) is
+   said in Diagnostics, and the clock under the setting: "This phone's clock is wrong, so
+   its changes aren't being shared."
+7. **Write**, if the plan has one.
+   1. The record's text as it was found is kept, once for the account and the version of
+      the app: `shared-record-kept-<version>.json` in the account's own data, made only if
+      it is not there (`CREATE_NEW`), flushed, never opened for writing again. If it can't
+      be made nothing is sent.
+   2. `Core.sending`: whether the plan still fits the choices (a change it carries may
+      have been taken back meanwhile; then nothing is sent and the exchange starts again),
+      and the choices, with the changes marked as tried, written and made sure of.
+   3. Still this account and the setting on, asked immediately before each request: the
+      playlist is made if there is none, then the text is written, with the account's own
+      client.
+   4. Only when the server has answered: `Core.written`, saved. With no answer the changes
+      stay as tried and the next exchange makes them again.
 
-   - `agreed`: the pins, theme and lists as last agreed with the server, with the record's own
-     times. This, and nothing else, is what the phone offers of them to the merge
-     (`Sharing.choices`).
-   - `waiting`: what the person changed here and has not yet been shared, as the change:
-     "pin this", "unpin that", "shuffle on (or off) for this list", "this sort for this
-     list", "this theme" (`sync/Changes.kt`). The last word on one thing is the one that
-     waits. They are saved with the settings: through the process being killed, being
-     offline, and the setting being off.
-   - `pinnedPlaylists`, `lists`, `theme`: what the screens show: what is agreed with the
-     waiting changes on top (and the phone's own where nothing is agreed).
-
-   At an exchange the server's record is merged with what was agreed, and then the waiting
-   changes are made to the result (`Changes.onto`): the playlist is added to the pins the
-   server has; the shuffle is set on the list's choices as the server has them, its sort left
-   alone. Only an item a change really altered is given a time: the later of now and one
-   second after the time it had, so it is the newer on every device whatever clock put the
-   earlier time on. A change that makes no difference to what is there (pinning what is
-   pinned) alters nothing and puts a time on nothing. Once the record is written, and only
-   then, the changes that went into it are forgotten (`PhoneShared.take`); one made again
-   meanwhile still waits, and goes with the next.
-
-   Every place a time is put on something shared, and what reaches it:
-
-   | What | Where the time is put on | Reached only by |
-   |---|---|---|
-   | the pins, the theme, a list's shuffle and sort | `Changes.onto`, at an exchange, on the server's value: the one place | a change that is waiting. `Changes.pin`: "Pin to top" / "Unpin" in a playlist's menu (`Menus.togglePin`). `Changes.theme`: a theme swatch tapped (`SettingsPage`). `Changes.sort`: the sort sheet (`Ui.rememberSort`). `Changes.shuffle`: a list page's shuffle button (`Ui.toggleListShuffle`); the shuffle button pressed while the list plays (`PlaybackService.queueChanged`, by `QueuePlayer.shufflePresses`: the app's, the notification's, a car's); "Shuffle" at the top of a list in the car (`PlaybackService.rememberShuffle`, by `PlayList.shuffleChosen`) |
-   | when a song was added to a playlist | `Added.changed`, `Added.create`: now | the person adding to, removing from or making a playlist on this phone, once the server has taken it (`Playlists.send`) |
-   | Recently played; the plays | `RecentlyPlayed.played`; `PlayLog.add`: now | a song starting to play here; a play that counted here |
-   | the queue's own time | `PlaybackService.save` (`queueStamp`): now | the queue changed or played on here; never while one is put back, follows its list, or is taken from another device (`quietly`). The server puts its own clock on a saved queue; this time decides whether another device's is taken up, and whether this phone's is saved (below) |
-   | what an earlier build left | `Belongs.demoted`: Windows' "long ago" (1); `Added`, reading its file: no time at all | an upgrade (rule 2) |
-
-   One time is not shared: each list's `at` in `Settings.lists` is when its order was last
-   chosen on this phone, kept only to tell whether a sort that arrives is newer than an order
-   only the phone offers (below, "Taking in").
-
-   Three places used to put "now" on what had merely been found different, and were changed
-   when this was first built. **A list's shuffle** was stamped whenever the queue's shuffle
-   and the list's remembered choice disagreed, which is also the case when the choice was
-   changed on a PC, the queue was put back from the last run, or the app itself chose (a
-   spoken "play <artist>" is shuffled): the phone would have overwritten the PC's choice at
-   the next song. **When a song was added**: Windows dates what it notices in a playlist with
-   "now" and shares it (`observe`), so a device that looks late overwrites the day the song
-   really was added, on every device. The phone keeps what it notices for its own "Date
-   added" in a note with no time on it, which is never shared and gives way to any dated note
-   (`Added.sawCopy`); a dated note changes only by the person's own change here or by a newer
-   one from another device. **The saved queue's time** was "now" at every save, a restore
-   included.
-2. **What the phone held before it could keep in step carries no weight** (A2). The released
-   build before this (0.3.0) put times on things under no rule that survives: a playlist
-   looked at twice dated what it had noticed with the time of the look; the pins, the theme
-   and each list's choices were stamped; and the settings belonged to no account. The first
-   time this build reads them (`Settings.stepMark`, and a mark in `playlist-added.json` and
-   `in-step.json`):
-
-   - **Notes of when songs were added** all lose their time: which of them were the person's
-     own doing can't be told from the file, so every one becomes what the phone merely saw,
-     kept for its own "Date added" and never shared (a note that only said "it went" says
-     nothing then, and is dropped).
-   - **Settings that belong to no account** stay the phone's own: shown as they were, agreed
-     with nobody, in nobody's record. They are not given, with the times they carry, to
-     whichever account is opened first (chosen under one account, they would have reached
-     another's PCs as its newest choices). An account's own take their place on the screen
-     item by item, as its record has something to say: the pins when the record has pins (or
-     a time on them), a list when the record has that list, the theme when the record has one.
-   - **Choices already under an account's name** (only the first build to keep in step wrote
-     those, and it was never released) are offered as "long ago": they lose to anything
-     chosen since on any device.
-
-   Files as 0.3.0 wrote them are kept as a fixture (`app/src/test/resources/instep-upgrade`).
-3. **Nothing it has not loaded.** No exchange until the choices in the settings are this
-   account's own (`Belongs.ready`), and Recently played and the log of plays have been read
-   from the phone for it (`AccountGraph.historyRead`; the notes of when songs were added are
-   read as they are first asked for): `PhoneShared.record` gives nothing before, and the
-   exchange then asks the server nothing. Notes are passed on for every playlist unless the
-   list of playlists is known and not empty (an empty list is "not loaded", not "none exist").
-4. **What the server did not say is not "empty"** (A3). A playlist is the account's only if
-   the server says so: its owner stated, and the same (`InStep.isOurs`; Windows takes one with
-   no owner stated for its own). With none known to be the account's, one of that name whose
-   owner the server left out may be anybody's: nothing is made beside it, nothing written
-   into it and nothing read out of it, and Diagnostics says so. That is also what protects
-   the comment. Navidrome, told to say little to a client (`Subsonic.MinimalClients`), leaves
-   a playlist's owner and comment out together; read as "ours, and empty", the record would
-   look like one with nothing in it, and the phone's own would be written over everything
-   the PCs have. A comment left out of an answer that *does* state the owner is an empty
-   one: Navidrome leaves an empty comment out of every answer (seen on 0.64.2; the check
-   against a real server fails if that ever changes), so a comment's absence alone says
-   nothing, and a sync playlist just made and not yet written to could otherwise never be
-   filled. And a record is made on the server, or an empty comment filled, only when the
-   phone has something of the person's to put in it (`Shared.says`): a phone with nothing to
-   say writes nothing and makes no playlist.
-5. **Only what Windows understands.** What the phone has, against Windows' `ListPrefs` and
-   its neighbours, field by field:
-
-   | Windows' field | The phone has | Shared | Kept on the phone |
-   |---|---|---|---|
-   | `pins` (playlist ids, in order) | the same | as they are | — |
-   | `theme` (one of Violet, Green, Ember, Ocean, Rose, Graphite) | the same six, by the same names | the name, once it has been chosen under this account or has come from its record | the look the phone had before any account's record said anything; a name Windows doesn't have (none today) is never written, and one the phone doesn't have is not taken in |
-   | a list's key (Windows' route keys) | `playlist:<id>`, `album:<id>`, `artist:<id>`, `genre:<name>`, `liked`, `songs`, `downloads`, `mix:<id>` | under the same key | `downloads:album:<id>`, `downloads:playlist:<id>`, `downloads:liked` (a list as the downloads have it), `radio` (a song's radio; Windows' `radio` is its stations page), `mix:rule:<id>` (a mix of one's own: the id is this device's) |
-   | `shuffle` | the same | as it is | — |
-   | `sort` (0 Custom order, 1 Title, 2 Artist, 3 Album, 4 Duration, 5 Date added) | the same six, by the same numbers (`ListView`), on a playlist, Liked songs and the Songs page | 0 to 5 | anything else: a sort only the phone offers never waits to be shared, and the shared one is left as it was (none today: the guard is for an order added later) |
-   | `descending`, `sort_chosen` | the same | as they are | — |
-   | `at` | the record's own time for the item; for a change made here, the time it gets at the exchange (rule 1) | as it is | when the order was last chosen here (`Settings.lists`) |
-
-   A list's choices taken in from the record are kept whatever their key and number (as
-   Windows keeps them); only what this table allows is shared back.
-6. **The phone writes only if it can write back everything it read** (A4). A record in a
-   later layout is read and never written (as Windows). A comment that is not empty and is
-   not a record is left exactly as it is, with a line in Diagnostics, and nothing is
-   exchanged until it is one (Windows takes it for "nothing shared yet" and writes over it);
-   only the empty text is "nothing shared yet", so a comment of spaces is such a comment.
-   Fields this version doesn't know at the top of the record are written back, exactly as
-   they were written, after the ones it does (Windows drops them). A field it doesn't know
-   *inside* a list's choices or a note, where it has nowhere to keep it, makes the whole
-   record one to read and not write (`Shared.more`, `Settled.ReadOnly`), with a line in
-   Diagnostics: written back without it, a later version's addition would be gone from
-   every device.
-7. **Byte for byte**: see above, and `scripts/instep-check`.
-8. **Nothing is shared while the phone's clock disagrees with the server's** (A5). The times
-   on everything shared are compared between devices, so a phone whose clock is far ahead
-   would put on one change a time no later choice on a PC could beat, push rightly dated
-   plays out of the 500 shared, and (ninety days ahead) drop the notes that say a song was
-   removed. Each answer's `Date` is compared with the phone's clock at every exchange; more
-   than five minutes apart (`InStep.CLOCK_SLACK_SECONDS`), what the server has is taken in
-   and nothing is written: not the record, and not the queue (nor is the saved queue looked
-   at: whether another device's is the newer can't be told by a clock that is wrong). The
-   changes wait. One line in
-   Diagnostics when it begins, and under the setting, for as long as it lasts: "This phone's
-   clock is wrong, so its changes aren't being shared." A server that gives no date can't be
-   compared with and is taken to agree.
-9. **Two exchanges never cross.** One at a time for an account in the whole process
-   (`InStep.turnOf`, by the account's key: signing out and straight back in makes a second
-   set of objects while the first may still be writing); one asked for meanwhile does
-   nothing but ask for another when the first is back. What comes back is taken in against
-   what is here *then*: a change made while the exchange was out is still waiting, stays on
-   the screen, and goes with the next. When the account goes its work is cancelled; an answer
-   that comes back afterwards changes nothing (the settings are no longer that account's:
-   `PhoneShared.take`), and the choices themselves are put away with the account (below).
-10. **What comes back is kept before anything is reported as done** (C1). An exchange goes:
-    read; merge; the waiting changes on top; **keep** (`PhoneShared.keep`: the plays in the
-    record go into the phone's log, and the log is made sure of on the disk, everything it
-    holds in memory, at every exchange whether or not this one added any); write; **take**
-    (the settings, the dates, Recently played; the changes forgotten). If the log can't be
-    written the exchange has failed as a whole: nothing is written to the server on the
-    strength of plays the phone could not keep, Diagnostics says so, and they are asked for
-    again at the next. (Asked to write only when something was new, a failed write left the
-    plays in memory, the next exchange found them "already here", and they were never
-    written.) A play already in the log whose source arrives later is given that source,
-    without being counted again (`PlayLog.absorb`).
-11. **The playlist that holds the record** (A6) is the one with the lowest id (by bytes)
-    among those of that name that are the account's own, looked for afresh at every exchange.
-    Nothing is remembered between exchanges: a phone that went on using an id it knew, after
-    a lower one appeared (two devices that each made one, having found none), would never
-    meet the devices that use the lower one again. It is made only when the server has just
-    listed the playlists and there is none, sharing is on, the server may be asked, and the
-    phone has something to say (rule 4); with a request that is sent once. Its name is
-    reserved: making a playlist of that name, or renaming one to it, is refused with "Nexus
-    Music keeps that name for itself, for keeping your devices in step. Choose another."
-    (`Playlists.reserved`). It is nowhere among the playlists: `Library.playlists()`, which
-    everything that lists playlists reads (Library, the car, search, the picker, Your stats,
-    spoken requests), leaves it out of what the server sends and of a copy kept by a version
-    that didn't know of it; asked for by id it is "not found" (`Library.playlist`); the
-    downloads' own list leaves it out; and `Playlists.canEdit` is false for it.
-
-- **Whose the choices are** (`sync/Belongs.kt`). The pins, list choices and theme, with what
-  was agreed and what is waiting, are in the phone's settings, where every screen reads them,
-  and are shared into an account's record. So they belong to one account at a time
-  (`Settings.sharedFor`): when another is taken on, before anything of it exists, they are
-  put away with the account they belong to (`in-step.json` in its data) and its own brought
-  out. The theme stays the phone's look: an account that has none of its own takes the look
-  as it is, and has nothing to say about it to its other devices until one is chosen under
-  it or comes from its record. Windows keeps all of this in its one settings file and shares
-  it with whoever is signed in.
+- **The account, told from another by exactly what it is.** The core is given the account's
+  key (`Account.key`: a hash of the server's address and the user's name, exactly as
+  entered), never a shortened or tidied form of either: a change is only ever sent for the
+  account it was made under.
+- **Whose the choices are** (`sync/Belongs.kt`). The settings are the phone's, and the
+  choices in them are shared into an account's record. So they belong to one account at a
+  time (`Settings.sharedFor`): when another is taken on, before anything of it exists, they
+  are put away with the account they belong to (`in-step.json` in its data) and its own
+  brought out. The theme stays the phone's look: an account that has none of its own takes
+  the look as it is, and has nothing to say about it to its other devices until one is
+  chosen under it or comes from its record. No exchange until the choices in the settings
+  are this account's (`Belongs.ready`), and Recently played and the log have been read for
+  it.
+- **What an earlier build left** (`Settings.stepMark`, `Belongs.MARK` = 2; `Core.adopt`).
+  - *0.3.0, which kept nothing in step*: its pins, theme and list choices carried times
+    made under no rule that survives, and belonged to no account. They stay the phone's
+    own: shown as they were, agreed with nobody, in nobody's record; an account's own take
+    their place item by item as its record has something to say. Its notes of when songs
+    were added all lose their time (which were the person's own doing can't be told from
+    the file): kept for the phone's own "Date added", never shared. The files as 0.3.0
+    wrote them are a fixture (`app/src/test/resources/instep-upgrade`).
+  - *0.4.0, which had the Kotlin rules switched off*: it kept the person's changes as
+    changes, waiting (`waiting`), and what it had agreed (`agreed`, empty on a real phone,
+    since it never exchanged). The core takes both on as they are: what was agreed, agreed;
+    each waiting change a change still waiting, under the account it was made for. **So
+    what the person pinned, sorted, shuffled or chose as a theme on 0.4.0 goes out at the
+    first exchange, on top of what the PCs have then**, as it would have had that build
+    been allowed to exchange. A pin adds to the PCs' pins; a theme or a sort chosen on the
+    phone at any time since 0.4.0 was installed replaces the PCs' on every device, however
+    long ago it was chosen. (Whether that is wanted is a decision, not a fault of the
+    code: the other choice is to offer them as "long ago", so that anything chosen since
+    on a PC stands.)
 - **When an exchange runs on a phone, and what it costs** (C2). At start (once the account's
   stores are read); **each minute while the app's screens are in front**; when they come to
   the front (not within ten seconds of the last); when the server comes back or sharing is
-  switched on; and three seconds after something shared changes here (Windows' `share_soon`:
-  a pin, a list's choice, the theme, a song added or removed, a song starting). **The
-  minute's timer itself runs only while the screens are in front** (`Graph.front`, set by
-  `MainActivity.onStart` and `onStop`; the loop is cancelled when it goes false): with them
-  gone nothing wakes each minute to find it has nothing to do. With music playing and the
-  screen off the record still goes out as each song starts (a change), which also brings in
-  what changed elsewhere, and nothing runs when nothing is playing; no wake lock, alarm or
-  job is used. A look is three requests: the list of playlists (rule 11; what Navidrome
-  sends for it has no songs in it), the record's playlist (the record is at most about
-  40 KB, a few KB compressed; 1.6 KB for the test account's) and the saved queue, of which
-  the server sends every song in full (119 KB for a hundred songs, 11 KB compressed as
-  Navidrome sends it; about five times that for the 500 a long queue is cut to). The record
-  is written only when the phone adds something. On the phone, an exchange reads only the
-  last 500 plays of the log, where they lie (`Sharing.plays`): not a copy of the whole log.
+  switched on; and three seconds after something shared changes here (a pin, a list's
+  choice, the theme, a song added or removed, a song starting). **The minute's timer itself
+  runs only while the screens are in front** (`Graph.front`): with them gone nothing wakes
+  each minute to find it has nothing to do. With music playing and the screen off the record
+  still goes out as each song starts, which also brings in what changed elsewhere, and
+  nothing runs when nothing is playing; no wake lock, alarm or job is used. A look is three
+  requests: the list of playlists, the record's playlist (at most about 40 KB, a few KB
+  compressed) and the saved queue, of which the server sends every song in full. The record
+  is written only when the phone adds something.
 - **The record's write goes beside `library/Playlists.kt`, not through it.** That is the way
   the person's own changes to a playlist go: queued behind their other changes, shown on the
   page while they wait, refused with words, sent once and never again. None of that is
   wanted for a write that is the app's own: it must never be shown, toast, or hold up an
-  edit. And it is the whole value, safe to make again: a write that gets no answer is
-  followed, at the next exchange, by a read of what the server has, and written again only
-  if it still adds something (`InStepTest.aWriteThatGetsNoAnswerIsSafeToMakeAgain`). It
-  shares only the account's client.
-- **Taking in** (`PhoneShared.keep` and `take`, Windows' `take_shared`): the plays into the
-  log, first (rule 10); then what was agreed becomes the record's pins, theme and lists, and
-  the screens show that with whatever still waits on top; dated notes of when songs were
-  added; Recently played merged with the record's, the songs it names looked up in the
-  phone's copy of the library and otherwise asked of the server one at a time, as Windows
-  asks (one the server says is gone is not asked for again this run; Windows asks at every
-  exchange). **A list that is open shows the sort it now has** (C3): the pages read the order
-  from the settings each time they are drawn, not once as they open, so a sort chosen on a
-  PC shows on a list that is already on the screen. An order only the phone offers is the
-  phone's own choice for that list, and stays unless the sort arriving was chosen after it.
-- **The queue** (`sync/QueueStep.kt`; Windows' `upload_queue`, `check_server_queue`,
-  `note_elsewhere`, `adopt_queue`, `continue_here`). Saved on the server under the phone's
-  own device name (`NexusMusic-<eight hex digits>`, made once) three seconds after the
-  person changes it, and once a minute while a song simply plays on (Windows: every twenty
-  seconds; each save sends the ids again): 50 songs behind the one playing and 450 from it
-  on, stations left out, nothing while a station plays. At each look the saved queue is
-  read: if another device saved it after this phone's queue last changed and nothing is
-  playing here, it takes this one's place, paused; otherwise, if another device has been
-  playing something else in the last half hour, the queue sheet offers it ("Playing on
-  another device", the song, "Continue here": Windows' card and words), and a tap picks it
-  up where it had got to and plays. Nothing starts playing by itself.
+  edit. It shares only the account's client.
+- **The sync playlist is nowhere among the playlists**, whether or not the feature exists:
+  `Library.playlists()`, which everything that lists playlists reads (Library, the car,
+  search, the picker, Your stats, spoken requests), leaves it out of what the server sends
+  and of a copy kept by a version that didn't know of it; asked for by id it is "not found";
+  the downloads' own list leaves it out; `Playlists.canEdit` is false for it. Its name is
+  reserved (`Playlists.reserved`, the name being the core's own): making a playlist of that name, or renaming one to it, is
+  refused with "Nexus Music keeps that name for itself, for keeping your devices in step.
+  Choose another."
+- **When songs were added** (`store/Added.kt`). What the phone merely notices in a playlist
+  is kept for its own "Date added" with no time on it, never shared, and gives way to any
+  dated note; a dated note is made only by the person's own change here (adding to,
+  removing from or making a playlist, once the server has taken it) or arrives from another
+  device. The rules are the core's (`notes`), a playlist at a time. The file is written
+  before a change counts, and one that could not be read is never taken for one that is not
+  there: it is left unwritten (or, damaged, kept aside as `<file>.damaged` before the first
+  write). **A list that is open and sorted by date added is arranged again when a date
+  arrives** (`Added.version`, which the list page's order depends on).
+- **A sort or a shuffle that arrives shows on a list that is open** (C3): the pages read the
+  order from the settings each time they are drawn.
+- **A log of plays that could not be read is never taken for one that is not there**
+  (`store/PlayLog.kt`). Only "no such file" is a new log. Any other failure to read it
+  leaves the file untouched: the plays counted meanwhile are written to a file beside it
+  (`plays.log.new`) and joined at the next start that can read the log. A torn last line is
+  cut back to the last whole record; a failed write is reported and tried again.
+- **The queue** (`sync/QueueStep.kt`; the rules are the core's `handover`, by its contract:
+  `Core.queueWindow`, `queueReadsFirst`, `queueSave`, `queueLook`, `queuePlace`). Saved on
+  the server under the phone's own device name (`NexusMusic-<eight hex digits>`, made once)
+  three seconds after the person changes it, and once a minute while a song simply plays on
+  (Windows: every twenty seconds; each save sends the ids again): the songs around the one
+  playing that the core's window says, stations left out, nothing while a station plays. At
+  each look the saved queue is read, with the clock of that read, and the core says what
+  then: nothing; take it up (another device saved it after this phone's queue last changed
+  and nothing is playing here: it takes this one's place, paused); or this phone's save is
+  owed. And whether to offer it: if another device has been playing something else in the
+  last half hour the queue sheet says "Playing on another device", the song, "Continue
+  here" (Windows' card and words), and a tap picks it up where it had got to and plays.
+  Nothing starts playing by itself.
 - **The phone saves its queue only if it is still the newest thing that happened** (B1).
-  Saves go one at a time, in the order they were asked for (two could finish the wrong way
-  round). Immediately before each, the server's saved queue is read, and it is left alone
-  if another device saved it after this phone's queue last changed: three seconds pass
-  between a change here and its save, and the save takes the server's clock for its time, so
-  it would land on top of anything saved in between. And a queue taken up from another
-  device is not saved by the phone until it has been changed or played on here: a save
-  asked for before it was taken up would pass that device's queue on as the phone's own,
-  changed now.
-- **"Continue here" is a choice like any other** (B2). The tap takes its place in the one
-  order of the person's choices (`playback/Choices`), and by the time its queue is ready it
-  is played only if nothing has taken a later place: a pause, a stop, something else to
-  play. A queue taken up without being asked is nobody's choice and takes no place: it gives
-  way to anything chosen while it was being made ready, and a start the person made just
-  before it, still being made ready itself, plays over it. Once the setting is off nothing
-  is offered and nothing of another device's goes into the player, whatever was already on
-  its way: the setting is asked again when the server's answer arrives, as an offer is
-  noted, at the tap, and at the last moment before a queue goes in (`QueueHere.replace`).
-  The server being out of reach is no reason to refuse a tap on an offer already made.
+  Saves go one at a time, in the order they were asked for. Immediately before each, the
+  server's saved queue is read, and the core says whether to save, with the clock of that
+  read: not over a queue another device saved after this phone's last changed. A queue taken
+  up from another device is not the phone's to save until it has been changed or played on
+  here: which device's it is, is kept with the queue (`taken`, in the saved queue's file
+  too, so that it is still known after a restart).
+- **A change to the queue on the phone's screens is a choice like any other.** Moving a
+  song, removing one and clearing the queue each take their place in the one order of the
+  person's choices (`playback/Choices`, in `PlayerConnection`), as starting something to
+  play always did. **A queue taken up from another device does not replace a queue the
+  person has changed since**: `QueueHere.replace` is given the place in that order and the
+  queue's own time as they were when the look was decided, and puts nothing in the player
+  if either has moved on.
+- **"Continue here" is a choice like any other** (B2). The tap takes its place in the order
+  of choices, and by the time its queue is ready it is played only if nothing has taken a
+  later place: a pause, a stop, something else to play, a change to the queue. A queue taken
+  up without being asked is nobody's choice and takes no place: it gives way to anything
+  chosen while it was being made ready. Once the setting is off nothing is offered and
+  nothing of another device's goes into the player, whatever was already on its way: the
+  setting is asked again when the server's answer arrives, as an offer is noted, at the tap,
+  and at the last moment before a queue goes in. The server being out of reach is no reason
+  to refuse a tap on an offer already made.
 - **The phone's own saved queue and the server's, at start-up.** The phone's own is put
   back first, as it was, with the time it last changed. The server's takes its place only
   if another device saved it after that time and nothing is playing here, and never before
   the phone's own is back (`QueueHere.replace` waits for it). So the two can't fight: the
   local file is how this phone remembers its queue; the server's is how the queue moves
-  between devices; and which one stands is decided by which was changed last, exactly as
-  between two PCs.
+  between devices.
 
-### Known, and accepted (the M5a fixes)
+### Known, and accepted
 
-None of these is fixed on the phone, each for the reason given.
+None of these is the phone's to fix: each is in the rules both apps share, or in what the
+server offers, and is written down where the rules are (the Windows repository's
+`core/src/step.rs`).
 
 - **Two devices that read the record at the same moment both write, and the second write
-  wins.** The Subsonic interface has no way to make a write conditional on what was read (as
-  for a playlist's edits), so the later of two crossed writes can be made without the
-  other's part. Nothing is lost for good by it: each device still holds what it wrote (the
-  phone in `Settings.agreed`, with its time) and offers it again at its next look, where it
-  is merged back in. `InStepTest` crosses two devices at every step. The same holds for the
-  saved queue, between the phone's look at it and its save (B1).
-- **Recently played can lose an earlier play of the same song, depending on the order
-  devices exchange in; and two notes of when a song was added that carry the same time and
-  different contents never settle** (each device keeps its own, and writes it over the
-  other's at every exchange). Both are in the shared merge (`merge_history`, `merge_notes`),
-  which the phone must do exactly as the PCs do: a phone that merged differently would be a
-  third opinion, and the record would change at every exchange for ever. They are to be put
-  right in both apps at once.
+  wins.** The Subsonic interface has no way to make a write conditional on what was read, so
+  the later of two crossed writes can be made without the other's part. Nothing is lost for
+  good by it: each device still holds what it wrote as agreed, with its time, and offers it
+  again at its next look, where it is merged back in. The same holds for the saved queue,
+  between the phone's look at it and its save (B1).
+- **A write whose answer is lost, and the opposite then chosen on another device.** The
+  phone's write reached the server and the phone never heard; before the phone next
+  exchanges, a PC deliberately sets the opposite (unpins what the phone pinned). The phone's
+  change is made again, on top of that. Made again over its own result a change alters
+  nothing; over a later, opposite choice it undoes that choice. Telling the two apart would
+  need the server to say which write a value came from. What does hold, and is checked end
+  to end (`InStepLiveTest`, and on the emulator with the process killed at `step-sent`):
+  that one change is all that happens, nothing else of the PC's is touched, and nothing is
+  left waiting afterwards.
+- **What the shared merge itself does with a tie** (Recently played and an earlier play of
+  the same song; two notes of when a song was added with the same time and different
+  contents) is the core's, for both apps at once: the phone can no longer be a third
+  opinion.
 - **The half hour of "another device has been playing" runs from when that device last saved
   its queue**, not from when it last played: a queue only edited on a PC, with nothing
   playing there, is offered as "Playing on another device" for half an hour, as between two
   PCs.
 - **The time a queue changed here is by the phone's clock, and the time another device saved
   one is by the server's.** The two are compared (which is the newer), with at most the five
-  minutes between them that rule 8 allows before the phone stops sharing.
+  minutes between them that the core allows before a device stops sharing.
 
 ### What the design left open, and what was decided (M5a)
 
 - **The minute's look is for the screens in front only**; in the background the record moves
   with each song (above). The brief allowed "on screen or music playing".
 - **The phone's theme follows the account** signed in, when that account has one of its own.
-- **A song noticed in a playlist is not dated for other devices** (rule 1). What it costs:
+- **A song noticed in a playlist is not dated for other devices.** What it costs:
   a song added in another app (Navidrome's own page) and seen only by the phone gets its
   shared date when a PC first sees it; and a dated note is not cleared when its song is
   noticed gone, so a song taken out and put back elsewhere, seen by no PC in between, keeps
   its old date.
 - **An unreadable comment stops the exchange** until someone puts it right (a PC running
   Windows' app will, by writing over it).
-- **Unknown fields are written back** although the Windows app would drop them; if the merge
-  becomes Windows' own code, that is lost unless it is done there too.
-- **The sync playlist's id is not remembered at all** (rule 11), rather than remembered and
+- **The sync playlist's id is not remembered at all**, rather than remembered and
   checked: the list of playlists is asked for at every exchange, one more small request.
-- **A phone with nothing to say makes no playlist** (rule 4): a second account signed in on
+- **A phone with nothing to say makes no playlist**: a second account signed in on
   the phone, with nothing chosen under it and no PC, has none on its server until it pins,
   sorts, plays or adds something.
 - **After an upgrade from 0.3.0, the pins made on the phone stay on its screen only until
-  the account's record has pins of its own** (rule 2): then the record's are shown, and a
+  the account's record has pins of its own**: then the record's are shown, and a
   playlist pinned only on the old phone is no longer pinned. Pinning it again shares it.
   The same for a list's shuffle and sort, list by list, and for the theme.
-- **A change made here is timed one second after the value it changes, if that is later than
-  now** (rule 1): a PC whose clock runs ahead (within what its own version allows) can't
-  make the phone's later change the older one.
 - **The saved queue is sent once a minute while a song plays**, not every twenty seconds: a
   PC that continues from a phone still playing starts up to a minute behind it.
 - **A queue taken from another device plays in its own order, unshuffled**, with no list
   behind it, as on Windows.
 - **Not built**: Windows looks at the theme alone before its window opens (`preload_theme`);
-  the phone's first exchange comes a moment after start, and a newer theme shows then. A
-  list on screen sorted by date added is not drawn again when another device's *dates*
-  arrive (it is right the next time it is arranged); a *sort* that arrives does show (C3).
+  the phone's first exchange comes a moment after start, and a newer theme shows then.
 
 **Smoothness**: lists are lazy with stable keys and content types; nothing is computed in
 composition that could be remembered; images are asked for at the size shown. Judge speed
