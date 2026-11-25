@@ -9,6 +9,7 @@ import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -96,6 +97,49 @@ class ContinueHereTest {
 
     /** A time after anything done here: another device's queue saved "just now". */
     private fun later() = System.currentTimeMillis() / 1000 + 60
+
+    @Test
+    fun aChangeToTheQueueOnAScreenTakesItsPlaceAndIsNotReplacedByAQueueOnItsWay() {
+        inside.player.play(mine(), 1, "A list", playNow = false)
+        settle()
+        // (A change made to the queue on the queue page takes its place in the order of
+        // choices as it is tapped: `PlayerConnection.move`, `remove` and `clear`, as `jump`
+        // and `enqueue` always did. The screens aren't connected to a player in this test,
+        // so the tap is its place, taken.)
+        fun tapped() = Choices.take()
+        // A queue another device saved is to be taken up, as was decided at this moment...
+        val asOf = Choices.latest
+        val stampThen = here().stamp()
+        // ...and before it is in the player, the person takes a row out of their own.
+        tapped()
+        assertFalse("a queue taken up unasked replaced one the person had just changed", wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = asOf, stampThen = stampThen, still = { true }) })
+        // "Continue here" tapped, and then a row moved before its queue is ready: the same.
+        val tap = Choices.take()
+        tapped()
+        assertFalse("Continue here replaced a queue changed after its tap", wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = tap, asOf = tap, stampThen = 0, still = { true }) })
+        settle()
+        assertEquals("s1", inside.player.queue.current()?.id)
+        // And one whose queue was changed here, however, since it was decided on (the stamp
+        // has moved): not replaced either.
+        assertFalse(wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = Choices.latest, stampThen = here().stamp() - 1, still = { true }) })
+        assertEquals("s1", inside.player.queue.current()?.id)
+    }
+
+    @Test
+    fun aQueueTakenUpFromAnotherDeviceIsStillThatDevicesAfterARestartUntilSomethingIsDoneToIt() {
+        inside.player.play(mine(), 1, "A list", playNow = false)
+        settle()
+        assertNull(here().taken())
+        assertTrue(wait { here().replace(theirs(), 1, 30_000, later(), "2026-01-01T00:00:00Z", choice = null, asOf = Choices.latest, stampThen = here().stamp(), still = { true }) })
+        settle()
+        // It is the other device's, and says so: kept with the queue, for the next run.
+        assertEquals("2026-01-01T00:00:00Z", here().taken())
+        // Played here ("Continue here" would be the same): this phone's own from then on.
+        val tap = Choices.take()
+        assertTrue(wait { here().replace(theirs(), 2, 0, later(), "2026-01-01T00:00:05Z", choice = tap, asOf = tap, stampThen = 0, still = { true }) })
+        settle()
+        assertNull(here().taken())
+    }
 
     @Test
     fun continueHereIsPlayedIfNothingWasChosenAfterItsTap() {

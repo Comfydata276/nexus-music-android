@@ -405,6 +405,10 @@ class PlayerConnection(
     fun move(uid: Long, after: Long?, queued: Boolean) {
         if (uid == AppCommands.NONE) return
         steered.hands?.let { it.move(uid, after, queued); return }
+        // A change to the queue is the person's choice, at the tap (order of choices): a
+        // queue from another device that was on its way into the player ("Continue here",
+        // or one taken up unasked) gives way to it, and does not replace what was changed.
+        Choices.take()
         send(AppCommands.MOVE, Bundle().apply { putLong("uid", uid); putLong("after", after ?: AppCommands.NONE); putBoolean("queued", queued) })
     }
 
@@ -412,12 +416,16 @@ class PlayerConnection(
     fun remove(uid: Long) {
         if (uid == AppCommands.NONE) return
         steered.hands?.let { it.remove(uid); return }
+        // (A choice, at the tap: see [move].)
+        Choices.take()
         send(AppCommands.REMOVE, Bundle().apply { putLong("uid", uid) })
     }
 
     /** Empties "Next in queue" (`queued`), or the rest of the list after it. */
     fun clear(queued: Boolean) {
         steered.hands?.let { it.clear(queued); return }
+        // (A choice, at the tap: see [move].)
+        Choices.take()
         send(AppCommands.CLEAR, Bundle().apply { putBoolean("queued", queued) })
     }
 

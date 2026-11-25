@@ -63,7 +63,11 @@ object Core {
             if (onMainThread()) throw CoreException("The shared library was asked for on the main thread before it had been loaded.")
             loading = true
             try {
-                System.loadLibrary("nexus_core_android")
+                try {
+                    System.loadLibrary(LIBRARY)
+                } catch (e: UnsatisfiedLinkError) {
+                    System.load(secondCopy(e) ?: throw e)
+                }
                 ready = true
             } catch (e: UnsatisfiedLinkError) {
                 // (The app was built without it, or for another kind of processor: the
@@ -73,6 +77,26 @@ object Core {
                 loading = false
             }
         }
+    }
+
+    private const val LIBRARY = "nexus_core_android"
+
+    /**
+     * On a computer only, where the unit tests run: a Java machine loads a library once for
+     * each class loader, and the tests that run on Robolectric's copy of Android have a
+     * class loader of their own, so whichever kind of test asks second is refused the
+     * library the first has. It is given the same library from a copy of its file, which is
+     * a second library as far as the machine is concerned. Null unless that is what
+     * happened. (On a phone the app has one class loader, and this is never reached.)
+     */
+    private fun secondCopy(refused: UnsatisfiedLinkError): String? {
+        if (refused.message?.contains("already loaded in another classloader") != true) return null
+        val name = System.mapLibraryName(LIBRARY)
+        val found = System.getProperty("java.library.path").orEmpty().split(java.io.File.pathSeparator).map { java.io.File(it, name) }.firstOrNull { it.isFile } ?: return null
+        val copy = java.io.File.createTempFile("nexus-core-", "-$name")
+        copy.deleteOnExit()
+        found.copyTo(copy, overwrite = true)
+        return copy.path
     }
 
     /** Loads the library, so that it is there when first wanted. Off the main thread, as the
