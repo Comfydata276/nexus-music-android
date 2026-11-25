@@ -37,7 +37,7 @@ use crate::{EXCEPTION, call, call_private};
 /// How a call that waits on the network ended.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum Outcome<T> {
+pub(crate) enum Outcome<T> {
     Got {
         value: T,
     },
@@ -49,7 +49,7 @@ enum Outcome<T> {
     Stopped,
 }
 
-fn outcome<T>(result: Result<T, String>) -> Outcome<T> {
+pub(crate) fn outcome<T>(result: Result<T, String>) -> Outcome<T> {
     match result {
         Ok(value) => Outcome::Got { value },
         // (The library reports a stop in words, as callers that only pass words on do: these.)
@@ -96,7 +96,7 @@ fn sessions<T>(act: impl FnOnce(&mut HashMap<u64, Arc<Session>>) -> T) -> T {
 /// What a call to Lidarr is made with: where it is, its key, and the sign-in in front of it
 /// if there is one (the number `gateOpen` gave).
 #[derive(Deserialize)]
-struct Connection {
+pub(crate) struct Connection {
     address: String,
     key: String,
     session: Option<u64>,
@@ -104,7 +104,7 @@ struct Connection {
 
 impl Connection {
     /// Lidarr, asked through this operation's own way out.
-    fn lidarr(&self, operation: u64) -> Result<Lidarr, String> {
+    pub(crate) fn lidarr(&self, operation: u64) -> Result<Lidarr, String> {
         let gate = match self.session {
             None => None,
             // (A sign-in that has been closed: as the library says when there is none.)
@@ -436,7 +436,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrCancel<'l>(env:
 /// MusicBrainz, of which there is one for the whole app: it keeps the gap MusicBrainz asks
 /// for between requests, and two would each keep their own. Its requests are whichever
 /// operation's the calling thread is carrying out.
-fn musicbrainz() -> &'static MusicBrainz {
+pub(crate) fn musicbrainz() -> &'static MusicBrainz {
     static ONE: OnceLock<MusicBrainz> = OnceLock::new();
     ONE.get_or_init(|| {
         MusicBrainz::new(Host::new(Whose::TheThreads, Line::MusicBrainz), ListenBrainz::new(Host::new(Whose::TheThreads, Line::ListenBrainz)))

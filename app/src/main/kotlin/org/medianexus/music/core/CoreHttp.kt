@@ -274,6 +274,7 @@ internal object CoreHttp {
 
     private fun end(doing: Doing) {
         doings.remove(doing.id)
+        publishers.remove(doing.id)
         // (The library lets go of every answer it was given; this is for one it didn't.)
         bodies.entries.removeIf { (_, held) ->
             (held.doing === doing).also { if (it) closeQuietly(held) }
@@ -296,6 +297,28 @@ internal object CoreHttp {
      * is let go at once, and what the library was doing ends behind it.
      */
     suspend fun <T> looking(act: (operation: Long) -> T): T = run(begin(changing = false), lookers, act)
+
+    /** The same, for something that hands over what it has found so far as it goes (a
+     *  search): `published` is called with each, on the library's thread, and never once the
+     *  operation has been stopped. */
+    suspend fun <T> looking(published: (ByteArray) -> Unit, act: (operation: Long) -> T): T {
+        val doing = begin(changing = false)
+        publishers[doing.id] = published
+        return run(doing, lookers, act)
+    }
+
+    private val publishers = ConcurrentHashMap<Long, (ByteArray) -> Unit>()
+
+    /** The library has found something more for an operation that shows what it finds as it
+     *  goes (see [looking]). Nothing is handed on after a stop. */
+    fun published(operation: Long, found: ByteArray) {
+        try {
+            val doing = doings[operation] ?: return
+            if (doing.isStopped) return
+            publishers[operation]?.invoke(found)
+        } catch (_: Exception) {
+        }
+    }
 
     /** The same for something that changes Lidarr or the sign-in in one step: stopped, the
      *  request in flight is let finish, behind the caller's back. */

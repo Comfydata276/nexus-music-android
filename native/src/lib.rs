@@ -14,6 +14,7 @@
 //! panic anywhere below, both reach Kotlin as one exception (`CoreException`) carrying the
 //! reason in words. A panic's place (file and line) goes to the phone's log.
 
+mod pages;
 mod requests;
 mod wire;
 

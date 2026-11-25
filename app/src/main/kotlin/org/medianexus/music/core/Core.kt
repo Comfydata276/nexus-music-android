@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNamingStrategy
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The shared core: the part of the app that is the Windows app's own code, compiled into a
@@ -540,6 +541,203 @@ object Core {
         over(TracksIn(operation, album), TracksIn.serializer(), ListSerializer(TrackName.serializer()), ::albumTracks)
     }
 
+    // ---- The pages and actions of requests ----
+    //
+    // Each is the library's own function of the same name (`requests::search`, `artist`,
+    // `album`, `asking`, `request`, `on_their_way`; `asked::`; `discover::`), asked with what
+    // one connection to Lidarr has by it: its *place* (see `native/src/pages.rs`), which
+    // holds what has been offered while the connection lasts and the three things the
+    // library reads at the moment it needs them, set here whenever they change.
+
+    /** A connection to Lidarr begins: its place, under the number handed back. */
+    fun placeOpen(): Long = across(true, Boolean.serializer(), Long.serializer(), ::placeOpen)
+
+    /** The connection is over: what was offered while it lasted is forgotten. */
+    fun placeClose(place: Long) {
+        across(place, Long.serializer(), Boolean.serializer(), ::placeClose)
+    }
+
+    @Serializable
+    private class PlaceLibraryIn(val place: Long, val library: LibraryLists)
+
+    /** The phone's copy of the library, handed over whenever it changes. (Large: off the
+     *  main thread.) */
+    fun placeLibrary(place: Long, library: LibraryLists) {
+        across(PlaceLibraryIn(place, library), PlaceLibraryIn.serializer(), Boolean.serializer(), ::placeLibrary)
+    }
+
+    @Serializable
+    private class PlaceAskedIn(val place: Long, val asked: List<Asked>)
+
+    /** What has been asked for, as the phone kept it: handed over as the connection begins. */
+    fun placeAsked(place: Long, asked: List<Asked>) {
+        across(PlaceAskedIn(place, asked), PlaceAskedIn.serializer(), Boolean.serializer(), ::placeAsked)
+    }
+
+    @Serializable
+    private class PlaceSinglesIn(val place: Long, val on: Boolean)
+
+    /** The "singles and EPs" setting, handed over whenever it changes. */
+    fun placeSingles(place: Long, on: Boolean) {
+        across(PlaceSinglesIn(place, on), PlaceSinglesIn.serializer(), Boolean.serializer(), ::placeSingles)
+    }
+
+    @Serializable
+    private class PageIn(val operation: Long, val lidarr: LidarrAt, val place: Long, val what: String, val name: String = "")
+
+    /**
+     * `requests::search`: songs, artists and albums matching `query` that aren't in the
+     * library. `soFar` is handed what has been found each time more of it is known (on one
+     * of the library's threads, never after a stop); all of it is the answer.
+     */
+    suspend fun pageSearch(lidarr: LidarrAt, place: Long, query: String, soFar: (Outside) -> Unit): Outcome<Outside> =
+        CoreHttp.looking(published = { found -> soFar(json.decodeFromString(Outside.serializer(), found.decodeToString())) }) { operation ->
+            over(PageIn(operation, lidarr, place, query), PageIn.serializer(), Outside.serializer(), ::pageSearch)
+        }
+
+    /** `requests::artist`: an artist as the wider world knows them; `id` is MusicBrainz's
+     *  name for them (an [ArtistOffer]'s, a [SongOffer]'s `artistId`). */
+    suspend fun pageArtist(lidarr: LidarrAt, place: Long, id: String): Outcome<OutsideArtist> = CoreHttp.looking { operation ->
+        over(PageIn(operation, lidarr, place, id), PageIn.serializer(), OutsideArtist.serializer(), ::pageArtist)
+    }
+
+    /** `requests::artist_popular`: the songs an artist is most played for that the library
+     *  doesn't have, found after their page since it takes a few more questions; `name` is
+     *  what the page calls them. No songs in it: there are none to show. */
+    suspend fun pageArtistPopular(lidarr: LidarrAt, place: Long, id: String, name: String): Outcome<Popular> = CoreHttp.looking { operation ->
+        over(PageIn(operation, lidarr, place, id, name), PageIn.serializer(), Popular.serializer(), ::pageArtistPopular)
+    }
+
+    /** `requests::album`: an album that isn't in the library; `id` is Lidarr's name for it. */
+    suspend fun pageAlbum(lidarr: LidarrAt, place: Long, id: String): Outcome<AlbumPage> = CoreHttp.looking { operation ->
+        when (val out = over(PageIn(operation, lidarr, place, id), PageIn.serializer(), JsonElement.serializer(), ::pageAlbum)) {
+            is Outcome.Got -> Outcome.Got(albumPage(out.value))
+            is Outcome.Failed -> out
+            Outcome.Stopped -> Outcome.Stopped
+        }
+    }
+
+    private fun albumPage(answer: JsonElement): AlbumPage {
+        val one = (answer as? JsonObject)?.entries?.singleOrNull() ?: throw CoreException("The shared library's answer couldn't be read.")
+        return when (one.key) {
+            "Found" -> AlbumPage.Found(json.decodeFromJsonElement(OutsideAlbum.serializer(), one.value))
+            "Unavailable" -> AlbumPage.Unavailable(json.decodeFromJsonElement(String.serializer(), one.value))
+            else -> throw CoreException("The shared library's answer couldn't be read.")
+        }
+    }
+
+    /** `requests::on_their_way`: what has arrived lately, and what Lidarr has still to get. */
+    suspend fun pageOnTheirWay(lidarr: LidarrAt, place: Long): Outcome<Waiting> = CoreHttp.looking { operation ->
+        over(PageIn(operation, lidarr, place, ""), PageIn.serializer(), Waiting.serializer(), ::pageOnTheirWay)
+    }
+
+    @Serializable
+    private class AskingIn(val place: Long, val album: String, val title: String, val by: String, val song: String, val kind: String)
+
+    @Serializable
+    private class AskWords(val heading: String, val text: String)
+
+    /** `requests::asking`: whether to ask for an album, and how the question is put: Lidarr's
+     *  name for it, its title, whose it is (may be empty), the song that led here if it was
+     *  one, and what kind of release it is if the caller knows. Asks nobody. */
+    fun asking(place: Long, album: String, title: String, by: String = "", song: String = "", kind: String = ""): Asking {
+        val answer = across(AskingIn(place, album, title, by, song, kind), AskingIn.serializer(), JsonElement.serializer(), ::asking)
+        val one = (answer as? JsonObject)?.entries?.singleOrNull() ?: throw CoreException("The shared library's answer couldn't be read.")
+        return when (one.key) {
+            "Already" -> Asking.Already(json.decodeFromJsonElement(String.serializer(), one.value))
+            "Ask" -> json.decodeFromJsonElement(AskWords.serializer(), one.value).let { Asking.Ask(it.heading, it.text) }
+            else -> throw CoreException("The shared library's answer couldn't be read.")
+        }
+    }
+
+    /**
+     * `requests::request`: asks Lidarr for an album that has been offered; the value is who
+     * it is by. **Begun, not waited for**: once it has started to change Lidarr it runs to
+     * its end whoever has gone away meanwhile, and whoever begins it must then write down
+     * what was asked for ([noted], then [marked]).
+     */
+    internal fun request(lidarr: LidarrAt, place: Long, album: String): CoreHttp.Begun<Outcome<String>> = CoreHttp.seeingThrough { operation ->
+        over(PageIn(operation, lidarr, place, album), PageIn.serializer(), String.serializer(), ::request)
+    }
+
+    /** `Lidarr::add_artist`, begun in the same way (see [request]). */
+    internal fun addArtist(lidarr: LidarrAt, artist: String, name: String): CoreHttp.Begun<Outcome<Int>> = CoreHttp.seeingThrough { operation ->
+        over(AddArtistIn(operation, lidarr, artist, name), AddArtistIn.serializer(), Int.serializer(), ::lidarrAddArtist)
+    }
+
+    @Serializable
+    private class NotedIn(val place: Long, val album: String, val title: String, val artist: String, val song: String, val now: Long)
+
+    /**
+     * Once Lidarr has an album on its list: the note of it, put with the rest
+     * (`requests::asked_for`, `asked::put`). The answer is everything asked for, **to be
+     * kept; only once it is kept is the offer marked** ([marked]): the order the library
+     * asks of every app.
+     */
+    fun noted(place: Long, album: String, title: String, artist: String, song: String, now: Long): List<Asked> =
+        across(NotedIn(place, album, title, artist, song, now), NotedIn.serializer(), ListSerializer(Asked.serializer()), ::noted)
+
+    @Serializable
+    private class MarkedIn(val place: Long, val album: String, val requested: Boolean)
+
+    /** `Offers::mark`: an album has been asked for (or no longer is), so it is shown that way. */
+    fun marked(place: Long, album: String, requested: Boolean) {
+        across(MarkedIn(place, album, requested), MarkedIn.serializer(), Boolean.serializer(), ::marked)
+    }
+
+    @Serializable
+    private class AddingIn(val name: String, val open: Int)
+
+    /** `requests::adding`: the question before Lidarr is set to keep track of an artist, its
+     *  heading and its text; `open` is how many of their albums could be asked for. */
+    fun adding(name: String, open: Int): Pair<String, String> = across(AddingIn(name, open), AddingIn.serializer(), TwoNames, ::adding)
+
+    @Serializable
+    private class ForgetIn(val place: Long, val title: String)
+
+    /** `asked::forget`: stops watching for an album that has been taken off Lidarr's list. */
+    fun askedForget(place: Long, title: String): AskedChange = across(ForgetIn(place, title), ForgetIn.serializer(), AskedChange.serializer(), ::askedForget)
+
+    @Serializable
+    private class NowIn(val place: Long, val now: Long)
+
+    /** `asked::tidy`: drops what has been listed long enough, and what has been waited for
+     *  too long. */
+    fun askedTidy(place: Long, now: Long): AskedChange = across(NowIn(place, now), NowIn.serializer(), AskedChange.serializer(), ::askedTidy)
+
+    /** Looks through the phone's copy of the library (as last handed over) for what was
+     *  asked for and is still awaited, marks what is there now, and says which are news.
+     *  Asks nobody. */
+    fun askedArrivals(place: Long, now: Long): Arrivals = across(NowIn(place, now), NowIn.serializer(), Arrivals.serializer(), ::askedArrivals)
+
+    /** A song of the library's, as far as choosing favourites needs it. */
+    @Serializable
+    class Played(val artistId: String, val artist: String, val plays: Int)
+
+    /** `discover::favourites`: the artists played most, favourite first, as the music
+     *  server's id for each and their name. */
+    fun discoverFavourites(songs: List<Played>): List<Pair<String, String>> =
+        across(songs, ListSerializer(Played.serializer()), ListSerializer(TwoNames), ::discoverFavourites)
+
+    @Serializable
+    private class SuggestIn(val operation: Long, val lidarr: LidarrAt, val place: Long, val similar: List<@Serializable(with = NameAndNames::class) Pair<String, List<String>>>, val now: Long)
+
+    /** `discover::look`: suggestions looked for afresh, from who the music server says each
+     *  favourite is like (in the favourites' order, most alike first). **Kept only if it is
+     *  got**: a stopped look is no answer. Slow: a question to Lidarr for each. */
+    suspend fun discoverLook(lidarr: LidarrAt, place: Long, similar: List<Pair<String, List<String>>>, now: Long): Outcome<KeptSuggestions> = CoreHttp.looking { operation ->
+        over(SuggestIn(operation, lidarr, place, similar, now), SuggestIn.serializer(), KeptSuggestions.serializer(), ::discoverLook)
+    }
+
+    @Serializable
+    private class KeptIn(val place: Long, val kept: KeptSuggestions, val now: Long, val forget: String)
+
+    /** The suggestions that are kept, read as the library reads them: whether they will
+     *  still do, which of them to show (less anyone the library has gained since), and, with
+     *  `forget`, the same without that artist (once they have been added). */
+    fun discoverKept(place: Long, kept: KeptSuggestions, now: Long, forget: String = ""): Suggested =
+        across(KeptIn(place, kept, now, forget), KeptIn.serializer(), Suggested.serializer(), ::discoverKept)
+
     // ---- For the tests of the boundary itself ----
 
     /** The text handed across and back, read as text on the other side and written again. */
@@ -615,6 +813,27 @@ object Core {
     @JvmStatic private external fun lidarrPending(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrCancel(input: ByteArray): ByteArray?
     @JvmStatic private external fun albumTracks(input: ByteArray): ByteArray?
+    @JvmStatic private external fun placeOpen(input: ByteArray): ByteArray?
+    @JvmStatic private external fun placeClose(input: ByteArray): ByteArray?
+    @JvmStatic private external fun placeLibrary(input: ByteArray): ByteArray?
+    @JvmStatic private external fun placeAsked(input: ByteArray): ByteArray?
+    @JvmStatic private external fun placeSingles(input: ByteArray): ByteArray?
+    @JvmStatic private external fun pageSearch(input: ByteArray): ByteArray?
+    @JvmStatic private external fun pageArtist(input: ByteArray): ByteArray?
+    @JvmStatic private external fun pageArtistPopular(input: ByteArray): ByteArray?
+    @JvmStatic private external fun pageAlbum(input: ByteArray): ByteArray?
+    @JvmStatic private external fun pageOnTheirWay(input: ByteArray): ByteArray?
+    @JvmStatic private external fun asking(input: ByteArray): ByteArray?
+    @JvmStatic private external fun request(input: ByteArray): ByteArray?
+    @JvmStatic private external fun noted(input: ByteArray): ByteArray?
+    @JvmStatic private external fun marked(input: ByteArray): ByteArray?
+    @JvmStatic private external fun adding(input: ByteArray): ByteArray?
+    @JvmStatic private external fun askedForget(input: ByteArray): ByteArray?
+    @JvmStatic private external fun askedTidy(input: ByteArray): ByteArray?
+    @JvmStatic private external fun askedArrivals(input: ByteArray): ByteArray?
+    @JvmStatic private external fun discoverFavourites(input: ByteArray): ByteArray?
+    @JvmStatic private external fun discoverLook(input: ByteArray): ByteArray?
+    @JvmStatic private external fun discoverKept(input: ByteArray): ByteArray?
     @JvmStatic private external fun wireProbe(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?
     @JvmStatic private external fun settle(input: ByteArray): ByteArray?

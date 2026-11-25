@@ -325,6 +325,18 @@ impl Read for Reading {
     }
 }
 
+/// Hands the Kotlin side something an operation has found so far (a search's results as they
+/// arrive), for whoever started the operation to show. Nothing is handed over once the
+/// operation has been stopped: the Kotlin side drops it.
+pub fn publish(operation: u64, found: &[u8]) {
+    if let Some(door) = door() {
+        door.up(|env, wire| {
+            let found = env.byte_array_from_slice(found)?;
+            env.call_method(wire, "published", "(J[B)V", &[JValue::Long(operation as i64), JValue::Object(&found)]).map(drop)
+        });
+    }
+}
+
 /// Hands the Kotlin side a sign-in's token to put away (or "" when it is dead): see
 /// `nexus_core::gate::Session::new`'s `keep`.
 pub fn keep(session: u64, token: &str) {

@@ -19,5 +19,6 @@
     void close(long);
     boolean pause(long, long);
     void keepGoing(long);
+    void published(long, byte[]);
     void kept(long, byte[]);
 }
