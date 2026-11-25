@@ -2852,6 +2852,181 @@ None of these is fixed on the phone, each for the reason given.
 composition that could be remembered; images are asked for at the size shown. Judge speed
 on release builds only.
 
+## Jams and the person's other devices (M6)
+
+A port of the Windows app's `src/jam.rs` against its relay (`relay/` in that repository, read
+as the definition of the protocol). Two features, one protocol: a **jam** is one queue that
+several people add to while the music plays where its host is; **linked devices** are the
+person's other copies of the app, listed under "Connect to a device", which the music moves
+to and which are steered from here. Both go through a small relay the owner runs.
+
+How it is built (`jam/`, `ui/jam/`, `playback/Steered.kt`):
+
+- **The relay** (`RelayLine`): its address and the app's HTTP client made fit for it. The
+  long waits for news are reads; **anything that changes a jam is sent once** (rule 6): no
+  retry on a dead connection, no redirect followed, and a reply OkHttp would follow up by
+  itself (a 408, a 421, a 503 with `Retry-After`) handed back as it is. No answer, or the
+  relay's own 504 (the host's app didn't answer, and may have done it), is "no answer": the
+  jam is read again and shown, and the person does it again if they still want to. The
+  relay's connections are a pool of their own, closed ten seconds after they are idle and
+  all at once when nothing of the relay is open (rule 1).
+- **Joining** (`GuestSide`, `Jams`): a link pasted on the jam page, or shared to the app from
+  another (`JamLinkActivity`, which only reads the link and puts it in the box: nothing is
+  joined until Join is pressed). While joined, the phone's player shows the jam
+  (`Steered`): `PlayerConnection`'s flows are the jam's, and what is done in the player bar,
+  Now Playing, the queue sheet and anywhere in the app (Play, Add to queue, a menu's Play) is
+  asked of the host, as Windows' `remote*` functions do. The player shows what was asked at
+  once and the host's word follows (`Steering.steer`, Windows' `remote`). A song this
+  phone's library has is shown as anywhere else (its cover, its menu, like); one it doesn't
+  is shown as the host described it, its cover from the relay (`JamCovers`), with no like and
+  no menu. What was playing on the phone pauses (a choice, in the order of choices) and is
+  still there afterwards. A strip in the accent colour above the player says so, with Find
+  songs and Leave jam.
+- **The person's devices** (`RoomSide`, `Answers`, `OwnPlayer`): with a host link entered in
+  Settings, Jam ("Host jams", the link, "Link my devices", this device's name, in Windows'
+  words and order), the phone joins the room worked out from the account's name and
+  password exactly as Windows does (`account_words`: neither is sent), says what it plays,
+  and opens a session of its own that the others steer it through. Connect lists the other
+  devices with what each is doing. Choosing one while music plays here hands it the queue
+  (what plays and everything after it, 3000 songs at most, at the same place) and pauses
+  here; while nothing plays, steers what it has on. The volume of a device being steered is
+  a slider on Now Playing. "Play here" takes the other device's queue and pauses it there.
+- **A queue handed to the phone** (rule 3, `PlaybackService.handOver`): it takes its place
+  in the order of choices as it arrives (before anything is looked up) and plays only if
+  nothing has taken a later place by the time it is ready (`QueuePlayer.playFor`); offline,
+  only its songs that play here are kept, as for any list, and with none it is refused; in a
+  call (the audio mode) or with the sound held by an app that won't give it up (a request
+  for the sound refused) it is refused, and the other device is told why. Being steered
+  (play, pause, a move, the volume) is a choice like a tap here. The phone's volume, as a
+  PC turns it, is its media volume.
+- **Hosting** (`Hosting` in `Jams`, `HostingPage`): "Start a jam" makes the phone's own
+  session public (or opens one); the page shows the link, a code to scan for it (drawn
+  without a library: `Qr`, byte mode at level M, as Windows' `qr_image` draws its own),
+  Android's share sheet, who is there with Remove, "Guests can steer", and End jam. Guests'
+  searches are answered from the phone's copy of the library (`LibrarySnapshot.find`, 40 at
+  most) and covers from the phone's cover store, cut down as Windows cuts them
+  (`GuestCovers`: 128 px for a row, the 640 px copy as it is unless heavy). A song a guest
+  names that the copy doesn't have is asked of the server by id, as Windows does.
+- **Guests are strangers** (rule 5, `Answers`): a guest is never given the server's
+  address, the sign-in or any audio; what they can ask is exactly what Windows answers
+  (`jam_asked`): add (50 at once, songs this library has, not twice), remove (their own
+  unless steering is allowed), and with steering the transport and queue; `hello`, `queue`,
+  `load` and `volume` only for a device that shows the owner's word. Every number and list
+  is bounded as Windows bounds it (100 of the queue told, 40 found, 50 added, 3000 handed),
+  ids that aren't ids are dropped, and a request that isn't understood does nothing. **A jam
+  joined is someone else's server**: everything it sends is read as untrusted
+  (`Wire.kt`): text cut to a line of fit length with what can't be seen taken out, numbers
+  held to what they can mean, ids and cover ids that aren't ids dropped (they would be sent
+  back, or put in an address), at most 100 songs of a queue, and a cover used only if its
+  first bytes are a JPEG, PNG or WebP, no larger than the relay takes and no larger than
+  4096 px a side.
+- **The key** (rule 4, `KeyVault`): the host link's key is sealed with the Android Keystore
+  as the password is, sealed together with the account it belongs to (another account
+  can't open it), in a file of its own beside the password's, never in the settings file,
+  a log or Diagnostics (no line of the jam code logs anything), sent only in the
+  `Authorization` header to the relay whose link it came with, and removed at sign-out. The
+  relay's address is in the settings (the screen shows its host name only).
+
+**When the phone holds a connection to the relay, and what it costs** (rule 1, `Reasons`).
+Windows keeps every linked PC at the relay all the time; a phone doing that from the
+background would keep its radio awake all day. The phone is in the room, with its session
+open, only while one of these is so: **the app's screens are in front; music is playing on
+the phone, or was less than ten minutes ago** (the playback service stays in the foreground
+that long after a pause, so a PC that paused the phone can play it again); **or the phone is
+in a jam, hosting one, or steering another device.** For the last three a foreground service
+of the connected-device kind (`JamService`) runs with a notification that says which ("In
+Jo's jam", "Hosting a jam", "Steering Desk PC") and offers Leave, End jam or Stop steering,
+so Android lets the app hold the connection with its screens closed and the person can see
+it and end it. With none of these, the phone leaves the room, ends its private session, and
+closes the relay's connections: the other devices simply do not list it. **What it costs
+while open**: two requests held open at the relay (the room's news and the session's), each
+answered at once when something changes and otherwise after twenty seconds, so at least six
+small requests a minute (a few hundred bytes each, a few kilobytes a minute), plus a short
+post whenever what the phone is playing changes and every thirty seconds besides. On mobile
+data that keeps the radio from settling into its idle state for as long as it lasts, which is
+why it lasts only while one of the reasons does. Checked on the emulator with `dumpsys
+activity services` and `/proc/net/tcp6` (docs/TESTING.md).
+
+**What the car, the notification and the lock screen show** (rule 2). Nothing of a jam or
+of another device reaches the media session:
+
+| The phone is | The media session, notification, lock screen and car | Play in the car | A headset's or the notification's Play/Pause, Next, Previous |
+|---|---|---|---|
+| playing its own music | its own song, playing (as before) | as before | as before |
+| hosting a jam | its own song (it is what plays), playing or paused; a second notification says "Hosting a jam" | as before: the jam's music is the phone's | as before |
+| in a friend's jam | its own queue, paused where it was (or nothing, if it had none); a second notification says "In Jo's jam" | not carried out: the car's player says "When it's safe, open Nexus Music on your phone to start playing", with Play still offered; the phone's own music does not start over the jam | steer the jam (play/pause, skip, back), as Windows' media keys do, when the host lets guests steer; the phone's own player does not move |
+| steering another of its devices | its own queue, paused (the music moved there); a second notification says "Steering Desk PC" | as in a jam | steer that device, as in a jam |
+
+A headset's keys and the notification's own buttons reach Media3 as media-button events and
+are given to the other player there (`onMediaButtonEvent`, `Steered.key`); a transport command
+under the notification controller's name likewise (`Steered.press`). Any other Play of the
+phone's own player while it shows another is refused (`mayPlay`): the car is one, and so is
+the phone's resume control.
+
+**Joining from a link that is opened.** Android opens a web link in an app by itself only
+for an address the app has proved it owns (an App Link, checked against a file on that
+site). A relay's address is the person's own and can't be known here, so from Android 12 a
+jam link someone taps opens in the browser, on the relay's own page, which works as a guest
+from any phone. The app takes a link two ways: **shared** to it (a chat's Share: always
+works), or **opened** where the app showing it offers a choice of apps (the filter matches
+`https://<any host>/j/…` and `/…/j/…`, not verified). The jam page also has Paste.
+
+### What the design left open, and what was decided (M6)
+
+- **The car while the phone is in a jam** shows the phone's own queue, paused, and its Play
+  is refused with the existing "open the app" line rather than steering a jam the car can't
+  show. A headset steers it, as Windows' media keys do; the lock screen and the media
+  notification's buttons do too, because Android hands them over as the same media keys.
+  So the lock screen can show the phone's own song paused while its Play/Pause pauses the
+  jam. The jam's own notification says what is going on beside it.
+- **When "music was playing" stops being a reason**: ten minutes after it stops, the time
+  Media3 keeps the playback service in the foreground. A PC that paused the phone can play
+  it again within that time, not after.
+- **Moved here from a PC "at the moment it was sent"**: the relay passes a request on to
+  the phone the moment it arrives (the phone's wait is held open there), so its arrival is
+  taken as the moment it was sent. A choice made on the phone in the second before it
+  arrives is not known to be earlier, and the queue from the PC wins over it. That second is
+  the window that remains; anything chosen after the arrival wins.
+- **The phone's volume** as another device turns it is the media volume (what turning a
+  phone up or down means), not a level of the app's own.
+- **Words** are in `res/values/strings_jam.xml`, beside `strings.xml`, so the feature's words
+  are found together; Windows' wording, with "this PC" made "this phone".
+- **The device's name** is the phone's own (Android's device name, else its model), unless
+  one is typed in Settings, Jam.
+- **Not shown on the phone that Windows shows**: the jam window's progress for a cover
+  being sent; the devices' list in a side panel (the phone's is Connect, a sheet from Now
+  Playing).
+
+**What remains, and what needs real devices**: Android Auto in a car with the phone in a
+jam (the emulator car check passes; see TESTING); a real call arriving (the emulator's calls
+don't change the audio mode: rule 3's refusal in a call is shown in the service under
+Robolectric); battery on mobile data while in a jam (the cost above is reasoned, not
+measured on a radio).
+
+### The order of choices, completed (with M6)
+
+Every choice takes one place in the order of choices, once (`playback/Choices`), so that the
+newest wins and a stop beats what was asked before it. The gaps the M3b review found, each
+closed by the same rule (`OrderOfChoicesTest`, in the real service, a case each):
+
+- **Resuming, Pause, and a tap on an entry of the queue** take their place at the tap
+  (`PlayerConnection.playPause`, `jump`).
+- **A Play from a list carries its tap's place** (`AppCommands.PLACE`) and the service plays
+  it at that place (`QueuePlayer.playFor`) instead of taking a second one on delivery. As
+  decided: anything that takes a later place before it lands (the sound taken away, a choice
+  in the car, offline mode switched on) drops it.
+- **A Play waiting for the saved queue** (`onPlaybackResumption`) takes a place as it arrives
+  and is dropped if anything takes a later one while it waits.
+- **A Play waiting for a call to end** remembers its place (taken once the refusal itself has
+  taken its own), not a flag a Stop left standing.
+- **The retry of a song that failed** (`retryLater`) is dropped by anything that takes a
+  place before it is due, a Stop included (which leaves "play when ready" as it was).
+- **A Pause takes a place even when already paused** (`QueuePlayer.handleSetPlayWhenReady`).
+
+The jams' starts follow the same rule: joining a jam or moving the music away pauses the
+phone (a place); a queue handed over takes its place as it arrives; "Play here" at its tap;
+Play or Pause asked of the phone from another device is a choice like a tap.
+
 ## Milestones
 
 Each one ends with the app building, its tests passing, a run on the emulator, and a review.
@@ -2880,7 +3055,7 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
   plays, "Your stats", "Made for you", mixes of one's own, the mixes in the car. M5a (built):
   the sync playlist, the saved queue and "Continue here", and the rules that keep the PCs
   safe from the phone.
-- **M6 Jams and linked devices.**
+- **M6 Jams and linked devices** (built): joining a jam, the person's own devices, hosting a jam from the phone; and the order of choices completed.
 - **M7 Requests.** Lidarr, MusicBrainz, ListenBrainz, browser sign-in through Authentik,
   "Artists you might like", bringing playlists over from Spotify.
 - **M8 Shipping.** The signing key, updates from GitHub releases, checks on every push,

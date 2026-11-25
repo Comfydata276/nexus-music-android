@@ -2386,6 +2386,139 @@ Navidrome behind a proxy that limits the size of a request (the record goes as a
 to some tens of KB); the record after an older Windows version (before 0.40, which drops the
 plays) has written it.
 
+## Jams and linked devices (M6): what was checked
+
+**A relay of one's own, never the owner's.** Every check runs against the published relay
+image (`ghcr.io/comfydata276/nexus-music-jam`, version 0.3.0, the same as `relay/Cargo.toml`)
+started on this machine only, with a key made up for the run and kept outside the
+repository:
+
+```sh
+key="$(openssl rand -hex 24)"     # kept in a scratch file, never in the repository
+docker run -d --name nexus-m6-relay -p 127.0.0.1:8099:8080 -e JAM_HOST_KEY="$key" \
+  ghcr.io/comfydata276/nexus-music-jam:latest
+scripts/emu adb reverse tcp:8099 tcp:8099         # the emulator reaches it at 127.0.0.1:8099
+```
+
+The phone's host link is then `http://127.0.0.1:8099/#<key>` (plain HTTP is taken for the
+phone itself, as for the home network). `tools/jam/host.py` plays the Windows host's side
+(`host_start`, the poll loop, `jam_asked` and `jam_sync` as src/jam.rs has them) and, given
+the room and the word worked out from the test account (`--room`, `--word`), a PC in the
+room that can be moved to, steer the phone (`steer`, `ask`), or move its music to the phone
+(`send-to`); it reads the key from `JAM_KEY`. `tools/jam/guest-page.mjs` drives the relay's
+own guest page in a headless Chromium (the copy Playwright keeps under `~/.cache/ms-playwright`)
+through the DevTools protocol.
+
+**Unit tests** (`app/src/test/kotlin/org/medianexus/music/jam/`, and `OrderOfChoicesTest`):
+
+| Test | What it holds |
+|---|---|
+| `LinksTest` | Windows' `reads_host_links` and `reads_jam_links`, ported; a link inside a message; the key never written out by the link's own `toString` |
+| `WireTest` | Windows' `describes_a_song_for_guests`; a Windows host's state read field by field; **rule 5**: a hostile state (lengths, ids, numbers, a queue of 500, a direction override) read as bounded, cut and dropped |
+| `SteerTest` | Windows' `remote`: what each press asks, the player showing it at once, a guest taking out their own, the host's song moving on from where it was heard |
+| `NeverTwiceTest` | **rule 6** against a stand-in relay: an ask whose answer is lost on a warm connection, a 503 with `Retry-After: 0`, a 408, a redirect, the relay's 504: each reaches the relay once; an answer too large is none; the key only in the `Authorization` header |
+| `AnswersTest` | Windows' `jam_asked`, `jam_add_for`, `jam_remove_for`, `jam_entry`, `handed_songs`, `queue_to_hand_over`, `jam_sync`'s state: **rule 5** (what a guest may ask, bounded as Windows bounds it), the owner's word, moves as Windows makes them |
+| `RoomTest` | the room and the word as Windows works them out (a fixed pair for the made-up test account); **rule 1** (`Reasons`) |
+| `RulesTest` | **rule 4** (the key opens only for its account, is not in plain text on the disk, and goes); **rule 2** (a headset's transport steers what the player shows, never the phone's own); the code to scan |
+| `HandOverTest` | **rule 3** in the real service: a queue handed over gives way to a choice made on the phone after it arrived; refused in a call, with the sound held elsewhere, and offline with nothing playable here |
+
+**Each rule's test seen to fail with its code taken out** (in a scratch worktree, the code
+changed and the test run, then put back):
+
+| Rule | Taken out | Fails |
+|---|---|---|
+| 1 | the ten minutes after a pause; "no reason" | `RoomTest` |
+| 2 | Play/Pause given to the other player | `RulesTest` |
+| 3 | the order check in the hand-over; the call check | `HandOverTest` (both cases) |
+| 4 | the key removed at sign-out | `RulesTest` |
+| 5 | the queue's bound; the id check; the bound on songs added at once; the owner's actions kept to the owner | `WireTest`, `AnswersTest` |
+| 6 | the once-only client (asks sent on the reading one) | `NeverTwiceTest` |
+
+**Against the real relay** (debug build on `phone`, Android 17):
+
+- The phone as a **guest** of a jam hosted by `host.py` (playing a Windows host): the link
+  shared to the app from another app (`am start … SEND`), joined; the player bar, Now Playing
+  and the queue sheet show the host's song and queue; songs the library has shown as
+  anywhere else, a song it doesn't from the host's words with no menu; who added what; pause
+  and skip from the phone reach the host ("asked: … pause -> ok"); search in the host's
+  library and add. A host's skip showed on the phone in under a second; with the relay at 3
+  KB/s (`NEXUS_TEST_PORT=8099 scripts/slowlink start 3`), in about 2.7 s, counting the screen
+  being read.
+- The phone as **host**, with the relay's own page in a headless browser as a guest
+  (`guest-page.mjs`): the page joined "tester's jam", its search was answered from the
+  phone's copy of the library, "Lantern Season" was added to Next in queue, the page's skip
+  moved the phone on, and covers came from the phone's cover store. The phone's page listed
+  the guest, the code drawn for the link was read back from a screenshot by zxing, and End
+  jam ended it.
+- **Two devices** (the phone and `host.py` as "Desk PC" in the room worked out from the test
+  account): the phone listed Desk PC with what it was playing; chose it with nothing playing
+  here (hello, then Play steered it); "Play here" brought its song to the phone at its place
+  and paused it there; chose it while the phone played (the queue handed over, the phone
+  paused); Desk PC moved its music to the phone (`send-to`: the phone played it from the
+  PC's place), then paused the phone and set its volume to 60% (media volume 9 of 15).
+- **The relay restarted mid-jam**: the phone left the jam by itself (its own player back),
+  and entered the room again.
+- **A black hole** where the relay was (`slowlink hole`): the jam page says "Reconnecting to
+  the jam…" after two waits have failed (each is given 40 s, as Windows gives it: about
+  ninety seconds); with the link back, the host's next skip arrived.
+
+**Rule 1 with dumpsys** (`dumpsys activity services org.medianexus.music`, and established
+connections to port 8099 in `/proc/net/tcp6`):
+
+| The phone | Services | Connections to the relay |
+|---|---|---|
+| app in front, nothing playing, linking on | the playback service only | 2 (the room, its session) |
+| 15 s after going to the background, nothing playing | none | 0 (closed: TIME_WAIT only) |
+| hosting a jam, app in front | the playback service; `JamService` in the foreground, type connected device | open |
+| in a jam, 20 s after going to the background | `JamService` in the foreground, type connected device | 3 (the jam, the room, its session) |
+
+And **rule 2**: in the jam, with the app in the background, the phone's own media session
+stayed as it was (not playing); `input keyevent KEYCODE_MEDIA_PLAY_PAUSE` and
+`KEYCODE_MEDIA_NEXT` reached the host as pause and skip. (Before `onMediaButtonEvent` was
+used they reached the phone's own player, which refused them and showed its error line.)
+
+**Screens** (`~/.cache/nexus-music-android/shots/m6/`, beside Windows' jam window, its
+ConnectPanel and its strip): the jam page joined and searching, Now Playing, the queue sheet
+and Connect while joined, at the default size and at 360dp with 1.3 font scale; hosting at
+the default size. At the narrow size the strip's words take two lines above its two buttons;
+nothing is cut off and every control is at least 48dp.
+
+**Landscape**: the strip's words and buttons were on two rows and left the page a third of
+the height; they now share one line where there is room (600dp). Shot again after the fix.
+
+**The car check, release build** (`scripts/carcheck org.medianexus.music --nexus`): 48 passed,
+0 failed, 1 warning, as before M6. **Offline** (`--mode offline`, `scripts/slowlink cut`, an
+album downloaded first): 24 passed, 0 failed, 1 warning. **In a jam** (`--mode play --warm`,
+the phone joined): the car's Play is refused, its player says "When it's safe, open Nexus
+Music on your phone to start playing" with Play still offered, the phone's own music does not
+start, and the jam is untouched (the probe counts that as its one failure, since it expects
+music: the answer is the design's, rule 2). After Leave jam, the same Play plays (5 passed).
+
+**Measurements** (`scripts/measure org.medianexus.music`, release builds, hosting switched off,
+the same signed-in data, runs interleaved): the build before M6 (`c9e6603`): cold start 715
+ms (698 to 795) and 1296 ms (1237 to 1535); idle 77.3 and 76.3 MB. With M6: 794 ms (677 to 829),
+749 ms (704 to 817) and 1074 ms (988 to 1244); idle 76.4, 86.3 and 76.2 MB. The machine's
+load swung during these (the same build's start moved by 300 ms between runs); nothing stands
+out of that noise. With the feature off nothing of jams is made but one empty object the
+player's flows look at. Installed code 6.96 MB (6.74 before); release APK 6,886,870 bytes.
+
+**The order of choices** (`OrderOfChoicesTest`, in the real service with the app's own
+controller and an account on a stand-in server): each case seen to fail with its fix taken
+out: resuming and a tap on a queue entry (an album's lookup held at a gate), a Play from a
+list carrying its tap's place (a newer choice taken while it was on its way), a Play waiting
+for the saved queue (a Stop while it waited, held at a test-only gate after the wait), a Play
+waiting for a call (a Stop meanwhile), a retry of a failed song (a Stop before it was due), a
+Pause while already paused (a lookup held at a gate). The reviewer's end-to-end case (a list
+playing, an album's Play looked up, Pause and Play again, the album's songs arriving last)
+ends playing the list.
+
+**The whole suite**: `scripts/check --release` passed (1051 run, 0 failed, 5 skipped; lint
+clean; one earlier run had lint itself crash while another engineer's files were changing,
+and it did not come back). The unit suite with `--no-build-cache --rerun-tasks` three times in
+a row on the last commit in a scratch worktree: 1051 run, 0 failed each time. (In the shared
+tree two runs were spoiled by another engineer's work in progress: a scratch test that didn't
+compile, and their new `SwitchedOffTest`.)
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
