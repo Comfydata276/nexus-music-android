@@ -72,8 +72,15 @@ object Belongs {
     /**
      * What an earlier build left as an account's shared choices, as the core keeps them.
      *
-     * - From a build that kept them itself (`mark` 1): what it had agreed with the server
-     *   as it was, and each change still waiting made again, in order.
+     * - From a build that kept them itself (`mark` 1; 0.4.0, which had keeping in step
+     *   switched off and so had agreed nothing): what the person changed there was never a
+     *   statement about their other devices. Its theme, and each list's shuffle and sort,
+     *   are offered as chosen "long ago": they lose to anything chosen since on any device,
+     *   and are what goes into the record only where nobody has said anything. A playlist
+     *   pinned there stays a pin still to be shared: it is added to the other devices'
+     *   pins, and replaces nothing. (What a build of that kind had really agreed with the
+     *   server is kept as it was, with a change on top of it still a change: the core's
+     *   layer decides which, [Core.adopt].)
      * - From the build before that (`mark` 0): its pins, list choices and theme, shown as
      *   they were and agreed with nobody. Their times were put on by rules since thrown out
      *   (the whole value stamped "now" from whatever the phone held), so the core is told to

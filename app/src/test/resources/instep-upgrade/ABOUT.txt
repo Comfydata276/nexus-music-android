@@ -12,3 +12,15 @@ What matters in them: a pin, a theme and two lists' choices, each with a time th
 on as it was changed, under whichever account was signed in; and a note that dates SONG_2 to
 the moment that build happened to look at the playlist (1795000300), which is not when the
 song was added.
+
+settings-0.4.0.json is what a phone holds that has been on 0.4.0, the build that had keeping
+in step built and switched off: every setting by the name that build's code gave it
+(store/Settings.kt at 082dfdb), written out by hand from that code and checked against the
+file an installed 0.4.0 wrote on the emulator. ACCOUNT stands for the account's key, and
+PLAYLIST_A, PLAYLIST_B and PLAYLIST_C for ids.
+
+What matters in it: that build never exchanged, so nothing is agreed; it kept what the
+person changed as changes, waiting, with no time on them (a playlist pinned, another
+unpinned again, a list's shuffle, another's sort, a theme), under the account they were
+made for, with its mark (1). None of it was ever a statement about the person's other
+devices: what a later build does with each is in UpgradeTest and docs/DESIGN.md.

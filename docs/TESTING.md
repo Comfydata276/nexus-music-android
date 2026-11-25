@@ -2225,7 +2225,7 @@ code, the tests run, and the code put back (25 November 2026, on the tree as it 
 | The plays that came are not put on the disk before anything is taken in (step 5) | `nothingIsTakenInOrWrittenUntilThePlaysThatCameAreOnTheDisk`, `whatIsTakenInIsOnTheDiskWhenTheExchangeIsDone`, `aFreshPhoneLeavesThePCsRecordExactlyAsItIs` |
 | An exchange goes on although what it took in could not be kept (step 6, `PhoneShared.take`) | `ifWhatCameCannotBeKeptTheExchangeHasFailedAndNothingIsWritten` |
 | A change to the settings shows before it is on the disk (`SettingsStore.commit`) | `aCheckedWriteOfTheSettingsIsOnTheDiskBeforeItShowsOrIsNotMade`, and the one above |
-| The record as found is not kept before the first write (step 7.1) | `theRecordAsFoundIsKeptBeforeTheFirstWriteAndNeverWrittenAgain`, `anEmptyRecordIsKeptAsAnEmptyFile`, `ifTheCopyCannotBeKeptNothingIsSent`, `aPhoneFromTheBuildBeforeTheSharedCoreKeepsWhatItHadAgreedAndWhatWasWaiting` |
+| The record as found is not kept before the first write (step 7.1) | `theRecordAsFoundIsKeptBeforeTheFirstWriteAndNeverWrittenAgain`, `anEmptyRecordIsKeptAsAnEmptyFile`, `ifTheCopyCannotBeKeptNothingIsSent`, `aPhoneFromTheBuildBeforeTheSharedCoreKeepsWhatItHadAgreedAndThePinsThatWereWaiting` |
 | The kept copy is written over if it is there (`PhoneShared.keepFirst`) | `theRecordAsFoundIsKeptBeforeTheFirstWriteAndNeverWrittenAgain`, `anEmptyRecordIsKeptAsAnEmptyFile` |
 | The write is sent without asking again whether this is still the account, with sharing on (step 7.3) | `eachRequestThatChangesTheServerIsAskedAboutFirst` |
 | An exchange that is let go drops its write half-way (steps 7.3 and 7.4 no longer run to their answer) | `anExchangeLetGoIsStillOnItsWayUntilItsWriteHasAnswered` |
@@ -2252,8 +2252,11 @@ follows the first; a clock five minutes out takes in and shares nothing; what th
 stops at is left as it is and said in Diagnostics; a phone with nothing to say makes no
 record and fills no empty one; what only the phone has (a list or a theme Windows doesn't)
 is not shared; nothing chosen under one account is in another's record; a phone from the
-build before the shared core keeps what it had agreed and what was waiting; 0.3.0's files
-(`UpgradeTest`) give a PC's record nothing to write; every test of `sync/` has a time limit.
+build before the shared core keeps what it had really agreed and the pins that were waiting;
+0.3.0's files (`UpgradeTest`) give a PC's record nothing to write; 0.4.0's files (the same,
+`settings-0.4.0.json`) add the playlist pinned there to the PC's pins and lose to the PC on
+the theme and a sort, a shuffle the PC said nothing about going in as chosen long ago, and
+are what goes into a record nobody has written yet; every test of `sync/` has a time limit.
 
 **3. With PCs on the Windows app's code, through a real server** (`scripts/instep-check`,
 `InStepLiveTest`). The script starts a server of its own (`scripts/server --instance step`,
@@ -2279,10 +2282,14 @@ it given as options. Each test begins with no sync playlist on the server. Run 2
 4. **A pin made while the phone's first read is on its way**, and the process killed: the
    phone, started again over the same files, shows its pin; after its exchange the PC holds
    its two with the phone's third, and so does the phone.
-5. **A phone with 0.4.0's files**, as that build wrote them (its mark, the account they were
-   taken on for, nothing agreed, a pin, a shuffle and a theme waiting): after one exchange
-   the PC's pin and sort stand, the phone's three changes are on top, and the kept copy is
-   the record as it was.
+5. **A phone with 0.4.0's files**, as that build wrote them (the fixture: its mark, the
+   account they were taken on for, nothing agreed; a playlist pinned, another unpinned
+   again, a shuffle, a sort and Rose, all waiting). The PC has since chosen Ember and a sort
+   of its own for the same playlist. After the phone's one exchange: **every device ends on
+   Ember and the PC's sort**, with the times the PC put on them; the PC's pin stands (the
+   waiting unpin does not take it) with the phone's after it; the shuffle of a list the PC
+   said nothing about is in the record as chosen long ago; the kept copy is the record as
+   it was.
 6. **The reviewer's case**: the phone pins; the server takes the write; the answer never
    reaches the phone and its process is killed. The PC sees the pin and unpins it. The
    phone, started again, makes the pin again on top of the unpin: known, accepted and
@@ -2328,11 +2335,11 @@ from the pinned commit), 25 November 2026. The evidence is in
 - **The upgrade from 0.4.0.** A debug build of 0.4.0's commit installed and signed in; a
   playlist pinned and Rose chosen on it (its settings then hold both as waiting, mark 1).
   A PC writes its record (293 bytes: a pin, Ember, a sort). This build installed over it and
-  started: the pins are the PC's with the phone's after it, the theme the phone's, the PC's
-  sort as it was; the kept copy is the 293 bytes; mark 2, nothing waiting; a further
-  exchange writes nothing. **Note what this means for a real phone**: the theme chosen on
-  0.4.0, before the PC chose its own, is the one every device ends with (docs/DESIGN.md,
-  "What an earlier build left").
+  started: the pins are the PC's with the phone's after it, the PC's sort as it was; the
+  kept copy is the 293 bytes; mark 2, nothing waiting; a further exchange writes nothing.
+  (This run was made while 0.4.0's waiting changes were still taken on as changes, and the
+  theme every device ended on was the phone's. They are now offered as chosen long ago:
+  the end-to-end check above has the rule as it is, and every device ending on the PC's.)
 - **The queue.** Saved by the PC (three songs, the second, ten seconds in): the app brought
   to the front takes it up, paused, at that song and place (not within ten seconds of its
   last look, when it does not look). With the phone playing Liked songs and the PC saving

@@ -200,12 +200,20 @@ object Core {
     private class AdoptIn(val agreed: AgreedFormerly, val waiting: List<WaitingFormerly>, val account: String, val demote: Boolean, val usualTheme: String)
 
     /**
-     * The choices a build from before the shared core kept, as the core keeps them: what it
-     * had agreed as it was, and each change still waiting made again, in order. Once, at
-     * the upgrade. `demote`: the times on `agreed` are not the record's (an earlier build
-     * still stamped whole values with "now"), so each choice is kept as chosen "long ago":
-     * offered, and losing to anything chosen since on any device (`Agreed::from_stamped`).
-     * `usualTheme` is the theme nobody chose.
+     * The choices a build from before the shared core kept, as the core keeps them. Once,
+     * at the upgrade.
+     *
+     * `waiting` are the changes that build still had waiting. One to something it had never
+     * agreed with the server (all of them, on a phone from 0.4.0, which never exchanged) is
+     * not kept as a change: a theme, a list's shuffle and its sort become what the phone
+     * holds as chosen "long ago", offered and losing to anything chosen since on any
+     * device; a pin stays a pin of that one playlist, to be added to whatever pins the
+     * server has; an unpin is dropped. One to something that had been agreed, at the
+     * record's own time, is a change still.
+     *
+     * `demote`: the times on `agreed` are not the record's (an earlier build still stamped
+     * whole values with "now"), so each of those is kept as chosen "long ago" too
+     * (`Agreed::from_stamped`). `usualTheme` is the theme nobody chose.
      */
     fun adopt(agreed: AgreedFormerly, waiting: List<WaitingFormerly>, account: String, demote: Boolean = false, usualTheme: String = ""): JsonElement =
         across(AdoptIn(agreed, waiting, account, demote, usualTheme), AdoptIn.serializer(), choices, ::adopt)

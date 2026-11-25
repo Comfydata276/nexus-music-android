@@ -52,6 +52,14 @@ class UpgradeTest {
         return PretendPhone(root, account, scope).also { phones += it }
     }
 
+    /** A phone whose files are 0.4.0's (it had keeping in step built and switched off, and
+     *  kept the person's changes waiting), opened by this build for the account "a". */
+    private fun from040(settings: (String) -> String = { it }): PretendPhone {
+        val root = folder.newFolder()
+        File(root, "settings.json").writeText(settings(fixture("settings-0.4.0.json").replace("ACCOUNT", "a").replace("PLAYLIST_B", "pl-b").replace("PLAYLIST_C", "pc-pin")))
+        return PretendPhone(root, "a", scope).also { phones += it }
+    }
+
     /** What the person's PC has shared: its own pins, theme and sort for the playlist, and
      *  the day the second song really was added, long before the phone looked. */
     private val pc = Shared(
@@ -132,5 +140,103 @@ class UpgradeTest {
             Shared(layout = 1, pins = listOf("old"), pinsAt = LONG_AGO, theme = "Ocean", themeAt = LONG_AGO, lists = mapOf("songs" to SharedPrefs(sort = 1, at = LONG_AGO))),
             SharedText.read(empty.comment(empty.made.single())!!),
         )
+    }
+
+    @Test
+    fun whatWasChosenOn040LosesToAnythingChosenSinceAndItsPinsAreAddedToThePCs() = runBlocking {
+        // 0.4.0 shared nothing a person could see: a theme or a sort chosen there was never
+        // a statement about the PCs, which hold the person's real choices.
+        val text = SharedText.write(pc)
+        val server = PretendServer().apply { put("r", text) }
+        val phone = from040()
+        // Until it has heard from the server, it shows what it showed.
+        assertEquals(listOf("pl-b") to "Rose", phone.settings.value.let { it.pinnedPlaylists to it.theme })
+        assertEquals(Belongs.MARK, phone.settings.value.stepMark)
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        val record = SharedText.read(server.comment("r")!!)!!
+        // The playlist pinned on the phone is added to the PC's pins: a pin is something the
+        // person did, and it replaces nothing. The unpin that was waiting took back a pin
+        // of the phone's own, and does not take the PC's.
+        assertEquals(listOf("pc-pin", "pl-b"), record.pins)
+        // The PC's theme and its sort for the playlist stand, with the times they had.
+        assertEquals("Ember" to pc.themeAt, record.theme to record.themeAt)
+        assertEquals(pc.lists.getValue("playlist:pl-a"), record.lists.getValue("playlist:pl-a"))
+        // The shuffle of a list the PC has said nothing about is offered, as chosen long ago.
+        assertEquals(SharedPrefs(shuffle = true, at = LONG_AGO), record.lists.getValue("liked"))
+        assertEquals(pc.added, record.added)
+        // And the phone now shows what every device shows.
+        val s = phone.settings.value
+        assertEquals(listOf("pc-pin", "pl-b") to "Ember", s.pinnedPlaylists to s.theme)
+        assertEquals(3 to true, s.lists.getValue("playlist:pl-a").let { it.sort to it.descending })
+        assertTrue(s.lists.getValue("liked").shuffle)
+        // Nothing is left waiting: a second exchange writes nothing.
+        val wrote = server.writes.size
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(wrote, server.writes.size)
+    }
+
+    @Test
+    fun whatWasChosenOn040IsWhatGoesIntoARecordNobodyHasWrittenYet() = runBlocking {
+        // No PC has shared anything: then the phone's are the only choices there are.
+        val server = PretendServer()
+        val phone = from040()
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(
+            Shared(
+                layout = 1, pins = listOf("pl-b"), pinsAt = PRETEND_NOW, theme = "Rose", themeAt = LONG_AGO,
+                lists = mapOf("liked" to SharedPrefs(shuffle = true, at = LONG_AGO), "playlist:pl-a" to SharedPrefs(sort = 4, descending = true, sortChosen = true, at = LONG_AGO)),
+            ),
+            SharedText.read(server.comment(server.made.single())!!),
+        )
+        assertEquals(listOf("pl-b") to "Rose", phone.settings.value.let { it.pinnedPlaylists to it.theme })
+    }
+
+    @Test
+    fun aListThePCHasChosenAnythingForSinceIsThePCsWholeAndADefaultThemeChosenOn040IsOfferedToo() = runBlocking {
+        // A list's choices have one time between them: the PC shuffled the playlist, with no
+        // sort of its own, after 0.4.0's sort was chosen. The PC's entry is the newer, whole:
+        // the phone's sort goes with it. And nobody has chosen a theme on a PC: Violet,
+        // chosen on the phone on purpose (it is also the theme nobody chose), is offered.
+        val theirs = Shared(layout = 1, lists = mapOf("playlist:pl-a" to SharedPrefs(shuffle = true, at = 1_790_000_200)))
+        val server = PretendServer().apply { put("r", SharedText.write(theirs)) }
+        val phone = from040 { it.replace("Rose", "Violet") }
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        val record = SharedText.read(server.comment("r")!!)!!
+        assertEquals(theirs.lists.getValue("playlist:pl-a"), record.lists.getValue("playlist:pl-a"))
+        assertEquals("Violet" to LONG_AGO, record.theme to record.themeAt)
+        assertEquals(listOf("pl-b"), record.pins)
+        val shown = phone.settings.value.lists.getValue("playlist:pl-a")
+        assertEquals(Triple(true, 0, false), Triple(shown.shuffle, shown.sort, shown.sortChosen))
+        // A theme a PC then chooses is the newer.
+        val chosen = record.copy(theme = "Ember", themeAt = 1_790_000_900)
+        server.put("r", SharedText.write(chosen))
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals("Ember", phone.settings.value.theme)
+        assertEquals(chosen, SharedText.read(server.comment("r")!!))
+    }
+
+    @Test
+    fun whatWasPutAwayWithAnAccountBy040IsTakenOnTheSameWay() = runBlocking {
+        // 0.4.0 put an account's choices away with it when another signed in (`in-step.json`,
+        // as that build wrote it): brought out by this build, they are what its settings
+        // would have been.
+        // (The settings are another account's, "b", as 0.4.0 left them.)
+        val root = folder.newFolder()
+        File(root, "settings.json").writeText(fixture("settings-0.4.0.json").replace("ACCOUNT", "b").replace("PLAYLIST_B", "pl-b").replace("PLAYLIST_C", "pc-pin"))
+        File(root, "accounts/a").mkdirs()
+        File(root, "accounts/a/in-step.json").writeText(
+            """{"pinnedPlaylists":["mine"],"lists":{"liked":{"shuffle":true,"sort":0,"descending":false,"sortChosen":false,"at":1795000400}},"theme":"Rose",
+               "agreed":{"pins":[],"pinsAt":0,"theme":"","themeAt":0,"lists":{}},
+               "waiting":[{"what":"pin","key":"mine","on":false,"sort":0,"descending":false},{"what":"shuffle","key":"liked","on":true,"sort":0,"descending":false},{"what":"theme","key":"Rose","on":false,"sort":0,"descending":false}],"mark":1}""",
+        )
+        val back = PretendPhone(root, "a", scope).also { phones += it }
+        assertEquals(listOf("mine") to "Rose", back.settings.value.let { it.pinnedPlaylists to it.theme })
+        val server = PretendServer().apply { put("r", SharedText.write(pc)) }
+        assertEquals(InStep.Outcome.DONE, back.step(server).exchange())
+        val record = SharedText.read(server.comment("r")!!)!!
+        assertEquals(listOf("pc-pin", "mine"), record.pins)
+        assertEquals("Ember" to pc.themeAt, record.theme to record.themeAt)
+        assertEquals(SharedPrefs(shuffle = true, at = LONG_AGO), record.lists.getValue("liked"))
+        assertEquals("Ember", back.settings.value.theme)
     }
 }

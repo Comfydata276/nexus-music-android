@@ -482,9 +482,11 @@ class InStepContractTest {
     // ---- the upgrade from the build before the shared core ----------------------------------------
 
     @Test
-    fun aPhoneFromTheBuildBeforeTheSharedCoreKeepsWhatItHadAgreedAndWhatWasWaiting() = runBlocking {
-        // The settings as 0.4.0 wrote them: what it showed, what it had agreed with the
-        // server, and the changes still waiting (0.4.0 kept them whether or not sharing ran).
+    fun aPhoneFromTheBuildBeforeTheSharedCoreKeepsWhatItHadAgreedAndThePinsThatWereWaiting() = runBlocking {
+        // Settings as the build before the shared core wrote them, from a phone on which
+        // that build had exchanged (none released did: 0.4.0 had it switched off, and its
+        // own files are UpgradeTest's): what it showed, the pins it had agreed with the
+        // server, with the record's time, and the changes still waiting.
         val root = File(folder.root, "upgraded").apply { mkdirs() }
         File(root, "settings.json").writeText(
             """{"server":"https://music.example.org","username":"tester","pinned_playlists":["p9","mine"],"theme":"Ocean",
@@ -500,14 +502,18 @@ class InStepContractTest {
         assertNotNull(phone.settings.value.choices)
         assertEquals(Belongs.MARK, phone.settings.value.stepMark)
         assertTrue(phone.settings.value.waiting.isEmpty())
-        // Its first exchange, with a PC's record: the PC's pins are the newer and stand; the
-        // pin, the shuffle and the theme that were waiting are made on top of them.
+        // Its first exchange, with a PC's record: the PC's pins are the newer and stand, and
+        // the pin that was waiting is made on top of them. The theme and the shuffle that
+        // were waiting had never been agreed with anyone: they are offered as chosen long
+        // ago, so the PC's theme stands, and the shuffle of a list the PC has said nothing
+        // about goes in with that time.
         val server = PretendServer().apply { put("a", windows) }
         assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
         val now = record(server)
         assertEquals(listOf("p1", "p2", "mine"), now.pins)
-        assertEquals("Ocean", now.theme)
-        assertTrue(now.lists.getValue("liked").shuffle)
+        assertEquals("Ember" to 1_700_000_100L, now.theme to now.themeAt)
+        assertEquals(SharedPrefs(shuffle = true, at = 1), now.lists.getValue("liked"))
+        assertEquals("Ember", phone.settings.value.theme)
         // Nothing else of the PC's was touched.
         assertEquals(SharedText.read(windows)!!.added, now.added)
         assertEquals(SharedText.read(windows)!!.lists.getValue("playlist:p1"), now.lists.getValue("playlist:p1"))

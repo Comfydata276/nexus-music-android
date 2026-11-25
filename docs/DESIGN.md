@@ -2736,16 +2736,24 @@ change the server run to their answer whatever has become of whoever asked.
     the file): kept for the phone's own "Date added", never shared. The files as 0.3.0
     wrote them are a fixture (`app/src/test/resources/instep-upgrade`).
   - *0.4.0, which had the Kotlin rules switched off*: it kept the person's changes as
-    changes, waiting (`waiting`), and what it had agreed (`agreed`, empty on a real phone,
-    since it never exchanged). The core takes both on as they are: what was agreed, agreed;
-    each waiting change a change still waiting, under the account it was made for. **So
-    what the person pinned, sorted, shuffled or chose as a theme on 0.4.0 goes out at the
-    first exchange, on top of what the PCs have then**, as it would have had that build
-    been allowed to exchange. A pin adds to the PCs' pins; a theme or a sort chosen on the
-    phone at any time since 0.4.0 was installed replaces the PCs' on every device, however
-    long ago it was chosen. (Whether that is wanted is a decision, not a fault of the
-    code: the other choice is to offer them as "long ago", so that anything chosen since
-    on a PC stands.)
+    changes, waiting, with no time on them, and had agreed nothing (it never exchanged).
+    **Nothing chosen there was a statement about the person's other devices**: that build
+    shared nothing a person could see, and the PCs hold the real choices. So what it left
+    carries no weight against anything chosen since on any device, as for 0.3.0 above
+    (`Core.adopt`; the fixture `instep-upgrade/settings-0.4.0.json`):
+    - its **theme**, and each list's **shuffle** and **sort**, are held as chosen "long
+      ago" (Windows' time for a choice that had none): offered, losing to whatever any
+      device has chosen, and going into the record only where nobody has said anything.
+      Rose chosen on 0.4.0 and Ember on a PC, in either order: every device ends on Ember.
+    - a **playlist pinned** there stays a pin still to be shared, of that one playlist: at
+      the first exchange it is added after the pins the PCs have, and replaces nothing.
+      The pins are the exception because a pin is something the person did and expects to
+      keep; offered as a whole list chosen long ago, the phone's list would lose to the
+      PCs' and the playlist would no longer be pinned on the phone. An **unpin** that was
+      waiting took back a pin of the phone's own (that build never showed the PCs' pins)
+      and is dropped: it does not unpin anything on a PC.
+    - (A waiting change to something that build *had* agreed with the server, at the
+      record's own time, would be a change still. No released build is in that state.)
 - **When an exchange runs on a phone, and what it costs** (C2). At start (once the account's
   stores are read); **each minute while the app's screens are in front**; when they come to
   the front (not within ten seconds of the last); when the server comes back or sharing is

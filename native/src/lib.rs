@@ -389,28 +389,68 @@ struct AdoptIn {
 }
 
 /// The choices a build from before the shared core kept (what it had agreed, and the
-/// changes still waiting, as it wrote them), as the core keeps them: agreed as it was, and
-/// each waiting change made again, in order, under the account. Done once, at the upgrade.
+/// changes still waiting, as it wrote them), as the core keeps them. Done once, at the
+/// upgrade.
+///
+/// The released build that kept changes waiting (0.4.0) had keeping in step switched off:
+/// it never exchanged, so it had agreed nothing, and nothing chosen on it was a statement
+/// about the person's other devices. So a waiting change to something **never agreed with
+/// the server** is not a change any more:
+///
+/// * a theme, a list's shuffle and a list's sort become what the device holds, as chosen
+///   "long ago" ([`sync::LONG_AGO`], as [`Agreed::from_stamped`] has what an earlier build
+///   stamped): offered, and losing to anything chosen since on any device;
+/// * a pin stays a change, of that one playlist: it is added to whatever pins the server
+///   has, and replaces nothing. (As a whole list chosen long ago it would lose to the other
+///   devices' list, and the playlist the person pinned would no longer be pinned.) An unpin
+///   took back a pin of the device's own, and is dropped: the device never showed the
+///   other devices' pins, so it was never a wish to unpin one of theirs.
+///
+/// A waiting change to something that **had** been agreed with the server, at the record's
+/// own time (a build that did exchange: none released), is a change still, made again in
+/// order under the account.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_adopt<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |given: AdoptIn| {
-        let agreed = if given.demote {
+        let mut agreed = if given.demote {
             let lists = given.agreed.lists.iter().map(|(key, prefs)| (key.clone(), ListPrefs { at: 0, ..*prefs })).collect();
             Agreed::from_stamped(&given.agreed.pins, 0, &given.agreed.theme, 0, &lists, &given.usual_theme)
         } else {
             given.agreed
         };
-        let mut choices = Choices { agreed, ..Default::default() };
+        // Whether each was agreed with the server, as the build that wrote this had it.
+        let pins_agreed = agreed.pins_at > sync::LONG_AGO;
+        let theme_agreed = agreed.theme_at > sync::LONG_AGO;
+        let lists_agreed: HashSet<String> = agreed.lists.iter().filter(|(_, prefs)| prefs.at > sync::LONG_AGO).map(|(key, _)| key.clone()).collect();
+        let mut still = Vec::new();
         for was in given.waiting {
-            let change = match was.what.as_str() {
-                "pin" => Change::Pin(was.key),
-                "unpin" => Change::Unpin(was.key),
-                "shuffle" => Change::Shuffle { key: was.key, on: was.on },
-                "sort" if was.sort >= 0 => Change::Sort { key: was.key, sort: was.sort as usize, descending: was.descending },
-                "theme" => Change::Theme(was.key),
+            match was.what.as_str() {
+                "pin" => still.push(Change::Pin(was.key)),
+                "unpin" if pins_agreed => still.push(Change::Unpin(was.key)),
+                // (The last word on that playlist: a pin of it made before is taken back.)
+                "unpin" => still.retain(|change| *change != Change::Pin(was.key.clone())),
+                "shuffle" if lists_agreed.contains(&was.key) => still.push(Change::Shuffle { key: was.key, on: was.on }),
+                "shuffle" => {
+                    let prefs = agreed.lists.entry(was.key).or_default();
+                    *prefs = ListPrefs { shuffle: was.on, at: sync::LONG_AGO, ..*prefs };
+                }
+                "sort" if was.sort < 0 => {}
+                "sort" if lists_agreed.contains(&was.key) => still.push(Change::Sort { key: was.key, sort: was.sort as usize, descending: was.descending }),
+                "sort" => {
+                    let prefs = agreed.lists.entry(was.key).or_default();
+                    *prefs = ListPrefs { sort: was.sort as usize, descending: was.descending, sort_chosen: true, at: sync::LONG_AGO, ..*prefs };
+                }
+                "theme" if theme_agreed => still.push(Change::Theme(was.key)),
+                "theme" => {
+                    agreed.theme = was.key;
+                    agreed.theme_at = sync::LONG_AGO;
+                }
                 // (Nothing an earlier build wrote.)
-                _ => continue,
-            };
+                _ => {}
+            }
+        }
+        let mut choices = Choices { agreed, ..Default::default() };
+        for change in still {
             choices.change(&given.account, change);
         }
         Ok(choices)

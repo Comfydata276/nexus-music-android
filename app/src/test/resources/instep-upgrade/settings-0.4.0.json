@@ -1,0 +1,111 @@
+{
+    "server": "",
+    "username": "",
+    "shuffle": false,
+    "repeat": 0,
+    "bitrate": 0,
+    "scrobble": true,
+    "crossfade": 0.0,
+    "gapless": true,
+    "autoplay": true,
+    "normalize": false,
+    "volume_level": 1,
+    "level_mode": 0,
+    "untagged_db": -6.0,
+    "mono": false,
+    "equalizer": false,
+    "eq_gains": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+    ],
+    "eq_preamp": 0.0,
+    "eq_saved": [],
+    "cache_limit_mb": 2048,
+    "cache_ahead": 3,
+    "download_quality": 0,
+    "download_wifi_only": true,
+    "offline": false,
+    "pinned_playlists": [
+        "PLAYLIST_B"
+    ],
+    "lists": {
+        "liked": {
+            "shuffle": true,
+            "sort": 0,
+            "descending": false,
+            "sort_chosen": false,
+            "at": 1795000400
+        },
+        "playlist:PLAYLIST_A": {
+            "shuffle": false,
+            "sort": 4,
+            "descending": true,
+            "sort_chosen": true,
+            "at": 1795000500
+        }
+    },
+    "theme": "Rose",
+    "sync": true,
+    "device_id": "0badf00d",
+    "sync_playlist": "",
+    "pins_at": 0,
+    "theme_at": 0,
+    "agreed": {
+        "pins": [],
+        "pins_at": 0,
+        "theme": "",
+        "theme_at": 0,
+        "lists": {}
+    },
+    "waiting": [
+        {
+            "what": "pin",
+            "key": "PLAYLIST_B",
+            "on": false,
+            "sort": 0,
+            "descending": false
+        },
+        {
+            "what": "unpin",
+            "key": "PLAYLIST_C",
+            "on": false,
+            "sort": 0,
+            "descending": false
+        },
+        {
+            "what": "shuffle",
+            "key": "liked",
+            "on": true,
+            "sort": 0,
+            "descending": false
+        },
+        {
+            "what": "sort",
+            "key": "playlist:PLAYLIST_A",
+            "on": false,
+            "sort": 4,
+            "descending": true
+        },
+        {
+            "what": "theme",
+            "key": "Rose",
+            "on": false,
+            "sort": 0,
+            "descending": false
+        }
+    ],
+    "step_mark": 1,
+    "shared_for": "ACCOUNT",
+    "jam_host": false,
+    "jam_relay": "",
+    "jam_name": "",
+    "jam_guests_control": true,
+    "link_devices": true,
+    "device_name": "",
+    "local_network_refused_for_good": false,
+    "download_notifications_asked": true
+}

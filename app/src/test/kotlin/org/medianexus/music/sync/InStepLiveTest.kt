@@ -253,26 +253,20 @@ class InStepLiveTest {
     }
 
     @Test
-    fun aPhoneWith040sFilesIsUpgradedAndKeepsWhatWasWaiting() {
+    fun aPhoneWith040sFilesIsUpgradedAndWhatItChoseLosesToWhatThePCChose() {
         assumeTrue("run by scripts/instep-check", live())
         fresh()
         val api = client()
         val lib = library(api)
-        say("5. A phone with 0.4.0's files (that build kept the person's changes, waiting, though it shared nothing), upgraded to this one, meets a PC's record.")
+        say("5. A phone with 0.4.0's files (that build kept the person's changes, waiting, though it shared nothing): a playlist pinned, Rose chosen, a sort and a shuffle. The PC then chooses Ember, and a sort of its own. The phone is upgraded to this build.")
         val pc = Pc("pc-five")
         assertTrue(pc.exchange("--pin", lib.p1, "--theme", "Ember", "--sort", "playlist:${lib.p1}=2,asc").wrote())
         val before = peek().text("comment")!!
-        // The settings as 0.4.0 wrote them (store/Settings.kt and sync/Belongs.kt at 082dfdb;
-        // the fields that matter here, by their names there, the rest at what that build
-        // took them to be when absent): what it showed, the account they were taken on
-        // for, its mark, nothing agreed, and three changes waiting.
+        // The settings as 0.4.0 wrote them (the fixture: see its ABOUT.txt), real ids put in.
         val root = folder.newFolder()
         File(root, "settings.json").writeText(
-            """{"server":"$server","username":"tester","pinned_playlists":["${lib.p2}"],"theme":"Rose",
-               "lists":{"liked":{"shuffle":true,"sort":0,"descending":false,"sort_chosen":false,"at":1790000000}},
-               "sync":true,"device_id":"0badf00d","agreed":{"pins":[],"pins_at":0,"theme":"","theme_at":0,"lists":{}},
-               "waiting":[{"what":"pin","key":"${lib.p2}"},{"what":"shuffle","key":"liked","on":true},{"what":"theme","key":"Rose"}],
-               "step_mark":1,"shared_for":"a"}""",
+            javaClass.getResource("/instep-upgrade/settings-0.4.0.json")!!.readText()
+                .replace("ACCOUNT", "a").replace("PLAYLIST_A", lib.p1).replace("PLAYLIST_B", lib.p2).replace("PLAYLIST_C", lib.p1),
         )
         val phone = phoneIn(root)
         assertEquals(listOf(lib.p2) to "Rose", phone.settings.value.let { it.pinnedPlaylists to it.theme })
@@ -280,15 +274,21 @@ class InStepLiveTest {
         assertEquals("the record as it found it, kept before its first write", before, phone.keptFirst.readText())
         val out = pc.exchange()
         assertFalse(out.wrote())
-        // The PC's pin stands, with the phone's on top; the phone's theme, chosen there, is
-        // the newer; the list's shuffle arrived; the PC's sort is as it was.
+        // The PC's pin stands (the unpin that was waiting on the phone took back a pin of
+        // the phone's own, and does not take the PC's), with the phone's after it.
         assertEquals(listOf(lib.p1, lib.p2), out.pins())
-        assertEquals("Rose", out.text("theme"))
+        // What was chosen on 0.4.0 was never a statement about the PCs: the PC's theme and
+        // its sort stand, on every device.
+        assertEquals("Ember", out.text("theme"))
         val now = record()
-        assertTrue(now.lists.getValue("liked").shuffle)
+        assertEquals(SharedText.read(before)!!.let { it.theme to it.themeAt }, now.theme to now.themeAt)
         assertEquals(SharedText.read(before)!!.lists.getValue("playlist:${lib.p1}"), now.lists.getValue("playlist:${lib.p1}"))
-        assertEquals(listOf(lib.p1, lib.p2), phone.pins)
-        say("   the PC's pin and sort stand; the phone's pin, shuffle and theme, which had been waiting since 0.4.0, are on top; a copy of the record as it was is on the phone")
+        // The shuffle of a list the PC had said nothing about is offered, as chosen long ago.
+        assertEquals(SharedPrefs(shuffle = true, at = 1), now.lists.getValue("liked"))
+        val s = phone.settings.value
+        assertEquals(listOf(lib.p1, lib.p2) to "Ember", s.pinnedPlaylists to s.theme)
+        assertEquals(2 to false, s.lists.getValue("playlist:${lib.p1}").let { it.sort to it.descending })
+        say("   every device ends on Ember and the PC's sort; the PC's pin stands with the phone's after it; a copy of the record as it was is on the phone")
     }
 
     @Test
