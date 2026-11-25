@@ -129,7 +129,7 @@ impl New {
         self.take(&plan);
         let Some(write) = &plan.write else { return Came::Done { wrote: false, held: plan.held } };
         assert!(self.choices.sending(write), "decided and sent in one go: the plan fits the choices");
-        sync::send(client, write).expect("the write");
+        sync::send(client, write, &|| true).expect("the write").expect("it was sent");
         if hears {
             self.choices.written(write);
         }
@@ -286,7 +286,7 @@ pub fn household(options: &Options) -> i32 {
         device.take(&plan);
         let write = plan.write.expect("something to write");
         assert!(device.choices.sending(&write));
-        sync::send(&client, &write).expect("the write");
+        sync::send(&client, &write, &|| true).expect("the write").expect("it was sent");
         device.choices.written(&write);
     }
     let crossed = on_server(&client);

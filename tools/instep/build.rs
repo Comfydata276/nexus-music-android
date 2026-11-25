@@ -16,7 +16,7 @@
 //!
 //! From the version after 0.40.4 the exchange itself is decided in the library
 //! (`nexus_core::step`), and what this tool takes of `sync.rs` is the app's asking of the
-//! server: `read` and `send`, which are its first items (the cut is where `peek` begins;
+//! server: `read` and `send`, which are its first items (the cut is the line that says the app's own part follows;
 //! what follows applies a plan to the app's own settings, which are not here). Such a checkout is "stepped" (the `stepped` cfg, which main.rs goes
 //! by): it can play a whole household (`instep household`), and has no `pc` mode of its own,
 //! since the PC it would play is the code under test. A checkout at 0.40.4 or before has
@@ -59,7 +59,11 @@ fn main() {
     // Whether the exchange is the library's (see the top).
     let stepped = sync.contains("\npub fn read(client: &Client)") && sync.contains("\npub fn send(client: &Client");
     let end = if stepped {
-        sync.find("\n/// The theme the record has").expect("sync.rs: the start of `peek` not found")
+        // (The line the app's own part begins at; before that line was put in, it began
+        // with the look at the theme, `peek`.)
+        sync.find("\n// ---- what follows is this app's own")
+            .or_else(|| sync.find("\n/// The theme the record has"))
+            .expect("sync.rs: where the app's own part begins not found")
     } else {
         sync.find("\nimpl Controller {").expect("sync.rs: `impl Controller {` not found")
     };
