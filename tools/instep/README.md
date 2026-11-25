@@ -33,6 +33,10 @@ fetches its few crates into `~/.cache/nexus-music-android/cargo` the first time.
 here began as the Windows app's own, so serde and the rest are the releases Windows is built
 with.
 
+**It has no tests of its own** (`cargo test` here builds nothing to run; `test = false` in
+`Cargo.toml`): the Windows files carry the Windows app's tests, which need the rest of that
+app and are run there. What this tool checks, it checks by running.
+
 **When the Windows code changes**: run `tools/instep/run cases` and the unit tests. A case
 that no longer matches is a difference between the two apps: fix the Kotlin, or raise it.
 New awkward inputs go in `src/main.rs` (`read_texts`, `merge_pairs`, `play_lists`,

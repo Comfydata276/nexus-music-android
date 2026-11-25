@@ -7,6 +7,15 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+# A program to run, with no tests of its own: what it checks, it checks by running (`run
+# cases`, `run reads`, scripts/instep-check). The Windows files it compiles carry the
+# Windows app's tests, which need the rest of that app; they are tested there. So `cargo
+# test` here builds no test program.
+[[bin]]
+name = "instep"
+path = "src/main.rs"
+test = false
+
 # What the Windows files compiled here use, at the versions and features the Windows app
 # names for them (its Cargo.lock is copied in by `run`, so the very same releases are built).
 [dependencies]

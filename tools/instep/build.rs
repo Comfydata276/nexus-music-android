@@ -41,7 +41,9 @@ fn main() {
         write(&out, whole, &without_inner_docs(&read(whole)));
     }
     // added.rs names the library's `merge_notes` only for its own tests: the tool's way in.
-    let door = if split { "\n/// (The tool's.) The library's merge of two devices' notes.\n#[cfg(not(test))]\npub use nexus_core::notes::merge_notes;\n" } else { "" };
+    // (The file names it itself only under `cfg(test)`, and this program is never built as a
+    // test: see `test = false` in Cargo.toml.)
+    let door = if split { "\n/// (The tool's.) The library's merge of two devices' notes.\npub use nexus_core::notes::merge_notes;\n" } else { "" };
     write(&out, "added.rs", &(without_inner_docs(&read("added.rs")) + door));
 
     // sync.rs: everything before the part that needs the window.
