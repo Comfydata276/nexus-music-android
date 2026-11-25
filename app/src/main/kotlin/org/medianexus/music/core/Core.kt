@@ -415,8 +415,22 @@ object Core {
     fun gateParam(query: String, name: String): String? =
         acrossPrivately(GateParamIn(query, name), GateParamIn.serializer(), String.serializer().nullable, ::gateParam)
 
+    /**
+     * **The place Lidarr's address is, as the client that will connect to it takes it**
+     * (scheme, host and port: [CoreHttp.originOf] of the address as the library uses it).
+     * Null for an address the client can't use. A key belongs to this, is kept with it, and
+     * is sent nowhere else.
+     */
+    fun lidarrPlace(address: String): String? = CoreHttp.originOf(lidarrTidy(address))
+
+    /** The same for a sign-in service: where its code, its check and its token may go. */
+    fun servicePlace(service: String): String? = CoreHttp.originOf(service)
+
+    /** Whether an address has a name or a password written into it. */
+    fun namesSomeone(address: String): Boolean = CoreHttp.namesSomeone(lidarrTidy(address))
+
     @Serializable
-    private class GateFinishIn(val operation: Long, val door: SignInDoor, val code: String, val back: String, val secret: String)
+    private class GateFinishIn(val operation: Long, val door: SignInDoor, val code: String, val back: String, val secret: String, val bound: String?)
 
     /**
      * `gate::finish`: collects the token once the browser has come back with `code`.
@@ -424,21 +438,23 @@ object Core {
      * other is someone else's and is never handed to this.
      */
     suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String): Outcome<SignedIn> = CoreHttp.changing { operation ->
-        over(GateFinishIn(operation, door, code, back, secret), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
+        over(GateFinishIn(operation, door, code, back, secret, servicePlace(door.service)), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
     }
 
     @Serializable
-    private class GateOpenIn(val door: SignInDoor, val token: String)
+    private class GateOpenIn(val door: SignInDoor, val token: String, val bound: String?)
 
     /**
      * `gate::Session::new`: a sign-in that's been done, kept open in the library under the
      * number handed back ([LidarrAt.session]). `keep` is called with the token each time
      * the service replaces it, to put it away, and with "" when the service has stopped
-     * honouring it; it is called on one of the library's threads.
+     * honouring it; it is called on one of the library's threads. `bound` is the place the
+     * token was given for (kept with it): the token, and the passes it buys, are sent to
+     * the service there and nowhere else.
      */
-    suspend fun gateOpen(door: SignInDoor, token: String, keep: (String) -> Unit): Long = CoreHttp.aside {
+    suspend fun gateOpen(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), keep: (String) -> Unit): Long = CoreHttp.aside {
         wired
-        acrossPrivately(GateOpenIn(door, token), GateOpenIn.serializer(), Long.serializer(), ::gateOpen).also { CoreHttp.keeping(it, keep) }
+        acrossPrivately(GateOpenIn(door, token, bound), GateOpenIn.serializer(), Long.serializer(), ::gateOpen).also { CoreHttp.keeping(it, keep) }
     }
 
     /** `gate::Session::close`: ends the sign-in here and hands back its token, for handing
@@ -450,13 +466,14 @@ object Core {
     }
 
     @Serializable
-    private class GateGiveUpIn(val operation: Long, val service: String, val token: String)
+    private class GateGiveUpIn(val operation: Long, val service: String, val token: String, val bound: String?)
 
-    /** `gate::give_up_token`: tells the service a token is no longer wanted. Best effort. */
-    suspend fun gateGiveUp(door: SignInDoor, token: String) {
+    /** `gate::give_up_token`: tells the service a token is no longer wanted. Best effort.
+     *  `bound` is the place the token was given for: it is handed back there or not at all. */
+    suspend fun gateGiveUp(door: SignInDoor, token: String, bound: String? = servicePlace(door.service)) {
         CoreHttp.changing { operation ->
             wired
-            acrossPrivately(GateGiveUpIn(operation, door.service, token), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
+            acrossPrivately(GateGiveUpIn(operation, door.service, token, bound), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
         }
     }
 
@@ -770,6 +787,8 @@ object Core {
         val sleep: Long? = null,
         /** When the library says "keep going", if it does: "first", or "after the wait". */
         val keepGoing: String? = null,
+        /** Asked through a way out bound to this place, as one that carries a secret is. */
+        val bound: String? = null,
     )
 
     @Serializable
@@ -779,11 +798,11 @@ object Core {
     private class ProbeIn(
         val operation: Long, val line: String, val nobodys: Boolean, val method: String, val url: String,
         val headers: List<List<String>>, val body: String?, val patience: Long?, val pause: Long?, val then: String,
-        val sleep: Long?, @kotlinx.serialization.SerialName("keep_going") val keepGoing: String?,
+        val sleep: Long?, @kotlinx.serialization.SerialName("keep_going") val keepGoing: String?, val bound: String?,
     )
 
     private fun probing(probe: Probe) = { operation: Long ->
-        val given = ProbeIn(operation, probe.line, probe.nobodys, probe.method, probe.url, probe.headers, probe.body, probe.patience, probe.pause, probe.then, probe.sleep, probe.keepGoing)
+        val given = ProbeIn(operation, probe.line, probe.nobodys, probe.method, probe.url, probe.headers, probe.body, probe.patience, probe.pause, probe.then, probe.sleep, probe.keepGoing, probe.bound)
         over(given, ProbeIn.serializer(), Probed.serializer(), ::wireProbe)
     }
 

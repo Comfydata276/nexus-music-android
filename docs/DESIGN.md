@@ -2024,6 +2024,31 @@ it up. As on Windows:
   that write outlasts a power cut: the one it replaces no longer works. At sign-out of the
   music server the key is forgotten and the token handed back to its service; signing out
   of the sign-in alone hands the token back and keeps the rest.
+- **A secret belongs to the place it was given for, and is sealed with it.** The place is
+  the scheme, host and port **as the client that connects reads the address**
+  (`Core.lidarrPlace`, which is OkHttp's own reading of the address as the library uses
+  it): Lidarr's for the key, the sign-in service's for the token. Two things follow, and
+  neither depends on what a settings file says.
+  - *Before a secret is used*, the place kept with it is compared with where Lidarr (or the
+    service) now is. A key found beside an address that is another place is forgotten
+    there and then, and the state is "the key was forgotten": so the order in which the
+    address and the key are written does not matter, and the app being stopped between
+    the two writes, or one of them failing, cannot pair an old key with a new address.
+    `http` and `https`, or two ports, on one host are two places.
+  - *Before every send*, the client itself checks (`CoreHttp.sent`): each way out the
+    library is given for requests that carry a secret is bound to that place
+    (`wire::Host::bound`), every request goes up with it, and one that carries a key, a
+    pass or a body to anywhere else is not sent. It is the client's reading on purpose: an
+    address can be written so that one reader takes it for one host while the client
+    connects to another (`http://a.example\@b.example`), and what matters is where the
+    bytes go.
+- **An address with a name and password written into it** (`http://me:secret@host`) is
+  refused, in the phone's own words (`RequestsWords`), and nothing of it is kept: Lidarr is
+  given its key instead, and a settings file is no place for a password. The same for an
+  address the client can make nothing of. **What a sign-in service says of itself is not
+  trusted to be fit to keep**: a service whose address can't be used, or has a name in it,
+  is not kept or signed in to, and the name it gives whoever signed in is cut to eighty
+  printable characters on one line before it is written down.
 - **The sign-in uses the same way back as Windows**: `http://127.0.0.1:<port>/callback`.
   The app listens on the loopback address (`BrowserReturn`: one request, the `state` it
   made itself checked before anything else is believed) while the browser is open, so

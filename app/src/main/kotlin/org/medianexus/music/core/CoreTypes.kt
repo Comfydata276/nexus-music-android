@@ -243,9 +243,14 @@ sealed interface Outcome<out T> {
 /**
  * What a call to Lidarr is made with: where it is, its key, and the sign-in in front of it
  * if there is one (the number [Core.gateOpen] gave). Never printed: its key is a secret.
+ *
+ * `origin` is **the place the key was given for** ([Core.lidarrPlace]): a request with the
+ * key in it is sent there and nowhere else, whatever is made of `address`. Whoever keeps a
+ * key keeps this with it and hands over what was kept; left out, it is the place `address`
+ * itself is.
  */
 @Serializable
-class LidarrAt(val address: String, val key: String, val session: Long? = null) {
+class LidarrAt(val address: String, val key: String, val session: Long? = null, val origin: String? = Core.lidarrPlace(address)) {
     override fun toString(): String = "LidarrAt"
 }
 

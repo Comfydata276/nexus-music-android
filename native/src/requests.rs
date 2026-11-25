@@ -100,6 +100,10 @@ pub(crate) struct Connection {
     address: String,
     key: String,
     session: Option<u64>,
+    /// The place the key was given for, as the app's client names it: the only place a
+    /// request with the key in it is sent (`wire::Host::bound`).
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 impl Connection {
@@ -110,7 +114,7 @@ impl Connection {
             // (A sign-in that has been closed: as the library says when there is none.)
             Some(id) => Some(sessions(|open| open.get(&id).cloned()).ok_or(nexus_core::lidarr::NEEDED)? as Arc<dyn SignIn>),
         };
-        Ok(Lidarr::new(&self.address, &self.key, gate, Host::new(Whose::Operation(operation), Line::Lidarr)))
+        Ok(Lidarr::new(&self.address, &self.key, gate, Host::bound(Whose::Operation(operation), Line::Lidarr, self.origin.as_deref())))
     }
 }
 
@@ -165,6 +169,10 @@ struct FinishIn {
     code: String,
     back: String,
     secret: String,
+    /// The sign-in service's own place, as the app's client names it: where alone the code,
+    /// its check and the token it is traded for are sent.
+    #[serde(default)]
+    bound: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -179,7 +187,7 @@ struct SignedIn {
 pub extern "system" fn Java_org_medianexus_music_core_Core_gateFinish<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call_private(env, input, |given: FinishIn| {
         let _during = During::new(given.operation);
-        let http = Host::new(Whose::Operation(given.operation), Line::Lidarr);
+        let http = Host::bound(Whose::Operation(given.operation), Line::Lidarr, given.bound.as_deref());
         let done = gate::finish(http.as_ref(), &given.door.found(), &given.code, &given.back, &given.secret);
         Ok(outcome(done.map(|done| SignedIn { token: done.token, name: done.name })))
     })
@@ -189,6 +197,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_gateFinish<'l>(env: J
 struct OpenIn {
     door: Door,
     token: String,
+    /// The sign-in service's own place: where alone the token and what it buys are sent.
+    #[serde(default)]
+    bound: Option<String>,
 }
 
 /// `gate::Session::new`: a sign-in that's been done, kept open under the number handed
@@ -200,7 +211,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_gateOpen<'l>(env: JNI
         let id = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
         // Asked through a way out that is nobody's: a renewal replaces the token, and is
         // never cut off part-way (see `wire::Whose::Nobodys`).
-        let session = Session::new(given.door.found(), given.token, move |token| wire::keep(id, token), Host::new(Whose::Nobodys, Line::Lidarr));
+        let session = Session::new(given.door.found(), given.token, move |token| wire::keep(id, token), Host::bound(Whose::Nobodys, Line::Lidarr, given.bound.as_deref()));
         sessions(|open| open.insert(id, Arc::new(session)));
         Ok(id)
     })
@@ -218,6 +229,8 @@ struct GiveUpIn {
     operation: u64,
     service: String,
     token: String,
+    #[serde(default)]
+    bound: Option<String>,
 }
 
 /// `gate::give_up_token`: tells the service a token is no longer wanted. Best effort.
@@ -225,7 +238,7 @@ struct GiveUpIn {
 pub extern "system" fn Java_org_medianexus_music_core_Core_gateGiveUp<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call_private(env, input, |given: GiveUpIn| {
         let _during = During::new(given.operation);
-        gate::give_up_token(Host::new(Whose::Operation(given.operation), Line::Lidarr).as_ref(), &given.service, &given.token);
+        gate::give_up_token(Host::bound(Whose::Operation(given.operation), Line::Lidarr, given.bound.as_deref()).as_ref(), &given.service, &given.token);
         Ok(true)
     })
 }
@@ -494,6 +507,9 @@ struct ProbeIn {
     keep_going: Option<String>,
     /// What is done with the answer: "text", "json", "drop" or "panic".
     then: String,
+    /// Asked through a way out bound to this place, if one is given (`wire::Host::bound`).
+    #[serde(default)]
+    bound: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -521,7 +537,11 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_wireProbe<'l>(env: JN
             "listenbrainz" => Line::ListenBrainz,
             _ => Line::Lidarr,
         };
-        let http = Host::new(if given.nobodys { Whose::Nobodys } else { Whose::Operation(given.operation) }, line);
+        let whose = if given.nobodys { Whose::Nobodys } else { Whose::Operation(given.operation) };
+        let http = match given.bound.as_deref() {
+            Some(origin) => Host::bound(whose, line, Some(origin)),
+            None => Host::new(whose, line),
+        };
         let mut out = ProbeOut::default();
         if given.keep_going.as_deref() == Some("first") {
             http.keep_going();

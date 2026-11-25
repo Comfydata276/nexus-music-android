@@ -50,6 +50,18 @@ data class RequestsSettings(
     val door: SignInDoor? get() = if (service.isEmpty()) null else SignInDoor(service, client)
 }
 
+/** Sentences that are the phone's own (Settings'), for what the library is never asked. */
+object RequestsWords {
+    /** An address with a name and password written into it (`http://me:secret@host`). */
+    const val ADDRESS_WITH_NAME = "Leave the name and password out of the address. Lidarr is given its key instead."
+
+    /** An address the app's client can make nothing of. */
+    const val ADDRESS_UNUSABLE = "That address isn't one the app can use."
+
+    /** What answered at Lidarr's address pointed at a sign-in service the app can't use. */
+    const val SERVICE_UNUSABLE = "The sign-in in front of Lidarr gave an address the app can't use."
+}
+
 /** Where the connection to Lidarr stands. */
 sealed interface RequestsState {
     /** Requests are switched off. Nothing is asked of anyone. */
@@ -58,8 +70,11 @@ sealed interface RequestsState {
     /** Switched on, with no address or no key yet. */
     data object NotConnected : RequestsState
 
-    /** The address now given is on a different host, so the key that was kept was forgotten
-     *  (a key is only ever sent to the host it was typed in for) and none was given. */
+    /** The key that was kept was for a different place from the address now given, so it
+     *  was forgotten and none has been given since: **a key is only ever sent to the place
+     *  it was typed in for** (the same scheme, host and port). Also what a start comes to
+     *  that finds a key kept for another place than the address it has, however that came
+     *  about. */
     data object KeyForgotten : RequestsState
 
     /** Asking Lidarr whether it is there. */
@@ -129,11 +144,16 @@ class Requests internal constructor(
     private var opened = false
     private var unreadable = false
 
-    /** Lidarr's key, as last read or given. */
-    private var key: String? = null
+    /** Lidarr's key and the place it is for, as last read or given. */
+    private var key: RequestsSecrets.Bound? = null
 
-    /** The sign-in that is open in the library: which, and the library's number for it. */
-    private class Open(val door: SignInDoor, val session: Long)
+    /** A key was found kept for another place than Lidarr's address, and was forgotten;
+     *  until one is given, that is what there is to say. */
+    private var forgotten = false
+
+    /** The sign-in that is open in the library: which, the library's number for it, and the
+     *  place its token is for. */
+    private class Open(val door: SignInDoor, val session: Long, val place: String)
 
     private var open: Open? = null
 
@@ -169,6 +189,36 @@ class Requests internal constructor(
 
     private fun hostOf(door: SignInDoor): String = Core.gateHost(door.service)
 
+    /** Where Lidarr is, as the client that connects takes the address (see
+     *  [Core.lidarrPlace]); null for no address, or one it can't use. */
+    private fun placeOf(settings: RequestsSettings): String? = if (settings.address.isBlank()) null else Core.lidarrPlace(settings.address)
+
+    /**
+     * The key, **if the one that is kept is for where Lidarr now is.** One kept for any
+     * other place is forgotten here and now, whatever the settings say and however the two
+     * came to disagree (the app stopped between writing one and the other, a write that
+     * failed): it is never sent. Under [turn].
+     */
+    private fun keyFor(place: String): String? {
+        val kept = key ?: return null
+        if (kept.origin == place) return kept.secret
+        secrets.forgetKey()
+        key = null
+        forgotten = true
+        note("requests: the key that was kept was for another address than Lidarr's, so it was forgotten")
+        return null
+    }
+
+    /** The sign-in's token, if the one that is kept is for this service's own place; one
+     *  kept for another is forgotten, and never sent. Under [turn]. */
+    private fun tokenFor(door: SignInDoor): RequestsSecrets.Bound? {
+        val place = Core.servicePlace(door.service) ?: return null
+        val kept = secrets.token() ?: return null
+        if (kept.origin == place) return kept
+        secrets.forgetToken()
+        return null
+    }
+
     // ---- the way to Lidarr -----------------------------------------------------------------------
 
     /**
@@ -181,9 +231,10 @@ class Requests internal constructor(
     private suspend fun lidarrNow(): LidarrAt? {
         read()
         val settings = settingsNow.value
-        if (unreadable || !settings.on || settings.address.isBlank()) return null
-        val key = key ?: return null
-        return LidarrAt(settings.address, key, sessionFor(settings))
+        if (unreadable || !settings.on) return null
+        val place = placeOf(settings) ?: return null
+        val key = keyFor(place) ?: return null
+        return LidarrAt(settings.address, key, sessionFor(settings), place)
     }
 
     /** The sign-in in front of Lidarr, opened from what is kept if it isn't open yet. */
@@ -196,19 +247,19 @@ class Requests internal constructor(
             afterwards { Core.gateClose(now.session) }
         }
         if (door == null) return null
-        val token = secrets.token() ?: return null
-        val session = Core.gateOpen(door, token) { fresh -> tokenChanged(fresh) }
-        open = Open(door, session)
+        val token = tokenFor(door) ?: return null
+        val session = Core.gateOpen(door, token.secret, bound = token.origin) { fresh -> tokenChanged(token.origin, fresh) }
+        open = Open(door, session, token.origin)
         return session
     }
 
     /** The service replaced the token (every renewal does), or stopped honouring it (""):
      *  called by the library, on one of its threads, before the request that caused it is
      *  answered. */
-    private fun tokenChanged(fresh: String) {
+    private fun tokenChanged(place: String, fresh: String) {
         if (fresh.isEmpty()) {
             secrets.forgetToken()
-        } else if (!secrets.keepToken(fresh)) {
+        } else if (!secrets.keepToken(place, fresh)) {
             note("requests: the sign-in's new token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
         }
     }
@@ -237,6 +288,7 @@ class Requests internal constructor(
             if (!on) giveUpAttempt()
             write(settingsNow.value.copy(on = on, signingIn = false))
             key = if (on) secrets.key() else null
+            forgotten = false
             checks++
         }
         check()
@@ -245,34 +297,58 @@ class Requests internal constructor(
     /**
      * Saves where Lidarr is and its key, then connects: asks whether it answers and, if a
      * sign-in answers in its place, finds which. `key` blank leaves the key that is kept,
-     * unless the address is now on a different host: a key is only ever sent to the host it
-     * was typed in for. Ends in [RequestsState.Connected], [RequestsState.NeedsSignIn] (the
-     * caller then offers [signIn], or goes straight to it), or why not.
+     * **unless the address is now a different place** (another host, another port, `https`
+     * for `http`): a key is only ever sent to the place it was typed in for, so then it is
+     * forgotten ([RequestsState.KeyForgotten]). Ends in [RequestsState.Connected],
+     * [RequestsState.NeedsSignIn] (the caller then offers [signIn], or goes straight to
+     * it), or why not.
+     *
+     * An address with a name and password in it, or one the app can make nothing of, is
+     * refused ([RequestsState.Unreachable] with one of [RequestsWords]) and nothing of it
+     * is kept.
      */
     suspend fun connect(address: String, key: String): RequestsState = withContext(io) {
         val forgotten = turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
+            val typed = address.trim()
+            val place = if (typed.isEmpty()) null else Core.lidarrPlace(typed)
+            val refused = when {
+                typed.isEmpty() -> null
+                Core.namesSomeone(typed) -> RequestsWords.ADDRESS_WITH_NAME
+                place == null -> RequestsWords.ADDRESS_UNUSABLE
+                else -> null
+            }
+            if (refused != null) {
+                checks++
+                stateNow.value = RequestsState.Unreachable(refused)
+                return@withContext stateNow.value
+            }
             val before = settingsNow.value
-            val moved = Core.lidarrTidy(before.address) != Core.lidarrTidy(address)
-            val elsewhere = Core.lidarrHost(before.address) != Core.lidarrHost(address)
-            var next = before.copy(address = address.trim())
+            val moved = Core.lidarrTidy(before.address) != Core.lidarrTidy(typed)
+            var next = before.copy(address = typed)
             if (moved) {
                 // A sign-in belongs to the address it was found in front of.
                 dropSignIn(before)
                 next = next.copy(service = "", client = "", signedIn = "", signingIn = false)
             }
+            // (The order of these two writes does not matter, and neither does the app being
+            // stopped between them: the key is sealed with its place, and one found beside
+            // an address that is another place is never used. See [keyFor].)
             write(next)
-            val forgotten = key.isBlank() && elsewhere && secrets.key() != null
-            if (key.isNotBlank()) {
-                if (!secrets.keepKey(key.trim())) note("requests: Lidarr's key couldn't be kept on the phone, so it lasts only until the app is closed")
-                this@Requests.key = key.trim()
-            } else if (elsewhere) {
+            val kept = this@Requests.key ?: secrets.key()
+            val given = key.trim()
+            val forgotten = given.isEmpty() && kept != null && kept.origin != place
+            if (given.isNotEmpty() && place != null) {
+                if (!secrets.keepKey(place, given)) note("requests: Lidarr's key couldn't be kept on the phone, so it lasts only until the app is closed")
+                this@Requests.key = RequestsSecrets.Bound(place, given)
+            } else if (kept != null && kept.origin != place) {
                 secrets.forgetKey()
                 this@Requests.key = null
             } else {
-                this@Requests.key = secrets.key() ?: this@Requests.key
+                this@Requests.key = kept
             }
+            this@Requests.forgotten = forgotten
             checks++
             forgotten
         }
@@ -296,7 +372,10 @@ class Requests internal constructor(
     suspend fun keyHint(): String = withContext(io) {
         turn.withLock {
             read()
-            (key ?: secrets.key())?.let { Core.lidarrMask(it) }.orEmpty()
+            // (Only the key for where Lidarr now is: one for another place is not this
+            // address's, and is not hinted at.)
+            val place = placeOf(settingsNow.value)
+            (key ?: secrets.key())?.takeIf { it.origin == place }?.let { Core.lidarrMask(it.secret) }.orEmpty()
         }
     }
 
@@ -313,7 +392,11 @@ class Requests internal constructor(
             val settings = settingsNow.value
             val at = lidarrNow()
             if (at == null) {
-                stateNow.value = if (settings.on) RequestsState.NotConnected else RequestsState.Off
+                stateNow.value = when {
+                    !settings.on -> RequestsState.Off
+                    forgotten -> RequestsState.KeyForgotten
+                    else -> RequestsState.NotConnected
+                }
                 return@withContext stateNow.value
             }
             stateNow.value = RequestsState.Connecting
@@ -322,7 +405,11 @@ class Requests internal constructor(
         val checked = Core.lidarrCheck(at)
         turn.withLock {
             if (checks != mine) return@withContext stateNow.value
-            val found = (checked as? Outcome.Got)?.value?.door
+            val answered = (checked as? Outcome.Got)?.value?.door
+            // (A sign-in service whose address the client can make nothing of, or with a
+            // name and password written into it, is not one to keep or to sign in to.)
+            val unusable = answered != null && (Core.servicePlace(answered.service) == null || Core.namesSomeone(answered.service))
+            val found = answered?.takeIf { !unusable }
             if (found != null && found != settingsNow.value.door) {
                 // A sign-in nobody here has signed in to: whatever was kept for another goes.
                 dropSignIn(settingsNow.value)
@@ -330,7 +417,7 @@ class Requests internal constructor(
             }
             val settings = settingsNow.value
             val door = settings.door
-            val signedOut = door != null && secrets.token() == null
+            val signedOut = door != null && tokenFor(door) == null
             stateNow.value = when (checked) {
                 is Outcome.Stopped -> if (door != null && signedOut) RequestsState.NeedsSignIn(hostOf(door)) else RequestsState.NotConnected
                 is Outcome.Failed -> RequestsState.Unreachable(checked.why)
@@ -338,6 +425,7 @@ class Requests internal constructor(
                     val got = checked.value
                     when {
                         got.version != null -> RequestsState.Connected(got.version, signedInAs = if (door == null) null else settings.signedIn)
+                        unusable -> RequestsState.Unreachable(RequestsWords.SERVICE_UNUSABLE)
                         found != null -> RequestsState.NeedsSignIn(hostOf(found), interrupted = interrupted)
                         got.doorWhy != null -> RequestsState.Unreachable(got.doorWhy)
                         signedOut && door != null -> RequestsState.NeedsSignIn(hostOf(door), why = got.why, interrupted = interrupted)
@@ -399,11 +487,12 @@ class Requests internal constructor(
                 if (attempt !== mine || !scope.isActive) return@withLock false
                 attempt = null
                 val settings = settingsNow.value
-                if (token != null) {
-                    if (!secrets.keepToken(token.token)) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
-                    write(settings.copy(signedIn = token.name, signingIn = false))
+                val place = Core.servicePlace(found.service)
+                if (token != null && place != null) {
+                    if (!secrets.keepToken(place, token.token)) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
+                    write(settings.copy(signedIn = shown(token.name), signingIn = false))
                     open?.let { old -> afterwards { Core.gateClose(old.session) } }
-                    open = Open(found, Core.gateOpen(found, token.token) { fresh -> tokenChanged(fresh) })
+                    open = Open(found, Core.gateOpen(found, token.token, bound = place) { fresh -> tokenChanged(place, fresh) }, place)
                 } else {
                     write(settings.copy(signingIn = false))
                     val why = when {
@@ -419,7 +508,7 @@ class Requests internal constructor(
             }
         }
         if (!current) {
-            if (token != null) afterwards { Core.gateGiveUp(found, token.token) }
+            if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service)) }
             return
         }
         if (token != null) check()
@@ -469,11 +558,14 @@ class Requests internal constructor(
         secrets.forgetToken()
         val door = was?.door ?: settings.door
         if (door == null || (was == null && onFile == null)) return
+        // (Handed back to the service it was given for, and to no other: what the client is
+        // told is the place that was kept with the token.)
+        val place = was?.place ?: onFile?.origin
         afterwards {
             // Closing waits out a renewal that is under way, so the token handed back is
             // the one that is good now.
-            val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile
-            if (token != null) Core.gateGiveUp(door, token)
+            val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile?.secret
+            if (token != null) Core.gateGiveUp(door, token, place)
             secrets.forgetToken()
         }
     }
@@ -514,5 +606,17 @@ class Requests internal constructor(
     private companion object {
         /** How long after the screen comes back a browser on its way is still let through. */
         const val LATE_MILLIS = 1_500L
+
+        /** The longest name a sign-in service may give whoever signed in, as it is kept. */
+        const val NAME_LENGTH = 80
+
+        /**
+         * A name as a sign-in service gave it, **made fit to keep and show**: it is the
+         * service's to choose, and is kept in a plain settings file. Nothing that isn't
+         * printable, on one line, and no longer than a name is.
+         */
+        fun shown(name: String): String =
+            name.map { if (it.isWhitespace()) ' ' else it }.filter { !it.isISOControl() && it.category != CharCategory.FORMAT && it.category != CharCategory.PRIVATE_USE && it.category != CharCategory.SURROGATE && it.category != CharCategory.UNASSIGNED }
+                .joinToString("").trim().replace(Regex(" {2,}"), " ").take(NAME_LENGTH).trim()
     }
 }

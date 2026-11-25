@@ -362,6 +362,39 @@ class CoreHttpTest {
     }
 
     @Test
+    fun `what carries a secret goes to the place the secret was given for, and nowhere else`() {
+        val lidarr = standIn { _, reply -> reply.json("""{"version":"2.9.6"}""") }
+        val other = standIn { _, reply -> reply.json("""{"version":"9"}""") }
+        val place = Core.lidarrPlace(lidarr.address)!!
+        assertEquals("http://127.0.0.1:${lidarr.port}", place)
+        val refused = Outcome.Failed("The request would have carried a key to an address it wasn't given for, so it wasn't sent.")
+        // A key, a pass, a body: each stays at home.
+        assertEquals(refused, probe(Core.Probe(url = "${other.address}/api/v1/system/status", headers = listOf(listOf("X-Api-Key", "the-key")), bound = place)))
+        assertEquals(refused, probe(Core.Probe(url = "${other.address}/x", headers = listOf(listOf("authorization", "Bearer a-pass")), bound = place)))
+        assertEquals(refused, probe(Core.Probe(method = "POST", url = "${other.address}/application/o/token/", body = "refresh_token=r", bound = place), changing = true))
+        // The same host by another scheme or on another port is another place.
+        assertEquals(refused, probe(Core.Probe(url = lidarr.address.replace("http://", "https://"), headers = listOf(listOf("X-Api-Key", "the-key")), bound = place)))
+        // And an address that reads as home to another reader and is elsewhere to the client.
+        assertEquals(refused, probe(Core.Probe(url = "${other.address}\\@127.0.0.1:${lidarr.port}/api", headers = listOf(listOf("X-Api-Key", "the-key")), bound = place)))
+        assertTrue(other.asked.isEmpty())
+        assertTrue(lidarr.asked.isEmpty())
+        // Bound to nowhere (a key kept without its place), it carries nothing anywhere.
+        assertEquals(refused, probe(Core.Probe(url = lidarr.address, headers = listOf(listOf("X-Api-Key", "the-key")), bound = "")))
+        // At home it goes, however the address is written.
+        assertEquals(200, probe(Core.Probe(url = "${lidarr.address.replace("http://", "HTTP://")}/api/v1/system/status", headers = listOf(listOf("X-Api-Key", "the-key")), bound = place)).got().status)
+        // What carries nothing may be asked of another place (a look at where a redirect
+        // points), as before.
+        assertEquals(200, probe(Core.Probe(url = "${other.address}/look", bound = place)).got().status)
+        assertEquals(listOf("GET /look"), other.asked.map { it.line })
+        // A connection made without saying where its key is for is bound to its own address.
+        val shown = runBlocking { Core.lidarrVersion(LidarrAt(lidarr.address, "the-key")) }
+        assertEquals(Outcome.Got("2.9.6"), shown)
+        val elsewhere = runBlocking { Core.lidarrVersion(LidarrAt(other.address, "the-key", origin = place)) }
+        assertEquals(Outcome.Failed("Couldn't reach Lidarr. The request would have carried a key to an address it wasn't given for, so it wasn't sent."), elsewhere)
+        assertEquals(1, other.asked.size)
+    }
+
+    @Test
     fun `a change is sent once, whatever answer would have a client send it again`() {
         // Each of these answers lets an HTTP client repeat the request by itself: "busy, come
         // back at once", "this was sent to the wrong place", "you took too long to send it".

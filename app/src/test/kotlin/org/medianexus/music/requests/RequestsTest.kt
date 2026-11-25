@@ -89,6 +89,9 @@ class RequestsTest {
         val passes = CopyOnWriteArrayList<String>()
         val refusing = AtomicBoolean(false)
         val revoked = CopyOnWriteArrayList<String>()
+
+        /** Who the service says signed in, as it is written inside its JSON answer. */
+        @Volatile var username = "walker"
         private val made = AtomicInteger(0)
         val service = StandIn { asked, reply ->
             val form = asked.body.split('&').associate { it.substringBefore('=') to it.substringAfter('=', "") }
@@ -100,7 +103,7 @@ class RequestsTest {
                     reply.json("""{"access_token":"$pass","expires_in":600}""")
                 }
                 asked.target == "/application/o/token/" -> reply.json("""{"access_token":"access-${made.incrementAndGet()}","refresh_token":"refresh-${made.incrementAndGet()}","expires_in":300}""")
-                asked.target == "/application/o/userinfo/" -> reply.json("""{"sub":"x","preferred_username":"walker","name":"The Walker"}""")
+                asked.target == "/application/o/userinfo/" -> reply.json("""{"sub":"x","preferred_username":"$username","name":"The Walker"}""")
                 asked.target == "/application/o/revoke/" -> {
                     revoked += form["token"].orEmpty()
                     reply.send(200)
@@ -218,6 +221,179 @@ class RequestsTest {
         assertNull(requests.lidarr())
     }
 
+    // ---- a secret and the place it is for ---------------------------------------------------------
+
+    /** Somewhere that is not Lidarr, which answers anything as Lidarr would and so shows what
+     *  it was sent. */
+    private fun elsewhere() = StandIn { _, reply -> reply.json("""{"version":"9"}""") }.also { closing += it }
+
+    private fun settingsFile(account: Account) = File(account.dirs.data, "requests.json")
+
+    @Test
+    fun `the app stopped between keeping a new address and forgetting the old key sends that key nowhere`() = runBlocking {
+        val lidarr = lidarr()
+        val other = elsewhere()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = null), requests.connect(lidarr.address, KEY))
+        // Stopped just there: the new address is written, and the key that is kept is still
+        // the one for the old address.
+        scopes.last().cancel()
+        settingsFile(account).let { it.writeText(it.readText().replace(lidarr.address, other.address)) }
+
+        val again = requests(account)
+        again.start()
+        assertEquals(RequestsState.KeyForgotten, again.until { it != RequestsState.Off && it != RequestsState.Connecting })
+        assertNull(again.lidarr())
+        assertEquals(RequestsState.KeyForgotten, again.check())
+        Thread.sleep(300)
+        assertTrue("the other address was sent ${other.asked.map { it.line }}", other.asked.isEmpty())
+        // And it is gone for good: a key is typed again for the new place.
+        assertFalse(File(secretsDir(account), "lidarr-key.sealed").exists())
+        assertEquals("", again.keyHint())
+    }
+
+    @Test
+    fun `the same host on another port, or by another scheme, is another place and the key does not go there`() = runBlocking {
+        val lidarr = lidarr()
+        val other = elsewhere()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(lidarr.address, KEY)
+        // (Both stand-ins are 127.0.0.1: only the port differs.)
+        assertEquals(RequestsState.KeyForgotten, requests.connect(other.address, ""))
+        assertTrue(other.asked.isEmpty())
+        assertFalse(File(secretsDir(account), "lidarr-key.sealed").exists())
+
+        requests.connect(lidarr.address, KEY)
+        assertEquals(RequestsState.KeyForgotten, requests.connect(lidarr.address.replace("http://", "https://"), ""))
+        assertEquals(1, lidarr.asked.count { it.header("X-Api-Key") == KEY } - 1)
+    }
+
+    @Test
+    fun `an address that reads as one place and is another to the client is taken as the client takes it`() = runBlocking {
+        val lidarr = lidarr()
+        val other = elsewhere()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(lidarr.address, KEY)
+        // To the eye, and to a reader that splits at the "@", this is still the first address.
+        // The client connects to what is before the backslash.
+        val port = lidarr.address.substringAfterLast(':')
+        val looks = "${other.address}\\@127.0.0.1:$port"
+        assertEquals(RequestsState.KeyForgotten, requests.connect(looks, ""))
+        assertTrue(other.asked.isEmpty())
+    }
+
+    @Test
+    fun `an address with a name and password in it is refused, and nothing of it is kept`() = runBlocking {
+        val lidarr = lidarr()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        val named = lidarr.address.replace("http://", "http://admin:hunter2@")
+        assertEquals(RequestsState.Unreachable("Leave the name and password out of the address. Lidarr is given its key instead."), requests.connect(named, KEY))
+        assertTrue(lidarr.asked.isEmpty())
+        assertFalse("hunter2" in everythingKept(account))
+        assertEquals("", requests.settings.value.address)
+        assertFalse(File(secretsDir(account), "lidarr-key.sealed").exists())
+        assertFalse(notes.any { "hunter2" in it })
+    }
+
+    @Test
+    fun `a key found kept for another place than the address, however that came about, is forgotten and not sent`() = runBlocking {
+        val lidarr = lidarr()
+        val other = elsewhere()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(lidarr.address, KEY)
+        scopes.last().cancel()
+        val before = lidarr.asked.size
+        // The other way round: a new key was kept, for a new address, and the write of the
+        // address is what never happened. The settings still say the old one.
+        val secrets = RequestsSecrets(secretsDir(account), Turned, account.server, account.username)
+        assertTrue(secrets.keepKey(Core.lidarrPlace(other.address)!!, "a-key-for-the-other-place"))
+
+        val again = requests(account)
+        again.start()
+        assertEquals(RequestsState.KeyForgotten, again.until { it != RequestsState.Off && it != RequestsState.Connecting })
+        Thread.sleep(300)
+        assertEquals(before, lidarr.asked.size)
+        assertTrue(other.asked.isEmpty())
+        assertFalse(File(secretsDir(account), "lidarr-key.sealed").exists())
+        // A key typed for where Lidarr is puts it right.
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = null), again.connect(lidarr.address, KEY))
+    }
+
+    @Test
+    fun `a key kept without the place it is for is no key`() = runBlocking {
+        val lidarr = lidarr()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(lidarr.address, KEY)
+        scopes.last().cancel()
+        val before = lidarr.asked.size
+        // (As a build before this rule would have kept it: the account, then the key.)
+        File(secretsDir(account), "lidarr-key.sealed").writeBytes(Turned.seal("${account.key}\n$KEY".toByteArray()))
+
+        val again = requests(account)
+        again.start()
+        assertEquals(RequestsState.NotConnected, again.until { it != RequestsState.Off && it != RequestsState.Connecting })
+        assertNull(again.lidarr())
+        assertEquals(before, lidarr.asked.size)
+    }
+
+    @Test
+    fun `a sign-in's token goes to the service it was given by and to no other`() = runBlocking {
+        val behind = Behind()
+        val other = elsewhere()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        requests.until { it is RequestsState.Connected }
+        scopes.last().cancel()
+        val sealed = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().split('\n', limit = 3)
+        assertEquals(Core.servicePlace(behind.service.address), sealed[1])
+        // What is kept now says the sign-in service is somewhere else (written by whatever
+        // means): the token that is kept was not given by that one.
+        settingsFile(account).let { it.writeText(it.readText().replace(behind.service.address, other.address)) }
+
+        val again = requests(account)
+        again.start()
+        // Lidarr still answers that it is behind the real one: nobody is signed in to it.
+        assertEquals(RequestsState.NeedsSignIn(behind.host), again.until { it is RequestsState.NeedsSignIn })
+        Thread.sleep(300)
+        assertTrue("the other service was sent ${other.asked.map { it.line }}", other.asked.isEmpty())
+        assertFalse(File(secretsDir(account), "lidarr-token.sealed").exists())
+    }
+
+    @Test
+    fun `the name a sign-in service gives is kept short and printable`() = runBlocking {
+        val behind = Behind()
+        // (A bell, a new line, a right-to-left override, and far too much of it.)
+        behind.username = "The\\u0007 Wal\\nker\\u202e " + "x".repeat(500)
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        val connected = requests.until { it is RequestsState.Connected } as RequestsState.Connected
+        val name = connected.signedInAs!!
+        assertEquals(80, name.length)
+        assertTrue(name, name.startsWith("The Wal ker x"))
+        assertEquals(name, requests.settings.value.signedIn)
+        assertTrue(settingsFile(account).readText().lines().size == 1)
+    }
+
     // ---- behind a sign-in --------------------------------------------------------------------------
 
     @Test
@@ -259,7 +435,7 @@ class RequestsTest {
         assertEquals(check, param(link, "code_challenge"))
 
         // Only a token is kept, sealed, and it is nowhere else.
-        val token = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().substringAfter('\n')
+        val token = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().split('\n', limit = 3)[2]
         assertTrue(token, token.startsWith("refresh-"))
         val kept = everythingKept(account)
         for (secretThing in listOf(token, secret, "the-code", KEY) + behind.passes) assertFalse(secretThing, secretThing in kept)
@@ -278,7 +454,7 @@ class RequestsTest {
         val link = requests.signIn()!!
         browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
         requests.until { it is RequestsState.Connected }
-        fun onDisk() = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().substringAfter('\n')
+        fun onDisk() = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().split('\n', limit = 3)[2]
         val first = onDisk()
 
         // The app started again: no browser, and the first request renews the token.
@@ -385,7 +561,7 @@ class RequestsTest {
         browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
         requests.until { it is RequestsState.Connected }
         val token = File(secretsDir(account), "lidarr-token.sealed")
-        val held = token.readBytes().reversedArray().decodeToString().substringAfter('\n')
+        val held = token.readBytes().reversedArray().decodeToString().split('\n', limit = 3)[2]
 
         assertEquals(RequestsState.NeedsSignIn(behind.host, signedOut = true), requests.signOut())
         withTimeout(10_000) { while (behind.revoked.isEmpty()) kotlinx.coroutines.delay(20) }

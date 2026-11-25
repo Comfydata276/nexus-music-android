@@ -18,6 +18,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.ConnectionPool
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType
 import okhttp3.OkHttpClient
@@ -124,6 +125,7 @@ internal object CoreHttp {
     private const val TOO_LARGE = "The answer was larger than 10 MB."
     private const val GONE = "The answer is no longer there to read."
     private const val STOPPED_WORDS = "Stopped."
+    private const val ELSEWHERE = "The request would have carried a key to an address it wasn't given for, so it wasn't sent."
 
     /** Why a request failed on its way, to end the library's sentence with ("Couldn't reach
      *  Lidarr. …"). Never the exception's own words, which name the host and can quote more. */
@@ -141,6 +143,31 @@ internal object CoreHttp {
         NetTrouble.NO_CONNECTION -> "Couldn't connect."
         NetTrouble.OTHER -> "The connection failed."
     }
+
+    // ---- where a secret may go -----------------------------------------------------------------
+
+    /**
+     * **The place an address is, as this client takes it**: its scheme, host and port as
+     * OkHttp reads them, which is where a request to that address really goes. Null for
+     * what the client can't use as an address at all.
+     *
+     * A secret is kept together with this (see `requests/RequestsSecrets`), and a request
+     * that carries one is sent only here ([sent]). It is this client's reading and nobody
+     * else's on purpose: an address can be written so that another reader takes it for one
+     * host while the client connects to another (`http://a.example\@b.example`), and what
+     * matters is where the bytes go.
+     */
+    fun originOf(address: String): String? = address.trim().toHttpUrlOrNull()?.let(::origin)
+
+    private fun origin(url: HttpUrl): String = "${url.scheme}://${url.host}:${url.port}"
+
+    /** Whether an address has a name or a password written into it (`http://me:secret@host`). */
+    fun namesSomeone(address: String): Boolean = address.trim().toHttpUrlOrNull()?.let { it.username.isNotEmpty() || it.password.isNotEmpty() } ?: false
+
+    /** Whether a request carries something secret: a key or a pass in its headers, or a body
+     *  at all (the sign-in's code, its check and its token travel as bodies). */
+    private fun carriesSecret(asked: Asked): Boolean =
+        asked.method != "GET" || asked.headers.any { it[0].equals("X-Api-Key", ignoreCase = true) || it[0].equals("Authorization", ignoreCase = true) }
 
     // ---- the client ---------------------------------------------------------------------------
 
@@ -398,6 +425,9 @@ internal object CoreHttp {
     private class Asked(
         val operation: Long, val line: String, val method: String, val url: String,
         val headers: List<List<String>> = emptyList(), val body: String? = null, val patience: Long? = null,
+        /** Where alone this request may carry a secret to (`wire::Host::bound`): the place
+         *  the secret was given for. Null for a way out that carries none. */
+        val bound: String? = null,
     )
 
     @Serializable
@@ -444,6 +474,9 @@ internal object CoreHttp {
         val limit = listOfNotNull(asked.patience, allowed).minOrNull()
 
         val url = asked.url.toHttpUrlOrNull() ?: return failed(BAD_ADDRESS)
+        // A secret goes to the place it was given for and nowhere else, whatever address the
+        // library was handed or made of it.
+        if (asked.bound != null && carriesSecret(asked) && origin(url) != asked.bound) return failed(ELSEWHERE)
         val body = asked.body.orEmpty().encodeToByteArray()
         val request = Request.Builder().url(url).apply {
             var named = false

@@ -132,11 +132,24 @@ pub enum Whose {
 pub struct Host {
     pub whose: Whose,
     pub line: Line,
+    /// The one place this way out may carry a secret to (see [`Host::bound`]); none for a
+    /// way out that carries none.
+    pub bound: Option<String>,
 }
 
 impl Host {
     pub fn new(whose: Whose, line: Line) -> Arc<Host> {
-        Arc::new(Host { whose, line })
+        Arc::new(Host { whose, line, bound: None })
+    }
+
+    /// A way out for requests that carry a secret (Lidarr's key, a pass, a sign-in's code or
+    /// its token), **bound to the place the secret was given for**: `origin` is that place
+    /// as the app's client names it (scheme, host and port), which the Kotlin side worked
+    /// out and sealed with the secret. Every request goes up with it, and the client sends
+    /// nothing that carries a secret anywhere else, whatever address the library was given
+    /// or made. With no origin it is bound to nowhere, and can carry no secret at all.
+    pub fn bound(whose: Whose, line: Line, origin: Option<&str>) -> Arc<Host> {
+        Arc::new(Host { whose, line, bound: Some(origin.unwrap_or_default().to_string()) })
     }
 
     fn operation(&self) -> u64 {
@@ -160,6 +173,8 @@ struct Asked<'a> {
     body: Option<&'a str>,
     /// Milliseconds the whole call may take, if the library set a limit of its own.
     patience: Option<u64>,
+    /// Where alone this request may carry a secret to (see [`Host::bound`]).
+    bound: Option<&'a str>,
 }
 
 /// An answer's status and headers, as they come back; its body waits on the Kotlin side
@@ -199,6 +214,7 @@ impl Http for Host {
             headers: request.headers,
             body,
             patience: request.patience.map(|patience| patience.as_millis().min(u64::MAX as u128) as u64),
+            bound: self.bound.as_deref(),
         };
         let frame = serde_json::to_vec(&asked).map_err(|_| Failure::Reach(NO_ANSWER.into()))?;
         let answer = door
