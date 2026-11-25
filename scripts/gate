@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""A gate between the app and the test server, for what only a held request can show.
+
+    scripts/gate <listen port> <server port>      e.g. scripts/gate 4556 4546
+
+The app signs in at http://10.0.2.2:<listen port> instead of the server's own port, and
+everything it asks goes through here, unchanged, with the server's own headers (its Date
+too, which the app measures its clock by). The gate can then be told, for requests whose
+method name contains some text ("updatePlaylist", "getPlaylists", "savePlayQueue"):
+
+    curl -s 127.0.0.1:<listen port>/__gate/hold?m=updatePlaylist      hold them, unsent
+    curl -s 127.0.0.1:<listen port>/__gate/pass?m=updatePlaylist      let them through (and those held)
+    curl -s 127.0.0.1:<listen port>/__gate/swallow?m=updatePlaylist   send them (and those held) to the
+                                                                      server and never answer the app:
+                                                                      the write is made, and the app
+                                                                      does not know
+    curl -s 127.0.0.1:<listen port>/__gate/clear                      no rules (held ones go through)
+    curl -s 127.0.0.1:<listen port>/__gate/log                        what was asked, in order
+
+The log has each request's method name and what became of it, with the time: never its
+query (the account's name and password are in it) and never an answer's body.
+
+It listens on this machine only. For the test rig alone: see docs/TESTING.md, "In step with
+other devices".
+"""
+import http.client
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+listen, upstream = int(sys.argv[1]), int(sys.argv[2])
+rules = {}  # text -> "hold" | "swallow"
+changed = threading.Condition()
+log = []
+started = time.time()
+
+
+def say(what):
+    with changed:
+        log.append("%8.2f  %s" % (time.time() - started, what))
+
+
+def rule_for(name):
+    for text, mode in rules.items():
+        if text in name:
+            return mode
+    return None
+
+
+class Gate(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def control(self):
+        parts = urlsplit(self.path)
+        what = parts.path.rsplit("/", 1)[-1]
+        text = parse_qs(parts.query).get("m", [""])[0]
+        with changed:
+            if what in ("hold", "swallow") and text:
+                rules[text] = what
+            elif what == "pass" and text:
+                rules.pop(text, None)
+            elif what == "clear":
+                rules.clear()
+            changed.notify_all()
+            body = "\n".join(log) + "\n" if what == "log" else "rules: %s\n" % rules
+        data = body.encode()
+        self.send_response_only(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def handle_one(self):
+        if self.path.startswith("/__gate/"):
+            return self.control()
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        name = urlsplit(self.path).path.rsplit("/", 1)[-1]
+        with changed:
+            mode = rule_for(name)
+            if mode == "hold":
+                log.append("%8.2f  %s held" % (time.time() - started, name))
+                while rule_for(name) == "hold":
+                    changed.wait()
+                mode = rule_for(name)
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "connection", "proxy-connection", "keep-alive")}
+        there = http.client.HTTPConnection("127.0.0.1", upstream, timeout=120)
+        try:
+            there.request(self.command, self.path, body=body, headers=headers)
+            answer = there.getresponse()
+            data = answer.read()
+        except OSError as error:
+            say("%s: the server could not be asked (%s)" % (name, type(error).__name__))
+            self.close_connection = True
+            return
+        finally:
+            there.close()
+        if mode == "swallow":
+            say("%s taken by the server (%d), and the answer withheld" % (name, answer.status))
+            # The app goes on waiting, as for an answer that is lost on its way.
+            self.close_connection = True
+            time.sleep(3600)
+            return
+        say("%s %d" % (name, answer.status))
+        self.send_response_only(answer.status, answer.reason)
+        for key, value in answer.getheaders():
+            if key.lower() not in ("transfer-encoding", "connection", "content-length", "keep-alive"):
+                self.send_header(key, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    do_GET = do_POST = do_HEAD = handle_one
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+if __name__ == "__main__":
+    print("gate: 127.0.0.1:%d -> 127.0.0.1:%d" % (listen, upstream), flush=True)
+    Server(("127.0.0.1", listen), Gate).serve_forever()

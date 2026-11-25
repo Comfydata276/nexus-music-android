@@ -1809,6 +1809,24 @@ what an emulator adds (that the Android build of the library loads and answers, 
 panic there is the exception here) is checked once on one, by the debug build's own check
 (docs/TESTING.md).
 
+### What the build is pinned by
+
+For a later task: what a build of the app takes from outside, and how firmly each is named.
+
+| What | Named by | A checksum the project holds? |
+|---|---|---|
+| The shared core | the Windows repository's commit (`native/Cargo.toml`, `Cargo.lock`) | the commit is one |
+| Every Rust crate | version, in `native/Cargo.lock` | yes, in the lock file; the build is `--locked` |
+| Gradle's dependencies | version (`gradle/libs.versions.toml`) | no (there is no `verification-metadata.xml`) |
+| The Gradle distribution | version (`gradle-wrapper.properties`) | no (`distributionSha256Sum` is not set) |
+| Rust | version (`RUST_VERSION` in `docker/build.Dockerfile`); installed by rustup's script, fetched at image build | no, neither for the script nor the toolchain |
+| Android's command-line tools | build number (`CMDLINE_TOOLS` in the Dockerfile) | no |
+| The SDK platform, build tools and NDK | version, through the SDK manager | no (the SDK manager checks its own downloads) |
+| The image's base | tag (`eclipse-temurin:25-jdk`) | no (not by digest) |
+
+A release build refuses the local override of the core before anything of it is merged,
+packaged, bundled or signed, whichever task was asked for (`refuseLocalCoreInARelease`).
+
 ### What a check on GitHub would need
 
 There is no workflow yet. One would need, beyond the JDK and the Android SDK: Rust at the
@@ -2667,7 +2685,13 @@ holds all of this; the feature's own tests switch it on for themselves
   the main thread: the core is asked what the choices become (`Core.change`, under the
   account the choices belong to), and the settings are written and made sure of
   (`SettingsStore.commit`) **before** the change shows anywhere. If the write fails the
-  change does not show, and the app says its settings could not be saved (`saveFailed`). The places
+  change does not show, and the app says its settings could not be saved (`saveFailed`).
+  **A choice belongs to the sign-in it was made under**: the tap carries the account signed
+  in at that moment, and when its turn comes it is carried out only if the settings are
+  still that account's (taps wait behind the settings' writes, and another account may have
+  been taken on meanwhile); otherwise it is not made at all. A sort only the phone offers,
+  chosen for a list with a shared sort still waiting, takes that one back
+  (`Core.sortTakenBack`): it is no longer what the person wants sent. The places
   that call it: "Pin to top" / "Unpin" in a playlist's menu; a theme swatch; the sort sheet;
   a list page's shuffle button; the shuffle button pressed while the list plays (the app's,
   the notification's, a car's); "Shuffle" at the top of a list in the car.
@@ -2678,6 +2702,17 @@ straight back in makes a second set of objects while the first may still be on i
 exchange that has been let go (the account signed out, sharing switched off) is still in
 flight until its requests have answered, and the next waits for it: the two requests that
 change the server run to their answer whatever has become of whoever asked.
+
+**An exchange has its leave from the moment it begins**: this account, sharing on, *the
+same "on" as then*, and whoever asked still wanting it. Switching sharing off is counted in
+the settings, where they change (`Settings.syncOffs`), so off and on again while an exchange
+is on its way is not the same "on", and does not give it its leave back. The leave is asked
+for (`still`) before **everything the exchange applies on the phone** (step 5, each of the
+three things step 6 takes in, the note that a write is being tried, the note that it was
+taken) as well as before each request that changes the server. An exchange that has lost
+it changes nothing more: what it brought is not applied, and if the server already has its
+write, nothing of that is noted here; the changes stay as tried, and the next exchange
+makes them again over their own result, which alters nothing.
 
 1. **Ask.** The list of playlists; `Core.find` says which holds the record (or that the
    server did not say whose they are, which stops here with a line in Diagnostics); that
@@ -2703,16 +2738,32 @@ change the server run to their answer whatever has become of whoever asked.
 7. **Write**, if the plan has one.
    1. The record's text as it was found is kept, once for the account and the version of
       the app: `shared-record-kept-<version>.json` in the account's own data, made only if
-      it is not there (`CREATE_NEW`), flushed, never opened for writing again. If it can't
-      be made nothing is sent.
+      it is not there, never opened for writing again. It is written whole under another
+      name beside its place (`….json.part`), made sure of there, and only then given its
+      own name, with the folder synced: so what is at the copy's name is the whole record
+      or nothing, whenever the app is killed. A file of the other name left by a kill is
+      cleared at the next exchange and never counts as the copy. If it can't be made
+      nothing is sent. (The Windows app makes its copy by creating the file at its name
+      and then writing it, and has the gap this closes.)
    2. `Core.sending`: whether the plan still fits the choices (a change it carries may
       have been taken back meanwhile; then nothing is sent and the exchange starts again),
       and the choices, with the changes marked as tried, written and made sure of.
-   3. Still this account and the setting on, asked immediately before each request: the
-      playlist is made if there is none, then the text is written, with the account's own
-      client.
-   4. Only when the server has answered: `Core.written`, saved. With no answer the changes
-      stay as tried and the next exchange makes them again.
+   3. Its leave asked immediately before each request: the playlist is made if there is
+      none; otherwise the text is written, with the account's own client. **Having made the
+      playlist, the exchange writes nothing into it on the strength of what was decided
+      before it existed**: it goes through the steps again from the first, once, with the
+      playlist there, and makes nothing that time (a change taken back while the server
+      was making it is then not written).
+   4. Only when the server has answered, and the exchange still has its leave:
+      `Core.written`, saved. If that can't be saved the exchange has **failed**, not
+      finished. With no answer the changes stay as tried and the next exchange makes them
+      again.
+
+An exchange is done when what it relied on is on the disk: each of those writes is by the
+one writer of its file, is made sure of with its folder, and one that failed stays due and
+is made at the next exchange whether or not that brings anything new (the settings by
+`SettingsStore.commit`; the notes and Recently played count their changes against what the
+file has).
 
 - **The account, told from another by exactly what it is.** The core is given the account's
   key (`Account.key`: a hash of the server's address and the user's name, exactly as
@@ -2726,7 +2777,12 @@ change the server run to their answer whatever has become of whoever asked.
   the look as it is, and has nothing to say about it to its other devices until one is
   chosen under it or comes from its record. No exchange until the choices in the settings
   are this account's (`Belongs.ready`), and Recently played and the log have been read for
-  it.
+  it. **An account is taken on before it is said to be signed in**, in the session's own
+  order of steps, once everything tapped so far has been carried out. If the account
+  before's choices can't be put away (surely), or this account's own, put away earlier, are
+  there and can't be read, nothing is changed and nobody is signed in: the sign-in screen
+  says so, and the password is not saved. (Taken on all the same, the new account would
+  have shared the other's choices as its own, or they would have been lost.)
 - **What an earlier build left** (`Settings.stepMark`, `Belongs.MARK` = 2; `Core.adopt`).
   - *0.3.0, which kept nothing in step*: its pins, theme and list choices carried times
     made under no rule that survives, and belonged to no account. They stay the phone's
@@ -2786,15 +2842,26 @@ change the server run to their answer whatever has become of whoever asked.
   device. The rules are the core's (`notes`), a playlist at a time. The file is written
   before a change counts, and one that could not be read is never taken for one that is not
   there: it is left unwritten (or, damaged, kept aside as `<file>.damaged` before the first
-  write). **A list that is open and sorted by date added is arranged again when a date
+  write). One writer of the file: an ordinary save and an exchange's take each in turn, so
+  an older save can't land on top of what an exchange has made sure of. **A list that is open and sorted by date added is arranged again when a date
   arrives** (`Added.version`, which the list page's order depends on).
 - **A sort or a shuffle that arrives shows on a list that is open** (C3): the pages read the
-  order from the settings each time they are drawn.
+  order from the settings each time they are drawn. The phone's own order for a list gives
+  way to a sort arriving for it from another device, the first one for a list nobody had
+  chosen anything for included; a shuffle alone does not displace it.
+- **Recently played** (`store/RecentlyPlayed.kt`) by the same rules as the log and the
+  notes: only "no such file" is an account with no history; a file that is there and can't
+  be read is left exactly as it is, never written in that run, and what is in memory is
+  then not the account's history (nothing is shared or merged; the song playing still
+  shows); one that reads and is no list is kept beside its place before the first write.
 - **A log of plays that could not be read is never taken for one that is not there**
   (`store/PlayLog.kt`). Only "no such file" is a new log. Any other failure to read it
   leaves the file untouched: the plays counted meanwhile are written to a file beside it
-  (`plays.log.new`) and joined at the next start that can read the log. A torn last line is
-  cut back to the last whole record; a failed write is reported and tried again.
+  (`plays.log.new`) and joined at the next start that can read the log. **The same holds
+  for that file**: if it is there and can't be read it is left exactly as it is, and this
+  run's plays go to a second (`plays.log.new.2`); each is joined to the log, and goes, only
+  in a run that read both it and the log. A torn last line is cut back to the last whole
+  record; a failed write is reported and tried again.
 - **The queue** (`sync/QueueStep.kt`; the rules are the core's `handover`, by its contract:
   `Core.queueWindow`, `queueReadsFirst`, `queueSave`, `queueLook`, `queuePlace`). Saved on
   the server under the phone's own device name (`NexusMusic-<eight hex digits>`, made once)
@@ -2809,9 +2876,20 @@ change the server run to their answer whatever has become of whoever asked.
   here" (Windows' card and words), and a tap picks it up where it had got to and plays.
   Nothing starts playing by itself.
 - **The phone saves its queue only if it is still the newest thing that happened** (B1).
-  Saves go one at a time, in the order they were asked for. Immediately before each, the
-  server's saved queue is read, and the core says whether to save, with the clock of that
-  read: not over a queue another device saved after this phone's last changed. A queue taken
+  Saves go one at a time, in the order they were asked for, **for the account** (a second
+  sign-in to it has no turn of its own while a save of the first's is on its way), and
+  looks at the server's queue likewise. While a song is playing the queue is this phone's to
+  keep, and is saved without a look, as on Windows. Otherwise the server's saved queue is
+  read first, and the core says whether to save, with the clock **as that very read
+  measured it**: not over a queue another device saved after this phone's last changed.
+  **A save is for the queue as it is when it is sent**: the player has a number that moves
+  on at everything done to the queue or to playing it (a change, its place moving on, play
+  and pause, another device's put in its place); a save carries the number it was prepared
+  from and is sent only if it is still that number. (The queue's time is in whole seconds
+  and says nothing of a pause.) What is known of the phone's clock is one of three things
+  (`InStep.ClockIs`): not measured yet in this run, right, or wrong. "Not measured" is not
+  "right": nothing that compares times goes by it, and with the clock known to be wrong no
+  queue is saved or taken up. A queue taken
   up from another device is not the phone's to save until it has been changed or played on
   here: which device's it is, is kept with the queue (`taken`, in the saved queue's file
   too, so that it is still known after a restart).
@@ -2821,7 +2899,8 @@ change the server run to their answer whatever has become of whoever asked.
   play always did. **A queue taken up from another device does not replace a queue the
   person has changed since**: `QueueHere.replace` is given the place in that order and the
   queue's own time as they were when the look was decided, and puts nothing in the player
-  if either has moved on.
+  if either has moved on; and it looks once more, by the player's number, when the queue is
+  ready to go in: of two made ready at once only the first to be ready goes in.
 - **"Continue here" is a choice like any other** (B2). The tap takes its place in the order
   of choices, and by the time its queue is ready it is played only if nothing has taken a
   later place: a pause, a stop, something else to play, a change to the queue. A queue taken
@@ -2859,6 +2938,14 @@ server offers, and is written down where the rules are (the Windows repository's
   to end (`InStepLiveTest`, and on the emulator with the process killed at `step-sent`):
   that one change is all that happens, nothing else of the PC's is touched, and nothing is
   left waiting afterwards.
+- **Plays and dates recorded while the phone's clock was wrong keep the times they were
+  given.** Nothing is shared while the clock is known to be wrong; once it is right, a play
+  counted or a song added meanwhile goes out with the time the wrong clock put on it. The
+  phone can't know afterwards by how much it was wrong, or since when.
+- **The whole log of plays is walked at each exchange** to find the newest five hundred to
+  offer (not for an exchange that brought no plays: that walk is skipped). An index of the
+  newest is not kept: on a long-lived phone it is a pass over some hundreds of thousands of
+  numbers, off the main thread, and has not been measured as a cost worth one.
 - **What the shared merge itself does with a tie** (Recently played and an earlier play of
   the same song; two notes of when a song was added with the same time and different
   contents) is the core's, for both apps at once: the phone can no longer be a third

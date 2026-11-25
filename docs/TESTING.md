@@ -2187,7 +2187,7 @@ written, in the Windows repository. What is checked here is everything that is t
 that nothing is lost or changed on the way through its one door to the library; that its
 own side of an exchange takes, checks and saves things in the order the core's contract
 says; and that the whole of it, with PCs on the Windows app's code, keeps a real server's
-record right. Five kinds of check, from the narrowest to the widest. **The feature is
+record right. Six kinds of check, from the narrowest to the widest. **The feature is
 switched off in the build** (`sync/InStepBuild.kt`); every check of it forces it on, in the
 tests by `InStepBuild.forTests` and on the emulator by a debug build's `DebugStep`.
 
@@ -2235,7 +2235,19 @@ code, the tests run, and the code put back (25 November 2026, on the tree as it 
 | The same, by the order of choices: it acts for the newest place at the moment it is put in, not at the moment it was decided on | the same test (with only the early look at the order taken out, nothing fails: the place it acts for is looked at again as it goes in, and that is the rule) |
 | A date arriving does not move `Added.version` on | `AddedTest.aListSortedByDateAddedIsArrangedAgainWhenADateArrivesAndNoOtherListIs` |
 | Any failure to read the log of plays is "no log yet" (`PlayLog.readLog`) | `PlayLogTest.aLogThatCouldNotBeReadIsNeverTakenForALogThatIsNotThere`, `whatIsThereAndIsNotAFileIsLeftAsItIs` |
-
+| What a kill left of the kept copy counts as the copy (the copy made at its own name, not beside it) | `InStepContractTest.aCopyCutShortByAKillIsNeverTakenForTheCopy` |
+| An exchange whose write was taken reports done though the phone could not note it (step 7.4) | `anExchangeWhoseWriteWasTakenAndCouldNotBeNotedHereHasNotFinished` |
+| An exchange is asked for its leave only with the answers in hand and before each request, and "may I?" is asked afresh each time | `sharingSwitchedOffAndOnAgainDoesNotGiveAnExchangeBegunBeforeItsLeaveBack`, `anExchangeNoLongerAllowedTakesNothingInAndNotesNothing` |
+| The record is written into a playlist the exchange has just made, as decided before it existed | `aPinTakenBackWhileThePlaylistIsBeingMadeIsNotWrittenIntoIt` |
+| A tap is carried out for whichever account the settings belong to when its turn comes (`Chosen.made`) | `aChoiceBelongsToTheSignInItWasMadeUnder` |
+| An account is taken on though the one before's choices could not be put away, or its own could not be read (`Belongs.takeOn`; the session) | `ifOneAccountsChoicesCannotBePutAwayTheNextIsNotTakenOnAndNothingIsLost`, `SessionTest.anAccountThatCouldNotBeTakenOnIsNotSignedInAndNoPasswordIsSaved` |
+| An order only the phone offers leaves the shared sort it replaces waiting (`Chosen.made`) | `anOrderOnlyThePhoneOffersTakesBackTheSharedSortStillWaitingForThatList` |
+| The phone's own order gives way only where the list already had shared choices (`Chosen.show`) | `anOrderOnlyThePhoneOffersGivesWayToTheFirstSortThatArrivesForAListNobodyHadChosen` |
+| An exchange's take writes the notes outside the file's one writer's turn (`Added`) | `AddedTest.aSaveAlreadyUnderWayDoesNotLandOverWhatAnExchangeTookIn` (as first written it passed with this: it read the file before the held save had written; it now waits for both) |
+| A change to the notes that could not be written is not made at the next exchange unless that brings something new | `AddedTest.aChangeThatCouldNotBeWrittenIsStillDueAtTheNextExchange` |
+| A save of the queue is sent if the time, the owner and the current song are as they were (`QueueStep.upload`) | `QueueStepTest.aSaveIsForTheQueueAsItIsWhenItIsSent` |
+| Looks at the server's queue do not take turns (`QueueStep.check`) | `QueueStepTest.looksTakeTurnsSoALaterOneIsNeverPutInBeforeAnEarlierOne` |
+| A queue ready to go in is not looked at once more (`QueueHere.replace`) | `ContinueHereTest.ofTwoQueuesMadeReadyAtOnceOnlyTheFirstToBeReadyGoesIn` |
 Not shown by taking code out, and said so: that the queue page's own taps take their place
 (`PlayerConnection.move`, `remove`, `clear` each begin with `Choices.take()`): the screens
 have no player to connect to in a unit test, so `ContinueHereTest` takes the place itself
@@ -2256,7 +2268,13 @@ build before the shared core keeps what it had really agreed and the pins that w
 0.3.0's files (`UpgradeTest`) give a PC's record nothing to write; 0.4.0's files (the same,
 `settings-0.4.0.json`) add the playlist pinned there to the PC's pins and lose to the PC on
 the theme and a sort, a shuffle the PC said nothing about going in as chosen long ago, and
-are what goes into a record nobody has written yet; every test of `sync/` has a time limit.
+are what goes into a record nobody has written yet, and the same for what 0.4.0 put away
+with an account, for a PC's entry with no sort of its own, and for Violet chosen on
+purpose; Recently played and what was kept beside the log of plays, unreadable, are left
+exactly as they are (`RecentlyPlayedTest`, `PlayLogTest`), and a history that could not be
+written stays due; saves of the queue take turns for an account, not a sign-in; a clock
+nobody has measured is not a clock that is right; an answer from the library the door has
+no name for is an error (`CoreTest`); every test of `sync/` has a time limit.
 
 **3. With PCs on the Windows app's code, through a real server** (`scripts/instep-check`,
 `InStepLiveTest`). The script starts a server of its own (`scripts/server --instance step`,
@@ -2332,14 +2350,9 @@ from the pinned commit), 25 November 2026. The evidence is in
   server holding the pin, and the phone's settings holding it as tried. The PC sees it and
   unpins it. The app started again: the pin is made again on top, nothing else changed,
   nothing left waiting, and a further exchange writes nothing. As accepted.
-- **The upgrade from 0.4.0.** A debug build of 0.4.0's commit installed and signed in; a
-  playlist pinned and Rose chosen on it (its settings then hold both as waiting, mark 1).
-  A PC writes its record (293 bytes: a pin, Ember, a sort). This build installed over it and
-  started: the pins are the PC's with the phone's after it, the PC's sort as it was; the
-  kept copy is the 293 bytes; mark 2, nothing waiting; a further exchange writes nothing.
-  (This run was made while 0.4.0's waiting changes were still taken on as changes, and the
-  theme every device ended on was the phone's. They are now offered as chosen long ago:
-  the end-to-end check above has the rule as it is, and every device ending on the PC's.)
+- **The upgrade from 0.4.0**, with a debug build of 0.4.0's commit under a debug build of
+  this one: made before it was decided that what 0.4.0 left is offered as chosen long ago,
+  and superseded by the run on the release build, below.
 - **The queue.** Saved by the PC (three songs, the second, ten seconds in): the app brought
   to the front takes it up, paused, at that song and place (not within ten seconds of its
   last look, when it does not look). With the phone playing Liked songs and the PC saving
@@ -2348,22 +2361,73 @@ from the pinned commit), 25 November 2026. The evidence is in
   server's saved queue is then the phone's own.
 - No crash or "not responding" report in the run.
 
-**The whole app, after it** (25 November 2026; the tree as it stands at the end of this
-work, **with the feature off**; the reports are in `reports/a1/` in the cache).
+**5. The release build, switched on, over a profile 0.4.0's own APK made** (Android 16,
+`phone36`, 25 November 2026; the evidence is in `shots/a1-evidence/` in the cache, with its
+`INDEX.md`). The tree at `e0ec18c` with the one line `InStepBuild.EXISTS = true`, built as
+a release in a scratch copy (never committed), signed with the debug key. A Navidrome of
+the run's own, **reached through `scripts/gate`**: a small proxy that passes every request
+on unchanged with the server's own headers, and can be told to hold requests of one kind
+unsent, or to send them and never answer (a write the server takes and the app never hears
+of). Two PCs on 0.40.6's code (`tools/instep pc` from the Windows checkout).
 
-- The whole unit suite three times from nothing (`--no-build-cache --rerun-tasks`): 1,046
-  tests and none failed, each time (115, 131 and 119 s); seven passed over (the six of
+How the profile was made, and the one thing that differs from a real update:
+`deliver/NexusMusic-Android-0.4.0.apk` was installed and used (a playlist pinned, another
+shuffled, a third sorted by Duration, Rose chosen, Liked songs played). That APK is signed
+with the project's key and the build under test with the debug key, so Android will not
+install one over the other: 0.4.0's whole data folder was carried across on the rooted
+emulator. The saved password cannot come across (it is sealed with a key Android destroys
+with the app), so the new build asked to sign in again, the address and name filled in.
+
+1. The record as the two PCs left it: 1,055 bytes (three pins, Ember, two sorts, a
+   shuffle, a date, four plays). 0.4.0 left it untouched.
+2. This build's first start, **its first look held at the gate**: its settings hold Rose,
+   the shuffle and the sort as agreed at time 1 ("long ago"), and the pin as the one change
+   waiting.
+3. **A queue save before the clock has been measured.** With that look still held, Play:
+   `savePlayQueue` three seconds later with no read before it (a device that is playing
+   keeps its own queue, as on Windows). Paused: the next save is `getPlayQueue` and then
+   `savePlayQueue` (a save that compares times reads first, and goes by the clock as that
+   read measured it). The next song chosen while paused: the same pair.
+4. **The first write held at the gate.** At that moment the kept copy was on the phone and
+   was the 1,055 bytes exactly. While it was held, "Empty playlist" was pinned (five pins on
+   the screen: the phone had the PCs' three by then) and unpinned again.
+5. **The server takes the write, the app never hears, and the app is killed.** The record
+   then: the PCs' three pins with the phone's after them; Ember, with the PCs' time on it;
+   the PCs' sort for the playlist the phone had sorted by Duration; the phone's shuffle for
+   a playlist the PCs had said nothing about, at time 1; the phone's songs in Recently
+   played. The pin made and undone while the write was held is not in it.
+6. The phone's files after the kill: the kept copy still the 1,055 bytes; four pins and
+   Ember shown; its own pin waiting, marked as tried; nothing waiting for "Empty playlist".
+7. Both PCs exchange: each shows the four pins, Ember and the same lists; neither writes.
+8. The app started again, the gate open: it reads and writes nothing (the pin made again
+   over its own result alters nothing); nothing is left waiting; the record and the kept
+   copy are byte for byte as they were. Both PCs again: nobody writes.
+
+No crash, no "not responding" report, no line beginning "in step:" in Diagnostics. (A
+request held for more than thirty seconds is given up by the app, whose exchange then
+fails and asks again at the next look: the made-and-undone choice and the kill were fitted
+inside that time.)
+
+**6. The whole app, after it** (25 November 2026; the code as it stands at the end of
+this work, `e0ec18c`, **with the feature off**; the reports are in `reports/a1/` in the
+cache).
+
+- The whole unit suite three times from nothing (`--no-build-cache --rerun-tasks`): 1,073
+  tests and none failed, each time (179, 189 and 130 s); seven passed over (the six of
   `InStepLiveTest`, which want their server, and one of `OrderOfChoicesTest`).
 - `scripts/check --release`: the debug build, the unit tests, lint and the release build,
-  all passed.
+  all passed. The release APK is 8,148,403 bytes (0.4.0: 6,693,594).
+- `scripts/instep-check`, the end-to-end check of section 3: all of it held.
 - The car check on that release build (Android 16, `scripts/carcheck org.medianexus.music
   --nexus`): online, 48 passed, none failed, one warning (the empty playlist); with the
   server stopped, `--mode offline`, 24 passed, none failed, the same warning. 0.4.0's own
-  APK, checked in the same session against the same server: 48, none and one, **item for
-  item the same**. (0.4.0's release was recorded as 51 and 24, against a server with more
+  APK, checked earlier the same day against the same server: 48, none and one, item for
+  item the same. (0.4.0's release was recorded as 51 and 24, against a server with more
   in it.)
 - `scripts/measure`, beside 0.4.0's own APK on the same emulator and server, each installed
-  afresh, signed in, Liked songs downloaded and played once. The machine was shared with
+  afresh, signed in, Liked songs downloaded and played once. (Taken at `bb06c3e`, before
+  the review's fixes, which are in what an exchange does and not in how the app starts or
+  what it holds; the size is the one figure taken again, above.) The machine was shared with
   another engineer's builds for part of it, so each run has the machine's load beside it:
 
   | | 0.4.0 (082dfdb) | This build |
