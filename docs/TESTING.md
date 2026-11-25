@@ -2654,6 +2654,51 @@ a row on the last commit in a scratch worktree: 1051 run, 0 failed each time. (I
 tree two runs were spoiled by another engineer's work in progress: a scratch test that didn't
 compile, and their new `SwitchedOffTest`.)
 
+## Requests (M7a): what was checked
+
+Requests are switched off in every build so far (`RequestsBuild`), and there are no screens
+for them yet. What is below the screens is driven three ways.
+
+**In the JVM, against stand-ins written into the tests**: `CoreHttpTest` (the boundary: 33
+tests against a server that answers in bytes of the test's choosing), `RequestsTest` (the
+connection: an address and a key, the browser sign-in played by the test, what is kept and
+what is handed back), `requests/SwitchedOffTest` (with the build's switch off an account
+has nothing of requests at all).
+
+**On an emulator, a debug build, against the kit's stand-in Lidarr and Authentik.**
+
+```sh
+# the stand-ins, as a phone on the emulator reaches them (a made-up catalogue; every request is logged)
+cd ~/.cache/nexus-music-android/shots/m7a/how && ./make-standin
+STANDIN_HOST=10.0.2.2 python3 standin-phone.py 4591 lidarr.jsonl --gate 4592
+# requests forced on in a debug build, from its next start
+adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es requests on
+# the debug stand-in for the screens: it shows where the connection stands, in the words the real screens will use
+adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es do on
+adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es do connect --es address http://10.0.2.2:4591 --es key standinkeystandinkeystandinkey12
+adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity --es do signin      # also: check, cancel, signout, off
+```
+
+The stand-in's sign-in page has two links, "Sign in as the walker" and "Refuse". Its key is
+the one above and no other; it is not a secret and opens nothing.
+
+**The sign-in, case by case** (Android 17, Chrome's Custom Tab; pictures and the stand-in's
+log in `~/.cache/nexus-music-android/shots/m7a/signin/`):
+
+| Case | Seen |
+|---|---|
+| Connecting to a Lidarr behind a sign-in | "Lidarr is behind the sign-in at 10.0.2.2:4592." |
+| Signing in, the app behind the tab | The tab is a real `CustomTabActivity` in the app's own task. On "Sign in as the walker" the app comes back in front by itself: "Connected to Lidarr 2.12.4.4658. Signed in as walker." |
+| The service refuses | The app comes back: "The sign-in service turned the sign-in down: The walker said no" |
+| The tab closed without signing in | A moment after the screen is back: "Lidarr is behind the sign-in at …", nobody signed in |
+| The app killed behind the tab (`am kill`) | The browser: "This site can't be reached … 127.0.0.1:<port> refused to connect". The tab closed, the app starts afresh and says the sign-in was not finished; started again, it signs in |
+| The app stopped and opened again | Still connected and signed in |
+| Signing out | "Signed out. Lidarr is behind the sign-in at …", and the stand-in's log has the token handed back (`POST /application/o/revoke/`) |
+| Where the secrets are | `no_backup/requests/<account>/lidarr-key.sealed` and `lidarr-token.sealed`. `requests.json`, `settings.json`, Diagnostics and the device log searched for the key, the tokens and the pass: none |
+
+The first time Chrome is opened on a fresh emulator it shows its own welcome ("Stay signed
+out"); that is Chrome's, once.
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account

@@ -469,6 +469,34 @@ object Core {
     }
 
     @Serializable
+    private class SayIn(val what: String, val with: List<String>)
+
+    /** One of the library's own sentences or pages, by the library's name for it: see
+     *  [Words], which is what to call. */
+    internal fun say(what: String, with: List<String> = emptyList()): String =
+        across(SayIn(what, with), SayIn.serializer(), String.serializer(), ::say)
+
+    /**
+     * The check of the connection, as the Windows app makes it: [lidarrVersion], and if the
+     * answer is that a sign-in is needed, [gateFind] for which.
+     */
+    suspend fun lidarrCheck(lidarr: LidarrAt): Outcome<Checked> = CoreHttp.looking { operation ->
+        over(Of(operation, lidarr), Of.serializer(), Checked.serializer(), ::lidarrCheck)
+    }
+
+    /** `lidarr::tidy`: an address as it is used, whatever was typed around it. */
+    fun lidarrTidy(address: String): String = across(address, String.serializer(), String.serializer(), ::lidarrTidy)
+
+    /** `lidarr::host`: the host an address is on, which is what a key belongs to. */
+    fun lidarrHost(address: String): String = across(address, String.serializer(), String.serializer(), ::lidarrHost)
+
+    /** `lidarr::mask`: a key as it may be shown. */
+    fun lidarrMask(key: String): String = acrossPrivately(key, String.serializer(), String.serializer(), ::lidarrMask)
+
+    /** `gate::Found::host`: the sign-in service's name, for showing. */
+    fun gateHost(service: String): String = across(service, String.serializer(), String.serializer(), ::gateHost)
+
+    @Serializable
     private class RequestIn(val operation: Long, val lidarr: LidarrAt, val wanted: Offer)
 
     /**
@@ -576,6 +604,12 @@ object Core {
     @JvmStatic private external fun gateClose(input: ByteArray): ByteArray?
     @JvmStatic private external fun gateGiveUp(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrVersion(input: ByteArray): ByteArray?
+    @JvmStatic private external fun say(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrCheck(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrTidy(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrHost(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrMask(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateHost(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrRequest(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrAddArtist(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrPending(input: ByteArray): ByteArray?

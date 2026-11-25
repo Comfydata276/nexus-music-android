@@ -8,6 +8,13 @@
             android:name=".gallery.GalleryActivity"
             android:exported="true"
             android:label="Nexus parts" />
+        <!-- A stand-in for the screens of requests, which are still to come (see
+             requests/RequestsDebugActivity.kt). Not in the launcher; started from adb. -->
+        <activity
+            android:name=".requests.RequestsDebugActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="Nexus requests (debug)" />
         <!-- Lets the rig drive the player from adb (see playback/DebugControl.kt). -->
         <receiver
             android:name=".playback.DebugControl"

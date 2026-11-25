@@ -168,6 +168,10 @@ class DebugControl : BroadcastReceiver() {
             resultData = org.medianexus.music.downloads.DebugSpare.set(context.applicationContext, megabytes)
             return
         }
+        // Requests forced on or off for the next start (see requests/DebugRequests.kt).
+        intent.getStringExtra("requests")?.let { what ->
+            resultData = org.medianexus.music.requests.DebugRequests.asked(context.applicationContext, what)
+        }
         // Keeping in step forced on, an exchange made now, a pin; and the shared library made
         // to panic (see sync/DebugStep.kt).
         (intent.getStringExtra("instep") ?: intent.getStringExtra("core"))?.let { what ->

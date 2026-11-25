@@ -200,6 +200,19 @@ class Graph(
                 inUse = { org.medianexus.music.downloads.DownloadKeeper.visible || playing },
                 settingsStore = settings,
                 front = front,
+                requests = { account ->
+                    org.medianexus.music.requests.Requests(
+                        account.account, account.scope,
+                        // (Beside the saved password, out of backups; a folder for each account.)
+                        org.medianexus.music.requests.RequestsSecrets(
+                            java.io.File(context.noBackupFilesDir, "requests/${account.account.key}"), passwordBox, account.account.server, account.account.username,
+                        ),
+                        afterwards = { work -> scope.launch { work() } },
+                        comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
+                        note = { diagnostics.note(it) },
+                    )
+                },
+                afterwards = { work -> scope.launch { work() } },
             ),
         )
     }

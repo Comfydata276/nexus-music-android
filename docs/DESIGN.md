@@ -1987,6 +1987,66 @@ import, which the phone does not have.
   rules expect (a "come back in" that can't be read means a second, and is not passed
   over for a later one that can).
 
+### Requests: the connection to Lidarr
+
+Requests are asking Lidarr for music that isn't in the library. **They do not exist in a
+build until `RequestsBuild.EXISTS` says so** (it does not, yet: the screens are still to
+come), and then they are off until the person switches them on. With the build's switch off
+an account has no connection at all: nothing is read, nothing kept, no address asked
+anything, and the client for the library's requests is never made.
+
+`requests/Requests.kt` is an account's connection, and the surface the screens use to set
+it up. As on Windows:
+
+- **An address and a key**, or, **when a sign-in service answers at that address instead of
+  Lidarr** (an Authentik in front of it), a sign-in in the browser, after which the app
+  keeps only a token. What is asked of Lidarr and the service, what is made of the answers,
+  and every sentence shown are the library's (`Core`, `Words`); what is here is the order
+  things happen in on a phone, and what is kept.
+- **`state`**, a flow: off; not connected (no address or no key yet); the key forgotten
+  (the address moved to another host, and a key is only ever sent to the host it was typed
+  in for); connecting; connected, to which version and as whom; needs a sign-in, at which
+  host and why; signing in (the browser is open); can't be reached, and why in the
+  library's sentence; and "what is kept can't be read", which changes nothing until a start
+  that can read it.
+- **What is kept, and where.** `requests.json` in the account's own folder: whether they
+  are on, the address, which sign-in service was found, who signed in. Never a secret.
+  **Lidarr's key and the sign-in's token are kept as the saved password is**: sealed with a
+  key held by the Android Keystore, in `no_backup/requests/<account>/`, sealed together
+  with the account they belong to (another account on the phone can't open them). The token
+  is replaced on the phone each time the service replaces it, which every renewal does, and
+  that write outlasts a power cut: the one it replaces no longer works. At sign-out of the
+  music server the key is forgotten and the token handed back to its service; signing out
+  of the sign-in alone hands the token back and keeps the rest.
+- **The sign-in uses the same way back as Windows**: `http://127.0.0.1:<port>/callback`.
+  The app listens on the loopback address (`BrowserReturn`: one request, the `state` it
+  made itself checked before anything else is believed) while the browser is open, so
+  nothing has to be changed on the person's Authentik. The browser is a **Custom Tab**
+  (`BrowserTab`), opened by a plain "view" intent with the one extra that asks for one, so
+  there is no library for it; it is opened from the screen that asked, in that screen's
+  task, which is what lets the app bring itself back in front when the sign-in comes home.
+  The pages the browser is shown ("You're signed in", "The sign-in didn't go through",
+  "Nothing here") are the library's.
+- **What can happen while the browser is open**, each tried on the emulator against a
+  stand-in service (docs/TESTING.md, "Requests"):
+  - the person signs in: the app comes back in front by itself, connected;
+  - the service refuses: the app comes back and says so in the service's words;
+  - the tab is closed without signing in: a moment after the screen is back the sign-in is
+    given up (a browser that was on its way back in that moment still gets through);
+  - nobody does anything for five minutes: given up, and said;
+  - **Android kills the app behind the tab**: the browser then has nowhere to come back to
+    and says the page can't be reached. When the person returns the app starts afresh, finds
+    that a sign-in was begun and never finished, and says so; it is simply started again.
+    Nothing can be carried across the kill: the secret half of the sign-in was only ever in
+    memory, which is what makes a code useless to anyone else.
+- **A sign-in that is open** is the library's `gate::Session`, kept on the Rust side under
+  a number. Its own requests are nobody's (see "Stopping"): no screen left can cut a
+  renewal off.
+
+There are no screens yet. A debug build has a stand-in for them
+(`requests/RequestsDebugActivity`, with requests forced on by `DebugRequests`), which does
+each thing as one call of the surface above and nothing past it.
+
 ### How it is tested
 
 Against the real library, on the JVM, in the ordinary unit suite: the build makes the same

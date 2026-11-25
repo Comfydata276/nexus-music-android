@@ -16,6 +16,7 @@ class App : Application(), SingletonImageLoader.Factory {
         // (A debug build can be told to run what the build has switched off: sync/DebugStep.kt.
         // Before anything is made, since what exists is decided as it is.)
         org.medianexus.music.sync.DebugStep.atStart(this)
+        org.medianexus.music.requests.DebugRequests.atStart(this)
         graph = Graph(this)
     }
 

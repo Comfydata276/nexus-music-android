@@ -279,3 +279,10 @@ data class Pending(val id: Long, val title: String, val artist: String, val prog
 /** A song on an album, by name only (`musicbrainz::TrackName`). */
 @Serializable
 data class TrackName(val title: String, val seconds: Int, val disc: Int, val number: Int)
+
+/** What asking Lidarr whether it is there came to ([Core.lidarrCheck]): its `version` if it
+ *  answered as itself; otherwise `why`, the library's sentence, with the sign-in that
+ *  answered in its place if that is why and one was found (`door`), or why what is in front
+ *  of Lidarr couldn't be made out (`doorWhy`). */
+@Serializable
+data class Checked(val version: String? = null, val why: String = "", val door: SignInDoor? = null, val doorWhy: String? = null)

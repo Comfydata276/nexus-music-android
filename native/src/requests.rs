@@ -230,6 +230,54 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_gateGiveUp<'l>(env: J
     })
 }
 
+// ---- the library's own words -----------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SayIn {
+    what: String,
+    #[serde(default)]
+    with: Vec<String>,
+}
+
+/// One of the library's own sentences, or one of the pages the browser is shown: what every
+/// app says in the same words. Named as the library names it (`gate.turned_down` is
+/// `nexus_core::gate::turned_down`), with what it is said of in `with`. A name the library
+/// doesn't have is an error, never an empty sentence.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_say<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    use nexus_core::{lidarr, requests};
+    call(env, input, |given: SayIn| {
+        let with = |place: usize| given.with.get(place).map(String::as_str).unwrap_or_default();
+        Ok(match given.what.as_str() {
+            "gate.wait_millis" => gate::WAIT.as_millis().to_string(),
+            "gate.nobody_signed_in" => gate::NOBODY_SIGNED_IN.to_string(),
+            "gate.page.signed_in" => gate::page(gate::Page::SignedIn),
+            "gate.page.not_through" => gate::page(gate::Page::NotThrough),
+            "gate.page.nothing_here" => gate::page(gate::Page::NothingHere),
+            "gate.turned_down" => gate::turned_down(with(0)),
+            "gate.not_ready" => gate::not_ready(&with(0)),
+            "gate.not_heard" => gate::not_heard(&with(0)),
+            "gate.no_random_numbers" => gate::no_random_numbers(with(0)),
+            "gate.behind_sign_in" => gate::behind_sign_in(with(0)),
+            "gate.finish_in_browser" => gate::finish_in_browser(with(0)),
+            "gate.signed_out" => gate::signed_out(with(0)),
+            "lidarr.connected" => lidarr::connected(with(0)),
+            "lidarr.not_connected" => lidarr::NOT_CONNECTED.to_string(),
+            "lidarr.checking" => lidarr::CHECKING.to_string(),
+            "lidarr.key_forgotten" => lidarr::KEY_FORGOTTEN.to_string(),
+            "lidarr.needed" => lidarr::NEEDED.to_string(),
+            "requests.not_listed" => requests::NOT_LISTED.to_string(),
+            "requests.no_longer_listed" => requests::NO_LONGER_LISTED.to_string(),
+            "requests.asking_for" => requests::asking_for(with(0)),
+            "requests.asked" => requests::asked_sentence(with(0)),
+            "requests.adding_now" => requests::adding_now(with(0)),
+            "requests.added" => requests::added(with(0)),
+            "requests.off_the_list" => requests::off_the_list(with(0)),
+            other => return Err(format!("The shared library has no sentence called {other}.")),
+        })
+    })
+}
+
 // ---- Lidarr -------------------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -246,6 +294,67 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrVersion<'l>(env
         let _during = During::new(given.operation);
         Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.version())))
     })
+}
+
+/// What asking Lidarr whether it is there came to.
+#[derive(Serialize)]
+struct Checked {
+    /// Lidarr's version, if it answered as itself.
+    version: Option<String>,
+    /// If it didn't: the library's sentence for why.
+    why: String,
+    /// The sign-in that answered in its place, if that is why and one was found.
+    door: Option<Door>,
+    /// Why what is in front of Lidarr couldn't be made out, if it couldn't.
+    door_why: Option<String>,
+}
+
+/// The Windows app's check of the connection (`check_requests` in its `src/controller.rs`):
+/// `Lidarr::version`, and if the answer is that a sign-in is needed, `gate::find` for which.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrCheck<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call_private(env, input, |given: Of| {
+        let _during = During::new(given.operation);
+        let why = match given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.version()) {
+            Ok(version) => return Ok(Outcome::Got { value: Checked { version: Some(version), why: String::new(), door: None, door_why: None } }),
+            Err(why) if why == STOPPED => return Ok(Outcome::Stopped),
+            Err(why) => why,
+        };
+        let mut checked = Checked { version: None, why, door: None, door_why: None };
+        if checked.why == nexus_core::lidarr::NEEDED {
+            let http = Host::new(Whose::Operation(given.operation), Line::Lidarr);
+            match gate::find(http.as_ref(), &nexus_core::lidarr::tidy(&given.lidarr.address)) {
+                Ok(found) => checked.door = found.map(|found| Door { service: found.service, client: found.client }),
+                Err(why) if why == STOPPED => return Ok(Outcome::Stopped),
+                Err(why) => checked.door_why = Some(why),
+            }
+        }
+        Ok(Outcome::Got { value: checked })
+    })
+}
+
+/// `lidarr::tidy`: an address as it is used, whatever was typed around it.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrTidy<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |address: String| Ok(nexus_core::lidarr::tidy(&address)))
+}
+
+/// `lidarr::host`: the host an address is on, which is what a key belongs to.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrHost<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |address: String| Ok(nexus_core::lidarr::host(&address)))
+}
+
+/// `lidarr::mask`: a key as it may be shown.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrMask<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call_private(env, input, |key: String| Ok(nexus_core::lidarr::mask(&key)))
+}
+
+/// `gate::Found::host`: the sign-in service's name, for showing.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_gateHost<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |service: String| Ok(Found { service, client: String::new() }.host().to_string()))
 }
 
 #[derive(Deserialize)]

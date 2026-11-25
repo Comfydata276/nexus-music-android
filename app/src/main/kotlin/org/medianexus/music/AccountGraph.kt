@@ -57,6 +57,12 @@ class AccountWiring(
     /** Whether the app's screens are in front: only then is the server looked at each
      *  minute for what other devices have changed. */
     val front: StateFlow<Boolean> = MutableStateFlow(false),
+    /** Makes the account's connection to Lidarr (it needs the phone: the Keystore, the
+     *  folder that is out of backups). Asked only in a build that has requests. */
+    val requests: ((AccountGraph) -> org.medianexus.music.requests.Requests)? = null,
+    /** Runs something that must finish though the account has gone (handing a token back
+     *  to a sign-in service at sign-out): on the app's own scope. */
+    val afterwards: (suspend () -> Unit) -> Unit = {},
 )
 
 /**
@@ -322,6 +328,16 @@ class AccountGraph(
             may = { scope.isActive && mayShare() && step?.clockIs?.value != org.medianexus.music.sync.InStep.ClockIs.WRONG }, on = { settings.value.sync }, standing = { settings.value.syncOffs }, scope = scope, pause = pause, note = wiring?.note ?: {},
         )
     }
+
+    private val afterwards: (suspend () -> Unit) -> Unit = wiring?.afterwards ?: {}
+
+    /**
+     * Requests: asking Lidarr for music that isn't in the library. **Null unless this build
+     * has them** ([org.medianexus.music.requests.RequestsBuild]): then nothing of them is
+     * read, kept or asked. With them, still off until the person switches them on.
+     */
+    val requests: org.medianexus.music.requests.Requests? =
+        if (org.medianexus.music.requests.RequestsBuild.on) wiring?.requests?.invoke(this)?.also { it.start() } else null
 
     private var lookedAt = 0L
 
@@ -629,6 +645,10 @@ class AccountGraph(
     fun close() {
         closed = true
         synchronized(going) { gone = true }
+        // The account's secrets for requests go with its password: the key forgotten, the
+        // sign-in's token handed back to its service. (After this account's own work has
+        // been cancelled, so on the app's.)
+        requests?.let { mine -> afterwards { mine.leave() } }
         downloads?.release()
         // Everything it holds written, then the file let go for whoever opens it next.
         playLog.close()
