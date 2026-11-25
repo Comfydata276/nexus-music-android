@@ -64,6 +64,10 @@ android {
         // emulators. Naming them here leaves every other kind out of the APK altogether,
         // so that a 32-bit phone is told the app is not for it when it tries to install,
         // instead of installing an app that cannot load its library.
+        //
+        // The x86_64 library is in the release APK too, though no phone uses it (751 KB of
+        // it, uncompressed): so that the build that ships is the very build that was car
+        // checked and measured on the emulators, not one made differently for release.
         ndk {
             abiFilters += coreAbis
         }

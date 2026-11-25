@@ -788,6 +788,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_deviceName<'l>(env: J
 }
 
 // ---- for the tests of the boundary itself ------------------------------------------------------
+//
+// (In every build of the library, and called by nothing in a release build of the app: see
+// `stop`, below.)
 
 /// Hands back the text it was given, having read it as text and written it again: what
 /// crosses, crosses exactly.
@@ -797,8 +800,15 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_echo<'l>(env: JNIEnv<
 }
 
 /// Panics, with the words it was given: for the check that a panic reaches Kotlin as an
-/// exception and the app carries on. (Reached only from the app's debug builds and its
-/// tests: see `Core.stopForTheTest`.)
+/// exception and the app carries on.
+///
+/// **This and `echo` above are in the library every build carries, the release build's
+/// too, and nothing in a release build calls either**: the unit tests do (`CoreTest`), and
+/// a debug build when the test rig asks (`DebugStep`, which a release build has only an
+/// empty version of). They stay in rather than being built out because the library is
+/// built once for every kind of build, so that the library that ships is the library that
+/// was tested. Called anyway, the one hands back its text and the other is caught at the
+/// boundary like any panic.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_stop<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |given: String| -> Result<(), String> { panic!("{given}") })
