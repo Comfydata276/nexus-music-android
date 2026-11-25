@@ -2073,6 +2073,13 @@ it up. As on Windows:
 - **A sign-in that is open** is the library's `gate::Session`, kept on the Rust side under
   a number. Its own requests are nobody's (see "Stopping"): no screen left can cut a
   renewal off.
+- **One sign-in owns the token that is kept, at a time.** Every sign-in opened here has a
+  number of the phone's own, and only the one whose token the file holds may write that
+  file or delete it. Signing out and in again at once is where it matters: the old
+  sign-in may still have a renewal on its way, and its goodbye to the service may take
+  seconds. When that renewal comes back it is handed back to the service and written
+  nowhere, and the goodbye, when it is done, takes away the kept token only if it is still
+  the very one it handed back. The new sign-in's token stands.
 
 There are no screens yet. A debug build has a stand-in for them
 (`requests/RequestsDebugActivity`, with requests forced on by `DebugRequests`), which does

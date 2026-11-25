@@ -101,12 +101,17 @@ class RequestsTest {
         @Volatile var username = "walker"
         private val made = AtomicInteger(0)
 
+        /** Requests the service keeps waiting until the test lets them go, by something in
+         *  their address or their body. */
+        val held = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CountDownLatch>()
+
         /** The check each code was asked for with. */
         private val checks = java.util.concurrent.ConcurrentHashMap<String, String>()
 
         private fun s256(secret: String) = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(secret.toByteArray()))
         val service = StandIn { asked, reply ->
             val form = asked.body.split('&').associate { it.substringBefore('=') to it.substringAfter('=', "") }
+            held.entries.firstOrNull { it.key in asked.target || it.key in asked.body }?.value?.await(30, java.util.concurrent.TimeUnit.SECONDS)
             when {
                 asked.target.startsWith("/application/o/authorize/?response_type=code&") -> {
                     val query = asked.target.substringAfter('?')
@@ -635,6 +640,88 @@ class RequestsTest {
         assertEquals("", requests.settings.value.signedIn)
         // And Lidarr is behind its sign-in again.
         assertEquals(RequestsState.NeedsSignIn(behind.host), requests.check())
+    }
+
+    // ---- one sign-in owns the token that is kept ------------------------------------------------
+
+    private fun tokenKept(account: Account): String? =
+        File(secretsDir(account), "lidarr-token.sealed").takeIf { it.exists() }?.readBytes()?.reversedArray()?.decodeToString()?.split('\n', limit = 3)?.get(2)
+
+    @Test
+    fun `signed out and in again at once, the new sign-in stands however late the old one's goodbye is`() = runBlocking {
+        val behind = Behind()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        signInWith(requests.signIn()!!)
+        requests.until { it is RequestsState.Connected }
+        val first = tokenKept(account)!!
+
+        // Signed out; and the service is slow to take the old token back.
+        val goodbye = java.util.concurrent.CountDownLatch(1)
+        behind.held["/application/o/revoke/"] = goodbye
+        requests.signOut()
+        assertTrue(behind.service.awaitAsked(10_000) { it.target == "/application/o/revoke/" })
+        // In again at once.
+        signInWith(requests.signIn()!!)
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected })
+        val second = tokenKept(account)!!
+        assertTrue(second != first)
+
+        // Only now does the old sign-in's goodbye finish. It was for the old token: the new
+        // one is not its to take away.
+        goodbye.countDown()
+        withTimeout(10_000) { while (behind.revoked.isEmpty()) kotlinx.coroutines.delay(20) }
+        kotlinx.coroutines.delay(600)
+        assertEquals(listOf(first), behind.revoked.toList())
+        assertEquals(second, tokenKept(account))
+        // And the app started again is still signed in, with no browser.
+        scopes.last().cancel()
+        val again = requests(account)
+        again.start()
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), again.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
+    }
+
+    @Test
+    fun `a renewal by a sign-in that has since been signed out of writes nothing over the one that replaced it`() = runBlocking {
+        val behind = Behind()
+        val account = account()
+        val before = requests(account)
+        before.switch(true)
+        before.connect(behind.lidarr.address, KEY)
+        signInWith(before.signIn()!!)
+        before.until { it is RequestsState.Connected }
+        scopes.last().cancel()
+        val kept = tokenKept(account)!!
+
+        // The app starts again. Its first request renews the token, and the service is slow
+        // about it: the renewal is on its way when...
+        val slow = java.util.concurrent.CountDownLatch(1)
+        behind.held["refresh_token=$kept"] = slow
+        val requests = requests(account)
+        requests.start()
+        assertTrue(behind.service.awaitAsked(10_000) { "refresh_token=$kept" in it.body })
+        // ...the person signs out, and in again.
+        requests.signOut()
+        signInWith(requests.signIn()!!)
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected })
+        val mine = tokenKept(account)!!
+
+        // The old renewal comes back now, with a token for a sign-in nobody is in any more.
+        // It is handed back to the service; it is written nowhere, and the token that is
+        // kept is not taken away with it.
+        slow.countDown()
+        withTimeout(10_000) { while (behind.revoked.isEmpty()) kotlinx.coroutines.delay(20) }
+        kotlinx.coroutines.delay(600)
+        assertEquals(1, behind.revoked.size)
+        assertTrue(behind.revoked.single() != mine)
+        assertEquals(mine, tokenKept(account))
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.check())
+        scopes.last().cancel()
+        val again = requests(account)
+        again.start()
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), again.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
     }
 
     @Test

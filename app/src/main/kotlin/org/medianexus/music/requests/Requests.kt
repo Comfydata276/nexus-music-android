@@ -151,11 +151,28 @@ class Requests internal constructor(
      *  until one is given, that is what there is to say. */
     private var forgotten = false
 
-    /** The sign-in that is open in the library: which, the library's number for it, and the
-     *  place its token is for. */
-    private class Open(val door: SignInDoor, val session: Long, val place: String)
+    /** The sign-in that is open in the library: which, the library's number for it, the
+     *  place its token is for, and this sign-in's own number (see [live]). */
+    private class Open(val door: SignInDoor, val session: Long, val place: String, val number: Long)
 
     private var open: Open? = null
+
+    /**
+     * **One sign-in owns the token that is kept, at a time.** Every sign-in that is opened
+     * here has a number, and [live] is the number of the one whose token the file holds (0
+     * for none). Only that one may write the file or delete it: a renewal that comes back
+     * for a sign-in that has since been signed out of writes nothing, and an old sign-in's
+     * goodbye takes away only the token it was handing back. Without this, signing out and
+     * in again at once could end with the old sign-in's late renewal written over the new
+     * token, or its clean-up deleting it.
+     *
+     * [owner] guards the number and every write and delete of the token file together. It
+     * is a plain lock, not [turn], because the library calls [tokenChanged] on a thread of
+     * its own, in the middle of a request.
+     */
+    private val owner = Any()
+    private var live = 0L
+    private var numbers = 0L
 
     /** Only the newest check counts. */
     private var checks = 0
@@ -213,10 +230,13 @@ class Requests internal constructor(
      *  kept for another is forgotten, and never sent. Under [turn]. */
     private fun tokenFor(door: SignInDoor): RequestsSecrets.Bound? {
         val place = Core.servicePlace(door.service) ?: return null
-        val kept = secrets.token() ?: return null
-        if (kept.origin == place) return kept
-        secrets.forgetToken()
-        return null
+        return synchronized(owner) {
+            val kept = secrets.token() ?: return null
+            if (kept.origin == place) return kept
+            // (Nobody's: no sign-in that is open here was given it.)
+            secrets.forgetToken()
+            null
+        }
     }
 
     // ---- the way to Lidarr -----------------------------------------------------------------------
@@ -242,26 +262,31 @@ class Requests internal constructor(
         val door = settings.door
         open?.let { now ->
             if (now.door == door) return now.session
-            // (Another sign-in's, or none any more: this one is let go of.)
+            // (Another sign-in's, or none any more: this one is let go of, and owns nothing.)
             open = null
+            synchronized(owner) { if (live == now.number) live = 0 }
             afterwards { Core.gateClose(now.session) }
         }
         if (door == null) return null
         val token = tokenFor(door) ?: return null
-        val session = Core.gateOpen(door, token.secret, bound = token.origin) { fresh -> tokenChanged(token.origin, fresh) }
-        open = Open(door, session, token.origin)
+        val number = synchronized(owner) { (++numbers).also { live = it } }
+        val session = Core.gateOpen(door, token.secret, bound = token.origin) { fresh -> tokenChanged(number, token.origin, fresh) }
+        open = Open(door, session, token.origin, number)
         return session
     }
 
-    /** The service replaced the token (every renewal does), or stopped honouring it (""):
-     *  called by the library, on one of its threads, before the request that caused it is
-     *  answered. */
-    private fun tokenChanged(place: String, fresh: String) {
-        if (fresh.isEmpty()) {
-            secrets.forgetToken()
-        } else if (!secrets.keepToken(place, fresh)) {
-            note("requests: the sign-in's new token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
+    /**
+     * The service replaced the token of sign-in `number` (every renewal does), or stopped
+     * honouring it (""): called by the library, on one of its threads, before the request
+     * that caused it is answered. **Only the sign-in that owns the kept token changes it**
+     * (see [live]): one that has been signed out of, or replaced, writes and deletes nothing.
+     */
+    private fun tokenChanged(number: Long, place: String, fresh: String) {
+        val kept = synchronized(owner) {
+            if (number != live) return
+            if (fresh.isEmpty()) secrets.forgetToken() else secrets.keepToken(place, fresh)
         }
+        if (!kept && fresh.isNotEmpty()) note("requests: the sign-in's new token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
     }
 
     // ---- setting it up -----------------------------------------------------------------------------
@@ -489,10 +514,16 @@ class Requests internal constructor(
                 val settings = settingsNow.value
                 val place = Core.servicePlace(found.service)
                 if (token != null && place != null) {
-                    if (!secrets.keepToken(place, token.token)) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
+                    // This sign-in owns the kept token from here: whatever an earlier one
+                    // still has on its way writes nothing.
+                    val (number, kept) = synchronized(owner) {
+                        live = ++numbers
+                        live to secrets.keepToken(place, token.token)
+                    }
+                    if (!kept) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
                     write(settings.copy(signedIn = shown(token.name), signingIn = false))
                     open?.let { old -> afterwards { Core.gateClose(old.session) } }
-                    open = Open(found, Core.gateOpen(found, token.token, bound = place) { fresh -> tokenChanged(place, fresh) }, place)
+                    open = Open(found, Core.gateOpen(found, token.token, bound = place) { fresh -> tokenChanged(number, place, fresh) }, place, number)
                 } else {
                     write(settings.copy(signingIn = false))
                     val why = when {
@@ -554,8 +585,12 @@ class Requests internal constructor(
         giveUpAttempt()
         val was = open
         open = null
-        val onFile = secrets.token()
-        secrets.forgetToken()
+        // From here no sign-in owns the kept token: a renewal that is on its way for the one
+        // being dropped writes nothing when it comes back.
+        val onFile = synchronized(owner) {
+            live = 0
+            secrets.token().also { secrets.forgetToken() }
+        }
         val door = was?.door ?: settings.door
         if (door == null || (was == null && onFile == null)) return
         // (Handed back to the service it was given for, and to no other: what the client is
@@ -566,7 +601,10 @@ class Requests internal constructor(
             // the one that is good now.
             val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile?.secret
             if (token != null) Core.gateGiveUp(door, token, place)
-            secrets.forgetToken()
+            // Tidied away only if what is kept is still the very token that was handed
+            // back (its first deletion failed, say). Anything else there by now is a later
+            // sign-in's, and is not this one's to take.
+            synchronized(owner) { if (token != null && secrets.token()?.secret == token) secrets.forgetToken() }
         }
     }
 
