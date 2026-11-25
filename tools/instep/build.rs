@@ -15,8 +15,9 @@
 //! from before the library is still compiled as it was (`split` below says which it is).
 //!
 //! From the version after 0.40.4 the exchange itself is decided in the library
-//! (`nexus_core::step`), and `sync.rs` above its cut is the app's asking of the server:
-//! `look` and `send`. Such a checkout is "stepped" (the `stepped` cfg, which main.rs goes
+//! (`nexus_core::step`), and what this tool takes of `sync.rs` is the app's asking of the
+//! server: `read` and `send`, which are its first items (the cut is where `peek` begins;
+//! what follows applies a plan to the app's own settings, which are not here). Such a checkout is "stepped" (the `stepped` cfg, which main.rs goes
 //! by): it can play a whole household (`instep household`), and has no `pc` mode of its own,
 //! since the PC it would play is the code under test. A checkout at 0.40.4 or before has
 //! `pc`, and is what the household's older PC is run from.
@@ -55,23 +56,29 @@ fn main() {
 
     // sync.rs: everything before the part that needs the window.
     let sync = read("sync.rs");
-    let end = sync.find("\nimpl Controller {").expect("sync.rs: `impl Controller {` not found");
+    // Whether the exchange is the library's (see the top).
+    let stepped = sync.contains("\npub fn read(client: &Client)") && sync.contains("\npub fn send(client: &Client");
+    let end = if stepped {
+        sync.find("\n/// The theme the record has").expect("sync.rs: the start of `peek` not found")
+    } else {
+        sync.find("\nimpl Controller {").expect("sync.rs: `impl Controller {` not found")
+    };
     let head: String = without_inner_docs(&sync[..end])
         .lines()
         // The window and the controller aren't here, and nothing above the cut uses them.
         .filter(|line| !line.starts_with("use slint") && !line.starts_with("use crate::controller"))
+        // (Nor, in a stepped checkout, the app's settings.)
+        .filter(|line| !(stepped && line.starts_with("use crate::config")))
         // What sync.rs takes from the library for its own use, the tool reaches through it
         // (`sync::merge`, `sync::Shared`): the same items, made visible, nothing changed.
         .map(|line| if split && line.starts_with("use nexus_core::sync::{") { format!("pub {line}\n") } else { format!("{line}\n") })
         .collect();
-    // Whether the exchange is the library's (see the top).
-    let stepped = head.contains("pub fn look(");
     println!("cargo::rustc-check-cfg=cfg(stepped)");
     if stepped {
         println!("cargo::rustc-cfg=stepped");
     }
     let above: &[&str] = if stepped {
-        &["pub fn look(", "pub fn send(", "pub struct Holds", "use nexus_core::sync::{"]
+        &["pub fn read(", "pub fn send(", "pub use nexus_core::sync::{"]
     } else if split {
         &["fn exchange(", "fn find_or_create(", "pub use nexus_core::sync::{", "merge, merge_history, merge_plays"]
     } else {
@@ -84,7 +91,7 @@ fn main() {
     // the Windows functions as they are.
     let stepped_doors = r#"
 /// (The tool's.) What the tool names through this module, from the library where it now is.
-pub use nexus_core::sync::{LONG_AGO, Shared, VERSION, merge, merge_history};
+pub use nexus_core::sync::{LONG_AGO, PLAYS_SHARED, Shared, VERSION, merge, merge_history, merge_plays};
 
 /// (The tool's.) Windows' own limits and layout number.
 pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTORY_LENGTH, PLAYS_SHARED, nexus_core::handover::QUEUE_BEHIND, nexus_core::handover::QUEUE_AHEAD, LONG_AGO);
@@ -109,7 +116,13 @@ pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTOR
         // Nothing of the stand-in library is used; this says so, for Cargo's sake.
         parts.push_str("use nexus_core as _;\n\n");
     }
-    let wanted: &[&str] = if split { &["pub struct Played {", "pub fn write_atomically("] } else { &["pub struct ListPrefs {", "pub struct Played {", "pub fn write_atomically("] };
+    let wanted: &[&str] = if stepped {
+        &["pub struct Played {", "pub fn write_atomically(", "pub fn write_surely("]
+    } else if split {
+        &["pub struct Played {", "pub fn write_atomically("]
+    } else {
+        &["pub struct ListPrefs {", "pub struct Played {", "pub fn write_atomically("]
+    };
     for marker in wanted {
         parts.push_str(&item(&config, marker));
         parts.push('\n');

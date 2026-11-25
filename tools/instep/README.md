@@ -17,8 +17,8 @@ it **is** the Windows code, compiled from the Windows repository's source where 
 in its `src/sync.rs`), and a build of this tool from such a checkout has `pc` and
 `pc-looks`. After it the exchange is decided in the Windows app's library
 (`nexus_core::step`), which the phone is to share; a build from such a checkout has
-`household` instead, and drives that code as the Windows app does (`sync::look`,
-`sync::send`). `cases`, `reads`, `peek`, `plant` and the queue modes are in both.
+`household` instead, and drives that code in the library's own numbered steps, with the
+Windows app's own asking of the server (`sync::read`, `sync::send`). `cases`, `reads`, `peek`, `plant` and the queue modes are in both.
 
 **What is compiled** (see `build.rs`): `subsonic.rs`, `added.rs` and `plays.rs` whole;
 `sync.rs` from its top down to `impl Controller` (the record, the merges, `exchange`); from

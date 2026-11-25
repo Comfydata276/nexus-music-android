@@ -12,21 +12,22 @@
 //!   older version goes on doing until it is updated. These are expectations too: if the
 //!   old PC stops doing one of them, the write-up is wrong.
 //!
-//! The devices on the new code are driven here exactly as the Windows app drives itself:
-//! `sync::look` (its reading of the server, and the library's `settle`), then, in the order
-//! the library gives, keep, take in, `sync::send`, and only then `written`.
+//! The devices on the new code are driven here in the library's own numbered steps
+//! (`nexus_core::step`, the top), with the Windows app's own asking of the server:
+//! `sync::read`, then `settle` from what the device holds at that moment, keep, take in,
+//! `sending`, `sync::send`, and only then `written`.
 
 use std::process::Command;
 
-use nexus_core::handover::{self, Here, Save, Then};
+use nexus_core::handover::{self, Clock, Here, Save, Then};
 use nexus_core::notes::{Kept, Note};
 use nexus_core::record::{self, Read};
-use nexus_core::step::{Answers, Change, Choices, Device, Found, Held, Outcome, Plan, Stop, find, settle};
-use nexus_core::sync::{PLAYS_SHARED, Shared};
+use nexus_core::step::{self, Change, Choices, Device, Held, Outcome, Plan, Stop, settle};
+use nexus_core::sync::{PLAYS_SHARED, Shared, newest_plays};
 use serde_json::Value;
 
 use crate::subsonic::Client;
-use crate::sync::{self, Holds, PLAYLIST_NAME};
+use crate::sync::{self, PLAYLIST_NAME};
 use crate::{Options, sync_playlists};
 
 fn now() -> i64 {
@@ -46,6 +47,8 @@ enum Came {
 struct New {
     name: &'static str,
     username: String,
+    /// The device's own name for the sign-in.
+    account: String,
     choices: Choices,
     kept: Kept,
     history: Vec<(String, i64)>,
@@ -53,13 +56,13 @@ struct New {
     sources: Vec<(String, i64, String)>,
     /// How far this device's clock is from the true time (the server's).
     skew: i64,
-    /// What the last exchange measured: the server's clock minus this device's.
-    offset: Option<i64>,
+    /// What the last read measured: the server's clock minus this device's.
+    offset: std::cell::Cell<Option<i64>>,
 }
 
 impl New {
     fn new(name: &'static str, username: &str) -> New {
-        New { name, username: username.into(), choices: Choices::default(), kept: Kept::default(), history: Vec::new(), log: Vec::new(), sources: Vec::new(), skew: 0, offset: None }
+        New { name, username: username.into(), account: format!("{username}@the-test-server"), choices: Choices::default(), kept: Kept::default(), history: Vec::new(), log: Vec::new(), sources: Vec::new(), skew: 0, offset: Default::default() }
     }
 
     /// Its process is killed and started again: what it holds is what was saved.
@@ -68,19 +71,19 @@ impl New {
     }
 
     fn does(&mut self, change: Change) {
-        self.choices.change(change);
+        self.choices.change(&self.account, change);
     }
 
     fn pins(&self) -> Vec<String> {
-        self.choices.shown().pins
+        self.choices.shown(&self.account).pins
     }
 
-    fn holds(&self) -> Holds {
-        let mut plays: Vec<(String, i64)> = self.log.iter().rev().take(PLAYS_SHARED).cloned().collect();
-        plays.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
-        plays.dedup();
-        Holds {
+    /// Step 3: what the device holds, now.
+    fn device(&self) -> Device {
+        let plays = newest_plays(self.log.iter());
+        Device {
             username: self.username.clone(),
+            account: self.account.clone(),
             choices: self.choices.clone(),
             notes: self.kept.shared(None),
             history: self.history.clone(),
@@ -89,26 +92,17 @@ impl New {
         }
     }
 
-    /// Reads the server and decides: the app's own `look`, or, for a device whose clock is
-    /// wrong, the same two reads with its clock as it would have read it.
+    /// Steps 1 to 3: the server is asked (the app's own `read`), and the decision made from
+    /// what the device holds then. A device whose clock is wrong read its clock that far
+    /// off as the answer arrived.
     fn read(&self, client: &Client) -> Outcome {
-        let holds = self.holds();
-        if self.skew == 0 {
-            return sync::look(client, &holds).expect("the server");
-        }
-        let listed = client.playlists_stated().expect("the playlists");
-        let (playlist, date, received) = match find(&listed.value, &holds.username) {
-            Found::Ours(id) => {
-                let answer = client.playlist_stated(&id).expect("the playlist");
-                (Some(answer.value), answer.date, answer.received)
-            }
-            _ => (None, listed.date, listed.received),
-        };
-        let device = Device { username: &holds.username, choices: holds.choices.clone(), notes: holds.notes.clone(), history: holds.history.clone(), plays: holds.plays.clone(), play_sources: holds.play_sources.clone() };
-        settle(&device, &Answers { listed: &listed.value, playlist: playlist.as_ref(), date, received: received + self.skew })
+        let mut answers = sync::read(client).expect("the server");
+        answers.received += self.skew;
+        self.offset.set(step::clock(&answers).offset());
+        settle(&self.device(), &answers)
     }
 
-    /// Keeps the plays and takes in what was shared (the library's steps 2 and 3).
+    /// Keeps the plays and takes in what was shared (the library's steps 5 and 6).
     fn take(&mut self, plan: &Plan) {
         for play in &plan.keep.plays {
             if !self.log.contains(play) {
@@ -122,8 +116,7 @@ impl New {
         }
         self.choices.take(&plan.take);
         self.kept.take(&plan.take.notes);
-        self.history = plan.take.history.clone();
-        self.offset = plan.offset;
+        self.history = step::history(&self.history, &plan.take);
     }
 
     /// A whole exchange. `hears` is whether the answer to its write, if it makes one,
@@ -135,7 +128,7 @@ impl New {
         };
         self.take(&plan);
         let Some(write) = &plan.write else { return Came::Done { wrote: false, held: plan.held } };
-        self.choices.sending(write);
+        assert!(self.choices.sending(write), "decided and sent in one go: the plan fits the choices");
         sync::send(client, write).expect("the write");
         if hears {
             self.choices.written(write);
@@ -282,7 +275,7 @@ pub fn household(options: &Options) -> i32 {
     a.exchange(&client);
     let list = on_server(&client).lists.get(&liked).copied().unwrap_or_default();
     t.ok((list.sort, list.descending, list.sort_chosen, list.shuffle) == (2, true, true, true), "the list has A's sort and B's shuffle (a whole value from B would have lost the sort)");
-    t.ok(a.choices.shown().theme == "Ocean" && a.choices.shown().lists[&liked] == b.choices.shown().lists[&liked], "A shows B's theme, and both show the same choices for the list");
+    t.ok(a.choices.shown(&a.account).theme == "Ocean" && a.choices.shown(&a.account).lists[&liked] == b.choices.shown(&b.account).lists[&liked], "A shows B's theme, and both show the same choices for the list");
 
     println!("4. Crossed: both read, then both write. The server has no write that waits on what was read.");
     a.does(Change::Pin(p3.clone()));
@@ -292,7 +285,7 @@ pub fn household(options: &Options) -> i32 {
         let Outcome::Go(plan) = outcome else { panic!("stopped") };
         device.take(&plan);
         let write = plan.write.expect("something to write");
-        device.choices.sending(&write);
+        assert!(device.choices.sending(&write));
         sync::send(&client, &write).expect("the write");
         device.choices.written(&write);
     }
@@ -367,7 +360,7 @@ pub fn household(options: &Options) -> i32 {
     let before = comment(&client).1;
     let came = fast.exchange(&client);
     t.ok(came == Came::Done { wrote: false, held: Some(Held::ClockWrong) } && comment(&client).1 == before, "it takes in and writes nothing, and says its clock is wrong");
-    t.ok(fast.pins() == [p1.clone(), p2.clone(), p3.clone()] && fast.choices.waiting.len() == 1 && handover::save(&client.play_queue().expect("the queue"), &Here { device: "NexusMusic-d", current: Some("x"), stamp: now() + 3_600, offset: fast.offset, ..Default::default() }) == Save::NotNow, "it shows the others' pins with its own waiting on top, and saves no queue");
+    t.ok(fast.pins() == [p1.clone(), p2.clone(), p3.clone()] && fast.choices.waiting.len() == 1 && handover::save(&saved_queue(&client).0, &Here { device: "NexusMusic-d".into(), current: Some("x".into()), stamp: now() + 3_600, ..Default::default() }, Clock::Offset(fast.offset.get().unwrap_or(0))) == Save::NotNow, "it shows the others' pins with its own waiting on top, and saves no queue");
     fast.skew = 0;
     fast.exchange(&client);
     t.ok(on_server(&client).pins == [p1.clone(), p2.clone(), p3.clone()], "its clock put right, the pin goes on top of the others'");
@@ -378,25 +371,28 @@ pub fn household(options: &Options) -> i32 {
 
     println!("9. The queue: a device saves its own only if it is still the newest thing that happened.");
     let (name_a, name_b) = ("NexusMusic-aaaaaaaa", "NexusMusic-bbbbbbbb");
-    let changed_on_a = handover_time(&a);
+    // (The time of a change is the device's own clock's; the clock beside the server's is
+    // measured by the very read that precedes a save or makes a look.)
+    let changed_on_a = now();
     std::thread::sleep(std::time::Duration::from_secs(2));
     client.save_play_queue(name_b, &ids(&[&songs[1], &songs[2], &songs[3]]), &songs[2], 5_000).expect("B's queue");
-    let theirs = client.play_queue().expect("the queue");
-    let here_a = Here { device: name_a, current: Some(&songs[5]), playing: false, stamp: changed_on_a, taken_up: false, offset: a.offset };
-    t.ok(handover::save(&theirs, &here_a) == Save::NotNewest, "A changed its queue, paused; B saved its own two seconds later; A's save, three seconds after the change, reads the server first and is not made");
-    let looked = handover::look(&theirs, &here_a, now());
+    let (theirs, clock) = saved_queue(&client);
+    let here_a = Here { device: name_a.into(), current: Some(songs[5].clone()), playing: false, stamp: changed_on_a, taken: None };
+    t.ok(handover::save(&theirs, &here_a, clock) == Save::NotNewest, "A changed its queue, paused; B saved its own two seconds later; A's save, three seconds after the change, reads the server first and is not made");
+    let looked = handover::look(&theirs, &here_a, clock, now());
     let Then::TakeUp(place) = looked.then else { panic!("A did not take B's queue up: {looked:?}") };
     t.ok(place.cursor == 1 && place.position == 5.0, "at its next look A takes B's queue up, paused, at B's song and place");
-    let taken = Here { stamp: place.stamp, taken_up: true, current: Some(&songs[2]), ..here_a };
-    t.ok(handover::save(&theirs, &taken) == Save::NotNewest && handover::look(&theirs, &taken, now()).then == Then::Nothing, "and does not save it back as its own");
+    let taken = Here { stamp: place.stamp, taken: Some(place.taken.clone()), current: Some(songs[2].clone()), ..here_a.clone() };
+    t.ok(handover::save(&theirs, &taken, clock) == Save::NotNewest && handover::look(&theirs, &taken, clock, now()).then == Then::Nothing, "and does not save it back as its own, nor take it up a second time");
     std::thread::sleep(std::time::Duration::from_secs(2));
-    let played = Here { stamp: handover_time(&a), taken_up: false, ..taken };
-    t.ok(handover::save(&theirs, &played) == Save::Save, "played on at A, it is A's to save");
+    let played = Here { stamp: now(), taken: None, ..taken.clone() };
+    t.ok(handover::save(&theirs, &played, clock) == Save::Save, "played on at A, it is A's to save");
     client.save_play_queue(name_a, &ids(&[&songs[1], &songs[2], &songs[3]]), &songs[3], 1_000).expect("A's queue");
-    let theirs = client.play_queue().expect("the queue");
-    let here_b = Here { device: name_b, current: Some(&songs[2]), playing: true, stamp: changed_on_a, taken_up: false, offset: b.offset };
-    let looked = handover::look(&theirs, &here_b, now());
+    let (theirs, clock) = saved_queue(&client);
+    let here_b = Here { device: name_b.into(), current: Some(songs[2].clone()), playing: true, stamp: changed_on_a, taken: None };
+    let looked = handover::look(&theirs, &here_b, clock, now());
     t.ok(looked.offer == Some(2) && looked.then == Then::Nothing, "B, playing, keeps its own queue and is offered A's as \"Continue here\"");
+    t.ok(handover::first(&here_b) == handover::First::Save && handover::first(&here_a) == handover::First::Read, "and while B plays, the saves of its place don't each read the server first; A's, made while nothing plays, do");
 
     println!("10. A PC on 0.40.4 joins the household.");
     let pc = old_at("pc");
@@ -519,14 +515,14 @@ pub fn household(options: &Options) -> i32 {
         Read::Record(record) => record.shared,
         other => panic!("the lower playlist holds {other:?}"),
     };
-    t.ok(in_low.lists.contains_key(&format!("playlist:{p2}")) && in_low.pins == a.pins() && b.choices.shown().lists.contains_key(&format!("playlist:{p2}")), "the new devices both go to the lowest id, taking what they hold with them");
+    t.ok(in_low.lists.contains_key(&format!("playlist:{p2}")) && in_low.pins == a.pins() && b.choices.shown(&b.account).lists.contains_key(&format!("playlist:{p2}")), "the new devices both go to the lowest id, taking what they hold with them");
     pc.change(|holds| {
         holds.theme = "Graphite".into();
         holds.theme_at = now() + 10;
     });
     pc.exchange(Some(&high));
     a.exchange(&client);
-    t.old(a.choices.shown().theme != "Graphite" && !pc.holds().lists.contains_key(&format!("playlist:{p2}")), "the PC on 0.40.4 goes on using the id it remembers: its theme reaches nobody, and A's sort does not reach it. Split, with nothing destroyed, until it is updated");
+    t.old(a.choices.shown(&a.account).theme != "Graphite" && !pc.holds().lists.contains_key(&format!("playlist:{p2}")), "the PC on 0.40.4 goes on using the id it remembers: its theme reaches nobody, and A's sort does not reach it. Split, with nothing destroyed, until it is updated");
     client.delete_playlist(&high).expect("deleting the higher");
 
     println!("17. The PC on 0.40.4 opens a playlist some time after a song was added to it elsewhere.");
@@ -541,20 +537,22 @@ pub fn household(options: &Options) -> i32 {
 
     println!("18. The queue again, with the PC on 0.40.4.");
     client.save_play_queue(name_a, &ids(&[&songs[4], &songs[5]]), &songs[5], 2_000).expect("A's queue");
-    let changed_on_a = handover_time(&a);
+    let changed_on_a = now();
     std::thread::sleep(std::time::Duration::from_secs(2));
     // (The PC changed its queue before A did, and saves it three seconds later, as it does.)
     pc.run("queue-save", &["--device", "NexusMusic-0badc0de", "--ids", &format!("{},{}", songs[6], songs[7]), "--current", &songs[6], "--position", "0"]);
-    let theirs = client.play_queue().expect("the queue");
-    let here_a = Here { device: name_a, current: Some(&songs[5]), playing: false, stamp: changed_on_a, taken_up: false, offset: a.offset };
-    t.old(theirs.changed_by == "NexusMusic-0badc0de" && matches!(handover::look(&theirs, &here_a, now()).then, Then::TakeUp(_)), "0.40.4 saves without a look at what is there: its older queue lands on top of A's newer one, as the newest, and A, paused, takes it up");
+    let (theirs, clock) = saved_queue(&client);
+    let here_a = Here { device: name_a.into(), current: Some(songs[5].clone()), playing: false, stamp: changed_on_a, taken: None };
+    t.old(theirs.changed_by == "NexusMusic-0badc0de" && matches!(handover::look(&theirs, &here_a, clock, now()).then, Then::TakeUp(_)), "0.40.4 saves without a look at what is there: its older queue lands on top of A's newer one, as the newest, and A, paused, takes it up");
 
     clear(&client);
     println!("{} expectations held, {} did not.", t.held, t.failed);
     t.failed.min(1) as i32
 }
 
-/// The time now, as the server's clock has it, for the stamp of a change to a device's queue.
-fn handover_time(device: &New) -> i64 {
-    nexus_core::time::aligned(now() + device.skew, device.offset)
+/// The server's saved queue, and this device's clock beside the server's as that read gives it.
+fn saved_queue(client: &Client) -> (crate::subsonic::PlayQueue, Clock) {
+    let read = client.play_queue_timed().expect("the queue");
+    let clock = Clock::measured(read.date, read.received);
+    (read.value, clock)
 }

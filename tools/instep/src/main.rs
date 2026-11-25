@@ -39,6 +39,12 @@ mod plays {
 mod sync {
     include!(concat!(env!("OUT_DIR"), "/sync.rs"));
 }
+/// (What the Windows app's notes of when songs were added name from its own `playlists`
+/// module, which is the library's.)
+#[cfg(stepped)]
+mod playlists {
+    pub use nexus_core::playlists::Edit;
+}
 #[cfg(stepped)]
 mod household;
 
@@ -568,7 +574,11 @@ fn queue_save(options: &Options) -> i32 {
 }
 
 fn queue_get(options: &Options) -> i32 {
-    match options.client().play_queue() {
+    #[cfg(stepped)]
+    let read = options.client().play_queue_timed().map(|answer| answer.value);
+    #[cfg(not(stepped))]
+    let read = options.client().play_queue();
+    match read {
         Ok(queue) => {
             let ids: Vec<&str> = queue.songs.iter().map(|song| song.id.as_str()).collect();
             println!("{}", json!({ "ids": ids, "current": queue.current, "position": queue.position, "changed": queue.changed, "changed_by": queue.changed_by }));
