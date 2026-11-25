@@ -16,9 +16,19 @@ it **is** the Windows code, compiled from the Windows repository's source where 
 `config.rs`, `ListPrefs`, `Played` and `write_atomically`. Nothing is rewritten; if the Windows
 code moves so that a cut can't be found, the build fails and says which.
 
+From the release after 0.40.3 the Windows repository is the app and a library, `core/` (nexus-core), beside
+`src/`: the record, the merges, the notes and what a server's answers are read into are
+there, and the files above name them from it. The tool depends on that library by path, as
+the app does (`run` puts `../nexus-music/core` at `/win/core` in the container), so what is
+run is still the Windows code itself: the merges straight from the library, `exchange` and
+the API client from `src/`. A Windows checkout from before the library (0.40.3 and earlier)
+is still compiled as it was; `before-core/` is an empty stand-in for the library then, to
+delete once no such checkout is used.
+
 **What it needs**: Docker, and the Windows app's build image `nexus-music-dev`
 (`docker build -f ../nexus-music/docker/dev.Dockerfile -t nexus-music-dev ../nexus-music/docker`).
-It builds in `~/.cache/nexus-music-android/instep-target`, outside both repositories, and
+It builds under `~/.cache/nexus-music-android/instep-target`, outside both repositories (in a
+folder of its own for each Windows checkout it is pointed at), and
 fetches its few crates into `~/.cache/nexus-music-android/cargo` the first time. `Cargo.lock`
 here began as the Windows app's own, so serde and the rest are the releases Windows is built
 with.

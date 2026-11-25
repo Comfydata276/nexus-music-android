@@ -10,6 +10,10 @@ publish = false
 # What the Windows files compiled here use, at the versions and features the Windows app
 # names for them (its Cargo.lock is copied in by `run`, so the very same releases are built).
 [dependencies]
+# The Windows app's library (its `core/`, beside `src/`), where the record and the merges
+# live from the release after 0.40.3 on. `run` puts it at this path in the build's container (or, for a
+# Windows checkout from before it existed, the empty stand-in in `before-core/`).
+nexus-core = { path = "/win/core" }
 ureq = { version = "3", default-features = false, features = ["native-tls", "gzip", "json"] }
 native-tls = "0.2"
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,15 @@
+# Stands in for the Windows app's library (its `core/`, nexus-core) when the Windows source
+# this tool is pointed at is from before the library existed (0.40.3 and earlier): Cargo
+# needs something at the path either way. Empty; build.rs then compiles the Windows files as
+# they were. Its name, version and dependencies are the real one's, so Cargo.lock is the
+# same whichever is used. Delete this folder, and its use in `run`, once no such checkout is
+# compiled.
+[package]
+name = "nexus-core"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

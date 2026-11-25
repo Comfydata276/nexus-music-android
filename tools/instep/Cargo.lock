@@ -480,6 +480,7 @@ dependencies = [
  "fastrand",
  "md-5",
  "native-tls",
+ "nexus-core",
  "serde",
  "serde_json",
  "ureq",
@@ -573,6 +574,14 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
+]
+
+[[package]]
+name = "nexus-core"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

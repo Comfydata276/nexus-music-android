@@ -7,7 +7,8 @@
 #   tools/instep/run peek|plant|queue-save|queue-get ...
 #   tools/instep/run build            builds it, and says where the program is
 #
-# It compiles the Windows app's source where it lies (../nexus-music/src, or NEXUS_WINDOWS_SRC),
+# It compiles the Windows app's source where it lies (../nexus-music/src, or NEXUS_WINDOWS_SRC,
+# with the library the app is built on beside it in ../nexus-music/core),
 # read-only, and builds outside both repositories (the cache folder). Nothing is written to
 # the Windows repository. Needs the Windows app's build image, `nexus-music-dev`
 # (docker build -f ../nexus-music/docker/dev.Dockerfile -t nexus-music-dev ../nexus-music/docker).
@@ -16,8 +17,16 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 windows="${NEXUS_WINDOWS_SRC:-$root/../nexus-music/src}"
 [ -f "$windows/sync.rs" ] || { echo "error: the Windows app's source isn't at $windows (set NEXUS_WINDOWS_SRC)" >&2; exit 1; }
 windows="$(cd "$windows" && pwd)"
+# The Windows app's library, `core/` beside `src/`: where the record and the merges are. A
+# checkout from before it existed (0.40.3 and earlier) has none; an empty one stands in.
+core="$(dirname "$windows")/core"
+[ -f "$core/Cargo.toml" ] || core="$root/tools/instep/before-core"
 cache="${NEXUS_ANDROID_CACHE:-$HOME/.cache/nexus-music-android}"
-mkdir -p "$cache/cargo/registry" "$cache/cargo/git" "$cache/instep-target" "$cache/home"
+# Each Windows checkout is built in a folder of its own. Cargo goes by the dates of files,
+# and in the container every checkout is at the same path: one whose files are older than
+# the last build would be taken for the checkout that was built then.
+built="$cache/instep-target/$(printf '%s\n%s\n' "$windows" "$core" | cksum | cut -d' ' -f1)"
+mkdir -p "$cache/cargo/registry" "$cache/cargo/git" "$built" "$cache/home"
 # The same releases of serde and the rest as the Windows app is built with: its lock file is
 # the starting point (Cargo keeps the versions of what this tool uses and drops the rest).
 [ -f "$root/tools/instep/Cargo.lock" ] || cp "$windows/../Cargo.lock" "$root/tools/instep/Cargo.lock"
@@ -31,14 +40,14 @@ run=(cargo run --quiet --release --)
 if [ "${1:-}" = "build" ]; then
   run=(cargo build --quiet --release)
   args=()
-  trap 'echo "$cache/instep-target/release/instep"' EXIT
+  trap 'echo "$built/release/instep"' EXIT
 fi
 # shellcheck disable=SC2086
 docker run --rm ${DX_DOCKER_ARGS:-} \
   -u "$(id -u):$(id -g)" --network host \
   -e HOME=/home/dev -e CARGO_TARGET_DIR=/target -e NEXUS_WINDOWS_SRC=/win/src \
-  -v "$root":/work -v "$windows":/win/src:ro \
-  -v "$cache/home":/home/dev -v "$cache/instep-target":/target \
+  -v "$root":/work -v "$windows":/win/src:ro -v "$core":/win/core:ro \
+  -v "$cache/home":/home/dev -v "$built":/target \
   -v "$cache/cargo/registry":/opt/cargo/registry -v "$cache/cargo/git":/opt/cargo/git \
   -w /work/tools/instep nexus-music-dev \
   "${run[@]}" "${args[@]}"

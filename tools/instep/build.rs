@@ -7,6 +7,12 @@
 //! * `sync.rs` from its top to where the part that drives the window begins (`impl
 //!   Controller`): the record, the merges, and `exchange` with what it calls.
 //! * From `config.rs` only `ListPrefs`, `Played` and `write_atomically`.
+//!
+//! From the release after 0.40.3 the record, the merges and what a server's answers are read into are in the
+//! Windows app's library (`core/`, beside `src/`), which this tool depends on as the app
+//! does (Cargo.toml here); the files above name them from there. Then `sync.rs` above its
+//! cut is `exchange` and what it calls, and `ListPrefs` is the library's. A Windows checkout
+//! from before the library is still compiled as it was (`split` below says which it is).
 
 use std::path::{Path, PathBuf};
 
@@ -20,9 +26,23 @@ fn main() {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("can't read the Windows app's {}: {e}", path.display()))
     };
 
-    for whole in ["subsonic.rs", "added.rs", "plays.rs"] {
+    // Whether the Windows source has its library beside it, holding the record and merges.
+    let core = src.join("../core/src");
+    let split = core.join("sync.rs").is_file();
+    if split {
+        // That it still holds what this tool is here to run.
+        let library = read("../core/src/sync.rs") + &read("../core/src/notes.rs");
+        for needed in ["pub fn merge(", "pub fn merge_history(", "pub fn merge_plays(", "fn merge_sources(", "pub struct Shared", "pub struct ListPrefs", "pub fn merge_notes("] {
+            assert!(library.contains(needed), "core/src/sync.rs and notes.rs: `{needed}` is no longer there");
+        }
+    }
+
+    for whole in ["subsonic.rs", "plays.rs"] {
         write(&out, whole, &without_inner_docs(&read(whole)));
     }
+    // added.rs names the library's `merge_notes` only for its own tests: the tool's way in.
+    let door = if split { "\n/// (The tool's.) The library's merge of two devices' notes.\n#[cfg(not(test))]\npub use nexus_core::notes::merge_notes;\n" } else { "" };
+    write(&out, "added.rs", &(without_inner_docs(&read("added.rs")) + door));
 
     // sync.rs: everything before the part that needs the window.
     let sync = read("sync.rs");
@@ -31,9 +51,16 @@ fn main() {
         .lines()
         // The window and the controller aren't here, and nothing above the cut uses them.
         .filter(|line| !line.starts_with("use slint") && !line.starts_with("use crate::controller"))
-        .map(|line| format!("{line}\n"))
+        // What sync.rs takes from the library for its own use, the tool reaches through it
+        // (`sync::merge`, `sync::Shared`): the same items, made visible, nothing changed.
+        .map(|line| if split && line.starts_with("use nexus_core::sync::{") { format!("pub {line}\n") } else { format!("{line}\n") })
         .collect();
-    for needed in ["pub fn merge(", "pub fn merge_history(", "pub fn merge_plays(", "fn merge_sources(", "fn exchange(", "fn find_or_create(", "pub struct Shared"] {
+    let above: &[&str] = if split {
+        &["fn exchange(", "fn find_or_create(", "pub use nexus_core::sync::{", "merge, merge_history, merge_plays"]
+    } else {
+        &["pub fn merge(", "pub fn merge_history(", "pub fn merge_plays(", "fn merge_sources(", "fn exchange(", "fn find_or_create(", "pub struct Shared"]
+    };
+    for needed in above {
         assert!(head.contains(needed), "sync.rs: `{needed}` is no longer above `impl Controller`");
     }
     // The tool's way in to what is private there. Added lines, not changed ones: they call
@@ -52,7 +79,14 @@ pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTOR
     // config.rs: three items.
     let config = read("config.rs");
     let mut parts = String::from("use std::fs;\nuse std::path::Path;\nuse serde::{Deserialize, Serialize};\nuse crate::subsonic::Song;\n\n");
-    for marker in ["pub struct ListPrefs {", "pub struct Played {", "pub fn write_atomically("] {
+    if split {
+        parts.push_str("pub use nexus_core::sync::ListPrefs;\n\n");
+    } else {
+        // Nothing of the stand-in library is used; this says so, for Cargo's sake.
+        parts.push_str("use nexus_core as _;\n\n");
+    }
+    let wanted: &[&str] = if split { &["pub struct Played {", "pub fn write_atomically("] } else { &["pub struct ListPrefs {", "pub struct Played {", "pub fn write_atomically("] };
+    for marker in wanted {
         parts.push_str(&item(&config, marker));
         parts.push('\n');
     }
