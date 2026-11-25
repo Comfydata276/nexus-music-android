@@ -23,9 +23,18 @@ if [ -n "${NEXUS_SIGN:-}" ]; then
   [ -f "$keys/signing.properties" ] || { echo "error: NEXUS_SIGN is set but $keys/signing.properties is missing" >&2; exit 1; }
   sign=(-v "$keys":/signing:ro)
 fi
+# To work on the shared core and the phone at once: NEXUS_CORE_LOCAL=1 (or the path of a
+# core) builds against that core as it lies, read-only, and not the pinned commit of the
+# Windows repository (see native/build). Never for a build that ships.
+local_core=()
+if [ -n "${NEXUS_CORE_LOCAL:-}" ]; then
+  from="$NEXUS_CORE_LOCAL"; [ "$from" = 1 ] && from="$root/../nexus-music/core"
+  [ -f "$from/Cargo.toml" ] || { echo "error: NEXUS_CORE_LOCAL is set but there is no core at $from" >&2; exit 1; }
+  local_core=(-v "$(cd "$from" && pwd)":/core-local:ro -e NEXUS_CORE_LOCAL=/core-local)
+fi
 # shellcheck disable=SC2086
 exec "${turn[@]}" docker run --rm ${DX_DOCKER_ARGS:-} "${kvm[@]}" \
   -u "$(id -u):$(id -g)" --network host \
   -e HOME=/home/dev -e GRADLE_USER_HOME=/home/dev/.gradle \
-  -v "$root":/work -v "$cache/home":/home/dev -v "$cache/sdk":/sdk "${sign[@]}" \
+  -v "$root":/work -v "$cache/home":/home/dev -v "$cache/sdk":/sdk "${sign[@]}" "${local_core[@]}" \
   -w /work nexus-music-android "$@"

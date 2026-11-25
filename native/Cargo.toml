@@ -1,0 +1,36 @@
+# The shared core as the phone app carries it: the Windows repository's `core/` (the rules
+# every app on an account must follow identically), with the thin layer that lets Kotlin
+# call it. See docs/DESIGN.md, "The shared core". Built by `native/build`, which Gradle runs
+# before every build of the app: nobody runs it by hand.
+[package]
+name = "nexus-core-android"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+# `libnexus_core_android.so`: what `System.loadLibrary("nexus_core_android")` finds.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The core itself, **at one fixed commit of the Windows repository**: the commit a release
+# of the Windows app was built from, so that the phone and that release run the same rules.
+# Cargo.lock records it; the build is `--locked`, so it cannot drift. To move to a later
+# release, change `rev` here, run `scripts/dx native/build --relock`, and commit both.
+# (To work on the core and the phone at once: NEXUS_CORE_LOCAL, see native/build.)
+nexus-core = { git = "https://github.com/Comfydata276/nexus-music", rev = "b6f16f3967eeffdd299d63c7c039794768cd55e0" }
+# The Java side of the boundary: finding the call's arguments and handing back its answer.
+# No default features: it never starts a JVM of its own.
+jni = { version = "0.21", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Built for size (Android keeps a native library uncompressed in the APK, so its size is
+# what the APK gains), and able to catch a panic: one is thrown to Kotlin as an exception
+# with the library's own words, and the app carries on.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"

@@ -31,7 +31,8 @@ When two of these pull against each other, the higher one wins.
 | JSON | kotlinx.serialization |
 | Images | Coil 3, fed by our own cover store |
 | Background work | Coroutines; for downloads, Media3's `DownloadManager` with a downloader of our own, kept up by a job of our own (see "Downloads: what Android allows") |
-| Build | Gradle with the version catalogue in `gradle/libs.versions.toml`, inside Docker (`scripts/dx`) |
+| Shared with the Windows app | Its own Rust library, `core/`, compiled into the app (see "The shared core") |
+| Build | Gradle with the version catalogue in `gradle/libs.versions.toml`, inside Docker (`scripts/dx`); the shared core by Cargo, which Gradle runs |
 | Tests | JUnit on the JVM; where a test is about what Media3 does (its cache, its media source, its player and session service), Media3's own classes on Robolectric with Media3's test kit. Test only: none of it is in the app |
 
 Versions are fixed in the catalogue and raised on purpose. Before using an API from
@@ -54,6 +55,7 @@ One Gradle module, `app`, package `org.medianexus.music`:
 | `playback` | The playback service, the queue, play reporting, Android Auto's browse tree and voice search. |
 | `downloads` | Offline downloads: the catalogue of what is downloaded (the mark that a download is whole), the whole-file fetcher and the check that reads a file through, the engine on Media3's download manager, the job and service that keep it going, and the downloads laid out for browsing with no signal. |
 | `ui` | Compose: `theme`, `parts` (shared components), one package per screen. |
+| `core` | The one door to the shared core (`Core.kt`). Nothing else in the app knows the library exists. |
 
 Rules that hold everywhere:
 
@@ -1700,11 +1702,106 @@ matching by song and copy (`library/PlaylistEdit.kt`) is gone.
 ## Working with the Windows app
 
 The phone is one more device on the same account. These must match the Windows app byte
-for byte, so port them from its code and tests, do not reinvent them:
+for byte. Where the rule is in the shared core (see "The shared core", next), the phone
+runs the Windows app's own code for it; the rest is ported from its code and tests, not
+reinvented:
 
 - the saved queue ("Continue here") and the "Nexus Music sync" playlist (`src/sync.rs`);
 - the play log behind "Your stats" (`src/plays.rs`);
 - jams and linked devices through the relay (`src/jam.rs`, `relay/`).
+
+## The shared core
+
+Some of what the phone does has to be done identically by every app on an account, to the
+letter: whatever one device writes with a newer time wins on all of them, so two versions
+of a rule are a fault waiting for the day they differ. Those rules are written once, in
+Rust, in the Windows repository's `core/`, and **the phone app carries that same code**,
+compiled into a library (`libnexus_core_android.so`). It is not a port, and there is no
+Kotlin copy of what it decides.
+
+What the core is: no window, no threads of its own, no network code, no files and no clock.
+It is handed what the app knows and says what follows. Every request still goes through
+the phone's one OkHttp client; every file is still the phone's to write.
+
+### How it gets into the APK
+
+1. `native/` here is a small Rust crate, the layer Kotlin can call (`native/src/lib.rs`).
+   It depends on `core/` **by Git, at one fixed commit of the Windows repository**: the
+   commit a release of the Windows app was built from (`rev` in `native/Cargo.toml`, and
+   recorded in `native/Cargo.lock`). So a build of the phone app and that release of the
+   Windows app run the same rules, and any two builds of the phone app from one commit of
+   this repository run the same core.
+2. `native/build` compiles it three times: for an arm64 phone, for an x86_64 emulator, and
+   for the machine doing the build (the unit tests load that one). The build is `--locked`:
+   if the lock file and the pinned commit disagree it fails, it never quietly takes another.
+3. Gradle runs `native/build` before anything else of the app's build (`buildCore` in
+   `app/build.gradle.kts`), again whenever the crate or its lock file has changed, and the
+   build fails if it fails. What it makes is the app's `jniLibs` and the tests' library
+   path. **Nobody has to remember a step**: `scripts/check`, `scripts/dx ./gradlew ...`
+   and the release build all go through it.
+4. When an APK has been put together, `check<Variant>CarriesCore` opens it and fails the
+   build unless the library is in it for both kinds of device, and for no other kind.
+
+What that needs: the build image (`docker/build.Dockerfile`) has Rust, at the version the
+Windows app is built with, with its standard library for the two Android targets, and a C
+linker for the machine's own. The Android NDK, whose linker the two device builds use, is
+kept with the rest of the SDK in the cache folder; `native/build` fetches it the first time
+(780 MB to download, 2.4 GB on disk). What a build downloads (the crates, the Windows
+repository at its commit) is kept under the cache folder's home, as Gradle's downloads are.
+
+**Moving to a later core.** Change `rev` in `native/Cargo.toml` to the commit of the
+Windows release that has it, run `scripts/dx native/build --relock`, and commit both files
+with whatever in the app the change asks for. The Windows repository never publishes the
+library as a release of its own: copies of the Windows app take that repository's latest
+release for an update of themselves. A commit is all the phone ever names.
+
+**Working on the core and the phone at once.** `NEXUS_CORE_LOCAL=1 scripts/dx ./gradlew ...`
+builds against `../nexus-music/core` as it lies (read-only; the pinned commit and the lock
+file are left alone). A release build refuses to be made that way.
+
+### Which devices
+
+arm64 phones, and the x86_64 emulators the test rig runs. **32-bit ARM is not supported**:
+the library is not built for it, and the app is built for those two kinds of processor and
+no other (`abiFilters`), so a 32-bit phone is told at install that the app is not for it,
+rather than installing an app that cannot load its library.
+
+### The boundary
+
+`core/Core.kt` (`org.medianexus.music.core.Core`) is **the only thing in the app that
+knows the library exists**. Everything else calls its functions, which take and give Kotlin
+values. Nothing else declares a native function or loads a library.
+
+- **Text crosses as UTF-8 bytes, never as Java strings.** Java's own encoding of text
+  damages what holds both a zero character and a character outside the basic plane. Each
+  call is one argument and one answer, both JSON.
+- **One function for each operation of the core the phone uses**, on both sides.
+- **Whatever goes wrong there is one exception**, `CoreException`, with the reason in
+  words: an argument the library doesn't take, an answer this side can't read, and a panic
+  in the library, which is caught at the boundary (the library is built to unwind) and
+  thrown to Kotlin. The app carries on, and whatever asked has not been done. A panic's
+  file and line go to the phone's log.
+- **The library is loaded at the first call, never on the main thread**: a call from the
+  main thread is refused before anything is loaded.
+- R8 keeps the native functions' names and the exception's constructor
+  (`app/proguard-rules.pro`): the library finds both by name.
+
+### How it is tested
+
+Against the real library, on the JVM, in the ordinary unit suite: the build makes the same
+crate for the machine doing the build, and the tests load it. Chosen over tests on an
+emulator because it runs at every `scripts/check`, in a second, with no emulator to start;
+what an emulator adds (that the Android build of the library loads and answers, and that a
+panic there is the exception here) is checked once on one, by the debug build's own check
+(docs/TESTING.md).
+
+### What a check on GitHub would need
+
+There is no workflow yet. One would need, beyond the JDK and the Android SDK: Rust at the
+version in `docker/build.Dockerfile` with the two Android targets (`rustup target add
+aarch64-linux-android x86_64-linux-android`), the NDK at the version `native/build` names
+(GitHub's `ubuntu-24.04` image ships it), and network access to fetch the Windows
+repository at the pinned commit, which is public. Nothing else: `./gradlew` does the rest.
 
 ## Look and feel
 

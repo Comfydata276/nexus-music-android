@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Builds the shared core for the app: the library for an arm64 phone and for an x86_64
+# emulator, and the same library for this machine, which the unit tests load on the JVM.
+#
+#   native/build <out folder>     what Gradle runs before every build of the app (see
+#                                 app/build.gradle.kts): <out>/jniLibs/<abi>/ and <out>/host/
+#   native/build --relock         writes Cargo.lock again, after the pinned commit of the
+#                                 Windows repository in Cargo.toml has been changed
+#
+# Runs inside the build image (scripts/dx), which has Rust; the Android NDK, whose linker
+# the two device builds need, is kept with the rest of the SDK and fetched here the first
+# time. The core comes from the Windows repository at the commit Cargo.toml names, and the
+# build is --locked: it fails if that and Cargo.lock disagree, it never quietly takes
+# another.
+#
+# To work on the core and the phone at once, NEXUS_CORE_LOCAL=1 scripts/dx ... builds
+# against ../nexus-music/core as it lies (scripts/dx mounts it); the pinned commit and
+# Cargo.lock are left alone, and such a build must never be the one that ships (Gradle
+# refuses a release build with it set).
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+ndk_version=29.0.14206865
+die() { echo "native/build: $*" >&2; exit 1; }
+command -v cargo >/dev/null || die "there is no Rust here. Build through scripts/dx (and rebuild the image if it is from before the shared core: docker build -f docker/build.Dockerfile -t nexus-music-android docker)"
+
+if [ "${1:-}" = "--relock" ]; then
+  # (Only the core's own entry, and what that forces: every other crate stays at the release
+  # the lock file has for it, which began as the Windows app's own.)
+  cd "$here" && exec cargo update nexus-core
+fi
+out="${1:?native/build: where to put the libraries}"
+
+ndk="${ANDROID_HOME:-/sdk}/ndk/$ndk_version"
+if [ ! -d "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
+  echo "native/build: fetching the Android NDK $ndk_version (once: 780 MB to download, 2.4 GB kept with the SDK)" >&2
+  yes | android sdk install "ndk/$ndk_version" >/dev/null 2>&1 || true
+  [ -d "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin" ] || die "the Android NDK could not be fetched. Try: scripts/dx android sdk install ndk/$ndk_version"
+fi
+bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+# (31: the oldest Android the app runs on. See minSdk in app/build.gradle.kts.)
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android31-clang"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android31-clang"
+export CARGO_TARGET_DIR="$out/target"
+mkdir -p "$out"
+
+src="$here"
+locked=(--locked)
+if [ -n "${NEXUS_CORE_LOCAL:-}" ]; then
+  [ -f "$NEXUS_CORE_LOCAL/Cargo.toml" ] || die "NEXUS_CORE_LOCAL is set but there is no core at $NEXUS_CORE_LOCAL (scripts/dx mounts ../nexus-music/core there)"
+  echo "native/build: building against the core at $NEXUS_CORE_LOCAL as it lies, NOT the pinned commit" >&2
+  # A copy of the crate, so that the lock file in the repository is not rewritten.
+  src="$out/local"
+  rm -rf "$src" && mkdir -p "$src" && cp -r "$here/Cargo.toml" "$here/Cargo.lock" "$here/src" "$src/"
+  locked=(--config "patch.\"https://github.com/Comfydata276/nexus-music\".nexus-core.path=\"$NEXUS_CORE_LOCAL\"")
+fi
+
+cd "$src"
+cargo build "${locked[@]}" --release --target aarch64-linux-android --target x86_64-linux-android --target x86_64-unknown-linux-gnu \
+  || die "the shared core did not build (above). If Cargo.lock is out of step with Cargo.toml: scripts/dx native/build --relock"
+
+put() { mkdir -p "$out/$2" && cp "$CARGO_TARGET_DIR/$1/release/libnexus_core_android.so" "$out/$2/"; }
+put aarch64-linux-android jniLibs/arm64-v8a
+put x86_64-linux-android jniLibs/x86_64
+put x86_64-unknown-linux-gnu host

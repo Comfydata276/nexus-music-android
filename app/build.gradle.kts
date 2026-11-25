@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.util.zip.ZipFile
 
 plugins {
     alias(libs.plugins.android.application)
@@ -18,6 +19,33 @@ plugins {
  */
 val jamsExist = false
 
+/**
+ * The shared core: the Windows app's own code for what every app on an account must do
+ * identically, compiled into a library the app carries (`native/`, docs/DESIGN.md "The
+ * shared core"). **Every build of the app builds it first, and none can leave it out**:
+ *
+ * - `buildCore` runs `native/build`, which compiles the library for the two kinds of device
+ *   and for this machine (the unit tests load that one). Gradle runs it again whenever
+ *   anything it is made from has changed, and the build fails if it fails.
+ * - What it makes is the app's `jniLibs`, and the tests' library path.
+ * - `assemble` then opens the APK it made and fails unless the library is in it for both.
+ */
+val coreAbis = listOf("arm64-v8a", "x86_64")
+val coreOut = layout.buildDirectory.dir("core")
+val coreLocal = providers.environmentVariable("NEXUS_CORE_LOCAL").orElse("")
+val buildCore = tasks.register<Exec>("buildCore") {
+    description = "Builds the shared core (native/) for the phone, the emulator and this machine."
+    val crate = rootProject.layout.projectDirectory.dir("native")
+    inputs.files(crate.file("Cargo.toml"), crate.file("Cargo.lock"), crate.file("build"))
+    inputs.dir(crate.dir("src"))
+    // (Working on the core and the phone at once: the core as it lies, see native/build.)
+    inputs.property("local", coreLocal)
+    if (coreLocal.get().isNotEmpty()) inputs.dir(coreLocal.get())
+    outputs.dir(coreOut.map { it.dir("jniLibs") })
+    outputs.dir(coreOut.map { it.dir("host") })
+    commandLine(crate.file("build").asFile.path, coreOut.get().asFile.path)
+}
+
 android {
     namespace = "org.medianexus.music"
     compileSdk {
@@ -31,6 +59,14 @@ android {
         versionCode = 5
         versionName = "0.4.0"
         buildConfigField("boolean", "JAMS", jamsExist.toString())
+        // The app carries a library of its own, compiled for these two kinds of processor
+        // and no other (see "The shared core", below): an arm64 phone, and the x86_64
+        // emulators. Naming them here leaves every other kind out of the APK altogether,
+        // so that a 32-bit phone is told the app is not for it when it tries to install,
+        // instead of installing an app that cannot load its library.
+        ndk {
+            abiFilters += coreAbis
+        }
     }
 
     signingConfigs {
@@ -89,6 +125,49 @@ android {
 androidComponents {
     onVariants { variant ->
         if (jamsExist) variant.sources.manifests.addStaticManifestFile("src/jam/AndroidManifest.xml")
+    }
+}
+
+// The shared core, into every build (see buildCore, above).
+android.sourceSets.getByName("main").jniLibs.directories.add(coreOut.get().dir("jniLibs").asFile.path)
+tasks.configureEach {
+    if (name.startsWith("merge") && name.endsWith("JniLibFolders")) dependsOn(buildCore)
+}
+tasks.withType<Test>().configureEach {
+    dependsOn(buildCore)
+    systemProperty("java.library.path", coreOut.get().dir("host").asFile.path)
+}
+androidComponents {
+    onVariants { variant ->
+        val named = variant.name.replaceFirstChar { it.uppercase() }
+        val apks = variant.artifacts.get(com.android.build.api.artifact.SingleArtifact.APK)
+        val abis = coreAbis
+        val release = variant.buildType == "release"
+        val local = coreLocal
+        val carries = tasks.register("check${named}CarriesCore") {
+            description = "Fails unless the APK just built has the shared core in it."
+            inputs.dir(apks)
+            doLast {
+                // A build against a core that isn't the pinned commit is for working on
+                // the two at once: it is never the one that ships.
+                if (release && local.get().isNotEmpty()) throw GradleException("NEXUS_CORE_LOCAL is set: a release build is made from the core at its pinned commit, never from a copy as it lies. Unset it.")
+                val built = apks.get().asFile.listFiles { file -> file.extension == "apk" }.orEmpty()
+                if (built.isEmpty()) throw GradleException("No APK was built in ${apks.get().asFile}.")
+                for (apk in built) {
+                    ZipFile(apk).use { zip ->
+                        for (abi in abis) {
+                            val entry = zip.getEntry("lib/$abi/libnexus_core_android.so")
+                            if (entry == null || entry.size < 100_000) {
+                                throw GradleException("${apk.name} does not carry the shared core for $abi. It must: the app cannot run without it. (native/build makes it; see app/build.gradle.kts.)")
+                            }
+                        }
+                        val others = zip.entries().asSequence().map { it.name }.filter { it.startsWith("lib/") }.map { it.split('/')[1] }.toSet() - abis.toSet()
+                        if (others.isNotEmpty()) throw GradleException("${apk.name} holds libraries for $others, where the shared core is not built: such a device would install an app it cannot run.")
+                    }
+                }
+            }
+        }
+        tasks.configureEach { if (name == "assemble$named") dependsOn(carries) }
     }
 }
 
