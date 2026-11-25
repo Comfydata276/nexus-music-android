@@ -333,4 +333,52 @@ class OrderOfChoicesTest {
         settle()
         assertEquals("a start went ahead after the sleep timer's pause", emptyList<String>(), acted.toList())
     }
+    // ---- The server gone, and offline mode ----------------------------------------------------
+
+    /** Songs on the phone (downloaded), and a Play of them from a list, its place taken at the tap. */
+    private fun aPlayOfSongsOnThePhone(): android.os.Bundle {
+        val account = app.graph.accounts.state.value!!
+        val songs = List(3) { Song(id = "phone$it", title = "On the phone $it", duration = 200) }
+        for (song in songs) account.catalogue.add(org.medianexus.music.downloads.Downloaded(song, "${song.id}.flac", 4, at = 1, suffix = "flac"))
+        val args = PlayerConnection.playArgs(songs, 0, "On the phone")
+        args.putLong(AppCommands.PLACE, Choices.take())
+        return args
+    }
+
+    private fun send(args: android.os.Bundle) =
+        controller.sendCustomCommand(androidx.media3.session.SessionCommand(AppActions.PLAY, android.os.Bundle.EMPTY), args)
+
+    /**
+     * The app finding that the server has gone is nobody's choice: a Play on its way when it
+     * does is carried out, and a song on the phone plays. (It took a place, as offline mode
+     * switched on does, and the Play was dropped: in the car, with no signal, a song chosen
+     * just as the phone noticed sat paused.)
+     */
+    @Test
+    fun aPlayOnItsWayIsNotDroppedByTheAppFindingTheServerGone() {
+        val inside = service.inside()
+        val args = aPlayOfSongsOnThePhone()
+        // On its way, the app finds the server out of reach; the person switched nothing.
+        app.graph.watch.noNetwork()
+        settle()
+        send(args)
+        until("the Play was carried out") { inside.player.queue.current()?.id == "phone0" }
+        settle()
+        assertEquals("the song on the phone is not playing", true, inside.exo.playWhenReady)
+    }
+
+    /** Offline mode switched on by the person is a choice, whether or not the server had
+     *  already gone: a Play on its way gives way to it. */
+    @Test
+    fun offlineModeSwitchedOnTakesItsPlaceEvenWithTheServerAlreadyGone() {
+        val inside = service.inside()
+        app.graph.watch.noNetwork()
+        settle()
+        val args = aPlayOfSongsOnThePhone()
+        app.graph.watch.manual(true)
+        settle()
+        send(args)
+        settle()
+        assertFalse("a Play overtaken by offline mode switched on was carried out", inside.player.queue.songs.any { it.id.startsWith("phone") })
+    }
 }

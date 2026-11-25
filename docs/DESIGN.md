@@ -3052,7 +3052,12 @@ closed by the same rule (`OrderOfChoicesTest`, in the real service, a case each)
 - **A Play from a list carries its tap's place** (`AppCommands.PLACE`) and the service plays
   it at that place (`QueuePlayer.playFor`) instead of taking a second one on delivery. As
   decided: anything that takes a later place before it lands (the sound taken away, a choice
-  in the car, offline mode switched on) drops it.
+  in the car, offline mode switched on) drops it. Only the person's own switching on of
+  offline mode takes a place, whether or not the server had gone already; the app finding that
+  the server has gone, or is back, takes none, so a Play on its way then goes ahead and plays
+  if what it asked for is on the phone (`aPlayOnItsWayIsNotDroppedByTheAppFindingTheServerGone`,
+  `offlineModeSwitchedOnTakesItsPlaceEvenWithTheServerAlreadyGone`). It used to take one when
+  the app noticed, and a song chosen in the car just as the phone lost the server sat paused.
 - **A Play waiting for the saved queue** (`onPlaybackResumption`) takes a place as it arrives
   and is dropped if anything takes a later one while it waits.
 - **A Play waiting for a call to end** remembers its place (taken once the refusal itself has

@@ -330,14 +330,18 @@ class PlaybackService : MediaLibraryService() {
         // Fetching ahead stops the moment offline mode goes on, or the server is gone.
         scope.launch { graph.watch.state.map { it.offline }.distinctUntilChanged().collect { aheadNow() } }
         scope.launch { graph.settings.state.map { it.cacheAhead to it.cacheLimitMb }.distinctUntilChanged().collect { aheadNow() } }
-        // Offline, or back: the car's tabs show something else now (only what plays). Offline
-        // mode switched on takes its place in the order of choices: whatever was waiting to
-        // start music (a lookup, a start, a rejoin) is overtaken by it.
+        // Offline, or back: the car's tabs show something else now (only what plays).
         scope.launch {
-            graph.watch.state.map { it.offline }.distinctUntilChanged().drop(1).collect { offline ->
-                if (offline) Choices.take()
-                if (era != null) reload()
-            }
+            graph.watch.state.map { it.offline }.distinctUntilChanged().drop(1).collect { if (era != null) reload() }
+        }
+        // Offline mode switched on by the person takes its place in the order of choices:
+        // whatever was waiting to start music (a lookup, a start, a rejoin) is overtaken by it,
+        // whether or not the server had gone already. The app finding that the server has
+        // gone, or is back, is nobody's choice and takes none: a Play on its way then goes
+        // ahead, and plays if what it asked for is on the phone (it used to be dropped, and
+        // a song chosen in the car just as the phone noticed sat paused).
+        scope.launch {
+            graph.watch.state.map { it.manual }.distinctUntilChanged().drop(1).collect { manual -> if (manual) Choices.take() }
         }
         // And when it becomes known whether the server is there, after the moment of not
         // knowing at a cold start: what the car was shown meanwhile came from the phone alone
