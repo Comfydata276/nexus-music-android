@@ -239,4 +239,18 @@ class UpgradeTest {
         assertEquals(SharedPrefs(shuffle = true, at = LONG_AGO), record.lists.getValue("liked"))
         assertEquals("Ember", back.settings.value.theme)
     }
+
+    @Test
+    fun anOrderOnlyThePhoneOfferedOn040IsStillThePhonesOwnAndIsNeverShared() = runBlocking {
+        // (No released build offers one: the six orders are the Windows app's. The place
+        // is kept right for a build that does.)
+        val phone = from040 { it.replace("\"sort\": 4", "\"sort\": 8") }
+        assertEquals(8, phone.settings.value.lists.getValue("playlist:pl-a").sort)
+        assertEquals(setOf("playlist:pl-a"), phone.settings.value.ownSorts.keys)
+        val server = PretendServer()
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        val record = SharedText.read(server.comment(server.made.single())!!)!!
+        assertTrue("a number the Windows app has no order for is not written", record.lists.values.all { it.sort in 0..5 })
+        assertEquals(8, phone.settings.value.lists.getValue("playlist:pl-a").sort)
+    }
 }

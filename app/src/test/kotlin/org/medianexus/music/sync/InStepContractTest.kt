@@ -484,6 +484,44 @@ class InStepContractTest {
     }
 
     @Test
+    fun anOrderOnlyThePhoneOffersTakesBackTheSharedSortStillWaitingForThatList() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        // Offline, the person picks a sort the PCs have too for the playlist, and then one
+        // only the phone offers. The first is no longer what the phone shows, or wants.
+        phone.does(Chosen.Did.Sort("playlist:p1", 2, false))
+        phone.does(Chosen.Did.Sort("playlist:p1", 7, true))
+        assertEquals(7, phone.settings.value.lists.getValue("playlist:p1").sort)
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertTrue("the sort that was taken back is not sent to the PCs", server.writes.isEmpty())
+        assertEquals(windows, server.comment("a"))
+        assertEquals(7, phone.settings.value.lists.getValue("playlist:p1").sort)
+    }
+
+    @Test
+    fun anOrderOnlyThePhoneOffersGivesWayToTheFirstSortThatArrivesForAListNobodyHadChosen() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        // Liked songs: no device has chosen anything for it. The phone's own order.
+        phone.does(Chosen.Did.Sort("liked", 8, false))
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(8, phone.settings.value.lists.getValue("liked").sort)
+        // A PC shuffles it: the phone's order stays.
+        val pc = record(server)
+        server.put("a", SharedText.write(pc.copy(lists = pc.lists + ("liked" to SharedPrefs(shuffle = true, at = 1_794_000_000)))))
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(8 to true, phone.settings.value.lists.getValue("liked").let { it.sort to it.shuffle })
+        // Another list nobody had chosen for, where the first thing to arrive is a sort
+        // chosen on a PC: that takes the place of the phone's own.
+        phone.does(Chosen.Did.Sort("songs", 9, true))
+        server.put("a", SharedText.write(record(server).let { it.copy(lists = it.lists + ("songs" to SharedPrefs(sort = 1, sortChosen = true, at = 1_794_000_200))) }))
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(1 to false, phone.settings.value.lists.getValue("songs").let { it.sort to it.descending })
+    }
+
+    @Test
     fun anOrderOnlyThePhoneOffersIsNotDisplacedByAShuffleAloneButIsByALaterSort() = runBlocking {
         val server = PretendServer().apply { put("a", windows) }
         val phone = phone()

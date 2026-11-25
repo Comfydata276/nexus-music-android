@@ -197,6 +197,15 @@ object Core {
     fun shown(choices: JsonElement, account: String): Shown = across(ShownIn(choices, account), ShownIn.serializer(), Shown.serializer(), ::shown)
 
     @Serializable
+    private class SortBackIn(val choices: JsonElement, val account: String, val key: String)
+
+    /** The person chose, for the list `key`, an order only this phone offers: a sort for
+     *  that list still waiting to be shared under `account` is taken back (one already
+     *  tried stays: its write may have arrived). The choices as they then are. */
+    fun sortTakenBack(choices: JsonElement, account: String, key: String): JsonElement =
+        across(SortBackIn(choices, account, key), SortBackIn.serializer(), this.choices, ::sortTakenBack)
+
+    @Serializable
     private class AdoptIn(val agreed: AgreedFormerly, val waiting: List<WaitingFormerly>, val account: String, val demote: Boolean, val usualTheme: String)
 
     /**
@@ -287,7 +296,15 @@ object Core {
         across(WindowIn(songs, cursor, positionSeconds), WindowIn.serializer(), QueueSaved.serializer().nullable, ::queueWindow)
 
     /** `first`: whether a save begins by reading the server's saved queue. */
-    fun queueReadsFirst(here: Here): Boolean = across(here, Here.serializer(), String.serializer(), ::queueFirst) == "read"
+    fun queueReadsFirst(here: Here): Boolean = readsFirst(across(here, Here.serializer(), String.serializer(), ::queueFirst))
+
+    /** The library's answer to that, read: one this side has no name for is an error, and
+     *  is never taken for "save without reading". */
+    internal fun readsFirst(said: String): Boolean = when (said) {
+        "read" -> true
+        "save" -> false
+        else -> throw CoreException("The shared library's answer couldn't be read: $said")
+    }
 
     @Serializable
     private class SaveIn(val theirs: Theirs, val here: Here)
@@ -341,6 +358,7 @@ object Core {
     @JvmStatic private external fun change(input: ByteArray): ByteArray?
     @JvmStatic private external fun shown(input: ByteArray): ByteArray?
     @JvmStatic private external fun adopt(input: ByteArray): ByteArray?
+    @JvmStatic private external fun sortTakenBack(input: ByteArray): ByteArray?
     @JvmStatic private external fun history(input: ByteArray): ByteArray?
     @JvmStatic private external fun names(input: ByteArray): ByteArray?
     @JvmStatic private external fun reserved(input: ByteArray): ByteArray?

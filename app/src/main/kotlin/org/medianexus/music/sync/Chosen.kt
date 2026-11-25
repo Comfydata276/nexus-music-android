@@ -123,8 +123,19 @@ object Chosen {
             return settings
         }
         val shown = here(settings, did, now)
-        val change = shared(did) ?: return shown
         if (account.isEmpty()) return shown
+        // An order only the phone offers, for a list the Windows app has too: a sort for
+        // that list still waiting to be shared is no longer what the person wants, and is
+        // taken back, so that it isn't sent to the other devices after all.
+        if (did is Did.Sort && did.key in shown.ownSorts) {
+            return try {
+                with(shown, Core.sortTakenBack(choices(settings), account, did.key), arrived = false)
+            } catch (e: CoreException) {
+                note("in step: a sort that was waiting to be shared couldn't be taken back (${e.message})")
+                shown
+            }
+        }
+        val change = shared(did) ?: return shown
         return try {
             with(shown, Core.change(choices(settings), account, change).choices)
         } catch (e: CoreException) {
@@ -138,9 +149,11 @@ object Chosen {
      * exchange took something in), and showing what the core says is shown for the account
      * they belong to. Off the main thread.
      */
-    fun with(settings: Settings, choices: JsonElement): Settings {
+    fun with(settings: Settings, choices: JsonElement, arrived: Boolean = true): Settings {
         val account = settings.sharedFor
-        val before = settings.choices?.let { Core.shown(it, account) }
+        // (`arrived` false: the shared order changed by this phone's own doing, taking a
+        // sort back; it is not a sort arriving, and the phone's own order does not give way.)
+        val before = if (arrived) settings.choices?.let { Core.shown(it, account) } else null
         return show(settings.copy(choices = choices), Core.shown(choices, account), before)
     }
 
@@ -150,10 +163,12 @@ object Chosen {
         var own = settings.ownSorts
         val lists = HashMap(settings.lists)
         for ((key, choices) in shown.lists) {
-            val was = before?.lists?.get(key)
+            // What the shared order for this list was until now: nothing chosen, where
+            // there was no entry for it.
+            val was = before?.let { it.lists[key]?.let { had -> Triple(had.sort, had.descending, had.sortChosen) } ?: Triple(0, false, false) }
             // A sort chosen on some device has arrived for this list (its order as shared is
             // not what it was): the phone's own order for it gives way.
-            if (key in own && was != null && Triple(was.sort, was.descending, was.sortChosen) != Triple(choices.sort, choices.descending, choices.sortChosen)) own = own - key
+            if (key in own && was != null && was != Triple(choices.sort, choices.descending, choices.sortChosen)) own = own - key
             val prefs = ListPrefs(choices.shuffle, choices.sort, choices.descending, choices.sortChosen, choices.at)
             lists[key] = own[key]?.let { prefs.copy(sort = it.sort, descending = it.descending, sortChosen = true) } ?: prefs
         }

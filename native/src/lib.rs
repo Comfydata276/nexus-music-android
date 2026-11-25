@@ -361,6 +361,27 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_shown<'l>(env: JNIEnv
     })
 }
 
+#[derive(Deserialize)]
+struct SortBackIn {
+    choices: Choices,
+    account: String,
+    key: String,
+}
+
+/// The person has chosen, for the list `key`, an order only this device offers. A sort for
+/// that list still waiting to be shared, under this account, is taken back: it is no longer
+/// what the device shows or wants. This is the first thing [`Choices::change`] does for any
+/// later word on the same thing (a change not yet tried gives way to it); here the later
+/// word is the device's own and is not a change at all. One already tried stays: its write
+/// may have arrived.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_sortTakenBack<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |mut given: SortBackIn| {
+        given.choices.waiting.retain(|waits| waits.account != given.account || waits.tried || !matches!(&waits.change, Change::Sort { key, .. } if *key == given.key));
+        Ok(given.choices)
+    })
+}
+
 /// A change as builds of the phone app before the shared core kept it.
 #[derive(Deserialize)]
 #[serde(default)]

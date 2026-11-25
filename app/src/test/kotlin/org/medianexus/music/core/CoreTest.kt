@@ -46,6 +46,16 @@ class CoreTest {
     }
 
     @Test
+    fun `an answer the door has no name for is an exception, never taken for one it has`() {
+        // Whether a save of the queue begins by reading the server's: "read" or "save". A
+        // later library that says something else must not be taken to have said "save".
+        assertTrue(Core.readsFirst("read"))
+        assertTrue(!Core.readsFirst("save"))
+        val thrown = assertThrows(CoreException::class.java) { Core.readsFirst("wait") }
+        assertTrue(thrown.message, thrown.message!!.contains("wait"))
+    }
+
+    @Test
     fun `something the library doesn't take is an exception with the reason, not a crash`() {
         for (bytes in listOf("not json", "{\"listed\": 7}", "", "{\"listed\":[],\"username\":\"a\"} and more").map { it.encodeToByteArray() } + byteArrayOf(0xFF.toByte(), 0xFE.toByte())) {
             val thrown = assertThrows(CoreException::class.java) { Core.findRaw(bytes) }

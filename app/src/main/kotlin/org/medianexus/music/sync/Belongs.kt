@@ -88,8 +88,20 @@ object Belongs {
      *   device.
      */
     private fun adopted(mark: Int, account: String, pins: List<String>, lists: Map<String, ListPrefs>, theme: String, agreed: Agreed, waiting: List<Waiting>): JsonElement =
-        if (mark >= 1) Core.adopt(formerly(agreed), waiting.map { WaitingFormerly(it.what, it.key, it.on, it.sort, it.descending) }, account)
+        if (mark >= 1) Core.adopt(
+            formerly(agreed),
+            // (Only what the phone may say: a list the Windows app has too, an order it has
+            // a number for. That build kept nothing else waiting; held to it all the same.)
+            waiting.filter { (it.what != "shuffle" && it.what != "sort") || (Chosen.windowsKey(it.key) && (it.what != "sort" || it.sort in 0..Chosen.WINDOWS_SORT_MOST)) }
+                .map { WaitingFormerly(it.what, it.key, it.on, it.sort, it.descending) },
+            account,
+        )
         else Core.adopt(formerly(Agreed(pins = pins, theme = theme, lists = lists.filterKeys(Chosen::windowsKey).filterValues { it.sort in 0..Chosen.WINDOWS_SORT_MOST })), emptyList(), account, demote = true, usualTheme = org.medianexus.music.store.DEFAULT_THEME)
+
+    /** The orders only the phone offers that an earlier build kept among a list's choices
+     *  (for a list the Windows app has too): kept apart from here on ([Settings.ownSorts]). */
+    private fun ownOf(lists: Map<String, ListPrefs>): Map<String, OwnSort> =
+        lists.filter { (key, prefs) -> Chosen.windowsKey(key) && prefs.sortChosen && prefs.sort !in 0..Chosen.WINDOWS_SORT_MOST }.mapValues { (_, prefs) -> OwnSort(prefs.sort, prefs.descending) }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -122,9 +134,10 @@ object Belongs {
                     // Settings that belong to no account (a phone that has never kept in
                     // step): what they hold stays the phone's own, shown and in nobody's
                     // record. They are not given to whichever account opens them first.
-                    old.sharedFor.isEmpty() -> old.copy(stepMark = MARK, choices = null, agreed = Agreed(), waiting = emptyList())
+                    old.sharedFor.isEmpty() -> old.copy(stepMark = MARK, choices = null, agreed = Agreed(), waiting = emptyList(), ownSorts = ownOf(old.lists))
                     else -> old.copy(
                         stepMark = MARK,
+                        ownSorts = ownOf(old.lists),
                         choices = adopted(old.stepMark, old.sharedFor, old.pinnedPlaylists, old.lists, old.theme, old.agreed, old.waiting),
                         agreed = Agreed(), waiting = emptyList(),
                     )
@@ -159,7 +172,7 @@ object Belongs {
             null
         }?.let { kept ->
             if (kept.mark >= MARK) kept else try {
-                kept.copy(choices = adopted(kept.mark, account, kept.pinnedPlaylists, kept.lists, kept.theme, kept.agreed, kept.waiting), agreed = Agreed(), waiting = emptyList(), mark = MARK)
+                kept.copy(choices = adopted(kept.mark, account, kept.pinnedPlaylists, kept.lists, kept.theme, kept.agreed, kept.waiting), ownSorts = ownOf(kept.lists), agreed = Agreed(), waiting = emptyList(), mark = MARK)
             } catch (e: CoreException) {
                 note("in step: the choices an earlier version kept for this account couldn't be brought over (${e.message})")
                 kept.copy(choices = null, agreed = Agreed(), waiting = emptyList(), mark = MARK)
