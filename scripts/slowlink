@@ -26,10 +26,25 @@ case "${NEXUS_DEVICE:-phone}" in
   car) relay=$((port + 7)); name=nexus-slowlink-car ;;
   *) die "unknown device '${NEXUS_DEVICE}'" ;;
 esac
+# The emulator is pointed at the relay's port, which must be this relay's or nobody's. Another
+# server left listening there (a second test server: scripts/instep-check's is on 4536, which
+# is phone36's) made a "cut" link reach that server, and the app was right to think it was
+# online. Asked after this relay has gone, so only something else can be there.
+nobody_on_relay() {
+  if (exec 3<>"/dev/tcp/127.0.0.1/$relay") 2>/dev/null; then
+    die "something else is listening on port $relay, where this emulator's link is pointed: the emulator would reach it, not nothing. Stop it, or move it to another port"
+  fi
+}
+# A cut or a hole drops what goes through the relay. Connections the app opened through adb's
+# own tunnel, before the relay was there (scripts/slowlink stop, or never started), carry on
+# to the server: with the app running, start the relay first.
+relay_was_up() { docker ps --format '{{.Names}}' | grep -qx "$name"; }
+
 case "${1:-}" in
   start)
     rate="${2:-200}"
     docker rm -f "$name" >/dev/null 2>&1 || true
+    nobody_on_relay
     need_rig_image
     docker run -d --rm --name "$name" --network host -v "$root/tools/library":/tools:ro "$rig_image" \
       python3 /tools/slowlink.py "$relay" "$port" "$rate" >/dev/null
@@ -37,13 +52,17 @@ case "${1:-}" in
     say "the emulator now reaches the server at ${rate} KB/s (scripts/slowlink stop to undo)"
     ;;
   cut)
+    relay_was_up || say "warning: the relay wasn't running: connections the app already has open go on reaching the server (scripts/slowlink start first, with the app running)"
     docker rm -f "$name" >/dev/null 2>&1 || true
+    nobody_on_relay
     "$root/scripts/emu" adb reverse "tcp:$port" "tcp:$relay" >/dev/null
     say "the server is out of reach of the emulator (scripts/slowlink start to bring it back)"
     ;;
   hole)
     # A black hole: the emulator's connections are taken and never answered.
+    relay_was_up || say "warning: the relay wasn't running: connections the app already has open go on reaching the server (scripts/slowlink start first, with the app running)"
     docker rm -f "$name" >/dev/null 2>&1 || true
+    nobody_on_relay
     need_rig_image
     docker run -d --rm --name "$name" --network host -v "$root/tools/library":/tools:ro "$rig_image" \
       python3 /tools/slowlink.py "$relay" "$port" -1 >/dev/null

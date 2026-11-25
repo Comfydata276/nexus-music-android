@@ -863,7 +863,22 @@ A phone signed in at `http://127.0.0.1:4533` goes through it at once (connection
 open: force-stop the app first). One signed in at `10.0.2.2` must sign in at
 `http://10.0.2.2:4534` to go through it (the relay listens on the server's port plus one).
 **Removing adb's reverse rule does not cut the server**: connections already open carry on
-through it, and OkHttp keeps them for minutes; `cut` closes them.
+through it, and OkHttp keeps them for minutes; `cut` closes them, **but only those that go
+through the relay**. With the relay not running (`stop`, or never started), the app's
+connections go through adb's own tunnel, and a `cut` or `hole` leaves them reaching the server:
+with the app running, `scripts/slowlink start 100000` first (a relay that slows nothing), then
+`cut`. `slowlink` warns when the relay wasn't up. (The car check's offline mode is not caught
+by this: it stops the app first, so every connection is new.)
+
+**Nothing else may listen on the relay's port** (the server's port plus 1, 3, 5 or 7: 4536 for
+phone36). `cut` points the emulator there and counts on nothing answering. On 25 November
+`scripts/instep-check`, which starts a test server on 4536 by default, was running while the
+pre-0.4.0 offline car check ran on phone36: the "cut" link reached that server, the app was
+right to think it was online, listed every song in the car's tabs, and two songs not on the
+phone (that server's ids are its own) ended paused and in error. Put back on purpose (another
+Navidrome on 4536), the car's tabs listed as online every time. `slowlink` now refuses to
+point the emulator at that port while something else listens there. (The `big` instance's
+default port, 4534, is the phone's relay port, and 4540 the car's: the same applies.)
 
 Debug builds answer to `DebugControl` for downloads (`docs` in `DebugControl.kt`):
 `--es download "album:<id>"` (or `playlist:<id>`, `liked`) downloads a list as its page's
