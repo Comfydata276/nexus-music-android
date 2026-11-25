@@ -34,6 +34,13 @@ usage: scripts/carcheck <package> [options]     check an installed app
                         the queue must survive the app's own commands sent by a controller
                         that isn't the app, and intents made to look like taps on the
                         notification (with --nexus, the app's own command names too)
+  --mode stranger       with --untrusted: an app like a watch's companion, with a Media3
+                        controller of its own. It must be refused until the person allows
+                        it in Settings, "Apps that can control playback"; with
+                        --expect allowed (once it has been switched on there) it must get
+                        transport and what is playing and nothing else; with --hold-s N it
+                        stays connected N seconds and must be left with nothing if it is
+                        switched off meanwhile
   --mode offline        with the server out of reach (scripts/server stop, or flight mode)
                         and something downloaded: every folder still opens, Downloads lists
                         what is on the phone, and songs chosen there, in the other tabs,
@@ -46,6 +53,8 @@ usage: scripts/carcheck <package> [options]     check an installed app
   --nodes N             how many folders to open at most (default 80)
   --limit-ms N          how long any one answer may take (default 10000)
   --json <file>         where to write the full report (default: under the cache)
+  --other-key           sign the probe with a key of its own, not the debug key that the
+                        app's builds made on this machine carry too (for --mode stranger)
   --untrusted           connect as an ordinary app instead of a trusted one like Android
                         Auto, to see what any app on the phone is allowed to do
   --known-host          connect as a caller Android does NOT trust (no notification access)
@@ -90,7 +99,7 @@ device_setup ""
 # it would do if it were let through: for --mode outsider.
 nexus_buttons="org.medianexus.music.LIKE;org.medianexus.music.SHUFFLE;org.medianexus.music.REPEAT"
 nexus_forge="org.medianexus.music.app.CLEAR|queued=false;org.medianexus.music.app.REMOVE|offset=0;org.medianexus.music.app.REMOVE|uid=1;org.medianexus.music.app.MOVE|from=0|to=1|queued=true;org.medianexus.music.app.JUMP|offset=1"
-target=""; extra=(); json=""; selftest=0; trusted=1; known=0
+target=""; extra=(); json=""; selftest=0; trusted=1; known=0; otherkey=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --standin) target=org.medianexus.standin ;;
@@ -107,11 +116,14 @@ while [ $# -gt 0 ]; do
     --list) extra+=(-e list "${2:?}"); shift ;;
     --warm) extra+=(-e cold false) ;;
     --pause-s) extra+=(-e pause_s "${2:?}"); shift ;;
+    --expect) extra+=(-e expect "${2:?}"); shift ;;
+    --hold-s) extra+=(-e hold_s "${2:?}"); shift ;;
     --depth) extra+=(-e depth "${2:?}"); shift ;;
     --nodes) extra+=(-e nodes "${2:?}"); shift ;;
     --limit-ms) extra+=(-e limit_ms "${2:?}"); shift ;;
     --json) json="${2:?}"; shift ;;
     --untrusted) trusted=0 ;;
+    --other-key) otherkey=1 ;;
     --known-host) trusted=0; known=1 ;;
     -h|--help) usage ;;
     -*) say "unknown option: $1"; usage ;;
@@ -124,6 +136,29 @@ done
 for i in "${!extra[@]}"; do [ "${extra[$i]}" = COVERS_OF_TARGET ] && extra[$i]="$target.covers"; done
 need_emulator
 build_tools
+# --other-key. A stranger is not signed as the app is, and here both would be: a build made
+# on this machine carries the debug key, as the probe does. So a copy of the probe is signed
+# with a key of its own, made on the spot the first time and kept in the cache (it signs
+# nothing but this).
+if [ "$otherkey" = 1 ]; then
+  signed="${probe_apk%.apk}-other-key.apk"
+  if [ ! -f "$signed" ] || [ "$probe_apk" -nt "$signed" ]; then
+    need_rig_image
+    signing_log="$cache/logs/probe-other-key.log"; mkdir -p "$cache/logs"
+    if ! "$root/scripts/dx" sh -c '
+      set -e
+      key=/home/dev/probe-other-key.jks
+      [ -f "$key" ] || keytool -genkeypair -keystore "$key" -storepass other-key -keypass other-key -alias probe \
+        -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Nexus Music rig probe as a stranger"
+      tool="$(ls /sdk/build-tools/*/apksigner | sort | tail -n 1)"
+      "$tool" sign --ks "$key" --ks-pass pass:other-key --key-pass pass:other-key --out "$1" "$2"
+    ' sh "/work/${signed#"$root"/}" "/work/${probe_apk#"$root"/}" >"$signing_log" 2>&1; then
+      tail -n 20 "$signing_log" >&2
+      die "could not sign the probe with a key of its own (full log: $signing_log)"
+    fi
+  fi
+  probe_apk="$signed"
+fi
 ensure_installed "$probe_apk" org.medianexus.carprobe
 # Android Auto is a caller media sessions trust (it may read notifications, among other
 # things), and Media3 gives full control only to callers it trusts. Give the probe the same

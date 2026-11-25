@@ -140,6 +140,10 @@ class Probe : Instrumentation() {
             outsider(service, trusted)
             return
         }
+        if (mode == "stranger") {
+            stranger(service, trusted)
+            return
+        }
         if (!connect(service, "connect.cold", "Starts cold and connects, as when a car asks first")) return
         val root = browser!!.root
         val rootExtras = browser!!.extras
@@ -1101,6 +1105,100 @@ class Probe : Instrumentation() {
     }
 
     /** A Media3 controller connected to the service, or null and why not. */
+    /**
+     * `--mode stranger`. An app like a watch's companion on the phone: no notification
+     * access, not a known host, and a Media3 controller of its own. Until the person allows
+     * it in the app's Settings ("Apps that can control playback") it must be refused; once
+     * allowed (`-e expect allowed`) it gets what a headset gets and no more: transport, the
+     * song that is playing and its cover; not the library, not the queue, none of the app's
+     * buttons. With `-e hold_s N` it stays connected that long and then says what it is left
+     * with, for the rig to switch it off in Settings meanwhile.
+     */
+    private fun stranger(service: ComponentName, trusted: Boolean) {
+        if (trusted) {
+            record("stranger.standing", "FAIL", "Runs as an app with no standing", "the probe has notification access, so being let in proves nothing: run with --untrusted")
+            return
+        }
+        val expectAllowed = args.getString("expect") == "allowed"
+        val (controller, why) = media3Controller(service)
+        if (!expectAllowed) {
+            check("stranger.refused", "An app the person has not allowed gets no connection", controller == null, "a Media3 controller connected", why)
+            controller?.let { c -> onMain { c.release() } }
+            return
+        }
+        if (controller == null) {
+            record("stranger.allowed", "FAIL", "An app the person allowed in Settings connects", "it was refused: $why")
+            return
+        }
+        record("stranger.allowed", "PASS", "An app the person allowed in Settings connects")
+        // (The app may have been started by this very connection, and be putting its last
+        // queue back: with nothing in a player nobody can skip or seek, whoever they are.
+        // What the probe is given is judged once there is a song, or after the limit.)
+        val restored = waitFor { onMain { controller.mediaMetadata.title != null } }
+        if (restored < 0) record("stranger.empty", "WARN", "Nothing is in the app's player", "skipping and seeking can't be judged with no song there: play something in the app first")
+        fun has(command: Int) = onMain { controller.availableCommands.contains(command) }
+        val names = mapOf(
+            androidx.media3.common.Player.COMMAND_PLAY_PAUSE to "play/pause", androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT to "next",
+            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS to "previous", androidx.media3.common.Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM to "seek",
+            androidx.media3.common.Player.COMMAND_STOP to "stop", androidx.media3.common.Player.COMMAND_GET_CURRENT_MEDIA_ITEM to "the song playing",
+            androidx.media3.common.Player.COMMAND_GET_METADATA to "its details",
+        )
+        // Its press, first: a song that has not been made ready can't be sought in by
+        // anybody, so what it may do is judged with the song playing. (A Media3 controller
+        // shows its own press as done at once, and is put right by the session a moment
+        // later if it was not: so the press is judged by what the session says after that
+        // moment, the song actually playing.)
+        val title = onMain { controller.mediaMetadata.title?.toString() }
+        record("stranger.playing", "INFO", "What it is told is playing", title ?: "(nothing is in the player)")
+        if (title != null) {
+            val was = onMain { controller.isPlaying }
+            if (!was) {
+                onMain { controller.play() }
+                val ms = waitFor { onMain { controller.isPlaying } }
+                SystemClock.sleep(1500)
+                check("stranger.press", "Its Play is carried out: the song plays", ms >= 0 && onMain { controller.isPlaying }, "the session did not say the song was playing", ms = ms)
+            }
+        }
+        val missing = names.filterKeys { !has(it) }.values.filter { restored >= 0 || it !in setOf("next", "previous", "seek") }
+        check("stranger.transport", "It may play, pause, skip and seek, and see what is playing", missing.isEmpty(), "not given: $missing", names.values.joinToString())
+        val more = mapOf(
+            androidx.media3.common.Player.COMMAND_GET_TIMELINE to "the queue", androidx.media3.common.Player.COMMAND_SET_MEDIA_ITEM to "choosing what plays",
+            androidx.media3.common.Player.COMMAND_CHANGE_MEDIA_ITEMS to "changing the queue", androidx.media3.common.Player.COMMAND_SEEK_TO_MEDIA_ITEM to "jumping in the queue",
+            androidx.media3.common.Player.COMMAND_SET_SHUFFLE_MODE to "shuffle", androidx.media3.common.Player.COMMAND_SET_REPEAT_MODE to "repeat",
+        ).filterKeys { has(it) }.values
+        check("stranger.no_queue", "It is given nothing of the queue, and cannot choose what plays", more.isEmpty(), "it was also given: $more")
+        val sessionCommands = onMain { controller.availableSessionCommands.commands.size }
+        check("stranger.no_library", "It is given no session commands: nothing of the library, none of the app's buttons", sessionCommands == 0, "$sessionCommands session commands")
+        val items = onMain { controller.mediaItemCount }
+        check("stranger.one_song", "What it is shown of the queue is the song that is playing, alone", items <= 1, "it sees $items items")
+        if (title != null) {
+            onMain { controller.mediaMetadata.artworkUri }?.let { cover ->
+                val problem = unreadable(cover)
+                check("stranger.cover", "It is given the cover of what is playing", problem == null, problem.orEmpty())
+            }
+            // Its Pause, judged the same way; and the song is left paused, as it was found.
+            onMain { controller.pause() }
+            val ms = waitFor { onMain { !controller.isPlaying } }
+            SystemClock.sleep(1500)
+            check("stranger.pause", "Its Pause is carried out", ms >= 0 && !onMain { controller.isPlaying } && !onMain { controller.playWhenReady }, "the session says the song is still playing", ms = ms)
+        }
+        args.getString("hold_s")?.toLongOrNull()?.let { seconds ->
+            say("holding the connection for $seconds s (switch the probe off in the app's Settings now)")
+            // (Media3 always leaves a controller the one command that lets it go,
+            // COMMAND_RELEASE: "nothing" is nothing but that.)
+            fun left() = onMain { (0 until controller.availableCommands.size()).map { controller.availableCommands.get(it) }.filter { it != androidx.media3.common.Player.COMMAND_RELEASE } }
+            val ms = waitFor(seconds * 1000) { onMain { !controller.isConnected } || (left().isEmpty() && onMain { controller.availableSessionCommands.commands.isEmpty() }) }
+            check("stranger.cut", "Switched off in Settings, its open connection is left with nothing", ms >= 0,
+                "after $seconds s it still had the player commands ${left()}", "no command but the one that lets it go, ${ms} ms into the wait", ms)
+            if (ms >= 0) {
+                onMain { controller.play() }
+                SystemClock.sleep(1500)
+                check("stranger.cut_press", "And a Play it sends then is not carried out", !onMain { controller.isPlaying } && !onMain { controller.playWhenReady }, "the player started")
+            }
+        }
+        onMain { controller.release() }
+    }
+
     private fun media3Controller(service: ComponentName): Pair<androidx.media3.session.MediaController?, String> {
         val future = runCatching {
             onMain {
