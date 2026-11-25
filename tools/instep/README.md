@@ -11,15 +11,15 @@ plays the PCs in the end-to-end checks.
 | What | How |
 |---|---|
 | The cases the phone's door to the library is held to | `tools/instep/run cases` writes `app/src/test/resources/instep-cases.json`: for a list of awkward inputs (what a device holds and what the server answered; runs of the person's changes), what the Windows app's library decides. The phone carries that same library at a pinned commit; `CoreCasesTest` hands the same inputs through the phone's one door to it (`core/Core.kt`) and must get the same answers. See `src/cases.rs`. |
-| Playing the PC | `tools/instep/run pc --server … --user … --password … --state <file>` makes one exchange with a server exactly as the Windows app does (its own `exchange`, `find_or_create` and API client), with `<file>` as what that PC holds. `peek` shows the playlist's comment byte for byte and changes nothing; `plant` puts a text of your choosing there; `queue-save` and `queue-get` are the server's saved queue as Windows saves and reads it. `scripts/instep-check` runs the whole end-to-end check with it (docs/TESTING.md). |
+| Playing the PC | `tools/instep/run pc --server … --user … --password … --state <file>` makes one exchange with a server as that version of the Windows app does, with `<file>` as what that PC holds. From 0.40.5 on (the exchange decided in the library) what the person does on the PC first is given as options, in order: `--pin`, `--unpin`, `--theme`, `--shuffle <key>=on\|off`, `--sort <key>=<n>,asc\|desc`, `--play <song>=<when>[,<route>]`, `--added <playlist>=<song>,<when>`; and how it goes: `--skew <seconds>`, `--lose-answer yes`. It prints, as JSON, whether it wrote, why it stopped or was held, the comment before and after, and what the PC then shows. `peek` shows the playlist's comment byte for byte and changes nothing; `plant` puts a text of your choosing there; `queue-save` and `queue-get` are the server's saved queue as Windows saves and reads it. `scripts/instep-check` runs the whole end-to-end check with it, a phone and two PCs built from the commit the phone's library is pinned to (docs/TESTING.md). |
 
 | A household on mixed versions | `scripts/instep-check --mixed` builds this tool twice, from the Windows code under test (`NEXUS_WINDOWS_SRC`) and from 0.40.4's source, and runs `instep household`: two devices on the new code and a PC on 0.40.4 against a real server, saying a line at a time what each did. `ok` lines are what the new code must do; `old` lines are what a PC on 0.40.4 goes on doing until it is updated. See `src/household.rs`. |
 
 **Which Windows versions.** Up to 0.40.4 the exchange is the Windows app's own (`exchange`
 in its `src/sync.rs`), and a build of this tool from such a checkout has `pc` and
 `pc-looks`. After it the exchange is decided in the Windows app's library
-(`nexus_core::step`), which the phone is to share; a build from such a checkout has
-`household` and `cases` instead, and drives that code in the library's own numbered steps, with the
+(`nexus_core::step`), which the phone carries too; a build from such a checkout has
+`pc`, `household` and `cases`, and drives that code in the library's own numbered steps, with the
 Windows app's own asking of the server (`sync::read`, `sync::send`). `peek`, `plant` and the queue modes are in both.
 
 **What is compiled** (see `build.rs`): `subsonic.rs`, `added.rs` and `plays.rs` whole;

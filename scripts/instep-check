@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# The end-to-end check of keeping in step: the phone's code and the Windows app's own code
-# exchanging in turn through a real Navidrome (docs/TESTING.md, "In step with other devices").
-# Besides the exchange in turn: a pin made on a phone before it had read the PC's pins, and
-# its process killed; a phone upgraded from the files of the build before keeping in step
-# (app/src/test/resources/instep-upgrade); a server whose answers leave out a playlist's
-# owner and comment, and one whose sync playlist has an empty comment; a phone whose clock is
-# an hour out.
+# The end-to-end check of keeping in step: a phone and two PCs exchanging in turn through a
+# real Navidrome (docs/TESTING.md, "In step with other devices"). The phone is the app's own
+# code, client and stores with the shared library it carries; each PC is the Windows app's
+# asking of the server and its library's exchange, compiled from the commit the phone's
+# library is pinned to (native/Cargo.toml: the Windows release that commit is).
+# Besides the exchange in turn: the phone's first exchange against a record full of a PC's
+# data, which must leave it byte for byte as it was; a pin made on a phone before it had read
+# the PC's pins, and its process killed; a phone upgraded from 0.4.0's files; the answer to
+# the phone's write lost, and the PC then setting the opposite; a server whose answers leave
+# out a playlist's owner and comment, and one whose sync playlist has an empty comment; a
+# phone whose clock is an hour out.
 #
 #   scripts/instep-check          starts a test server of its own (instance "step"), builds
-#                                 the Windows code (tools/instep), runs InStepLiveTest
-#                                 against both, and stops the server
+#                                 the PC (tools/instep, from the pinned commit), runs
+#                                 InStepLiveTest against both, and stops the server
 #   scripts/instep-check --keep   leaves the server running afterwards (for the emulator)
 #   scripts/instep-check --mixed  a household on mixed versions instead: two devices on the
 #                                 Windows code at NEXUS_WINDOWS_SRC (the version under test,
@@ -35,19 +39,26 @@ scripts/server --instance step start >/dev/null
 scripts/server --instance step reset >/dev/null
 $keep || trap 'scripts/server --instance step stop >/dev/null || true' EXIT
 
-# The source of 0.40.4, the last version whose exchange is its own (`instep pc`): laid out
-# in the cache from the Windows repository's history, never in that repository.
-old_source() {
+# The Windows app's source at a commit, laid out in the cache from the Windows repository's
+# history (never in that repository): where its `src` is.
+source_at() {
+  local commit="$1"
   local cache="${NEXUS_ANDROID_CACHE:-$HOME/.cache/nexus-music-android}"
+  local git_dir="${NEXUS_WINDOWS_GIT:-$root/../nexus-music}"
+  local src="$cache/windows-$commit"
+  if [ ! -f "$src/src/sync.rs" ]; then
+    mkdir -p "$src"
+    git -C "$git_dir" archive "$commit" src core Cargo.lock Cargo.toml | tar -x -C "$src"
+  fi
+  echo "$src/src"
+}
+
+# The source of 0.40.4, the last version whose exchange is its own.
+old_source() {
   local git_dir="${NEXUS_WINDOWS_GIT:-$root/../nexus-music}"
   local old_commit="${NEXUS_WINDOWS_OLD:-$(git -C "$git_dir" log --format=%H --grep='^0\.40\.4$' -1)}"
   [ -n "$old_commit" ] || { echo "scripts/instep-check: the commit of 0.40.4 wasn't found in $git_dir (set NEXUS_WINDOWS_OLD)" >&2; exit 1; }
-  local old_src="$cache/windows-$old_commit"
-  if [ ! -f "$old_src/src/sync.rs" ]; then
-    mkdir -p "$old_src"
-    git -C "$git_dir" archive "$old_commit" src core Cargo.lock Cargo.toml | tar -x -C "$old_src"
-  fi
-  echo "$old_src/src"
+  source_at "$old_commit"
 }
 
 if $mixed; then
@@ -65,14 +76,16 @@ if $mixed; then
   exit "$status"
 fi
 
-# The PC the phone's Kotlin exchanges with is the Windows app's own `exchange`, which the
-# versions after 0.40.4 no longer have (theirs is decided in the library the phone is to
-# share): where the Windows checkout is one of those, the PC is 0.40.4's.
-windows="${NEXUS_WINDOWS_SRC:-$root/../nexus-music/src}"
-if grep -q "^pub fn look(" "$windows/sync.rs" 2>/dev/null; then
-  NEXUS_WINDOWS_SRC="$(old_source)"
+# The PCs are the Windows app at the commit the phone's library is pinned to: the release
+# the phone shares its rules with, whatever the Windows checkout beside this one has become
+# since. (NEXUS_WINDOWS_SRC, set, is used instead: a Windows checkout being worked on.)
+if [ -z "${NEXUS_WINDOWS_SRC:-}" ]; then
+  pinned="$(sed -n 's/^nexus-core = .*rev = "\([0-9a-f]\{40\}\)".*/\1/p' native/Cargo.toml)"
+  [ -n "$pinned" ] || { echo "scripts/instep-check: native/Cargo.toml doesn't say which commit the library is pinned to" >&2; exit 1; }
+  NEXUS_WINDOWS_SRC="$(source_at "$pinned")"
   export NEXUS_WINDOWS_SRC
 fi
+grep -q "^pub fn read(client: &Client)" "$NEXUS_WINDOWS_SRC/sync.rs" || { echo "scripts/instep-check: the Windows source at $NEXUS_WINDOWS_SRC is from before its exchange was decided in the library (0.40.5)" >&2; exit 1; }
 program="$(tools/instep/run build | tail -1)"
 mkdir -p build/instep
 cp "$program" build/instep/instep
@@ -87,6 +100,6 @@ if [ "$status" -ne 0 ]; then
   grep -E 'FAILED|AssertionError|expected|at org.medianexus' build/instep/gradle.txt | head -20 >&2 || true
   echo "scripts/instep-check: FAILED (the whole of Gradle's output is in build/instep/gradle.txt)" >&2
 else
-  echo "scripts/instep-check: the phone and the Windows code kept in step"
+  echo "scripts/instep-check: the phone and the PCs kept in step"
 fi
 exit "$status"

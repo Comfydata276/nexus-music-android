@@ -5,7 +5,10 @@
 //!                            answered; a run of the person's changes): the cases the phone's
 //!                            door to that same library is held to
 //!                            (app/src/test/resources/instep-cases.json; cases.rs)
-//!   instep pc ...            plays the PC: Windows' own `exchange`, against a server
+//!   instep pc ...            plays a PC: one exchange with a server, as that version of
+//!                            the Windows app makes it, with what the PC holds kept in a
+//!                            file between runs. (From 0.40.5 on: what the person does on
+//!                            the PC first is given as options; see household.rs.)
 //!   instep peek ...          the sync playlist and its comment, byte for byte, changing nothing
 //!   instep plant ...         puts a text of your choosing in the comment (an unreadable one,
 //!                            a newer layout), or makes a second sync playlist
@@ -15,9 +18,8 @@
 //!                            version, as one household against a real server (household.rs)
 //!
 //! Which of these a build has depends on the Windows checkout it was compiled from (build.rs):
-//! `pc` and `pc-looks` are that checkout's own exchange, and exist for 0.40.4 and before;
-//! `household` drives the exchange that is decided in the Windows app's library, and exists
-//! for the versions after.
+//! up to 0.40.4 `pc` and `pc-looks` are that checkout's own exchange; after it, `pc`,
+//! `household` and `cases` drive the exchange that is decided in the Windows app's library.
 //!
 //! The modules below are the Windows app's own files, compiled from its source by path (see
 //! build.rs). Nothing of them is copied into this repository.
@@ -67,16 +69,13 @@ fn main() {
         #[cfg(stepped)]
         "household" => household::household(&Options::of(rest)),
         #[cfg(stepped)]
-        "pc" | "pc-looks" => {
-            eprintln!("this instep was built from a Windows checkout whose exchange is its library's: the PC it would play is the code under test (see `household`). Build it from 0.40.4 or before for `pc`.");
-            2
-        }
+        "pc" => household::pc(&Options::of(rest)),
         "peek" => peek(&Options::of(rest)),
         "plant" => plant(&Options::of(rest)),
         "queue-save" => queue_save(&Options::of(rest)),
         "queue-get" => queue_get(&Options::of(rest)),
         _ => {
-            eprintln!("usage: instep cases <file> | reads <file> | pc | peek | plant | queue-save | queue-get  (see tools/instep/README.md)");
+            eprintln!("usage: instep cases <file> | pc | household | peek | plant | queue-save | queue-get  (see tools/instep/README.md)");
             2
         }
     };

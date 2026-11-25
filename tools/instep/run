@@ -2,7 +2,6 @@
 # Builds and runs the tool that is the Windows app's own in-step code (see README.md here).
 #
 #   tools/instep/run cases            writes app/src/test/resources/instep-cases.json
-#   tools/instep/run reads <file>     checks texts the phone's Kotlin wrote (a path in this repository)
 #   tools/instep/run pc --server http://127.0.0.1:4535 --user tester --password ... --state <file>
 #   tools/instep/run peek|plant|queue-save|queue-get ...
 #   tools/instep/run build            builds it, and says where the program is

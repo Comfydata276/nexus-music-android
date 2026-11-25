@@ -24,7 +24,8 @@ use nexus_core::notes::{Kept, Note};
 use nexus_core::record::{self, Read};
 use nexus_core::step::{self, Change, Choices, Device, Held, Outcome, Plan, Stop, settle};
 use nexus_core::sync::{PLAYS_SHARED, Shared, newest_plays};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::subsonic::Client;
 use crate::sync::{self, PLAYLIST_NAME};
@@ -179,6 +180,99 @@ impl Old<'_> {
         with(&mut holds);
         std::fs::write(&self.state, serde_json::to_string(&holds).unwrap()).unwrap();
     }
+}
+
+// ---- one PC, an exchange at a time -------------------------------------------------------------
+
+/// What a PC on this code holds between runs of `instep pc`: the file named by `--state`.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct PcHolds {
+    choices: Choices,
+    kept: Kept,
+    history: Vec<(String, i64)>,
+    log: Vec<(String, i64)>,
+    sources: Vec<(String, i64, String)>,
+}
+
+/// `instep pc --state <file> [what the person does on it first] ...`: one exchange with the
+/// server by a PC on the Windows code this tool was built from, in the library's own
+/// numbered steps with the Windows app's own asking of the server (as `household` drives
+/// it), and with what the PC holds read from the file and written back to it.
+///
+/// What the person does on the PC before the exchange, in the order given: `--pin <id>`,
+/// `--unpin <id>`, `--theme <name>`, `--shuffle <key>=on|off`, `--sort <key>=<n>,asc|desc`,
+/// `--play <song>=<when>[,<route key>]` (a play that counted, and a song in Recently
+/// played), `--added <playlist>=<song>,<when>` (a song the person added there). And how it
+/// goes: `--skew <seconds>` (the PC's clock is that far from the true time);
+/// `--lose-answer yes` (the server takes its write and the answer never reaches the PC).
+///
+/// Prints, as JSON: whether it wrote, why it stopped or was held if it was, the comment
+/// before and after, and what the PC then shows.
+pub fn pc(options: &Options) -> i32 {
+    let client = options.client();
+    let user = options.need("user");
+    let state = options.need("state");
+    let held: PcHolds = std::fs::read_to_string(state).ok().filter(|text| !text.trim().is_empty()).map(|text| serde_json::from_str(&text).expect("what the PC holds")).unwrap_or_default();
+    let mut pc = New { choices: held.choices, kept: held.kept, history: held.history, log: held.log, sources: held.sources, ..New::new("pc", user) };
+    let pair = |value: &str| -> (String, String) {
+        let (a, b) = value.split_once('=').unwrap_or_else(|| panic!("expected <this>=<that>, not {value}"));
+        (a.to_string(), b.to_string())
+    };
+    for (name, value) in &options.0 {
+        match name.as_str() {
+            "pin" => pc.does(Change::Pin(value.clone())),
+            "unpin" => pc.does(Change::Unpin(value.clone())),
+            "theme" => pc.does(Change::Theme(value.clone())),
+            "shuffle" => {
+                let (key, on) = pair(value);
+                pc.does(Change::Shuffle { key, on: on == "on" });
+            }
+            "sort" => {
+                let (key, how) = pair(value);
+                let (sort, way) = how.split_once(',').expect("<n>,asc|desc");
+                pc.does(Change::Sort { key, sort: sort.parse().expect("a sort's number"), descending: way == "desc" });
+            }
+            "play" => {
+                let (song, rest) = pair(value);
+                let (at, from) = rest.split_once(',').map(|(at, from)| (at, Some(from))).unwrap_or((rest.as_str(), None));
+                let at: i64 = at.parse().expect("when it was played");
+                pc.log.push((song.clone(), at));
+                if let Some(from) = from {
+                    pc.sources.push((song.clone(), at, from.to_string()));
+                }
+                pc.history = nexus_core::sync::merge_history(&[(song, at)], &pc.history);
+            }
+            "added" => {
+                let (playlist, rest) = pair(value);
+                let (song, at) = rest.split_once(',').expect("<song>,<when>");
+                pc.kept.added(&playlist, &[song.to_string()], at.parse().expect("when it was added"));
+            }
+            "skew" => pc.skew = value.parse().expect("seconds"),
+            _ => {}
+        }
+    }
+    let before = sync_playlists(&client).into_iter().next();
+    let came = pc.exchange_hearing(&client, options.get("lose-answer").is_none());
+    let after = sync_playlists(&client).into_iter().next();
+    let holds = PcHolds { choices: pc.choices.clone(), kept: pc.kept.clone(), history: pc.history.clone(), log: pc.log.clone(), sources: pc.sources.clone() };
+    std::fs::write(state, serde_json::to_string_pretty(&holds).unwrap()).expect("the PC's file");
+    let shown = pc.choices.shown(&pc.account);
+    let (wrote, stopped, held) = match came {
+        Came::Stopped(stop) => (false, Some(format!("{stop:?}")), None),
+        Came::Done { wrote, held } => (wrote, None, held.map(|held| format!("{held:?}"))),
+    };
+    println!("{}", json!({
+        "playlist": after.as_ref().map(|(id, _)| id),
+        "wrote": wrote, "stopped": stopped, "held": held,
+        "comment_before": before.map(|(_, comment)| comment),
+        "comment_after": after.map(|(_, comment)| comment),
+        "pins": shown.pins, "theme": shown.theme, "lists": shown.lists,
+        "waiting": pc.choices.waiting.len(),
+        "history": pc.history, "plays": pc.log.len(),
+        "dates": pc.kept.shared(None),
+    }));
+    0
 }
 
 /// The run's tally.
