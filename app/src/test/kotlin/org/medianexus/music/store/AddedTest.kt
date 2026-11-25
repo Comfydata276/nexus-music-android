@@ -91,22 +91,22 @@ class AddedTest {
             // An ordinary save has made up its mind to write, with the notes as they were
             // then; and at that moment an exchange takes in a date from another device.
             val took = java.util.concurrent.CompletableFuture<Boolean>()
+            val saving = java.util.concurrent.CountDownLatch(1)
             added.duringSave = {
                 added.duringSave = null
-                val taking = kotlin.concurrent.thread { took.complete(added.take(theirs)) }
-                // (Until the exchange has written, or is waiting for this save to finish.)
-                val limit = System.nanoTime() + 10_000_000_000
-                while (!took.isDone && taking.state != Thread.State.BLOCKED && System.nanoTime() < limit) Thread.sleep(5)
+                kotlin.concurrent.thread { took.complete(added.take(theirs)) }
+                // (Long enough for the exchange to have written, if nothing makes it wait
+                // for this save: with one writer it waits, and this gives up waiting.)
+                runCatching { took.get(2, java.util.concurrent.TimeUnit.SECONDS) }
+                saving.countDown()
             }
             added.create("q", listOf("x"), 200)
             assertTrue(took.get(10, java.util.concurrent.TimeUnit.SECONDS))
-            // Whichever of the two reached the file last, the file has what was taken in.
-            var onDisk = emptyList<Long>()
-            for (attempt in 0 until 100) {
-                onDisk = Added(file, null, Dispatchers.IO).let { it.dates("p", songs("s")).list() + it.dates("q", songs("x")).list() }
-                if (onDisk == listOf(5L, 200L)) break
-                Thread.sleep(50)
-            }
+            // Once both have written (the save goes on to write as this is let go; a
+            // moment for it), the file has what was taken in, whichever asked first.
+            assertTrue(saving.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            Thread.sleep(1_000)
+            val onDisk = Added(file, null, Dispatchers.IO).let { it.dates("p", songs("s")).list() + it.dates("q", songs("x")).list() }
             assertEquals(listOf(5L, 200L), onDisk)
         } finally {
             scope.cancel()
