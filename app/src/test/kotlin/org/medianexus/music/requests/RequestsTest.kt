@@ -83,8 +83,15 @@ class RequestsTest {
         }
     }.also { closing += it }
 
-    /** A stand-in sign-in service, and a stand-in Lidarr behind it that lets through only a
-     *  pass the service handed out. */
+    /**
+     * A stand-in sign-in service, and a stand-in Lidarr behind it that lets through only a
+     * pass the service handed out.
+     *
+     * The service **checks the secret half of a sign-in as a real one does** (PKCE, S256):
+     * a code is handed out for the check that came with the request for it, and is traded
+     * for a token only by whoever then shows the secret that check was made from. An app
+     * that sent the wrong secret, or a code brought to another sign-in, gets nothing.
+     */
     private inner class Behind {
         val passes = CopyOnWriteArrayList<String>()
         val refusing = AtomicBoolean(false)
@@ -93,10 +100,29 @@ class RequestsTest {
         /** Who the service says signed in, as it is written inside its JSON answer. */
         @Volatile var username = "walker"
         private val made = AtomicInteger(0)
+
+        /** The check each code was asked for with. */
+        private val checks = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        private fun s256(secret: String) = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(secret.toByteArray()))
         val service = StandIn { asked, reply ->
             val form = asked.body.split('&').associate { it.substringBefore('=') to it.substringAfter('=', "") }
             when {
+                asked.target.startsWith("/application/o/authorize/?response_type=code&") -> {
+                    val query = asked.target.substringAfter('?')
+                    val check = Core.gateParam(query, "code_challenge").orEmpty()
+                    val back = Core.gateParam(query, "redirect_uri").orEmpty()
+                    if (Core.gateParam(query, "code_challenge_method") != "S256" || check.isEmpty() || back.isEmpty()) {
+                        reply.send(400)
+                    } else {
+                        val code = "code-${made.incrementAndGet()}"
+                        checks[code] = check
+                        reply.send(302, "", "Location" to "$back?code=$code&state=${Core.gateParam(query, "state").orEmpty()}")
+                    }
+                }
                 asked.target == "/application/o/token/" && refusing.get() -> reply.json("""{"error":"invalid_grant"}""", status = 400)
+                asked.target == "/application/o/token/" && form["grant_type"] == "authorization_code" && checks.remove(form["code"].orEmpty()) != s256(form["code_verifier"].orEmpty()) ->
+                    reply.json("""{"error":"invalid_grant","error_description":"the code and the secret do not belong together"}""", status = 400)
                 asked.target == "/application/o/token/" && form["grant_type"] == "client_credentials" -> {
                     val pass = "pass-${made.incrementAndGet()}"
                     passes += pass
@@ -136,6 +162,21 @@ class RequestsTest {
     }
 
     private fun param(link: String, name: String): String = Core.gateParam(link.substringAfter('?'), name)!!
+
+    /** Where the sign-in service sends the browser once someone has signed in on the page
+     *  at `link`: back to the app, with a code. */
+    private fun signedInAt(link: String): String {
+        val connection = URL(link).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 3_000
+        connection.readTimeout = 5_000
+        assertEquals(302, connection.responseCode)
+        return connection.getHeaderField("Location")
+    }
+
+    /** The browser, signing in: the page at `link`, then wherever the service sends it. It
+     *  says what page the app showed it at the end. */
+    private fun signInWith(link: String): Pair<Int, String> = browse(signedInAt(link))
 
     private suspend fun Requests.until(what: (RequestsState) -> Boolean): RequestsState = withTimeout(20_000) { state.first(what) }
 
@@ -357,7 +398,7 @@ class RequestsTest {
         requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         val link = requests.signIn()!!
-        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        signInWith(link)
         requests.until { it is RequestsState.Connected }
         scopes.last().cancel()
         val sealed = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().split('\n', limit = 3)
@@ -385,7 +426,7 @@ class RequestsTest {
         requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         val link = requests.signIn()!!
-        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        signInWith(link)
         val connected = requests.until { it is RequestsState.Connected } as RequestsState.Connected
         val name = connected.signedInAs!!
         assertEquals(80, name.length)
@@ -419,7 +460,10 @@ class RequestsTest {
         assertEquals(RequestsState.SigningIn(behind.host), requests.state.value)
 
         // The browser comes back.
-        val (status, page) = browse("$back?code=the-code&state=${param(link, "state")}")
+        val home = signedInAt(link)
+        val code = param(home, "code")
+        assertEquals("$back?code=$code&state=${param(link, "state")}", home)
+        val (status, page) = browse(home)
         assertEquals(200, status)
         assertTrue(page, "You're signed in" in page)
         assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected })
@@ -429,7 +473,7 @@ class RequestsTest {
         // What was asked of the service for it: the code, with the secret only this app
         // had, whose check was in the link.
         val trade = behind.service.asked.first { "grant_type=authorization_code" in it.body }
-        assertTrue(trade.body, "code=the-code" in trade.body && "redirect_uri=${java.net.URLEncoder.encode(back, "UTF-8")}" in trade.body)
+        assertTrue(trade.body, "code=$code" in trade.body && "redirect_uri=${java.net.URLEncoder.encode(back, "UTF-8")}" in trade.body)
         val secret = Core.gateParam(trade.body, "code_verifier")!!
         val check = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(secret.toByteArray()))
         assertEquals(check, param(link, "code_challenge"))
@@ -438,8 +482,8 @@ class RequestsTest {
         val token = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().split('\n', limit = 3)[2]
         assertTrue(token, token.startsWith("refresh-"))
         val kept = everythingKept(account)
-        for (secretThing in listOf(token, secret, "the-code", KEY) + behind.passes) assertFalse(secretThing, secretThing in kept)
-        assertFalse(notes.any { note -> listOf(token, secret, "the-code", KEY).any { it in note } })
+        for (secretThing in listOf(token, secret, code, KEY) + behind.passes) assertFalse(secretThing, secretThing in kept)
+        assertFalse(notes.any { note -> listOf(token, secret, code, KEY).any { it in note } })
         // The door is shut.
         assertTrue(runCatching { browse("$back?code=again&state=${param(link, "state")}") }.isFailure)
     }
@@ -452,7 +496,7 @@ class RequestsTest {
         requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         val link = requests.signIn()!!
-        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        signInWith(link)
         requests.until { it is RequestsState.Connected }
         fun onDisk() = File(secretsDir(account), "lidarr-token.sealed").readBytes().reversedArray().decodeToString().split('\n', limit = 3)[2]
         val first = onDisk()
@@ -495,6 +539,27 @@ class RequestsTest {
     }
 
     @Test
+    fun `a code from one sign-in brought back to another gets no token`() = runBlocking {
+        val behind = Behind()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        // Someone signs in on the page of a first sign-in, which is then given up...
+        val first = requests.signIn()!!
+        val stale = param(signedInAt(first), "code")
+        requests.cancelSignIn()
+        // ...and its code turns up at the door of a second (whose state somebody has seen).
+        val second = requests.signIn()!!
+        browse("${param(second, "redirect_uri")}?code=$stale&state=${param(second, "state")}")
+        // The service checks the code against the secret it was asked for with, and the
+        // second sign-in's secret is another: no token.
+        assertEquals(RequestsState.NeedsSignIn(behind.host, why = "The sign-in service wouldn't finish the sign-in. Try again."), requests.until { it is RequestsState.NeedsSignIn && it.why != null })
+        assertFalse(File(secretsDir(account), "lidarr-token.sealed").exists())
+        assertTrue(behind.passes.isEmpty())
+    }
+
+    @Test
     fun `the tab closed without signing in gives the sign-in up, and a browser on its way back still gets through`() = runBlocking {
         val behind = Behind()
         val requests = requests()
@@ -513,7 +578,7 @@ class RequestsTest {
         link = requests.signIn()!!
         back = param(link, "redirect_uri")
         requests.cameBack()
-        browse("$back?code=in-time&state=${param(link, "state")}")
+        signInWith(link)
         assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
         Thread.sleep(2_000)
         assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.state.value)
@@ -546,7 +611,7 @@ class RequestsTest {
         assertTrue(runCatching { browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}") }.isFailure)
         // Started again, it works as any other.
         val fresh = again.signIn()!!
-        browse("${param(fresh, "redirect_uri")}?code=c&state=${param(fresh, "state")}")
+        signInWith(fresh)
         assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), again.until { it is RequestsState.Connected })
     }
 
@@ -558,7 +623,7 @@ class RequestsTest {
         requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         val link = requests.signIn()!!
-        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        signInWith(link)
         requests.until { it is RequestsState.Connected }
         val token = File(secretsDir(account), "lidarr-token.sealed")
         val held = token.readBytes().reversedArray().decodeToString().split('\n', limit = 3)[2]
@@ -580,7 +645,7 @@ class RequestsTest {
         requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         val link = requests.signIn()!!
-        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        signInWith(link)
         requests.until { it is RequestsState.Connected }
 
         scopes.last().cancel()
@@ -602,7 +667,7 @@ class RequestsTest {
         requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         val link = requests.signIn()!!
-        browse("${param(link, "redirect_uri")}?code=c&state=${param(link, "state")}")
+        signInWith(link)
         requests.until { it is RequestsState.Connected }
 
         // The app started again, and the service no longer honours the token.
