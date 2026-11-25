@@ -137,7 +137,11 @@ fun SongListPage(
     val account = ui.account
     // Which songs are shown, in what order, as places in the list. Worked out off the main
     // thread for a long list; meanwhile, a list whose order is its own is shown as it is.
-    val arranged = rememberShown(songs, view) { list -> account?.addedDates(key, list) ?: LongArray(list.size) }
+    // (A list sorted by date added is arranged again when a date arrives: one another
+    // device shared, or one this phone has just noted. Any other order has nothing to do
+    // with the dates, and is left as it is.)
+    val dated by (account?.added?.version ?: NO_DATES).collectAsStateWithLifecycle()
+    val arranged = rememberShown(songs, view, org.medianexus.music.library.ListView.datesKey(view, dated)) { list -> account?.addedDates(key, list) ?: LongArray(list.size) }
     val shown = arranged?.order
     // What a tap plays is the arrangement drawn, handed to the player as it is: while more
     // typing (or another order) is being worked out, the rows still shown, in their order.
@@ -335,15 +339,16 @@ fun SongListPage(
  * song was added, for "Date added"; it is asked only for that order.
  */
 @Composable
-fun rememberShown(songs: List<Song>?, view: org.medianexus.music.library.ListView, dates: (List<Song>) -> LongArray): org.medianexus.music.library.Shown<List<Song>>? {
+fun rememberShown(songs: List<Song>?, view: org.medianexus.music.library.ListView, dated: Long = 0, dates: (List<Song>) -> LongArray): org.medianexus.music.library.Shown<List<Song>>? {
     if (songs == null) return null
     if (view.isDefault) return remember(songs, view) { org.medianexus.music.library.Shown(songs, view, IntArray(songs.size) { it }) }
     val work = { cancelled: () -> Boolean ->
         val added = if (view.sort == org.medianexus.music.library.ListView.ADDED) dates(songs) else null
         org.medianexus.music.library.Shown(songs, view, org.medianexus.music.library.Arrange.arrange(songs.columns(), view, cancelled) { i -> added?.get(i) ?: 0L }, added)
     }
-    if (songs.size <= ARRANGED_AT_ONCE) return remember(songs, view) { work { false } }
-    val arranged by androidx.compose.runtime.produceState<org.medianexus.music.library.Shown<List<Song>>?>(null, songs, view) {
+    // (`dated`: which reading of the dates this arrangement is for. See ListView.datesKey.)
+    if (songs.size <= ARRANGED_AT_ONCE) return remember(songs, view, dated) { work { false } }
+    val arranged by androidx.compose.runtime.produceState<org.medianexus.music.library.Shown<List<Song>>?>(null, songs, view, dated) {
         value = value?.takeIf { it.list === songs }
         // Stopped part-way when another keystroke or order replaces it.
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
@@ -353,6 +358,9 @@ fun rememberShown(songs: List<Song>?, view: org.medianexus.music.library.ListVie
     }
     return arranged?.takeIf { it.list === songs }
 }
+
+/** Where no dates are kept (no account): they never change. */
+private val NO_DATES = kotlinx.coroutines.flow.MutableStateFlow(0L)
 
 /** A list this long or shorter is arranged as it is drawn: well under a frame's time. */
 private const val ARRANGED_AT_ONCE = 600

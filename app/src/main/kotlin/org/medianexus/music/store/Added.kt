@@ -59,6 +59,15 @@ class Added(
      *  other devices. */
     @Volatile var changedHere: () -> Unit = {}
 
+    private val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /**
+     * Moves on whenever a date changes here, however it came (noticed, the person's own
+     * change, or taken in from another device): a list that is open and sorted by date
+     * added is arranged again when it does, and shows the dates as they now are.
+     */
+    val version: kotlinx.coroutines.flow.StateFlow<Long> = changes
+
     private var lists = HashMap<String, Map<String, AddedNote>>()
     private var seen = HashSet<String>()
     private var loaded = false
@@ -103,6 +112,7 @@ class Added(
         val before = one(playlist)
         if (told.notes.isEmpty()) lists.remove(playlist) else lists[playlist] = told.notes
         if (told.seen) seen.add(playlist) else seen.remove(playlist)
+        if (before.notes != told.notes) changes.value++
         return before.notes != told.notes || before.seen != told.seen
     }
 
@@ -171,7 +181,9 @@ class Added(
     fun forget(playlist: String) {
         load()
         val known = seen.remove(playlist)
-        if (lists.remove(playlist) != null || known) save()
+        val had = lists.remove(playlist) != null
+        if (had) changes.value++
+        if (had || known) save()
     }
 
     /** The time each of these songs was added to the playlist, in the same order; 0 where it
@@ -210,6 +222,7 @@ class Added(
         if (!out.changed) return false
         writeAtomically(file, json.encodeToString(Stored.serializer(), Stored(out.lists, HashSet(seen), MARK)).toByteArray())
         lists = HashMap(out.lists)
+        changes.value++
         // (What is on the disk is newer than any write still waiting its turn.)
         dirty++
         return true

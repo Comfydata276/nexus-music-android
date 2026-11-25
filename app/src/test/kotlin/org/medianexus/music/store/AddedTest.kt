@@ -39,6 +39,30 @@ class AddedTest {
     }
 
     @Test
+    fun aListSortedByDateAddedIsArrangedAgainWhenADateArrivesAndNoOtherListIs() {
+        val added = added()
+        val view = org.medianexus.music.library.ListView
+        val byDate = org.medianexus.music.library.ListView(sort = view.ADDED, descending = true)
+        val byTitle = org.medianexus.music.library.ListView(sort = view.TITLE)
+        added.sawCopy("p", songs("a", "b"), 100)
+        val before = added.version.value
+        // A date arrives from another device: what an open list sorted by date is arranged
+        // for has changed; what a list in any other order is arranged for has not.
+        assertTrue(added.take(mapOf("p" to mapOf("b" to AddedNote(listOf(50), 50)))))
+        assertTrue(added.version.value != before)
+        assertTrue(view.datesKey(byDate, added.version.value) != view.datesKey(byDate, before))
+        assertEquals(view.datesKey(byTitle, before), view.datesKey(byTitle, added.version.value))
+        // The same again brings nothing, and nothing is arranged again for it.
+        val settled = added.version.value
+        assertFalse(added.take(mapOf("p" to mapOf("b" to AddedNote(listOf(50), 50)))))
+        added.sawCopy("p", songs("a", "b"), 200)
+        assertEquals(settled, added.version.value)
+        // A date this phone notes itself does it too.
+        added.record("p", listOf("c"), 300)
+        assertTrue(added.version.value != settled)
+    }
+
+    @Test
     fun notesTakenInFromOtherDevicesAreOnTheDiskWhenTheyAreTaken() {
         val added = added()
         added.sawCopy("p", songs("a"), 100)

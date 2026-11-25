@@ -39,6 +39,15 @@ data class ListView(val sort: Int = OWN, val descending: Boolean = false, val fi
         const val ADDED = 5
         const val SORTS = 6
 
+        /**
+         * Which reading of the dates an arrangement of a list is for: `dated` (which moves
+         * on whenever a date changes, `Added.version`) for a list in order of date added,
+         * and always the same for any other order. A list that is open is arranged again
+         * when this changes: so a date that arrives from another device re-sorts a list
+         * sorted by date, and disturbs no other.
+         */
+        fun datesKey(view: ListView, dated: Long): Long = if (view.sort == ADDED) dated else 0L
+
         /** The most characters a find box takes, and so the most of them a list is narrowed
          *  by: on screen and in what is handed to the player alike. */
         const val MOST_FILTER = 200
