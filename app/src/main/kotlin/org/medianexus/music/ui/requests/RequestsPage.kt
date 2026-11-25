@@ -6,11 +6,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicText
@@ -35,15 +36,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.medianexus.music.R
 import org.medianexus.music.core.Pending
-import org.medianexus.music.ui.parts.CardData
-import org.medianexus.music.ui.parts.CardKind
 import org.medianexus.music.ui.parts.IconButton
-import org.medianexus.music.ui.parts.MediaCard
 import org.medianexus.music.ui.parts.Refreshable
 import org.medianexus.music.ui.parts.SectionTitle
 import org.medianexus.music.ui.parts.SkeletonRows
 import org.medianexus.music.ui.parts.TitleBar
-import org.medianexus.music.ui.lists.gridColumns
 import org.medianexus.music.ui.player.SwipeAway
 import org.medianexus.music.ui.shell.LocalUi
 import org.medianexus.music.ui.shell.Route
@@ -102,8 +99,6 @@ fun RequestsPage() {
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)
         Refreshable(state.asking && waiting != null, model::again) {
-            val width = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() }
-            val columns = gridColumns(width)
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
                 when {
                     waiting == null && state.why != null -> item(key = "why", contentType = "said") { Said(state.why.orEmpty(), onRetry = model::again) }
@@ -112,18 +107,8 @@ fun RequestsPage() {
                         state.why?.let { why -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(why, model::again) } }
                         if (waiting.arrived.isNotEmpty()) {
                             item(key = "arrived-title", contentType = "title") { SectionTitle(stringResource(R.string.arrived)) }
-                            val lines = (waiting.arrived.size + columns - 1) / columns
-                            items(lines, key = { "arrived/$it" }, contentType = { "cards" }) { line ->
-                                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    val end = minOf(waiting.arrived.size, line * columns + columns)
-                                    for (at in line * columns until end) {
-                                        val (asked, about) = waiting.arrived[at]
-                                        // (The library's own album, and the music server's cover.)
-                                        val card = remember(asked, about) { CardData(CardKind.ALBUM, asked.libraryAlbum, asked.title, about, asked.cover) }
-                                        MediaCard(card, onClick = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) }, modifier = Modifier.weight(1f))
-                                    }
-                                    repeat(columns - (end - line * columns)) { Spacer(Modifier.weight(1f)) }
-                                }
+                            items(waiting.arrived, key = { (asked, _) -> "arrived/${asked.libraryAlbum}/${asked.title}" }, contentType = { "arrived" }) { (asked, about) ->
+                                ArrivedRow(asked, about, onOpen = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) })
                             }
                         }
                         val pending = waiting.pending.filter { (album, _) -> album.id !in going }
@@ -153,6 +138,33 @@ fun RequestsPage() {
 
 /** How often the page asks again while it is on screen (Windows: every half minute). */
 private const val REFRESH_MILLIS = 30_000L
+
+/**
+ * An album that has arrived, as a row like those on their way: the library's own cover (the
+ * music server's), its title, and the library's line under it whole, over two lines if it
+ * needs them ("The Quiet Harbour • for “Low Water”": never cut before the song's name).
+ * Opens the library's own album.
+ */
+@Composable
+private fun ArrivedRow(asked: org.medianexus.music.core.Asked, line: String, onOpen: () -> Unit) {
+    val colors = Theme.colors
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = Theme.dimens.rowHeight)
+            .clickable(enabled = asked.libraryAlbum.isNotEmpty(), role = androidx.compose.ui.semantics.Role.Button, onClick = onOpen)
+            .semantics(mergeDescendants = true) {}
+            .padding(start = Theme.dimens.pagePad, end = Theme.dimens.pagePad, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        org.medianexus.music.ui.parts.Cover(asked.cover, Modifier.size(Theme.dimens.rowCover), org.medianexus.music.ui.parts.CoverShape.ROW, R.drawable.ic_disc_3)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            BasicText(asked.title, style = Theme.type.rowTitle.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (line.isNotEmpty()) BasicText(line, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
 
 /** An album on its way: its title, the library's line under it, and its "…". */
 @Composable
