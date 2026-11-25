@@ -347,6 +347,8 @@ class PlayLog(
      */
     suspend fun absorb(plays: List<Pair<String, Long>>, sources: List<Triple<String, Long, String>>): Int {
         ready.await()
+        // (Nothing came: the log is not walked to find that none of nothing is new.)
+        if (plays.isEmpty() && sources.isEmpty()) return 0
         var changed = false
         val new = synchronized(this) {
             if (closed || !holding) return 0
