@@ -3223,10 +3223,16 @@ server offers, and is written down where the rules are (the Windows repository's
   - **What a controller may send, state by state** (Media3's rule is `Util.getAvailableCommands`;
     ours adds to it in `getState`). Play and pause, stop, shuffle, repeat, a tap on an
     entry of the queue and the app's own commands are always there. Next is there whenever
-    there is a queue (ours: on the last song it goes round to the top). Previous is there
-    for anything that is not a live broadcast, which nothing here is. Seeking, and forward
-    and back, are there for a song and never for a station. With nothing in the player
-    there is nothing to skip or seek, and nothing on any screen offers it.
+    there is a queue (ours: on the last song it goes round to the top). Previous is always
+    there for a song (first in the queue, it starts the song again), and for a radio
+    station only when something is before it in the queue: a station with nothing before
+    it has nowhere to go back to and can't be started again from its beginning. Media3
+    withdraws Previous there by itself once the station plays (a stream of no known length
+    is a live broadcast to it); the player says the same before that too, and the app's
+    own button, which used to look live and do nothing, is dimmed from the player's word
+    (`PlayerConnection.canPrevious`). Seeking, and forward and back, are there for a song
+    and never for a station. With nothing in the player there is nothing to skip or seek,
+    and nothing on any screen offers it.
   - **A test of something a person does goes through a real controller**
     (`SeekBeforeReadyTest`: the screens' own connection, and an outside app's). Calling the
     service's callback and the player directly, as `ContinueHereTest` does for the claim,

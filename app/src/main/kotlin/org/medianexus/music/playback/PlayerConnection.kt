@@ -107,6 +107,7 @@ class PlayerConnection(
     private val shuffleNow = MutableStateFlow(false)
     private val repeatNow = MutableStateFlow(Repeat.OFF)
     private val errorNow = MutableStateFlow<String?>(null)
+    private val previousNow = MutableStateFlow(true)
     private val fromNow = MutableStateFlow(PlayingFrom())
     private val convertedNow = MutableStateFlow(false)
 
@@ -150,6 +151,10 @@ class PlayerConnection(
     val shuffle: StateFlow<Boolean> = shown(shuffleNow) { it.shuffle }
     /** [Repeat.OFF], [Repeat.ALL] or [Repeat.ONE]. */
     val repeat: StateFlow<Int> = shown(repeatNow) { it.repeat }
+    /** Whether Previous is there to press: the player's own word (it is not on a radio
+     *  station with nothing before it in the queue, which has nowhere to go back to). A
+     *  button the player would not carry out is shown dimmed, not left looking live. */
+    val canPrevious: StateFlow<Boolean> = shown(previousNow) { true }
     /** Why the song isn't playing, in words, when something went wrong ("Lost the
      *  connection to the server…", in the service's words). */
     val error: StateFlow<String?> = shown(errorNow) { null }
@@ -304,6 +309,7 @@ class PlayerConnection(
             )
         }
         shuffleNow.value = c.shuffleModeEnabled
+        previousNow.value = c.currentMediaItem == null || c.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS)
         repeatNow.value = QueuePlayer.ourRepeat(c.repeatMode)
         errorNow.value = c.playerError?.let { error -> if (error.extras.getBoolean(PlaybackService.EXTRA_LOST)) lostConnection else error.message }
         fromNow.value = PlayingFrom(

@@ -232,6 +232,13 @@ class QueuePlayer(
             // to seek to, ready or not.
             if (queue.current()?.radioUrl?.isEmpty() == true) {
                 commands.add(COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM).add(COMMAND_SEEK_BACK).add(COMMAND_SEEK_FORWARD)
+            } else if (queue.cursor == 0) {
+                // A station with nothing before it has nowhere to go back to, and can't be
+                // started again from its beginning. Once it plays, Media3 withdraws Previous
+                // by itself (a stream of no known length is a live broadcast to it); before
+                // that it was offered and did nothing. The same in every state, so that no
+                // screen shows a button here that nothing answers.
+                commands.remove(COMMAND_SEEK_TO_PREVIOUS).remove(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
             }
             builder.setAvailableCommands(commands.build())
         }

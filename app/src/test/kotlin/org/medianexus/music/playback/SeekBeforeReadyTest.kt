@@ -36,9 +36,10 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
- * A seek in a song the player has not yet made ready: one put in the player and never played
- * in this run (another device's queue taken up; the last run's queue put back). Every seek
- * here is sent the way a person's is, **through a real Media3 controller connected to the
+ * What a person presses, sent the way a person's press is. It began with a seek in a song
+ * the player has not yet made ready: one put in the player and never played in this run
+ * (another device's queue taken up; the last run's queue put back). Every press here is
+ * sent the way a person's is, **through a real Media3 controller connected to the
  * session**: the app's own screens' ([PlayerConnection]), and an outside app's that the
  * person allowed. A controller decides for itself whether a command may be sent at all, from
  * what the player says is available, and what it decides not to send the service never hears
@@ -258,7 +259,7 @@ class SeekBeforeReadyTest {
         settle()
         assertEquals("station", inside.player.queue.current()?.id)
         for (command in seeking) assertTrue("command $command on a station", !may(command))
-        for (command in skipping + Player.COMMAND_PLAY_PAUSE) assertTrue("command $command on a station", may(command))
+        for (command in listOf(Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_PLAY_PAUSE)) assertTrue("command $command on a station", may(command))
         // And a seek the player does not take is not shown as made: the screens show the
         // place the player holds, whatever was asked for.
         val screens = screens()
@@ -269,6 +270,43 @@ class SeekBeforeReadyTest {
         assertEquals(0L, shows())
         // (Not even for a moment, until the player's next word put it right.)
         assertTrue("the screen showed a place the player was never at: $places", 30_000L !in places)
+        controller.release()
+    }
+
+    @Test
+    fun previousIsNotThereToPressOnAStationWithNothingBeforeIt() {
+        val screens = screens()
+        val connecting = MediaController.Builder(app, inside.session.token).buildAsync()
+        until("a controller is connected") { connecting.isDone }
+        val controller = connecting.get()
+        fun mayGoBack(): Boolean {
+            settle()
+            return controller.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS) || controller.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+        }
+        val station = Song(id = "station", title = "A station", radioUrl = "http://127.0.0.1:9/stream")
+
+        // A station with nothing before it: there is nowhere to go back to, and a station
+        // can't be started again from its beginning. Once it is playing Media3 withdraws
+        // Previous by itself (a stream of no known length is a live broadcast to it); the
+        // player says the same before that, so that the button is the same in every state,
+        // and the app's own, which used to look live and do nothing, is dimmed.
+        inside.player.play(listOf(station, mine()[0]), 0, "Radio", playNow = false)
+        settle()
+        assertTrue("Previous is offered on a station with nothing before it", !mayGoBack())
+        until("the screens' Previous is dimmed") { !screens.canPrevious.value }
+
+        // With something before it, Previous goes there.
+        inside.player.play(listOf(mine()[0], station), 1, "Radio", playNow = false)
+        settle()
+        assertEquals("station", inside.player.queue.current()?.id)
+        assertTrue(mayGoBack())
+        until("the screens' Previous is there again") { screens.canPrevious.value }
+
+        // And on a song, first in the queue or not, it is always there: it starts the song again.
+        inside.player.play(mine(), 0, "A list", playNow = false)
+        settle()
+        assertTrue(mayGoBack())
+        assertTrue(screens.canPrevious.value)
         controller.release()
     }
 

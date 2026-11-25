@@ -252,6 +252,7 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
     val format by player.format.collectAsStateWithLifecycle()
     val shuffle by player.shuffle.collectAsStateWithLifecycle()
     val repeat by player.repeat.collectAsStateWithLifecycle()
+    val canPrevious by player.canPrevious.collectAsStateWithLifecycle()
 
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -327,7 +328,7 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
             active = shuffle,
             iconSize = 24.dp,
         )
-        IconButton(R.drawable.ic_prev_fill, stringResource(R.string.previous), player::previous, tint = colors.text, iconSize = 30.dp, modifier = Modifier.size(56.dp))
+        IconButton(R.drawable.ic_prev_fill, stringResource(R.string.previous), player::previous, tint = colors.text, iconSize = 30.dp, modifier = Modifier.size(56.dp), enabled = canPrevious)
         BigPlay(playing) { player.playPause() }
         IconButton(R.drawable.ic_next_fill, stringResource(R.string.next), player::next, tint = colors.text, iconSize = 30.dp, modifier = Modifier.size(56.dp))
         IconButton(
