@@ -252,8 +252,9 @@ class AccountGraph(
         return found
     }
 
-    /** This phone's side of what is shared between devices (see [step]). */
-    private val shared: org.medianexus.music.sync.PhoneShared? = wiring?.settingsStore?.let { store ->
+    /** This phone's side of what is shared between devices (see [step]). None in a build
+     *  where keeping in step doesn't exist ([org.medianexus.music.sync.InStepBuild]). */
+    private val shared: org.medianexus.music.sync.PhoneShared? = wiring?.settingsStore?.takeIf { org.medianexus.music.sync.InStepBuild.on }?.let { store ->
         org.medianexus.music.sync.PhoneShared(
             store, account.key, added, recentlyPlayed, playLog,
             read = { historyRead.isCompleted },
@@ -266,7 +267,9 @@ class AccountGraph(
      * Keeping in step with the person's other devices (Windows' src/sync.rs): the pins, each
      * list's shuffle and sort, the theme, when songs were added to playlists, Recently played
      * and the latest plays, kept as text in the comment of a playlist on the server. Null
-     * where nothing is shared (tests of other things).
+     * where nothing is shared: in a build where it doesn't exist
+     * ([org.medianexus.music.sync.InStepBuild], this one), and in tests of other things.
+     * Null, nothing starts an exchange or schedules a look for one.
      *
      * The record is written by the account's client directly, beside the playlists' own way
      * of changing a playlist ([playlists]) and not through it: that way is for what the
@@ -290,8 +293,9 @@ class AccountGraph(
     }
 
     /** The play queue shared with the person's other devices through the server's saved
-     *  queue, and "Continue here" (see [org.medianexus.music.sync.QueueStep]). */
-    val queueStep: org.medianexus.music.sync.QueueStep? = wiring?.settingsStore?.let { store ->
+     *  queue, and "Continue here" (see [org.medianexus.music.sync.QueueStep]). Null where
+     *  [step] is: the queue is then neither saved on the server nor read from it. */
+    val queueStep: org.medianexus.music.sync.QueueStep? = wiring?.settingsStore?.takeIf { org.medianexus.music.sync.InStepBuild.on }?.let { store ->
         org.medianexus.music.sync.QueueStep(
             save = { device, upload -> api.savePlayQueue(device, upload.ids, upload.current, upload.positionMs) },
             saved = { api.playQueue() },

@@ -227,7 +227,9 @@ private fun Account(graph: Graph) {
         TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
     }
     // Where Windows has it, in Windows' words. Off, nothing of this is read from the server
-    // or written to it.
+    // or written to it. Not shown at all in a build where it doesn't exist (this one: see
+    // sync/InStepBuild.kt).
+    if (!org.medianexus.music.sync.InStepBuild.on) return
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     val inStep = stringResource(R.string.keep_in_step)
     // Said under it while this phone's clock disagrees with the server's: what changes here

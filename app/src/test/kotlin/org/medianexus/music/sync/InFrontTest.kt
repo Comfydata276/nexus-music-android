@@ -47,6 +47,8 @@ class InFrontTest {
 
     @Test
     fun theMinutesTimerRunsOnlyWhileTheScreensAreInFront() = runBlocking {
+        // Keeping in step is switched off in this build; this is a test of it.
+        InStepBuild.forTests = true
         val looks = AtomicInteger()
         val server = MockWebServer()
         server.dispatcher = object : mockwebserver3.Dispatcher() {
@@ -95,6 +97,7 @@ class InFrontTest {
             front.value = true
             until("a look once back") { looks.get() == 3 }
         } finally {
+            InStepBuild.forTests = false
             account.close()
             scope.cancel()
             server.close()

@@ -52,6 +52,8 @@ class ContinueHereTest {
 
     @Before
     fun start() {
+        // Keeping in step is switched off in this build; these are tests of it.
+        org.medianexus.music.sync.InStepBuild.forTests = true
         kotlinx.coroutines.runBlocking { app.graph.session.restored() }
         service = Robolectric.buildService(PlaybackService::class.java).create().get()
         service.foreground = Android()
@@ -67,6 +69,7 @@ class ContinueHereTest {
         service.onDestroy()
         settle()
         server.stop()
+        org.medianexus.music.sync.InStepBuild.forTests = false
     }
 
     private fun settle() = shadowOf(Looper.getMainLooper()).idle()

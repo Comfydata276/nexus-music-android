@@ -2481,6 +2481,24 @@ before any feature, and each has a test that fails with the rule's code taken ou
 (docs/TESTING.md, "In step with other devices"). They are as they stand after an adversarial
 review against the Windows code (the M5a fixes); the letter after a rule is its item there.
 
+**Switched off in this build** (`sync/InStepBuild.kt`, one constant, `EXISTS = false`). Two
+reviews judged it not yet safe to let write into the record the person's PCs trust, and its
+rules are to be rewritten once, in Rust shared with the Windows app, which will replace the
+Kotlin logic here. Until then nothing of it runs on a phone. With it off the setting is not
+shown; the account has no exchange and no shared queue (`AccountGraph.step` and `queueStep`
+are null), so nothing starts one, schedules one or asks the server anything for one: the sync
+playlist is never looked for, read, made or written, and the server's saved queue is neither
+saved nor read; "Continue here" is never offered. What stays on, because it protects the
+person whether or not the feature exists: the sync playlist is never listed, played,
+downloaded or edited on the phone, and its name is reserved. The pins, each list's choices
+and the theme are plain local settings: what the phone shows is the settings' own, at once,
+and kept across a restart. Their changes waiting to be shared are never shared, and so never
+forgotten, but they do not grow without end: one for each playlist ever pinned or unpinned,
+one each for a list's shuffle and its sort (lists Windows also has), and one for the theme,
+the last word on each. When the feature is switched on they are what goes out at the first
+exchange. `SwitchedOffTest` holds all of this; the feature's own tests switch it on for
+themselves (`InStepBuild.forTests`), so its code goes on being tested.
+
 - **What is shared, and where** (a port of the Windows app's src/sync.rs). The pins, each
   list's shuffle and sort, the theme, when songs were added to playlists, Recently played and
   the latest 500 plays live as text in the comment of one playlist, "Nexus Music sync"
