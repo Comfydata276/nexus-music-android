@@ -238,7 +238,10 @@ class InStep(
             val still = { may() && standing() == began && asker?.isActive != false }
             // (The playlist that holds the record, made by this exchange: what goes into
             // it is decided again, from the top, with it there.)
-            return once(still, made = null) ?: once(still, made = true) ?: Outcome.FAILED
+            return once(still, made = null)
+                // (Its leave asked again before the read that follows making the playlist.)
+                ?: (if (still()) once(still, made = true) else Outcome.NOT_NOW)
+                ?: Outcome.FAILED
         } catch (e: CancellationException) {
             throw e
         } catch (_: ApiError) {
@@ -314,7 +317,21 @@ class InStep(
         }
         // 7. Write, if there is something to write.
         val write = plan.write ?: return held ?: Outcome.DONE
-        // 7.1. The record as this version first found it is kept, or nothing is sent.
+        // No playlist holds the record yet: one is made, and that is all this pass does.
+        // **Making it sends nothing of the person's**, so nothing is marked as tried for
+        // it and nothing is kept as "the record as found": the decision made once it
+        // exists is the only one. (Marked now, a change taken back while the server was
+        // making the playlist would look like one sent and then undone, and the undoing
+        // would be sent over whatever another device had put there meanwhile.)
+        val into = plan.writeInto ?: return withContext(NonCancellable) {
+            // Never a second one beside one this exchange has just made.
+            if (made == true) return@withContext Outcome.FAILED
+            if (!still()) return@withContext Outcome.NOT_NOW
+            server.create(PLAYLIST_NAME).ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
+            null
+        }
+        // 7.1. The record as this version first found it is kept, or nothing is sent: the
+        // text this very decision read, kept whole before this decision's write.
         if (!phone.keepFirst(plan.writeFound)) {
             note("in step: a copy of the shared record couldn't be kept on the phone first, so nothing was written")
             return Outcome.FAILED
@@ -337,13 +354,6 @@ class InStep(
         return withContext(NonCancellable) {
             // Still this account, with sharing on as it was when this began, and not let
             // go: asked immediately before each such request.
-            if (!still()) return@withContext Outcome.NOT_NOW
-            val into = plan.writeInto ?: run {
-                // Never a second one beside one this exchange has just made.
-                if (made == true) return@withContext Outcome.FAILED
-                server.create(PLAYLIST_NAME).ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
-                return@withContext null
-            }
             if (!still()) return@withContext Outcome.NOT_NOW
             server.setComment(into, plan.writeText)
             // (Where the test rig can have the process killed: the server has the write, and

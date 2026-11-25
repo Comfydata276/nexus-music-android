@@ -373,6 +373,40 @@ class InStepContractTest {
     }
 
     @Test
+    fun makingThePlaylistSendsNothingOfThePersonsSoNothingIsMarkedOrKeptForIt() = runBlocking {
+        // No sync playlist yet, and a pin waiting on the phone: one is made. While the server
+        // is making it the person takes the pin back; and a PC, which had found none either,
+        // makes one of its own (the one every device will use: the lower id) with that very
+        // playlist pinned.
+        val server = PretendServer()
+        val phone = phone()
+        phone.pin("mine")
+        val pcs = """{"nexus_music_sync":1,"pins":["mine"],"pins_at":1794000000}"""
+        server.gate = { what ->
+            if (what == "make") {
+                phone.unpin("mine")
+                server.put("a", pcs)
+            }
+        }
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        // The phone never sent its pin, so there is nothing of its own to take back: the
+        // PC's pin is the PC's, and stands, with the PC's time.
+        assertTrue("nothing was written", server.writes.isEmpty())
+        assertEquals("the PC's record, byte for byte", pcs, server.comment("a"))
+        assertEquals(listOf("mine"), phone.pins)
+        assertFalse("nothing of the phone's is marked as tried", phone.onDisk().contains("\"tried\": true"))
+        // And nothing was kept as "the record as found": nothing has been written over.
+        assertFalse(phone.keptFirst.exists())
+        // The first write this version makes: the copy kept then is the text that write's
+        // own decision read, the PC's, and not the nothing there was before any playlist.
+        server.gate = {}
+        phone.pin("another")
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertEquals(pcs, phone.keptFirst.readText())
+        assertEquals(listOf("mine", "another"), record(server).pins)
+    }
+
+    @Test
     fun sharingSwitchedOffAndOnAgainDoesNotGiveAnExchangeBegunBeforeItsLeaveBack() = runBlocking {
         val server = PretendServer().apply { put("a", windows) }
         val phone = phone()
