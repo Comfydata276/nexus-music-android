@@ -208,6 +208,33 @@ class InStepContractTest {
     }
 
     @Test
+    fun aCopyCutShortByAKillIsNeverTakenForTheCopy() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        phone.pin("mine")
+        // The app was killed while it was keeping the copy: what it had written so far is
+        // under the name the copy is written under, never under the copy's own name.
+        val part = File(phone.keptFirst.path + ".part")
+        part.parentFile.mkdirs()
+        part.writeText(windows.take(40))
+        var keptWhenSent: String? = null
+        server.gate = { what -> if (what == "write") keptWhenSent = phone.keptFirst.takeIf { it.isFile }?.readText() }
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        // The half-written one counted for nothing: the whole record was kept before the
+        // write, and what the kill left is gone.
+        assertEquals(windows, keptWhenSent)
+        assertEquals(windows, phone.keptFirst.readText())
+        assertFalse(part.exists())
+        // With the copy there, a file of that other name left by a later kill is cleared
+        // too, and the copy is as it was.
+        part.writeText("half")
+        phone.pin("another")
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertFalse(part.exists())
+        assertEquals(windows, phone.keptFirst.readText())
+    }
+
+    @Test
     fun anEmptyRecordIsKeptAsAnEmptyFile() = runBlocking {
         // The playlist is there and empty (Navidrome leaves an empty comment out of its answers).
         val server = PretendServer().apply { put("a", null) }

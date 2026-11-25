@@ -76,8 +76,10 @@ interface StepPhone {
     /**
      * Step 7.1: the record's text as it was found is kept on the phone, once for this
      * account and this version of the app, before the first write this version makes: a
-     * file that is its own proof, made only if it isn't there, never written again. False
-     * if it isn't there and couldn't be made: then nothing is sent.
+     * file that is its own proof, made only if it isn't there, never written again. It is
+     * written whole under another name beside its place and only then given its own, so a
+     * kill part-way leaves nothing at its name (what it leaves is cleared, and never counts
+     * as the copy). False if it isn't there and couldn't be made: then nothing is sent.
      */
     fun keepFirst(found: String): Boolean
 

@@ -4,7 +4,8 @@ import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.PriorityQueue
 import kotlinx.serialization.json.JsonElement
@@ -106,24 +107,29 @@ class PhoneShared(
     }
 
     override fun keepFirst(found: String): Boolean = try {
-        keptFirst.parentFile?.mkdirs()
-        // Made only if it isn't there, and never opened for writing again.
-        FileChannel.open(keptFirst.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { channel ->
-            val bytes = ByteBuffer.wrap(found.encodeToByteArray())
-            try {
+        // What a kill left of an earlier try is not the copy, and goes.
+        val part = File(keptFirst.path + ".part")
+        if (keptFirst.isFile) {
+            // The file is its own proof: it only ever comes to its name whole (below), and
+            // is never opened for writing.
+            part.delete()
+            true
+        } else {
+            keptFirst.parentFile?.mkdirs()
+            // Written whole under another name beside its place, and made sure of there...
+            FileChannel.open(part.toPath(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE).use { channel ->
+                val bytes = ByteBuffer.wrap(found.encodeToByteArray())
                 while (bytes.hasRemaining()) channel.write(bytes)
                 channel.force(true)
-            } catch (e: IOException) {
-                // (This call's own file, made a moment ago and not what was found: it must
-                // not pass for the copy.)
-                runCatching { keptFirst.delete() }
-                throw e
             }
+            // ...and only then given its name, if nothing has it: so whatever is at that
+            // name is the whole record as it was found, or is not there. (One exchange at
+            // a time for an account, in the whole process: nothing else makes it.)
+            if (keptFirst.exists()) throw IOException("Something that is not the copy has its name")
+            Files.move(part.toPath(), keptFirst.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            keptFirst.parentFile?.let { org.medianexus.music.store.syncDirOrFail(it) }
+            true
         }
-        true
-    } catch (_: FileAlreadyExistsException) {
-        // The file is its own proof.
-        keptFirst.isFile
     } catch (_: IOException) {
         false
     }
