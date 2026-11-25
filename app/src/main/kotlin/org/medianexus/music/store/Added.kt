@@ -4,8 +4,6 @@ import java.io.File
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -75,8 +73,15 @@ class Added(
     private var unreadable = false
     /** The file holds something that isn't notes: kept aside before it is written over. */
     private var damaged = false
-    private val writing = Mutex()
+    /** The one writer of the file: an ordinary save and an exchange's take in turn, so that
+     *  an older save can't land on top of what an exchange has just made sure of. */
+    private val fileLock = Any()
+    /** Counts the changes to the notes; [written] is the count the file has. Whatever is
+     *  between the two is due, and is written at the next change or the next exchange. */
     @Volatile private var dirty = 0L
+    @Volatile private var written = 0L
+    /** For a test: run by an ordinary save once it has decided to write, before it does. */
+    @Volatile internal var duringSave: (() -> Unit)? = null
 
     /** `mark`: [MARK] in a file written under the present rule for what gets a time (see
      *  the class); 0 in one from a build before it. */
@@ -239,17 +244,31 @@ class Added(
     @Throws(java.io.IOException::class)
     fun take(theirs: AddedNotes): Boolean {
         load()
-        if (theirs.isEmpty()) return false
-        val out = Core.notesTake(HashMap(lists), theirs)
-        if (!out.changed) return false
+        val out = if (theirs.isEmpty()) null else Core.notesTake(HashMap(lists), theirs)
+        if (out == null || !out.changed) {
+            // Nothing new: but a change made here that couldn't be written is still due,
+            // and the exchange is not done while it is.
+            if (!unreadable && written != dirty) {
+                val number = dirty
+                write(Stored(HashMap(lists), HashSet(seen), MARK), durable = true)
+                written = number
+            }
+            return false
+        }
         if (unreadable) throw java.io.IOException("The notes of when songs were added can't be read on the phone, so nothing is written over them")
-        keepDamaged()
-        writeAtomically(file, json.encodeToString(Stored.serializer(), Stored(out.lists, HashSet(seen), MARK)).toByteArray())
+        write(Stored(out.lists, HashSet(seen), MARK), durable = true)
         lists = HashMap(out.lists)
         changes.value++
         // (What is on the disk is newer than any write still waiting its turn.)
-        dirty++
+        written = ++dirty
         return true
+    }
+
+    /** The notes to the file, in the file's one writer's turn. */
+    @Throws(java.io.IOException::class)
+    private fun write(stored: Stored, durable: Boolean) = synchronized(fileLock) {
+        keepDamaged()
+        writeAtomically(file, json.encodeToString(Stored.serializer(), stored).toByteArray(), durable)
     }
 
     /** Written off the caller's thread (always off the main one), the newest state each
@@ -261,14 +280,20 @@ class Added(
         val stored = Stored(HashMap(lists), HashSet(seen), MARK)
         val number = ++dirty
         val write = {
-            try {
-                keepDamaged()
-                writeAtomically(file, json.encodeToString(Stored.serializer(), stored).toByteArray())
-            } catch (_: java.io.IOException) {
-                // Kept in memory; the next change writes it again.
+            synchronized(fileLock) {
+                if (number == dirty) {
+                    duringSave?.invoke()
+                    try {
+                        write(stored, durable = false)
+                        written = number
+                    } catch (_: java.io.IOException) {
+                        // Kept in memory, and still due: the next change writes it again,
+                        // and so does the next exchange.
+                    }
+                }
             }
         }
-        if (scope == null) write() else scope.launch(io) { writing.withLock { if (number == dirty) write() } }
+        if (scope == null) write() else scope.launch(io) { write() }
     }
 
     /** A file that held something other than notes is kept as it was found, beside where

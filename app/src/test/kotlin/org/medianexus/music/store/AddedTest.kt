@@ -2,6 +2,7 @@ package org.medianexus.music.store
 
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -78,6 +79,57 @@ class AddedTest {
         File(file, "in the way").mkdirs()
         org.junit.Assert.assertThrows(java.io.IOException::class.java) { added.take(mapOf("p" to mapOf("t" to AddedNote(listOf(9), 9)))) }
         assertEquals(listOf(0L), added.dates("p", songs("t")).list())
+    }
+
+    @Test
+    fun aSaveAlreadyUnderWayDoesNotLandOverWhatAnExchangeTookIn() {
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+        try {
+            val file = File(folder.root, "racing.json")
+            val added = Added(file, scope, Dispatchers.IO)
+            val theirs = mapOf("p" to mapOf("s" to AddedNote(listOf(5), 5)))
+            // An ordinary save has made up its mind to write, with the notes as they were
+            // then; and at that moment an exchange takes in a date from another device.
+            val took = java.util.concurrent.CompletableFuture<Boolean>()
+            added.duringSave = {
+                added.duringSave = null
+                val taking = kotlin.concurrent.thread { took.complete(added.take(theirs)) }
+                // (Until the exchange has written, or is waiting for this save to finish.)
+                val limit = System.nanoTime() + 10_000_000_000
+                while (!took.isDone && taking.state != Thread.State.BLOCKED && System.nanoTime() < limit) Thread.sleep(5)
+            }
+            added.create("q", listOf("x"), 200)
+            assertTrue(took.get(10, java.util.concurrent.TimeUnit.SECONDS))
+            // Whichever of the two reached the file last, the file has what was taken in.
+            var onDisk = emptyList<Long>()
+            for (attempt in 0 until 100) {
+                onDisk = Added(file, null, Dispatchers.IO).let { it.dates("p", songs("s")).list() + it.dates("q", songs("x")).list() }
+                if (onDisk == listOf(5L, 200L)) break
+                Thread.sleep(50)
+            }
+            assertEquals(listOf(5L, 200L), onDisk)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun aChangeThatCouldNotBeWrittenIsStillDueAtTheNextExchange() {
+        val dir = folder.newFolder("account")
+        val file = File(dir, "added.json")
+        val added = Added(file, null, Dispatchers.IO)
+        added.create("p", listOf("a"), 100)
+        // The disk won't take the next one.
+        assertTrue(dir.setWritable(false))
+        org.junit.Assume.assumeFalse("whoever runs this may write anywhere", runCatching { File(dir, "probe").writeText("") }.isSuccess)
+        added.create("q", listOf("x"), 200)
+        // An exchange that brings nothing new must still not be done with the notes behind
+        // on the disk: it is told so...
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { added.take(emptyMap()) }
+        // ...and once the disk takes it, it is written, though nothing new came.
+        assertTrue(dir.setWritable(true))
+        assertFalse(added.take(emptyMap()))
+        assertEquals(listOf(200L), Added(file, null, Dispatchers.IO).dates("q", songs("x")).list())
     }
 
     @Test
