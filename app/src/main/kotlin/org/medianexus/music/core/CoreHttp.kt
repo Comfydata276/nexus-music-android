@@ -19,11 +19,13 @@ import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody
 import okhttp3.Response
 import okio.Buffer
+import okio.BufferedSink
 import org.medianexus.music.BuildConfig
 import org.medianexus.music.net.NetTrouble
 import org.medianexus.music.net.netTrouble
@@ -162,7 +164,9 @@ internal object CoreHttp {
                 .followSslRedirects(follows)
                 .build()
             // A request that changes something is sent once: never again by the client on
-            // its own, which could not know whether the first had been acted on.
+            // its own, which could not know whether the first had been acted on. (Not after
+            // a connection that failed, here; and not after an answer that invites it: see
+            // [Once].)
             return looks to looks.newBuilder().retryOnConnectionFailure(false).build()
         }
 
@@ -454,9 +458,8 @@ internal object CoreHttp {
             if (!accepts) header("Accept", "*/*")
             when (asked.method) {
                 "GET" -> get()
-                // (No kind of its own: the library says what the text is, in a header.)
-                "POST" -> post(body.toRequestBody(null))
-                "PUT" -> put(body.toRequestBody(null))
+                "POST" -> post(Once(body))
+                "PUT" -> put(Once(body))
                 else -> return failed(NOT_MADE)
             }
         }.build()
@@ -475,6 +478,26 @@ internal object CoreHttp {
         val headers = response.headers.map { (name, value) -> listOf(name, value.takeIf(::isText)) }
         val length = response.body.contentLength().takeIf { it >= 0 }
         return byteArrayOf(FINE) + json.encodeToString(Answered.serializer(), Answered(response.code, headers, id, length)).encodeToByteArray()
+    }
+
+    /**
+     * What a request that changes something carries: **sent once.** An HTTP client may send a
+     * request again by itself when the answer is "busy, come back at once" (503 with
+     * `Retry-After: 0`), "this came to the wrong place" (421) or "you took too long" (408),
+     * and Lidarr may have acted on the first. One that says it can be sent only once is
+     * never sent again by the client: the answer goes back to the library as it came.
+     * (It has no kind of its own: the library says what the text is, in a header.)
+     */
+    private class Once(private val bytes: ByteArray) : RequestBody() {
+        override fun contentType(): MediaType? = null
+
+        override fun contentLength(): Long = bytes.size.toLong()
+
+        override fun isOneShot(): Boolean = true
+
+        override fun writeTo(sink: BufferedSink) {
+            sink.write(bytes)
+        }
     }
 
     /** Whether a header's value is text as the Windows app's agent has it: visible ASCII

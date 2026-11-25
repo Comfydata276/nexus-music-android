@@ -1874,7 +1874,13 @@ that is added it should be added to both at once.
 
 A request that changes something (`POST`, `PUT`) is **sent once**: the client never sends
 it again on its own, as it may a `GET` that failed on a connection gone stale. It could not
-know whether the first had been acted on.
+know whether the first had been acted on. That holds for an answer that invites sending
+again, too: "busy, come back at once" (503 with `Retry-After: 0`), "this came to the wrong
+place" (421), "you took too long" (408). OkHttp repeats a request after the first of those
+unless its body says it can be sent only once, so every body here says so
+(`CoreHttp.Once`), and the answer goes back to the library as it came. (The library itself
+sends a change again after a redirect to the sign-in, with a fresh pass: that one never
+reached Lidarr.)
 
 **Bodies.** An answer comes back as its status and headers; its body waits on the Kotlin
 side and is read **only if the library asks**, as the Windows app reads one: whole, as

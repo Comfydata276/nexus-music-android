@@ -362,6 +362,29 @@ class CoreHttpTest {
     }
 
     @Test
+    fun `a change is sent once, whatever answer would have a client send it again`() {
+        // Each of these answers lets an HTTP client repeat the request by itself: "busy, come
+        // back at once", "this was sent to the wrong place", "you took too long to send it".
+        // A change to Lidarr repeated may be a change made twice.
+        for ((status, header) in listOf(503 to ("Retry-After" to "0"), 421 to null, 408 to null)) {
+            for (method in listOf("POST", "PUT")) {
+                val server = standIn { _, reply -> if (header != null) reply.send(status, "", header) else reply.send(status) }
+                val answered = probe(Core.Probe(method = method, url = server.address, body = """{"wanted":true}"""), changing = true).got()
+                assertEquals(status, answered.status)
+                Thread.sleep(300)
+                assertEquals("a $method answered $status was sent ${server.asked.size} times", 1, server.asked.size)
+                assertEquals("""{"wanted":true}""", server.asked.single().body)
+            }
+        }
+        // (And as part of something the library sees through.)
+        val busy = standIn { _, reply -> reply.send(503, "", "Retry-After" to "0") }
+        val begun = Core.wireProbeSeenThrough(Core.Probe(method = "POST", url = busy.address, body = "{}", keepGoing = "first"))
+        assertEquals(503, runBlocking { withTimeout(30_000) { begun.done.await() } }.got().status)
+        Thread.sleep(300)
+        assertEquals(1, busy.asked.size)
+    }
+
+    @Test
     fun `nothing answering is said in the app's words, without the address`() {
         val gone = StandIn { _, _ -> }.also { it.close() }
         val failed = runBlocking { Core.lidarrVersion(LidarrAt(gone.address, "k")) }
