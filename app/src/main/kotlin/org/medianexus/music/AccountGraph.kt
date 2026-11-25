@@ -296,7 +296,10 @@ class AccountGraph(
             },
             // (Asked again before each request that changes the server: still this account,
             // not let go, with sharing on.)
-            phone, account.username, account.key, { scope.isActive && mayShare() }, scope, pause = pause, note = wiring?.note ?: {},
+            // And not while this account's Recently played is on the phone and can't be
+            // read: what is in memory then is not its history, and an exchange would publish
+            // the little there is and call itself done.
+            phone, account.username, account.key, { scope.isActive && mayShare() && !recentlyPlayed.unreadable }, scope, pause = pause, note = wiring?.note ?: {},
         )
     }
 
@@ -394,6 +397,9 @@ class AccountGraph(
             // With no log yet it starts empty: Recently played is not taken for plays that
             // counted (see PlayLog).
             playLog.open()
+            if (recentlyPlayed.unreadable && step != null) {
+                (wiring?.note ?: {})("in step: Recently played on this phone couldn't be read, so nothing is exchanged with your other devices for this account until it can be (it is tried again when the app next starts)")
+            }
             historyRead.complete(Unit)
             // In step with the person's other devices: now (Windows' `start_sync`); when
             // the app's screens come to the front (unless a look was made a moment ago); and

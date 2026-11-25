@@ -70,6 +70,7 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
             }
             if (read == null) {
                 // Left exactly as it is, and never written in this run ([opened] stays false).
+                unreadable = true
                 note("recently played: the list on the phone couldn't be read, so it is left exactly as it is and nothing is shared of it")
                 return
             }
@@ -114,6 +115,13 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
     /** Whether the list on the phone has been read ([open]): before it has, what is here is
      *  not the account's history, and is neither shared with other devices nor merged. */
     val isOpen: Boolean get() = opened
+
+    /** The list is on the phone and could not be read (as [open] found it): it is left as
+     *  it is, and nothing of this account is exchanged with other devices until a start
+     *  that can read it. Not so for no list at all, nor for one that read and was no list
+     *  (kept aside): those are an empty history, and the account's. */
+    @Volatile var unreadable = false
+        private set
 
     /**
      * Takes in what other devices have played: what is here **at this moment** and theirs,

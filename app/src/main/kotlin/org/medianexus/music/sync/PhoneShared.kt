@@ -87,6 +87,9 @@ class PhoneShared(
         // read yet" is never sent as "none". (The notes of when songs were added are read
         // from the phone the first time they are asked for, which is here.)
         if (!Belongs.ready(now, account) || !read()) return null
+        // Nor while the history on the phone could not be read: a finished attempt to read
+        // it is not the history. (The account asks nothing of the server then, either.)
+        if (!history.isOpen) return null
         // Before the playlists have loaded there's no telling which still exist.
         val known = playlists()?.takeIf { it.isNotEmpty() }
         // (The plays and their sources from one and the same moment of the log.)

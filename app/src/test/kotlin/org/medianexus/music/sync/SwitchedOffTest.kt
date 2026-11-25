@@ -67,11 +67,11 @@ class SwitchedOffTest {
     }
 
     /** The account as the app makes it, with everything keeping in step is given there. */
-    private fun account(settings: SettingsStore, reach: MutableStateFlow<Reach>, front: MutableStateFlow<Boolean>, dirs: AccountDirs): AccountGraph {
+    private fun account(settings: SettingsStore, reach: MutableStateFlow<Reach>, front: MutableStateFlow<Boolean>, dirs: AccountDirs, note: (String) -> Unit = {}): AccountGraph {
         val api = Subsonic(server.url("/").toString(), "tester", "pass", OkHttpClient(), OfflineSwitch())
         Belongs.takeOn(settings, "key", { dirs.data })
         val wiring = AccountWiring(
-            settings = settings.state, reach = reach, suspect = {}, settingsStore = settings, front = front,
+            settings = settings.state, reach = reach, suspect = {}, settingsStore = settings, front = front, note = note,
             // (Every wait is over at once: the settling, the minute.)
             pause = { delay(1) },
         )
@@ -127,6 +127,40 @@ class SwitchedOffTest {
         } finally {
             account.close()
         }
+    }
+
+    /**
+     * Switched on, and the account's Recently played is on the phone and can't be read:
+     * what is in memory is then not the account's history, and an exchange would publish
+     * the little that is there and call itself done, while the other devices' history never
+     * reached the phone's file. No exchange is made for the account at all.
+     */
+    @Test
+    fun anAccountWhoseRecentlyPlayedCouldNotBeReadMakesNoExchange() = runBlocking {
+        InStepBuild.forTests = true
+        startServer()
+        val settings = SettingsStore.open(File(folder.root, "settings.json"), scope, Dispatchers.IO)
+        val reach = MutableStateFlow(Reach())
+        val front = MutableStateFlow(false)
+        val dirs = AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))
+        val history = File(dirs.data, "history.json")
+        val years = """[{"song":{"id":"old"},"at":5}]"""
+        history.writeText(years)
+        assertTrue(history.setReadable(false))
+        org.junit.Assume.assumeFalse("whoever runs this may read anything", runCatching { history.readBytes() }.isSuccess)
+        val notes = Collections.synchronizedList(mutableListOf<String>())
+        val account = account(settings, reach, front, dirs, note = { notes += it })
+        try {
+            everyTrigger(account, settings, reach, front)
+            assertTrue("no exchange was made: $asked", asked.none { it in setOf("getPlaylists", "getPlaylist", "updatePlaylist", "createPlaylist") })
+            assertEquals("said why, once: $notes", 1, notes.count { it.startsWith("in step:") && "Recently played" in it })
+            // (The queue is another matter, and is still looked at.)
+            assertTrue("asked of the server: $asked", "getPlayQueue" in asked)
+        } finally {
+            account.close()
+        }
+        assertTrue(history.setReadable(true))
+        assertEquals("the file is exactly as it was", years, history.readText())
     }
 
     /** The same, switched on for the test: what the test looks for is what would be asked. */
