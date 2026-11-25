@@ -519,15 +519,20 @@ class InStepContractTest {
     @Test
     fun everyPlayThatCouldBeAmongTheNewestIsOfferedHoweverTheLogIsOrdered() = runBlocking {
         val phone = phone()
-        // 600 plays, the newest of them near the start of the log (plays taken in from other
-        // devices go on the end, whenever they were made), three at one and the same second.
-        val plays = (0 until 600).map { Play("s$it", 1_000_000L + (it * 7919L) % 600) }
-        phone.log.absorb(plays.map { it.song to it.at }, listOf(Triple("s3", plays[3].at, "playlist:p")))
+        // 600 plays a second apart, the newer half of them first in the log (plays taken in
+        // from other devices go on the end, whenever they were made), and two more at the
+        // very second of the 500th newest.
+        fun play(n: Int) = Play("s$n", 1_000_000L + n)
+        val tied = listOf(Play("t1", play(100).at), Play("t2", play(100).at))
+        phone.log.absorb((300 until 600).map { play(it).song to play(it).at }, listOf(Triple("s303", play(303).at, "playlist:p")))
+        phone.log.absorb(((0 until 300).map(::play) + tied).map { it.song to it.at }, listOf(Triple("s3", play(3).at, "playlist:q")))
+        assertEquals(602, phone.log.state.value.size)
         val (offered, sources) = PhoneShared.newest(phone.log.state.value)
-        val newest = plays.sortedByDescending { it.at }.take(PhoneShared.PLAYS_SHARED)
-        assertTrue(offered.containsAll(newest))
-        assertTrue("not the whole log", offered.size <= PhoneShared.PLAYS_SHARED + 1)
-        assertEquals(if (plays[3] in offered) listOf(PlayFrom("s3", plays[3].at, "playlist:p")) else emptyList(), sources)
+        // Every play at least as new as the 500th newest: the 499 after it, and all three
+        // of that second (which 500 of them are shared is the core's to say).
+        assertEquals(((100 until 600).map(::play) + tied).toSet(), offered.toSet())
+        assertEquals("each once", 502, offered.size)
+        assertEquals("only the sources of plays that are offered", listOf(PlayFrom("s303", play(303).at, "playlist:p")), sources)
         // A short log is offered whole.
         val short = phone("short")
         short.log.absorb(listOf("a" to 5L, "b" to 3L), emptyList())
