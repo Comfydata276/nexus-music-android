@@ -309,6 +309,17 @@ itself makes it an app this one may see; a watch's companion comes straight to t
 with a token it read elsewhere, and can be named only because the manifest's `<queries>`
 names it. That needs the phone and the watch.
 
+**A press is tested through a real controller.** A Media3 controller sends only the
+commands the player says are available and drops the rest on its own side, so a test that
+calls the service's callback (`onPlayerCommandRequest`) and then the player shows what the
+service does with a press that arrives, and nothing about whether it arrives. The update
+walk for 0.5.1 found a seek that never did: on a song not yet made ready the bar moved on
+the screen and the player was never told, and every unit test passed. `SeekBeforeReadyTest`
+connects the app's own `PlayerConnection` to the service as the screens do, and an outside
+app's controller as the watch's would be (another uid, through Robolectric's
+`ShadowBinder`), and reads what each may send in each state of the player. A new control
+gets its test there.
+
 Media3 gives full control only to callers it trusts: the app
 itself, the system, and anything allowed to read notifications. Android Auto is one. By
 Media3's default an ordinary app gets to look (browse, search, see what is playing) but

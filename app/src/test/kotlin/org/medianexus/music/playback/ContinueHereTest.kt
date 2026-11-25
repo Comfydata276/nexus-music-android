@@ -275,7 +275,14 @@ class ContinueHereTest {
     }
 
     /** A headset, a car, the app's own screens: whoever it is, a press reaches the player
-     *  as a command the service is asked about, which is then carried out. */
+     *  as a command the service is asked about, which is then carried out.
+     *
+     *  **This is the service's side only.** A real controller first decides for itself
+     *  whether to send a command at all, from what the player says is available, and a
+     *  press it does not send never gets here: these tests show what the service does with
+     *  a press that arrives, not that one arrives. That it does is `SeekBeforeReadyTest`'s
+     *  to show, through a real controller (a seek that was never sent passed every test
+     *  here, and was found on a phone). */
     private val headset = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
         "com.example.car", 4_321, 10_123, androidx.media3.session.MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, android.os.Bundle.EMPTY, true,
     )

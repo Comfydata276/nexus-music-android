@@ -474,7 +474,11 @@ class PlayerConnection(
         steered.hands?.let { it.seek(positionMs); return }
         withController {
             it.seekTo(positionMs)
-            positionNow.value = positionMs
+            // The place the player holds, never the place that was asked for: a seek the
+            // player did not take must not look as if it had been made. (This line used to
+            // put the asked-for place on the screen, which is how a seek that was never
+            // sent went unseen.)
+            positionNow.value = it.currentPosition.coerceAtLeast(0)
         }
     }
 

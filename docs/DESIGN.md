@@ -3198,6 +3198,39 @@ server offers, and is written down where the rules are (the Windows repository's
   good by it: each device still holds what it wrote as agreed, with its time, and offers it
   again at its next look, where it is merged back in. The same holds for the saved queue,
   between the phone's look at it and its save (B1).
+- **A song can be sought in whenever one is in the player, made ready or not** (0.5.1;
+  `QueuePlayer.getState`). A song put in the player and never played in this run of the app
+  (the last run's queue put back; another device's queue taken up) has not been made ready,
+  and ExoPlayer says such a song can't be sought in. A Media3 controller sends only what
+  the player says is available and drops the rest on its own side, without a word. So a
+  drag on the paused song's bar moved the screen and nothing else: Play then started from
+  the old place, and on a queue taken up the drag claimed nothing, so the other device's
+  next save replaced it. The update walk for 0.5.1 found it on the delivered file; 0.5.0
+  and everything before had it too. Now the player the session exposes says a song (not a
+  radio station) can be sought in, forward and back, whenever it is the current one, and
+  shows it as seekable with the library's length. ExoPlayer takes a seek before it is ready
+  as the place the song will start from, which is what is meant. It is fixed **at the
+  player, so every controller gets it**: the app's screens (the bar, a tap on a line of the
+  lyrics), the notification's and the lock screen's bar and the car's (which were not even
+  offered before), a headset's or keyboard's forward and back keys, an app the person
+  allowed. After any press the queue as it then stands is kept (`keepAfterPress`), so the
+  place a paused song was dragged to is there after a restart.
+  - **The screens show what the player holds.** `PlayerConnection.seek` used to put the
+    place it had asked for on the screen itself, which is how a seek that was never sent
+    looked as if it had been made. It now shows the place the controller reports. No other
+    control on the player or the mini player draws its own result: everything else on them
+    is read back from the controller.
+  - **What a controller may send, state by state** (Media3's rule is `Util.getAvailableCommands`;
+    ours adds to it in `getState`). Play and pause, stop, shuffle, repeat, a tap on an
+    entry of the queue and the app's own commands are always there. Next is there whenever
+    there is a queue (ours: on the last song it goes round to the top). Previous is there
+    for anything that is not a live broadcast, which nothing here is. Seeking, and forward
+    and back, are there for a song and never for a station. With nothing in the player
+    there is nothing to skip or seek, and nothing on any screen offers it.
+  - **A test of something a person does goes through a real controller**
+    (`SeekBeforeReadyTest`: the screens' own connection, and an outside app's). Calling the
+    service's callback and the player directly, as `ContinueHereTest` does for the claim,
+    goes round the controller, which is exactly where this seek was lost.
 - **A phone that is not playing saves a queue the person has just changed, though another
   device is playing.** For the seconds until that device's next save (it saves as it plays,
   without looking: at most 23 seconds on a PC, a minute on a phone) the server holds the

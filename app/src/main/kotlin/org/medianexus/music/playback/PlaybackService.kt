@@ -1326,6 +1326,12 @@ class PlaybackService : MediaLibraryService() {
         step.changedHere()
     }
 
+    /** Once a press has been carried out, the queue as it then stands is kept: a seek in a
+     *  paused song moves the place, and nothing else would write that down before the
+     *  next time the song is played (the place is otherwise noted as a song plays, and
+     *  when it stops). */
+    private val keepAfterPress = Runnable { save() }
+
     /** Does something to the queue that is not the person changing it here: nothing of it
      *  is stamped as changed now, or passed on to other devices. */
     private inline fun quietly(change: () -> Unit) {
@@ -2063,7 +2069,12 @@ class PlaybackService : MediaLibraryService() {
             if (!Access.mayPlayer(caller, playerCommand)) return SessionError.ERROR_PERMISSION_DENIED
             // The person's press, about to be carried out: the queue is this phone's own
             // from now (see claimQueue).
-            if (playerCommand in PRESSES) claimQueue()
+            if (playerCommand in PRESSES) {
+                claimQueue()
+                // (After the command itself, which is carried out as this returns.)
+                main.removeCallbacks(keepAfterPress)
+                main.post(keepAfterPress)
+            }
             // Play or Pause tapped on the app's own screens took its place at the tap; carried
             // out now (straight after this, on this thread), it takes no other.
             if (caller == Caller.OWN_INTERFACE && playerCommand == Player.COMMAND_PLAY_PAUSE && Choices.arrivedFromTap()) {

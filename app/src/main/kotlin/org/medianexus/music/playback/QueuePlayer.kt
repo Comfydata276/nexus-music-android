@@ -221,7 +221,19 @@ class QueuePlayer(
         // Next is always there to press while there is a queue: on the last song ExoPlayer
         // withdraws it, and Windows goes round to the top (see handleSeek).
         if (!queue.isEmpty) {
-            builder.setAvailableCommands(state.availableCommands.buildUpon().add(COMMAND_SEEK_TO_NEXT).add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM).build())
+            val commands = state.availableCommands.buildUpon().add(COMMAND_SEEK_TO_NEXT).add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            // A song can be sought in whenever one is there, **made ready or not**. ExoPlayer
+            // says a song it has not yet made ready (one put in the player and never played
+            // in this run: the last run's queue, another device's taken up) can't be, and a
+            // Media3 controller does not even send what the player says is unavailable: the
+            // bar was dragged, the screen moved, and the player never heard of it (found on
+            // a real update, 0.5.1). ExoPlayer itself takes such a seek as the place the song
+            // will start from, which is exactly what is meant. A radio station has nowhere
+            // to seek to, ready or not.
+            if (queue.current()?.radioUrl?.isEmpty() == true) {
+                commands.add(COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM).add(COMMAND_SEEK_BACK).add(COMMAND_SEEK_FORWARD)
+            }
+            builder.setAvailableCommands(commands.build())
         }
         if (exo.isCommandAvailable(COMMAND_GET_TIMELINE)) {
             // The playlist is already in playing order, whatever shuffle says: nobody should
@@ -1027,14 +1039,18 @@ private class InOrderTimeline(
      */
     override fun getWindow(windowIndex: Int, window: Window, defaultPositionProjectionUs: Long): Window {
         timeline.getWindow(windowIndex, window, defaultPositionProjectionUs)
+        val song = (window.mediaItem.localConfiguration?.tag as? QueuePlayer.SongTag)?.song
         if (window.durationUs == C.TIME_UNSET) {
-            val seconds = (window.mediaItem.localConfiguration?.tag as? QueuePlayer.SongTag)?.song?.duration ?: 0
+            val seconds = song?.duration ?: 0
             if (seconds > 0) {
                 window.durationUs = seconds * 1_000_000L
                 window.liveConfiguration = null
                 window.isDynamic = false
             }
         }
+        // A song the player has not yet made ready is one it knows nothing of, and says
+        // can't be sought in. It can: see `getState`, which says so in the commands too.
+        if (window.isPlaceholder && song != null && song.radioUrl.isEmpty()) window.isSeekable = true
         return window
     }
 }
