@@ -3065,6 +3065,19 @@ The jams' starts follow the same rule: joining a jam or moving the music away pa
 phone (a place); a queue handed over takes its place as it arrives; "Play here" at its tap;
 Play or Pause asked of the phone from another device is a choice like a tap.
 
+**Known, and accepted: a Pause sent a moment before a Play from a list can land after it.**
+Media3 carries out the app's own commands (a Play from a list, sent as `AppActions.PLAY`) as
+they arrive, and queues the player's commands (Pause, Resume) behind them. So a Pause the
+screens send a moment before a Play from a list can be carried out after that Play, and pause
+what it started, whatever the order of choices says (the places are right: the Pause's was
+taken first, at its tap). Accepted for 0.4.0: it needs the two to be tapped within the few
+milliseconds a command takes to reach the service, which a finger can't do, and closing it
+means changing how the screens send transport. What would close it: the screens' Pause and
+Resume sent as the app's own commands, carrying their tap's place, so that they arrive in the
+order they were tapped with everything else the screens send.
+`OrderOfChoicesTest.aPlayTappedJustAfterAPauseIsNotDroppedByThatPause` is the case, with the
+Pause's delivery held, ignored until then.
+
 ## Milestones
 
 Each one ends with the app building, its tests passing, a run on the emulator, and a review.

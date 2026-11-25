@@ -273,6 +273,35 @@ class OrderOfChoicesTest {
         assertEquals("a Pause tapped on the phone took other than one place", before + 1, Choices.latest)
     }
 
+    /**
+     * A Play from a list tapped just after a Pause, with the Pause's delivery held: what plays
+     * is what the Play asked for. The places are right (the Pause's is taken at its tap, and
+     * none more as it arrives); what fails is the order Media3 carries the two out in. Known
+     * and accepted (docs/DESIGN.md, "The order of choices, completed"): ignored until the
+     * screens' Pause and Resume are sent as the app's own commands.
+     */
+    @org.junit.Ignore("Media3 carries out the app's own commands as they arrive and queues the player's commands behind them, so a Pause sent a moment before a Play from a list lands after it and pauses what the Play started; closed by sending the screens' Pause and Resume as the app's own commands (docs/DESIGN.md)")
+    @Test
+    fun aPlayTappedJustAfterAPauseIsNotDroppedByThatPause() {
+        val inside = service.inside()
+        val loaded = List(3) { Song(id = "here$it", title = "Here $it") }
+        app.graph.player.play(loaded, 0, "Loaded")
+        until("the list played") { inside.player.queue.current()?.id == "here0" && inside.exo.playWhenReady }
+        // (As the screens see it: their Play/Pause button is a Pause.)
+        until("the screens see it playing") { app.graph.player.playing.value }
+        // Pause, on the phone: its delivery held (the player's thread not let run).
+        app.graph.player.playPause()
+        // Play on a list, straight after.
+        val chosen = List(3) { Song(id = "chosen$it", title = "Chosen $it") }
+        app.graph.player.play(chosen, 0, "Chosen")
+        // The gate opens. (Today Media3 carries out the Play as it arrives, and the Pause,
+        // queued, after it.)
+        settle()
+        until("the Play was carried out") { inside.player.queue.current()?.id == "chosen0" }
+        settle()
+        assertEquals("not playing what the Play asked for", true, inside.exo.playWhenReady)
+    }
+
     /** A Pause from outside the app's screens (a car, a headset, the notification) takes its
      *  one place when it arrives: a start the phone chose before it gives way. */
     @Test
