@@ -18,5 +18,6 @@
     byte[] read(long, int);
     void close(long);
     boolean pause(long, long);
+    void keepGoing(long);
     void kept(long, byte[]);
 }

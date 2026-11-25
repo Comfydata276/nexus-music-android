@@ -228,6 +228,20 @@ impl Http for Host {
         // in loops, and one that never waited would spin.
         if waited == Some(true) { Ok(()) } else { Err(Failure::Stopped) }
     }
+
+    /// The library is about to change something it must then see through (see the trait).
+    /// The Kotlin side is told, and from then on does not stop this operation: unless it had
+    /// stopped it already, in which case the change that was about to be made is refused.
+    fn keep_going(&self) {
+        let operation = self.operation();
+        // (Nobody's are never stopped as it is.)
+        if operation == 0 {
+            return;
+        }
+        if let Some(door) = door() {
+            door.up(|env, wire| env.call_method(wire, "keepGoing", "(J)V", &[JValue::Long(operation as i64)]).map(drop));
+        }
+    }
 }
 
 /// An answer's body, unread, waiting on the Kotlin side.

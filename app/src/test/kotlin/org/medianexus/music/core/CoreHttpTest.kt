@@ -450,46 +450,87 @@ class CoreHttpTest {
     }
 
     @Test
-    fun `asking for a single, stopped while it waits, still puts new releases back`() = runBlocking {
+    fun `asking for a single, stopped once it has begun to change Lidarr, is seen through to the end`() = runBlocking {
         val lidarr = LidarrWithOneArtist()
         val asking = launch(Dispatchers.Default) { Core.lidarrRequest(lidarr.at, lidarr.single) }
         // New releases have been turned off, and the library is waiting for Lidarr to begin.
         assertTrue(lidarr.server.awaitAsked { it.method == "PUT" && it.target.endsWith("artist/1") })
         assertEquals("none", lidarr.newReleases)
-        val before = lidarr.server.asked.size
         val took = elapsed { runBlocking { asking.cancelAndJoin() } }
-        // Whoever asked is let go at once; behind them the waits are over, and the setting
-        // is put back by the requests that are still let through.
+        // Whoever asked is let go at once. Behind them the library carries on as if nobody
+        // had stopped it (it said "keep going" before its first change): the waits are
+        // waited out, the album is marked and looked for, and new releases are put back.
+        // Stopped half-way it would leave an album marked and never looked for.
         assertTrue("took $took ms", took < 2_000)
-        val until = System.nanoTime() + 10_000_000_000
+        assertTrue(lidarr.server.awaitAsked(30_000) { it.method == "POST" && it.target.endsWith("/command") })
+        val until = System.nanoTime() + 20_000_000_000
         while (lidarr.newReleases != "all" && System.nanoTime() < until) Thread.sleep(20)
         assertEquals("all", lidarr.newReleases)
-        val after = lidarr.server.asked.drop(before).map { "${it.method} ${it.target.substringAfter("/api/v1/")}" }
-        assertEquals("PUT artist/1", after.last())
-        // No wait was waited out: the three seconds for Lidarr to begin, and those after.
-        assertTrue("$after", lidarr.server.asked.none { it.method == "POST" && it.target.endsWith("/command") })
+        assertTrue(lidarr.wanted.get())
     }
 
     @Test
-    fun `after a stop each request still let through has a short limit, and after a while none is`() = runBlocking {
-        // Lidarr turns slow the moment the asking is stopped: three seconds an answer.
-        val stopped = AtomicBoolean(false)
-        val lidarr = LidarrWithOneArtist(slowAfter = { stopped.get() })
+    fun `asking for a single, stopped before it has changed anything, changes nothing`() = runBlocking {
+        // Lidarr is slow to say which artists it has: the first thing asked, and only a look.
+        val held = CountDownLatch(1)
+        val lidarr = LidarrWithOneArtist(slowAfter = { held.await(5, TimeUnit.SECONDS); false })
+        val asking = launch(Dispatchers.Default) { Core.lidarrRequest(lidarr.at, lidarr.single) }
+        assertTrue(lidarr.server.awaitAsked { it.method == "GET" && it.target.endsWith("/artist") })
+        val took = elapsed { runBlocking { asking.cancelAndJoin() } }
+        assertTrue("took $took ms", took < 2_000)
+        held.countDown()
+        Thread.sleep(1_500)
+        // Nothing but looks ever reached Lidarr, and no more after the stop.
+        val asked = lidarr.server.asked.map { "${it.method} ${it.target.substringAfter("/api/v1/")}" }
+        assertEquals(listOf("GET artist"), asked)
+        assertEquals("all", lidarr.newReleases)
+        assertFalse(lidarr.wanted.get())
+    }
+
+    @Test
+    fun `once the library has said to keep going, a stop ends no wait and refuses no request`() = runBlocking {
+        val server = standIn { _, reply -> reply.json("{}") }
+        val begun = Core.wireProbeSeenThrough(Core.Probe(method = "PUT", url = server.address, body = "{}", pause = 1_200, keepGoing = "first"))
+        Thread.sleep(300)
+        begun.stop()
+        val done = withTimeout(20_000) { begun.done.await() }.got()
+        assertEquals("the wait was cut short", true, done.waited)
+        assertEquals(200, done.status)
+        assertEquals(1, server.asked.size)
+    }
+
+    @Test
+    fun `a stop that came before the library said to keep going is still honoured`() = runBlocking {
+        val server = standIn { _, reply -> reply.json("{}") }
+        // Stopped during the wait; only then does the library say "keep going", too late:
+        // the change it was about to make is never sent.
+        val begun = Core.wireProbeSeenThrough(Core.Probe(method = "PUT", url = server.address, body = "{}", pause = 30_000, keepGoing = "after the wait"))
+        Thread.sleep(300)
+        begun.stop()
+        assertEquals(Outcome.Stopped, withTimeout(20_000) { begun.done.await() })
+        Thread.sleep(300)
+        assertEquals(0, server.asked.size)
+    }
+
+    @Test
+    fun `something that changes in one step and never says to keep going is let finish under a short limit, and after a while nothing is`() = runBlocking {
+        // (Taking an album off Lidarr's list; finishing a sign-in, whose second request reads
+        // the name the first one's token belongs to.) Stopped during a wait, the request
+        // that follows is still let through...
+        val server = standIn { _, reply -> reply.json("{}") }
         CoreHttp.afterStopMillis = 400
         CoreHttp.graceMillis = 1_000
-        val asking = launch(Dispatchers.Default) { Core.lidarrRequest(lidarr.at, lidarr.single) }
-        assertTrue(lidarr.server.awaitAsked { it.method == "PUT" && it.target.endsWith("artist/1") })
-        val before = lidarr.server.asked.size
-        stopped.set(true)
-        asking.cancelAndJoin()
-        // Each is given up after its short limit, and the library gives up with it: a slow
-        // Lidarr holds nothing for long.
-        Thread.sleep(2_500)
-        val after = lidarr.server.asked.size - before
-        assertTrue("$after requests after the stop", after in 1..3)
-        Thread.sleep(1_500)
-        assertEquals(after, lidarr.server.asked.size - before)
-        assertEquals("none", lidarr.newReleases)
+        val changing = launch(Dispatchers.Default) { Core.wireProbe(Core.Probe(method = "PUT", url = server.address, body = "{}", pause = 800), changing = true) }
+        Thread.sleep(200)
+        changing.cancelAndJoin()
+        assertTrue(server.awaitAsked(5_000) { it.method == "PUT" })
+        // ...and one that would come after the grace is over is not.
+        // (The library busy for three seconds, in a way no stop can cut short, before it asks.)
+        val late = launch(Dispatchers.Default) { Core.wireProbe(Core.Probe(method = "PUT", url = server.address, body = "{}", sleep = 3_000), changing = true) }
+        Thread.sleep(200)
+        late.cancelAndJoin()
+        Thread.sleep(4_000)
+        assertEquals(1, server.asked.size)
     }
 
     @Test

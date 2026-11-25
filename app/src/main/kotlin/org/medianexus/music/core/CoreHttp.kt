@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -50,12 +52,20 @@ import org.medianexus.music.net.netTrouble
  *
  * - one that only **looks** (a search, a page, a check of the address): the request in
  *   flight is cut off, and no more are sent;
- * - one that **changes** something on Lidarr or at the sign-in service (asking for an album,
- *   adding an artist, finishing a sign-in): the request in flight is not cut off at once,
- *   because one that was changing something would leave the library not knowing whether it
- *   had; it is given [afterStopMillis] to finish. Requests the library still makes are let
- *   through under the same short limit, so that **what it changed and means to put back is
- *   put back**, for [graceMillis] in all; then no more are sent.
+ * - one that **changes something in several steps, which the library sees through**
+ *   (asking Lidarr for an album, adding an artist). It looks before it changes, and until
+ *   its first change a stop is honoured exactly as for one that only looks. Just before
+ *   that first change the library says so ([keepGoing], its `Http::keep_going`), and **from
+ *   then on a stop does nothing**: its waits are waited out and its requests are sent, to
+ *   the end, behind the back of whoever asked. Stopped half-way it would leave an album
+ *   marked and never looked for, or an artist no longer taking new releases. A stop that
+ *   came first is still honoured: the change it was about to make is refused;
+ * - one that **changes something in one step** and never says to keep going (taking an
+ *   album off Lidarr's list, finishing a sign-in, handing a token back): the request in
+ *   flight is not cut off at once, because the library would not know whether the change
+ *   was made; it is given [afterStopMillis] to finish. A request it still makes (the name
+ *   a new token belongs to) is let through under the same short limit, for [graceMillis]
+ *   in all; then no more are sent.
  *
  * A request that is **nobody's** (the sign-in renewing its token, which replaces the token
  * that is kept) is never stopped and never cut off: it has [nobodysMillis] and no longer.
@@ -188,11 +198,19 @@ internal object CoreHttp {
         private var stoppedAt = 0L
         private val flying = HashSet<Call>()
 
+        /** The library has said this is to be seen through, and it had not been stopped. */
+        private var seenThrough = false
+
         val isStopped: Boolean get() = lock.withLock { stopped }
+
+        /** The library's "keep going": honoured unless a stop came first. */
+        fun keepGoing() {
+            lock.withLock { if (!stopped) seenThrough = true }
+        }
 
         fun stop() {
             val cut = lock.withLock {
-                if (stopped) return
+                if (stopped || seenThrough) return
                 stopped = true
                 stoppedAt = System.nanoTime()
                 stoppedNow.signalAll()
@@ -279,9 +297,36 @@ internal object CoreHttp {
      */
     suspend fun <T> looking(act: (operation: Long) -> T): T = run(begin(changing = false), lookers, act)
 
-    /** The same for something that changes Lidarr or the sign-in: stopped, it still puts back
-     *  what it changed, behind the caller's back. */
+    /** The same for something that changes Lidarr or the sign-in in one step: stopped, the
+     *  request in flight is let finish, behind the caller's back. */
     suspend fun <T> changing(act: (operation: Long) -> T): T = run(begin(changing = true), changers, act)
+
+    /**
+     * The same for something the library sees through once it has begun to change Lidarr
+     * (asking for an album, adding an artist): cancelling the caller stops it only if the
+     * library has not yet said to keep going. After that it runs to its end behind the
+     * caller, who is let go at once all the same, **and never hears how it ended**: whoever
+     * must know (to write down what was asked for) uses [seeingThrough].
+     */
+    suspend fun <T> seenThrough(act: (operation: Long) -> T): T = run(begin(changing = false), changers, act)
+
+    /** Something begun with [seeingThrough]: how it ended, whenever that is, and a way to
+     *  stop it, which the library may no longer honour. */
+    class Begun<T> internal constructor(val done: Deferred<T>, private val doing: Doing) {
+        fun stop() = doing.stop()
+    }
+
+    /** Starts something the library sees through, without waiting for it. */
+    fun <T> seeingThrough(act: (operation: Long) -> T): Begun<T> {
+        val doing = begin(changing = false)
+        val done = CompletableDeferred<T>()
+        changers.execute {
+            val outcome = if (doing.isStopped) Result.failure(CancellationException(STOPPED_WORDS)) else runCatching { act(doing.id) }
+            end(doing)
+            outcome.fold(done::complete, done::completeExceptionally)
+        }
+        return Begun(done, doing)
+    }
 
     /** Runs something of the library's that makes no request an operation could own (opening
      *  and closing a sign-in, which can wait on a renewal) off the caller's thread. It is
@@ -475,6 +520,15 @@ internal object CoreHttp {
         }
     } catch (_: Exception) {
         false
+    }
+
+    /** The library is about to change something it must see through: this operation is no
+     *  longer stopped (see [Doing.keepGoing]). */
+    fun keepGoing(operation: Long) {
+        try {
+            doings[operation]?.keepGoing()
+        } catch (_: Exception) {
+        }
     }
 
     /** A sign-in's token has changed: handed to whoever puts it away. */

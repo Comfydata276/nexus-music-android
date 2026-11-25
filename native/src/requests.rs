@@ -379,6 +379,10 @@ struct ProbeIn {
     patience: Option<u64>,
     /// A wait asked for before the request, in milliseconds.
     pause: Option<u64>,
+    /// Time the library is simply busy for before the request, which no stop cuts short.
+    sleep: Option<u64>,
+    /// When the library says "keep going", if it does: "first", or "after the wait".
+    keep_going: Option<String>,
     /// What is done with the answer: "text", "json", "drop" or "panic".
     then: String,
 }
@@ -410,8 +414,17 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_wireProbe<'l>(env: JN
         };
         let http = Host::new(if given.nobodys { Whose::Nobodys } else { Whose::Operation(given.operation) }, line);
         let mut out = ProbeOut::default();
+        if given.keep_going.as_deref() == Some("first") {
+            http.keep_going();
+        }
         if let Some(pause) = given.pause {
             out.waited = Some(http.pause(std::time::Duration::from_millis(pause)).is_ok());
+        }
+        if let Some(sleep) = given.sleep {
+            std::thread::sleep(std::time::Duration::from_millis(sleep));
+        }
+        if given.keep_going.as_deref() == Some("after the wait") {
+            http.keep_going();
         }
         let body = given.body.as_deref().unwrap_or_default();
         let method = match given.method.as_str() {

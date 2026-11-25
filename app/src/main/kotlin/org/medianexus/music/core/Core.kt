@@ -476,7 +476,7 @@ object Core {
      * and has Lidarr start looking for it. Can take a minute and a half. Stopped, it still
      * puts back what it changed on Lidarr to do it.
      */
-    suspend fun lidarrRequest(lidarr: LidarrAt, wanted: Offer): Outcome<Boolean> = CoreHttp.changing { operation ->
+    suspend fun lidarrRequest(lidarr: LidarrAt, wanted: Offer): Outcome<Boolean> = CoreHttp.seenThrough { operation ->
         over(RequestIn(operation, lidarr, wanted), RequestIn.serializer(), Boolean.serializer(), ::lidarrRequest)
     }
 
@@ -486,7 +486,7 @@ object Core {
     /** `Lidarr::add_artist`: has Lidarr get everything by an artist (`artist` is Lidarr's
      *  name for them). Answers with how many of their albums were newly asked for; none for
      *  an artist new to Lidarr, which learns their albums in its own time. */
-    suspend fun lidarrAddArtist(lidarr: LidarrAt, artist: String, name: String): Outcome<Int> = CoreHttp.changing { operation ->
+    suspend fun lidarrAddArtist(lidarr: LidarrAt, artist: String, name: String): Outcome<Int> = CoreHttp.seenThrough { operation ->
         over(AddArtistIn(operation, lidarr, artist, name), AddArtistIn.serializer(), Int.serializer(), ::lidarrAddArtist)
     }
 
@@ -540,6 +540,10 @@ object Core {
     internal class Probe(
         val line: String = "lidarr", val nobodys: Boolean = false, val method: String = "GET", val url: String,
         val headers: List<List<String>> = emptyList(), val body: String? = null, val patience: Long? = null, val pause: Long? = null, val then: String = "text",
+        /** Time the library is busy for before the request, which no stop cuts short. */
+        val sleep: Long? = null,
+        /** When the library says "keep going", if it does: "first", or "after the wait". */
+        val keepGoing: String? = null,
     )
 
     @Serializable
@@ -549,15 +553,19 @@ object Core {
     private class ProbeIn(
         val operation: Long, val line: String, val nobodys: Boolean, val method: String, val url: String,
         val headers: List<List<String>>, val body: String?, val patience: Long?, val pause: Long?, val then: String,
+        val sleep: Long?, @kotlinx.serialization.SerialName("keep_going") val keepGoing: String?,
     )
 
-    internal suspend fun wireProbe(probe: Probe, changing: Boolean = false): Outcome<Probed> {
-        val act = { operation: Long ->
-            val given = ProbeIn(operation, probe.line, probe.nobodys, probe.method, probe.url, probe.headers, probe.body, probe.patience, probe.pause, probe.then)
-            over(given, ProbeIn.serializer(), Probed.serializer(), ::wireProbe)
-        }
-        return if (changing) CoreHttp.changing(act) else CoreHttp.looking(act)
+    private fun probing(probe: Probe) = { operation: Long ->
+        val given = ProbeIn(operation, probe.line, probe.nobodys, probe.method, probe.url, probe.headers, probe.body, probe.patience, probe.pause, probe.then, probe.sleep, probe.keepGoing)
+        over(given, ProbeIn.serializer(), Probed.serializer(), ::wireProbe)
     }
+
+    internal suspend fun wireProbe(probe: Probe, changing: Boolean = false): Outcome<Probed> =
+        if (changing) CoreHttp.changing(probing(probe)) else CoreHttp.looking(probing(probe))
+
+    /** The same, run as something that is seen through once the library says so. */
+    internal fun wireProbeSeenThrough(probe: Probe): CoreHttp.Begun<Outcome<Probed>> = CoreHttp.seeingThrough(probing(probe))
 
     @JvmStatic private external fun wire(wire: Any)
     @JvmStatic private external fun gateFind(input: ByteArray): ByteArray?

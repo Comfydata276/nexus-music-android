@@ -1890,27 +1890,43 @@ dropped: the first of a name is the one that counts, readable or not.
 the screen is left, the account signs out. Everything the library does that makes requests
 is an *operation* with a number, started by a `suspend` function of `Core`; cancelling the
 caller stops the operation, and **the caller is let go at once**: nothing is handed to it
-afterwards. What a stop does to the operation behind it depends on which of two kinds it is:
+afterwards. What a stop does to the operation behind it depends on which of three kinds it is:
 
 - One that only **looks** (a search, a page, checking the address): its waits end, the
   request in flight is cut off, and no more are sent.
-- One that **changes** something (asking for an album, adding an artist, finishing a
-  sign-in): its waits end. The request in flight is *not* cut off at once: a `PUT` cut off
-  half-way may or may not have been acted on, and the library would then not know that it
-  had something to put back. It is given ten seconds. Requests the library goes on to make
-  are let through, each with that same short limit, for thirty seconds from the stop; then
-  none is. That is what lets the library **put back what it changed**: asking for a single
-  turns an artist's "new releases" off in Lidarr while Lidarr reads their singles in, and
-  the library puts it back even when its wait was cut short (the Windows repository's
-  `6dffaf9`). Putting back is two requests, a read and a write, so both kinds must pass.
+- One that **changes Lidarr in several steps, which the library sees through** (asking for
+  an album, adding an artist). It looks before it changes, and until its first change a stop
+  is honoured exactly as above: nothing has been changed, and nothing is. Just before that
+  first change the library says so (`Http::keep_going`, from the Windows app's 0.40.9;
+  `CoreHttp.keepGoing` here), and **from then on a stop does nothing**: the waits are waited
+  out and the requests sent, to the end, behind the back of whoever asked. Asking for a
+  single turns an artist's "new releases" off in Lidarr while Lidarr reads their singles in,
+  marks the single, has Lidarr look for it and puts "new releases" back; stopped half-way it
+  would leave an album marked and never looked for, or the artist taking no new releases. A
+  stop that arrived before the library said to keep going is still honoured: the change it
+  was about to make is refused, and it comes back "stopped" having changed nothing.
+  (Before 0.40.9 the phone had a rule of its own here, requests let through for thirty
+  seconds after a stop under a short limit, which put the setting back but could leave the
+  album marked and not looked for. The library's rule replaced it.)
+  Whoever must know how such an operation ended, though the screen that asked has gone (to
+  write down what was asked for), starts it with `CoreHttp.seeingThrough`, which hands back
+  the outcome whenever it comes; `seenThrough`, the `suspend` form, lets a cancelled caller
+  go and tells it nothing.
+- One that **changes something in one step** and never says to keep going (taking an album
+  off Lidarr's list, finishing a sign-in, handing a token back): its waits end. The request
+  in flight is *not* cut off at once: a change cut off half-way may or may not have been
+  made, and the library would not know which. It is given ten seconds. A request it still
+  makes (after a sign-in's token is granted, the name it belongs to) is let through under
+  that same short limit, for thirty seconds from the stop; then none is.
 - A request that is **nobody's** is never stopped and never cut off. These are the
   sign-in's own (renewing the pass for Lidarr), which replace the token that is kept: one
   cut off after the service had replaced it would leave the phone holding a token that no
   longer works, and the person signed out. It has a minute for the whole call, and no
   more.
 
-Nothing survives the app being killed: a single asked for in the seconds before leaves
-"new releases" off for that artist until it is asked for again, as on Windows.
+Nothing survives the app being killed: a single asked for in the seconds before can leave
+"new releases" off for that artist, or the single marked and not looked for, until it is
+asked for again, as on Windows.
 
 **Which operation a request belongs to.** `Lidarr` costs nothing to make, so each operation
 has its own, asked through a way out that carries the operation's number. `MusicBrainz` is
