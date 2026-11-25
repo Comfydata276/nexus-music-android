@@ -7,6 +7,14 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.medianexus.music.core.Core
 import org.medianexus.music.core.Words
 
@@ -17,12 +25,33 @@ import org.medianexus.music.core.Words
  * sign-in service needs nothing set up for the phone that it doesn't already have for the
  * PC.
  *
- * Any app on the phone can knock on it, and so can a page in the browser. What it lets in
- * is one request for `/callback` that carries the [state] this sign-in was started with,
- * which nobody else was told: anything else is shown "Nothing here" and the wait goes on.
+ * **Any app on the phone can knock on it, and so can a page in the browser.** What it lets
+ * in is one whole request, `GET /callback?…`, that carries the [state] this sign-in was
+ * started with, which nobody else was told. Everything else is told "Nothing here" (404)
+ * and the wait goes on. And nobody who knocks can hold the door, the wait or the real
+ * browser up:
+ *
+ * - whoever connects has [READ_MILLIS] **in all** to send a whole first line, however they
+ *   space it out, and is hung up on then;
+ * - each knock is attended to apart from the others, [AT_ONCE] at a time; one more than
+ *   that is hung up on at once, with no waiting;
+ * - the wait ends when it is due whoever is connected, and shutting the door ([close])
+ *   hangs up on everyone it had let in.
+ *
  * What comes in is a code that is no use by itself: collecting the token also takes the
  * secret that only this app holds (see `Core.gateFinish`), so a code that went to some
  * other app listening on this port later would be no use to it either.
+ *
+ * **The page the browser is shown is the truth.** When the browser comes back with a code
+ * it is kept waiting, a few seconds at the most, until the code has been traded for a
+ * token or has failed to be, and is then shown "You're signed in" or "The sign-in didn't
+ * go through" ([Came.Code.say]).
+ *
+ * Accepted, and written down: the address of the sign-in page is handed to whatever the
+ * person has chosen as the phone's browser (that is what a browser is), with the `state`
+ * and the check of the secret in it. A hostile app that has been made the phone's browser
+ * sees them, and could come back through this door with a code of its choosing. It still
+ * gets no token of the person's: the secret itself never leaves the app.
  */
 internal class BrowserReturn private constructor(private val server: ServerSocket, private val state: String) : Closeable {
     /** Where the service is to send the browser back to. */
@@ -30,10 +59,24 @@ internal class BrowserReturn private constructor(private val server: ServerSocke
 
     /** How the wait ended. */
     sealed interface Came {
-        /** With a code, to be traded for the token. */
-        class Code(val code: String) : Came
+        /**
+         * With a code, to be traded for the token. **The browser is still waiting for its
+         * page**: [say] shows it one, once it is known how the trade went. (Shutting the
+         * door first hangs up on it instead.)
+         */
+        class Code internal constructor(val code: String, private val waiting: Socket, private val door: BrowserReturn) : Came {
+            private val said = AtomicBoolean(false)
 
-        /** The service turned the sign-in down, and said this. */
+            /** Shows the browser "You're signed in", or "The sign-in didn't go through". Once. */
+            fun say(signedIn: Boolean) {
+                if (!said.compareAndSet(false, true)) return
+                door.reply(waiting, "200 OK", if (signedIn) Words.pageSignedIn else Words.pageNotThrough)
+                door.hangUp(waiting)
+            }
+        }
+
+        /** The service turned the sign-in down, and said this. (The browser has been shown
+         *  that it didn't go through.) */
         class TurnedDown(val why: String) : Came
 
         /** Nobody came back in time. */
@@ -50,91 +93,204 @@ internal class BrowserReturn private constructor(private val server: ServerSocke
     @Volatile var arrived = false
         private set
 
+    /** Everyone let in and not yet hung up on. */
+    private val inside = ConcurrentHashMap.newKeySet<Socket>()
+
+    /** What the browser brought, once it has come. Only the first counts. */
+    private val brought = LinkedBlockingQueue<Came>(1)
+    private val taken = AtomicBoolean(false)
+
+    @Volatile private var shut = false
+
+    /** Whoever attends to the knocks: [AT_ONCE] at a time and nobody waiting for a turn. */
+    private val attending = ThreadPoolExecutor(0, AT_ONCE, 5, TimeUnit.SECONDS, SynchronousQueue()) { work ->
+        Thread(work, "requests-door-${threads.incrementAndGet()}").apply { isDaemon = true }
+    }
+
     /**
      * Waits for the browser to come back, `millis` at the longest. Blocks: for a thread
-     * that may wait. [close], from anywhere, ends the wait.
+     * that may wait. [close], from anywhere, ends the wait. Once the browser has come the
+     * door takes no more knocks.
      */
     fun await(millis: Long): Came {
         val deadline = System.nanoTime() + millis * 1_000_000
         while (true) {
+            brought.poll()?.let { came ->
+                stopListening()
+                return came
+            }
+            if (shut) return Came.GivenUp
             val left = (deadline - System.nanoTime()) / 1_000_000
             if (left <= 0) return Came.Nobody
             val socket = try {
-                server.soTimeout = left.coerceIn(1, Int.MAX_VALUE.toLong()).toInt()
+                // (In short turns, so that what a knock brought is noticed promptly.)
+                server.soTimeout = left.coerceIn(1, LOOK_MILLIS).toInt()
                 server.accept()
             } catch (_: SocketTimeoutException) {
-                return Came.Nobody
+                continue
             } catch (e: IOException) {
-                return if (server.isClosed) Came.GivenUp else Came.Failed(e.javaClass.simpleName)
+                brought.poll()?.let { return it }
+                return if (shut || server.isClosed) Came.GivenUp else Came.Failed(e.javaClass.simpleName)
+            }
+            inside += socket
+            if (shut) {
+                hangUp(socket)
+                continue
             }
             try {
-                socket.use { answer(it) }?.let { return it }
-            } catch (_: IOException) {
-                // (Whoever knocked went away part-way: the wait goes on.)
+                attending.execute { attend(socket) }
+            } catch (_: RejectedExecutionException) {
+                // (As many are being attended to as ever are: this one is not kept waiting.)
+                hangUp(socket)
             }
         }
     }
 
-    /** One knock: answered, and what it brought, or null if it was not the browser coming
-     *  back from this sign-in. */
-    private fun answer(socket: Socket): Came? {
-        val target = firstLine(socket).split(' ').getOrNull(1).orEmpty()
+    /** One knock, from connecting to being hung up on (unless it is the browser coming
+     *  back with a code, which is kept for its page). */
+    private fun attend(socket: Socket) {
+        var keep = false
+        try {
+            val line = firstLine(socket)
+            if (line == null) return
+            val came = answer(socket, line)
+            keep = came is Came.Code
+        } catch (_: IOException) {
+            // (Whoever knocked went away part-way: the wait goes on.)
+        } catch (_: RuntimeException) {
+        } finally {
+            if (!keep) hangUp(socket)
+        }
+    }
+
+    /** What a knock's first line brought: answered here unless it is a code, whose page
+     *  waits. Null if it was not the browser coming back from this sign-in. */
+    private fun answer(socket: Socket, line: String): Came? {
+        // "GET /callback?code=… HTTP/1.1", and nothing else.
+        val parts = line.split(' ')
+        val target = parts.getOrNull(1).orEmpty()
         val path = target.substringBefore('?')
         val query = target.substringAfter('?', "")
-        val theirs = Core.gateParam(query, "state")
-        if (path != "/callback" || theirs == null || !MessageDigest.isEqual(theirs.toByteArray(), state.toByteArray())) {
+        val theirs = if (parts.size == 3 && parts[0] == "GET" && parts[2].startsWith("HTTP/1.") && path == "/callback") Core.gateParam(query, "state") else null
+        if (theirs == null || !MessageDigest.isEqual(theirs.toByteArray(), state.toByteArray())) {
+            reply(socket, "404 Not Found", Words.pageNothingHere)
+            return null
+        }
+        val error = Core.gateParam(query, "error")
+        val code = Core.gateParam(query, "code")?.takeIf { it.isNotEmpty() }
+        if (error == null && code == null) {
+            reply(socket, "404 Not Found", Words.pageNothingHere)
+            return null
+        }
+        // The browser has come back. Once: a second coming (a page reloaded) is nothing.
+        if (!taken.compareAndSet(false, true)) {
             reply(socket, "404 Not Found", Words.pageNothingHere)
             return null
         }
         arrived = true
-        Core.gateParam(query, "error")?.let { error ->
-            val why = Core.gateParam(query, "error_description")?.takeIf { it.isNotEmpty() } ?: error
+        val came = if (error != null) {
             reply(socket, "200 OK", Words.pageNotThrough)
-            return Came.TurnedDown(why)
+            Came.TurnedDown(Core.gateParam(query, "error_description")?.takeIf { it.isNotEmpty() } ?: error)
+        } else {
+            // (Its page waits until it is known how the trade for a token went.)
+            socket.soTimeout = 0
+            Came.Code(code!!, socket, this)
         }
-        Core.gateParam(query, "code")?.takeIf { it.isNotEmpty() }?.let { code ->
-            reply(socket, "200 OK", Words.pageSignedIn)
-            return Came.Code(code)
-        }
-        arrived = false
-        reply(socket, "400 Bad Request", Words.pageNothingHere)
-        return null
+        brought.offer(came)
+        return came
     }
 
-    /** The first line of what a browser sent, e.g. "GET /callback?code=… HTTP/1.1". */
-    private fun firstLine(socket: Socket): String {
-        socket.soTimeout = 2_000
+    /**
+     * The first line of what was sent, e.g. "GET /callback?code=… HTTP/1.1", if a whole one
+     * (ended by a new line) arrives within [READ_MILLIS] of connecting **in all**, however
+     * it is spaced out, and is no longer than a line may be. Null otherwise: whoever it was
+     * has had their time.
+     */
+    private fun firstLine(socket: Socket): String? {
+        val deadline = System.nanoTime() + READ_MILLIS * 1_000_000
         val input = socket.getInputStream()
         val seen = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(2048)
-        try {
-            while (seen.size() < 16 * 1024 && !seen.toByteArray().let { bytes -> (1 until bytes.size).any { bytes[it - 1] == '\r'.code.toByte() && bytes[it] == '\n'.code.toByte() } }) {
-                val count = input.read(buffer)
-                if (count <= 0) break
-                seen.write(buffer, 0, count)
+        val buffer = ByteArray(1024)
+        while (true) {
+            val left = (deadline - System.nanoTime()) / 1_000_000
+            if (left <= 0 || shut) return null
+            socket.soTimeout = left.coerceAtLeast(1).toInt()
+            val count = try {
+                input.read(buffer)
+            } catch (_: SocketTimeoutException) {
+                return null
             }
-        } catch (_: IOException) {
+            if (count <= 0) return null
+            for (at in 0 until count) {
+                if (buffer[at] == '\n'.code.toByte()) {
+                    seen.write(buffer, 0, at)
+                    return seen.toString(Charsets.ISO_8859_1.name()).removeSuffix("\r")
+                }
+            }
+            seen.write(buffer, 0, count)
+            if (seen.size() > LINE_LENGTH) {
+                reply(socket, "404 Not Found", Words.pageNothingHere)
+                return null
+            }
         }
-        return seen.toString(Charsets.UTF_8.name()).lineSequence().firstOrNull().orEmpty()
     }
 
     private fun reply(socket: Socket, status: String, body: String) {
-        val bytes = body.toByteArray(Charsets.UTF_8)
-        val out = socket.getOutputStream()
-        out.write("HTTP/1.1 $status\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".toByteArray(Charsets.UTF_8))
-        out.write(bytes)
-        out.flush()
+        try {
+            val bytes = body.toByteArray(Charsets.UTF_8)
+            // (A page that may hold a code in its address tells no other site where the
+            // browser came from, and is kept nowhere.)
+            val head = "HTTP/1.1 $status\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\n" +
+                "Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+            socket.soTimeout = WRITE_MILLIS
+            val out = socket.getOutputStream()
+            out.write(head.toByteArray(Charsets.UTF_8))
+            out.write(bytes)
+            out.flush()
+            // (So that whoever asked reads the answer to its end before the connection goes.)
+            socket.shutdownOutput()
+        } catch (_: IOException) {
+        }
     }
 
-    /** Shuts the door. A wait under way ends as given up. */
-    override fun close() {
+    private fun hangUp(socket: Socket) {
+        inside -= socket
+        try {
+            socket.close()
+        } catch (_: IOException) {
+        }
+    }
+
+    /** No more knocks are taken; whoever is inside is seen out as usual. */
+    private fun stopListening() {
         try {
             server.close()
         } catch (_: IOException) {
         }
     }
 
+    /** Shuts the door, **and hangs up on everyone it had let in** (a browser still waiting
+     *  for its page among them). A wait under way ends as given up. */
+    override fun close() {
+        shut = true
+        stopListening()
+        inside.toList().forEach(::hangUp)
+        attending.shutdownNow()
+    }
+
     companion object {
+        /** How long whoever connects has to send a whole first line, in all. */
+        const val READ_MILLIS = 2_000L
+
+        /** How many knocks are attended to at once. One more is hung up on. */
+        const val AT_ONCE = 4
+
+        /** The longest a first line may be. (The browser's is a few hundred letters.) */
+        private const val LINE_LENGTH = 8 * 1024
+        private const val LOOK_MILLIS = 100L
+        private const val WRITE_MILLIS = 2_000
+        private val threads = AtomicInteger(0)
+
         /** Opens the door, on a port of the phone's choosing, for a sign-in that will come
          *  back with `state`. Throws if the phone won't give one. */
         @Throws(IOException::class)

@@ -537,10 +537,64 @@ class RequestsTest {
         // The service won't finish it (the code was no good).
         behind.refusing.set(true)
         link = requests.signIn()!!
-        browse("${param(link, "redirect_uri")}?code=bad&state=${param(link, "state")}")
+        // (The browser is not told it is signed in when it is not.)
+        val unfinished = browse("${param(link, "redirect_uri")}?code=bad&state=${param(link, "state")}")
+        assertTrue(unfinished.second, "The sign-in didn't go through" in unfinished.second && "You're signed in" !in unfinished.second)
         assertEquals(RequestsState.NeedsSignIn(behind.host, why = "The sign-in service wouldn't finish the sign-in. Try again."), requests.until { it is RequestsState.NeedsSignIn })
         behind.refusing.set(false)
         assertFalse(requests.settings.value.signingIn)
+    }
+
+    @Test
+    fun `the browser is shown its page when the token is in the app's keeping, and not before`() = runBlocking {
+        val behind = Behind()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        // The service takes its time over the trade of the code for a token.
+        val slow = java.util.concurrent.CountDownLatch(1)
+        behind.held["grant_type=authorization_code"] = slow
+        val home = signedInAt(link)
+        val page = java.util.concurrent.CompletableFuture.supplyAsync { browse(home) }
+        assertTrue(behind.service.awaitAsked(10_000) { "grant_type=authorization_code" in it.body })
+        Thread.sleep(500)
+        assertFalse("the browser was shown a page before the sign-in was finished", page.isDone)
+        assertEquals(0, cameBack.get())
+        assertNull(tokenKept(account))
+        slow.countDown()
+        val (status, shown) = page.get(10, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals(200, status)
+        assertTrue(shown, "You're signed in" in shown)
+        // By the time the browser has its page the token is kept; then the app comes forward.
+        assertNotNull(tokenKept(account))
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected })
+        assertEquals(1, cameBack.get())
+    }
+
+    @Test
+    fun `a sign-in service that never finishes the trade is given a few seconds, and the browser is told it didn't go through`() = runBlocking {
+        val behind = Behind()
+        val requests = requests()
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        org.medianexus.music.core.CoreHttp.signInMillis = 700
+        try {
+            behind.held["grant_type=authorization_code"] = java.util.concurrent.CountDownLatch(1)
+            val began = System.nanoTime()
+            val (status, shown) = signInWith(link)
+            val took = (System.nanoTime() - began) / 1_000_000
+            assertEquals(200, status)
+            assertTrue(shown, "The sign-in didn't go through" in shown)
+            assertTrue("the browser waited $took ms", took in 600..4_000)
+            val state = requests.until { it is RequestsState.NeedsSignIn && it.why != null } as RequestsState.NeedsSignIn
+            assertEquals("Couldn't reach the sign-in service. It didn't answer in time.", state.why)
+        } finally {
+            org.medianexus.music.core.CoreHttp.signInMillis = 8_000
+            behind.held.values.forEach { it.countDown() }
+        }
     }
 
     @Test

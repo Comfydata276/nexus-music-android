@@ -499,50 +499,63 @@ class Requests internal constructor(
 
     private suspend fun waitFor(mine: Attempt, found: SignInDoor, secret: String) {
         val came = mine.door.await(waitMillis)
-        mine.door.close()
-        if (came is BrowserReturn.Came.GivenUp) return
-        // Whoever signed in is looking at the browser: the app comes back in front of it.
-        if (came is BrowserReturn.Came.Code || came is BrowserReturn.Came.TurnedDown) comeBack()
-        // Collecting the token is not to be cut off part-way, whatever becomes of the
-        // account meanwhile: a token collected for nobody is handed straight back.
-        val done = if (came is BrowserReturn.Came.Code) withContext(NonCancellable) { Core.gateFinish(found, came.code, mine.door.back, secret) } else null
-        val token = (done as? Outcome.Got)?.value
-        val current = withContext(NonCancellable) {
-            turn.withLock {
-                if (attempt !== mine || !scope.isActive) return@withLock false
-                attempt = null
-                val settings = settingsNow.value
-                val place = Core.servicePlace(found.service)
-                if (token != null && place != null) {
-                    // This sign-in owns the kept token from here: whatever an earlier one
-                    // still has on its way writes nothing.
-                    val (number, kept) = synchronized(owner) {
-                        live = ++numbers
-                        live to secrets.keepToken(place, token.token)
+        try {
+            if (came is BrowserReturn.Came.GivenUp) return
+            val code = came as? BrowserReturn.Came.Code
+            // Collecting the token is not to be cut off part-way, whatever becomes of the
+            // account meanwhile: a token collected for nobody is handed straight back. (It
+            // is not left to take for ever either: see `Core.gateFinish`.)
+            val done = if (code != null) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret) } else null
+            val token = (done as? Outcome.Got)?.value
+            // 0: this sign-in has been retired meanwhile; 1: it didn't go through; 2: signed in.
+            val ended = withContext(NonCancellable) {
+                turn.withLock {
+                    if (attempt !== mine || !scope.isActive) return@withLock 0
+                    attempt = null
+                    val settings = settingsNow.value
+                    val place = Core.servicePlace(found.service)
+                    if (token != null && place != null) {
+                        // This sign-in owns the kept token from here: whatever an earlier one
+                        // still has on its way writes nothing.
+                        val (number, kept) = synchronized(owner) {
+                            live = ++numbers
+                            live to secrets.keepToken(place, token.token)
+                        }
+                        if (!kept) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
+                        write(settings.copy(signedIn = shown(token.name), signingIn = false))
+                        open?.let { old -> afterwards { Core.gateClose(old.session) } }
+                        open = Open(found, Core.gateOpen(found, token.token, bound = place) { fresh -> tokenChanged(number, place, fresh) }, place, number)
+                        2
+                    } else {
+                        write(settings.copy(signingIn = false))
+                        val why = when {
+                            done is Outcome.Failed -> done.why
+                            came is BrowserReturn.Came.TurnedDown -> Words.turnedDown(came.why)
+                            came is BrowserReturn.Came.Nobody -> Words.nobodySignedIn
+                            came is BrowserReturn.Came.Failed -> Words.notHeard(came.why)
+                            else -> null
+                        }
+                        stateNow.value = RequestsState.NeedsSignIn(mine.host, why = why)
+                        1
                     }
-                    if (!kept) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
-                    write(settings.copy(signedIn = shown(token.name), signingIn = false))
-                    open?.let { old -> afterwards { Core.gateClose(old.session) } }
-                    open = Open(found, Core.gateOpen(found, token.token, bound = place) { fresh -> tokenChanged(number, place, fresh) }, place, number)
-                } else {
-                    write(settings.copy(signingIn = false))
-                    val why = when {
-                        done is Outcome.Failed -> done.why
-                        came is BrowserReturn.Came.TurnedDown -> Words.turnedDown(came.why)
-                        came is BrowserReturn.Came.Nobody -> Words.nobodySignedIn
-                        came is BrowserReturn.Came.Failed -> Words.notHeard(came.why)
-                        else -> null
-                    }
-                    stateNow.value = RequestsState.NeedsSignIn(mine.host, why = why)
                 }
-                true
             }
+            // **The browser is shown how it ended, now that it is known**: "You're signed
+            // in" only if the token is in this app's keeping. (A sign-in the service turned
+            // down was shown so as it arrived.)
+            code?.say(signedIn = ended == 2)
+            mine.door.close()
+            // Whoever signed in is looking at the browser: the app comes back in front of it.
+            if (code != null || came is BrowserReturn.Came.TurnedDown) comeBack()
+            if (ended == 0) {
+                if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service)) }
+                return
+            }
+            if (ended == 2) check()
+        } finally {
+            // (Whatever happened: the door is shut, and nobody is left waiting at it.)
+            mine.door.close()
         }
-        if (!current) {
-            if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service)) }
-            return
-        }
-        if (token != null) check()
     }
 
     /**

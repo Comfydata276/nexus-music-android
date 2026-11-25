@@ -103,6 +103,10 @@ internal object CoreHttp {
     /** And for how long after the stop its requests are still let through at all. */
     @Volatile var graceMillis = 30_000L
 
+    /** How long each request of a sign-in being finished may take in all, its answer
+     *  included: the browser is kept waiting for its page meanwhile (see [finishing]). */
+    @Volatile var signInMillis = 8_000L
+
     /**
      * Whether requests may not be sent at all just now, and if so the words for why (the end
      * of the library's own sentence, as in "Couldn't reach Lidarr. Offline mode is on.").
@@ -222,7 +226,11 @@ internal object CoreHttp {
      * One thing the library is doing for the app that makes requests. [stop] is how the app
      * says it has no more use for it; what that does is in this file's own comment.
      */
-    class Doing(val id: Long, val changing: Boolean) {
+    class Doing(
+        val id: Long, val changing: Boolean,
+        /** The longest any one request of this may take in all, if it has a limit of its own. */
+        private val callMillis: Long? = null,
+    ) {
         private val lock = ReentrantLock()
         private val stoppedNow = lock.newCondition()
         private var stopped = false
@@ -275,10 +283,10 @@ internal object CoreHttp {
          */
         fun allowance(): Long? = lock.withLock {
             when {
-                !stopped -> null
+                !stopped -> callMillis
                 !changing -> REFUSED
                 System.nanoTime() - stoppedAt > TimeUnit.MILLISECONDS.toNanos(graceMillis) -> REFUSED
-                else -> afterStopMillis
+                else -> minOf(afterStopMillis, callMillis ?: Long.MAX_VALUE)
             }
         }
 
@@ -301,7 +309,7 @@ internal object CoreHttp {
     private val doings = ConcurrentHashMap<Long, Doing>()
     private val nextDoing = AtomicLong(0)
 
-    private fun begin(changing: Boolean): Doing = Doing(nextDoing.incrementAndGet(), changing).also { doings[it.id] = it }
+    private fun begin(changing: Boolean, callMillis: Long? = null): Doing = Doing(nextDoing.incrementAndGet(), changing, callMillis).also { doings[it.id] = it }
 
     private fun end(doing: Doing) {
         doings.remove(doing.id)
@@ -354,6 +362,18 @@ internal object CoreHttp {
     /** The same for something that changes Lidarr or the sign-in in one step: stopped, the
      *  request in flight is let finish, behind the caller's back. */
     suspend fun <T> changing(act: (operation: Long) -> T): T = run(begin(changing = true), changers, act)
+
+    /** A thread of its own for each thing run on it: for what must never wait its turn. */
+    private val apart = Executor { work -> Thread(work, "requests-sign-in").apply { isDaemon = true }.start() }
+
+    /**
+     * Finishing a sign-in: the browser has come back with a code, and is kept waiting for
+     * its page until this is done. So it **never waits its turn** behind other changes (a
+     * thread of its own), and **cannot take for ever**: each of its requests has
+     * [signInMillis] in all, after which the library says in its own words that the
+     * service didn't answer in time. Otherwise as [changing].
+     */
+    suspend fun <T> finishing(act: (operation: Long) -> T): T = run(begin(changing = true, callMillis = signInMillis), apart, act)
 
     /**
      * The same for something the library sees through once it has begun to change Lidarr

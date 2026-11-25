@@ -435,9 +435,11 @@ object Core {
     /**
      * `gate::finish`: collects the token once the browser has come back with `code`.
      * **The caller has checked the browser's `state` itself**: a code that came with any
-     * other is someone else's and is never handed to this.
+     * other is someone else's and is never handed to this. It never waits behind other
+     * changes, and each of its requests has a few seconds and no more
+     * ([CoreHttp.finishing]): the browser is waiting for its page.
      */
-    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String): Outcome<SignedIn> = CoreHttp.changing { operation ->
+    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String): Outcome<SignedIn> = CoreHttp.finishing { operation ->
         over(GateFinishIn(operation, door, code, back, secret, servicePlace(door.service)), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
     }
 

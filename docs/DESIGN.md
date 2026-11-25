@@ -2058,6 +2058,28 @@ it up. As on Windows:
   task, which is what lets the app bring itself back in front when the sign-in comes home.
   The pages the browser is shown ("You're signed in", "The sign-in didn't go through",
   "Nothing here") are the library's.
+- **The door cannot be held by another app.** Any app on the phone can connect to a port
+  on the loopback address, and so can a page in the browser. Only one whole request,
+  `GET /callback?…` with the `state` this sign-in was started with, is the browser coming
+  back; everything else is told "Nothing here" and the wait goes on. Whoever connects has
+  two seconds **in all** to send a whole first line, however they space it out; knocks are
+  attended to apart from each other, four at a time, and one more than that is hung up on
+  at once; the wait ends when it is due whoever is connected; and shutting the door hangs
+  up on everyone it had let in. The pages it shows carry `Referrer-Policy: no-referrer`
+  and are kept nowhere.
+- **The page the browser is shown is the truth.** When the browser comes back with a code
+  it is kept waiting until the code has been traded for a token and the token is in the
+  app's keeping, or until that has failed, and is shown "You're signed in" or "The sign-in
+  didn't go through" accordingly; only then does the app come forward. The trade never
+  waits behind other changes (a thread of its own) and each of its requests has eight
+  seconds in all, after which the library says in its own words that the service didn't
+  answer in time: so the browser waits a few seconds at the worst.
+- **Accepted, and written down.** The address of the sign-in page goes to whatever the
+  person has chosen as the phone's browser, with the `state` and the check of the secret in
+  it: that is what a browser is. A hostile app that has been made the phone's browser sees
+  them and could come back through the door with a code of its choosing. It gets no token
+  of the person's (the secret itself never leaves the app), and what it could do instead,
+  sign the app in as somebody else, is what any hostile browser can do to any sign-in.
 - **What can happen while the browser is open**, each tried on the emulator against a
   stand-in service (docs/TESTING.md, "Requests"):
   - the person signs in: the app comes back in front by itself, connected;
