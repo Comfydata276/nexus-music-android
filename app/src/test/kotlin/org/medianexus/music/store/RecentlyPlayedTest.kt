@@ -102,7 +102,7 @@ class RecentlyPlayedTest {
         // What is here is not the account's history: not shared, not merged, never written.
         assertFalse(history.isOpen)
         history.played(Song(id = "new"))
-        assertFalse(runBlocking { history.take(listOf(org.medianexus.music.core.Play("theirs", 9)), { emptyMap() }) })
+        assertFalse(runBlocking { history.take(listOf(org.medianexus.music.core.Play("theirs", 9))) { emptyMap() } })
         assertEquals("the song playing still shows", listOf("new"), history.ids())
         assertTrue(file.setReadable(true))
         assertEquals("the file is exactly as it was", years, file.readText())
@@ -139,11 +139,11 @@ class RecentlyPlayedTest {
         // The disk won't take it: the exchange is told, and has failed.
         assertTrue(dir.setWritable(false))
         org.junit.Assume.assumeFalse("whoever runs this may write anywhere", runCatching { File(dir, "probe").writeText("") }.isSuccess)
-        assertTrue(runCatching { runBlocking { history.take(theirs, songs) } }.exceptionOrNull() is java.io.IOException)
+        assertTrue(runCatching { runBlocking { history.take(theirs, songsOf = songs) } }.exceptionOrNull() is java.io.IOException)
         assertTrue(file.readText().contains("\"old\"") && !file.readText().contains("theirs"))
         // The same again, with nothing new to merge: it is still due, and is written now.
         assertTrue(dir.setWritable(true))
-        runBlocking { history.take(theirs, songs) }
+        runBlocking { history.take(theirs, songsOf = songs) }
         assertTrue("what was taken in is on the disk", file.readText().contains("\"theirs\""))
         // (And again fails if the disk fails again, rather than saying all is well.)
         history.played(Song(id = "now"))

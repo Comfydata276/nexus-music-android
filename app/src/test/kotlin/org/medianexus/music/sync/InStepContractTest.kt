@@ -352,6 +352,73 @@ class InStepContractTest {
         assertEquals(listOf("mine"), record(server, server.made[0]).pins)
     }
 
+    @Test
+    fun aPinTakenBackWhileThePlaylistIsBeingMadeIsNotWrittenIntoIt() = runBlocking {
+        // No playlist yet. The phone has a pin to say, so one is made; and while the server
+        // is making it, the person takes the pin back.
+        val server = PretendServer()
+        val phone = phone()
+        phone.pin("mine")
+        server.gate = { what -> if (what == "make") phone.unpin("mine") }
+        phone.step(server).exchange()
+        // What goes into the new playlist is decided again, from what the phone holds once
+        // it is there: the pin that was taken back is nowhere in it.
+        assertEquals(1, server.made.size)
+        assertFalse(server.comment(server.made[0]).orEmpty().contains("mine"))
+        server.gate = {}
+        assertEquals(InStep.Outcome.DONE, phone.step(server).exchange())
+        assertFalse(server.comment(server.made[0]).orEmpty().contains("mine"))
+        assertEquals(1, server.made.size)
+        assertTrue(phone.pins.isEmpty())
+    }
+
+    @Test
+    fun sharingSwitchedOffAndOnAgainDoesNotGiveAnExchangeBegunBeforeItsLeaveBack() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        phone.pin("mine")
+        // While the server is being asked, sharing is switched off, and on again. The
+        // exchange that was on its way was let go by the first, and stays let go.
+        var offs = 0L
+        server.gate = { what -> if (what == "read") offs++ }
+        assertEquals(InStep.Outcome.NOT_NOW, phone.step(server, standing = { offs }).exchange())
+        assertTrue(server.writes.isEmpty())
+        assertEquals("nothing of it was taken in", listOf("mine"), phone.pins)
+        // One begun since has its own.
+        server.gate = {}
+        assertEquals(InStep.Outcome.DONE, phone.step(server, standing = { offs }).exchange())
+        assertEquals(listOf("p1", "p2", "mine"), phone.pins)
+    }
+
+    @Test
+    fun anExchangeNoLongerAllowedTakesNothingInAndNotesNothing() = runBlocking {
+        val server = PretendServer().apply { put("a", windows) }
+        val phone = phone()
+        phone.pin("mine")
+        // Sharing goes off (or the account) once the answers are in hand and it has been
+        // asked about once more, as the contract has it: while the phone is keeping the
+        // plays that came, say.
+        var left = -1
+        server.gate = { what -> if (what == "read") left = 1 }
+        assertEquals(InStep.Outcome.NOT_NOW, phone.step(server, may = { left < 0 || left-- > 0 }).exchange())
+        assertEquals("nothing of it was taken in", listOf("mine"), phone.pins)
+        assertTrue(phone.history.state.value.isEmpty())
+        assertTrue(server.writes.isEmpty())
+        // And off while the write is with the server: the server has it, and the phone
+        // notes nothing from an exchange it has let go. The pin stays as tried.
+        var on = true
+        server.gate = { what -> if (what == "write") on = false }
+        assertEquals(InStep.Outcome.NOT_NOW, phone.step(server, may = { on }).exchange())
+        assertEquals(1, server.writes.size)
+        assertTrue(phone.onDisk().contains("\"tried\": true"))
+        // On again: made again over its own result, which alters nothing and writes nothing.
+        on = true
+        server.gate = {}
+        assertEquals(InStep.Outcome.DONE, phone.step(server, may = { on }).exchange())
+        assertEquals(1, server.writes.size)
+        assertFalse(phone.onDisk().contains("\"tried\": true"))
+    }
+
     // ---- one at a time, and still on its way until it has answered ------------------------------
 
     @Test
@@ -380,14 +447,18 @@ class InStepContractTest {
         server.gate = { what -> if (what == "write") release.await() }
         assertEquals(InStep.Outcome.BUSY, second.exchange())
         assertEquals(1, server.listed)
-        // The first write is answered: it was not abandoned, and what it carried is agreed.
+        // The first write is answered: it was not abandoned half-way, and the server has
+        // it. But the exchange had been let go, and nothing of it is noted on the phone:
+        // the pin stays as tried.
         release.complete(Unit)
         running.join()
         assertEquals(listOf("p1", "p2", "mine"), record(server).pins)
-        assertFalse(phone.onDisk().contains("\"tried\": true"))
-        // Now the next may run, and finds nothing to do.
+        assertTrue(phone.onDisk().contains("\"tried\": true"))
+        // Now the next may run. It makes the pin again over its own result, which alters
+        // nothing and writes nothing, and that is noted.
         assertEquals(InStep.Outcome.DONE, second.exchange())
         assertEquals(1, server.writes.size)
+        assertFalse(phone.onDisk().contains("\"tried\": true"))
     }
 
     @Test

@@ -161,6 +161,11 @@ data class Settings(
      * put on by rules since thrown out.
      */
     val stepMark: Int = 0,
+    /** How many times [sync] has been switched off: an exchange with the person's other
+     *  devices has leave to go on only while this is what it was when it began, so that
+     *  one let go by switching off is not given its leave back by switching on again
+     *  (`sync/InStep.kt`). Counted where the settings change (`SettingsStore`). */
+    val syncOffs: Long = 0,
     /** Which account the choices that are shared between devices belong to (its storage
      *  key): the pins and their time, each list's choices, the theme's time and the sync
      *  playlist's id. They are shared into that account's record and no other's: when

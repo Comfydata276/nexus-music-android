@@ -70,8 +70,10 @@ interface StepPhone {
      * they show), the notes of when songs were added, and Recently played, which is what
      * the phone has at this moment put together with what the plan brought. False if the
      * phone couldn't keep it: then the exchange has failed, and nothing is written.
+     * `still` is asked before each of the three is taken in (songs may have to be looked
+     * up on the way): what an exchange that has lost its leave brought is not applied.
      */
-    suspend fun take(plan: Plan): Boolean
+    suspend fun take(plan: Plan, still: () -> Boolean = { true }): Boolean
 
     /**
      * Step 7.1: the record's text as it was found is kept on the phone, once for this
@@ -129,6 +131,12 @@ class InStep(
     private val pause: suspend (Long) -> Unit = { delay(it) },
     /** Something for the Diagnostics page (no names, no addresses, nothing of the record). */
     private val note: (String) -> Unit = {},
+    /**
+     * A number that moves on whenever sharing is switched off. An exchange has leave to go
+     * on only while it is the number it began with: switched off and on again while one is
+     * on its way, [may] says yes again, and this says it is not the same yes.
+     */
+    private val standing: () -> Long = { 0 },
 ) {
     /** How an exchange ended. */
     enum class Outcome {
@@ -202,7 +210,15 @@ class InStep(
             return Outcome.BUSY
         }
         try {
-            return once()
+            // The leave this exchange has, from now to its last step: this account, sharing
+            // on, **the same "on" as now**, and whoever asked still wanting it. Asked again
+            // before everything it applies here and every request that changes the server.
+            val began = standing()
+            val asker = kotlin.coroutines.coroutineContext[Job]
+            val still = { may() && standing() == began && asker?.isActive != false }
+            // (The playlist that holds the record, made by this exchange: what goes into
+            // it is decided again, from the top, with it there.)
+            return once(still, made = null) ?: once(still, made = true) ?: Outcome.FAILED
         } catch (e: CancellationException) {
             throw e
         } catch (_: ApiError) {
@@ -222,8 +238,14 @@ class InStep(
         }
     }
 
-    /** The core's numbered steps (the top of its `step.rs`), in order. */
-    private suspend fun once(): Outcome {
+    /**
+     * The core's numbered steps (the top of its `step.rs`), in order. Null when it has just
+     * made the playlist that is to hold the record: nothing is written into it on the
+     * strength of what was decided before it existed (the person may have taken a change
+     * back while the server was making it); the steps are gone through again, once
+     * (`made`), and that time nothing is made.
+     */
+    private suspend fun once(still: () -> Boolean, made: Boolean?): Outcome? {
         // 1. Ask the server. Nothing of the phone's state is taken yet: what the person
         // does while these answers are on their way is in what is decided.
         val listed = server.playlists()
@@ -232,7 +254,7 @@ class InStep(
         // 2. With both answers in hand: still this account, with sharing on. The clock is
         // the server's by the last answer, beside the phone's as it arrived.
         val received = clock()
-        if (!may()) return Outcome.NOT_NOW
+        if (!still()) return Outcome.NOT_NOW
         // 3. Decide, from what the phone holds now.
         val device = phone.device() ?: return Outcome.NOT_READ_YET
         val playlist = read?.value?.let { Stated(it.id, it.name, it.owner, it.comment) }
@@ -249,10 +271,14 @@ class InStep(
             }
         }
         val plan = settled.plan ?: return Outcome.FAILED
+        // (From here on things are applied on the phone: nothing is, from an exchange that
+        // has been let go or has lost its leave. Asked before each.)
+        if (!still()) return Outcome.NOT_NOW
         // 5. Keep: on the disk, or the exchange stops here (it throws).
         phone.keep(plan.keepPlays, plan.keepSources)
+        if (!still()) return Outcome.NOT_NOW
         // 6. Take in.
-        if (!phone.take(plan)) {
+        if (!phone.take(plan, still)) {
             note("in step: what other devices shared couldn't be kept on the phone; nothing was written, and it will be asked for again")
             return Outcome.FAILED
         }
@@ -274,6 +300,7 @@ class InStep(
         }
         // 7.2. The plan must still fit the choices, which are saved, as tried, before the
         // request is made.
+        if (!still()) return Outcome.NOT_NOW
         when (phone.sending(write)) {
             null -> return Outcome.FAILED
             false -> {
@@ -287,17 +314,26 @@ class InStep(
         // have been made, this exchange is on its way until the server has answered,
         // whatever has become of whoever asked for it.
         return withContext(NonCancellable) {
-            // Still this account, with sharing on, immediately before each such request.
-            if (!may()) return@withContext Outcome.NOT_NOW
-            val into = plan.writeInto ?: server.create(PLAYLIST_NAME).ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
-            if (!may()) return@withContext Outcome.NOT_NOW
+            // Still this account, with sharing on as it was when this began, and not let
+            // go: asked immediately before each such request.
+            if (!still()) return@withContext Outcome.NOT_NOW
+            val into = plan.writeInto ?: run {
+                // Never a second one beside one this exchange has just made.
+                if (made == true) return@withContext Outcome.FAILED
+                server.create(PLAYLIST_NAME).ifEmpty { throw ApiError.NotSubsonic("The new playlist came back without an id.") }
+                return@withContext null
+            }
+            if (!still()) return@withContext Outcome.NOT_NOW
             server.setComment(into, plan.writeText)
             // (Where the test rig can have the process killed: the server has the write, and
             // the phone has not yet kept that it has. In a release build, a null field read.)
             org.medianexus.music.downloads.CrashPoints.reached("step-sent")
-            // Only now is what the write carried agreed, and its changes done with.
-            // (Not kept: the exchange is not done. The changes stay as tried, and the next
-            // makes them again over their own result, which alters nothing.)
+            // Only now is what the write carried agreed, and its changes done with: unless
+            // this exchange lost its leave while the server had the write. Then nothing of
+            // it is noted here; the changes stay as tried, and the next exchange there is
+            // makes them again over their own result, which alters nothing.
+            if (!still()) return@withContext Outcome.NOT_NOW
+            // (Not kept: the exchange is not done, and the same holds.)
             if (phone.written(write)) Outcome.DONE else Outcome.FAILED
         }
     }

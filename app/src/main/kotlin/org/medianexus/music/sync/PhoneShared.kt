@@ -91,18 +91,19 @@ class PhoneShared(
         log.flushed()
     }
 
-    override suspend fun take(plan: Plan): Boolean {
+    override suspend fun take(plan: Plan, still: () -> Boolean): Boolean {
         // Only into settings that are still this account's: an exchange that comes back
         // after the account has gone changes nothing. Kept before they show.
         val kept = settings.commit { now ->
             if (!Belongs.ready(now, account)) now else Chosen.with(now, Core.take(Chosen.choices(now), plan.take)).also { settled = it.choices }
         }
         if (!kept) return false
-        if (!Belongs.ready(settings.value, account)) return true
+        if (!Belongs.ready(settings.value, account) || !still()) return true
         // (Each of these is on the disk when it returns, or throws.)
         if (added.take(plan.notes)) datesChanged()
-        // Recently played: what is here now, with what the other devices played.
-        history.take(plan.history, songs)
+        // Recently played: what is here now, with what the other devices played. (The
+        // songs it names may have to be asked of the server first: asked again after.)
+        history.take(plan.history, still, songs)
         return true
     }
 

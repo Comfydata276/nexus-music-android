@@ -125,7 +125,7 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
      * been read. Off the main thread.
      */
     @Throws(java.io.IOException::class)
-    suspend fun take(theirs: List<org.medianexus.music.core.Play>, songsOf: suspend (List<String>) -> Map<String, Song>): Boolean {
+    suspend fun take(theirs: List<org.medianexus.music.core.Play>, still: () -> Boolean = { true }, songsOf: suspend (List<String>) -> Map<String, Song>): Boolean {
         if (!opened) return false
         fun plays(list: List<Played>) = list.map { org.medianexus.music.core.Play(it.song.id, it.at) }
         val before = songs.value
@@ -139,6 +139,8 @@ class RecentlyPlayed(private val file: File, private val scope: CoroutineScope, 
         for (played in before) known.putIfAbsent(played.song.id, played.song)
         val unmet = merged.map { it.song }.filter { it !in known }.distinct()
         if (unmet.isNotEmpty()) known.putAll(songsOf(unmet))
+        // (Looking songs up took a moment: whoever asked may no longer want this taken in.)
+        if (!still()) return false
         var changed = false
         songs.update { now ->
             // (Something may have started playing while the songs were looked up: merged

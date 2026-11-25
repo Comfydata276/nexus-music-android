@@ -83,7 +83,7 @@ class SettingsStore private constructor(
         var changed = false
         while (true) {
             val before = current.value
-            val after = change(before)
+            val after = counted(before, change(before))
             if (current.compareAndSet(before, after)) {
                 changed = after != before
                 break
@@ -95,6 +95,11 @@ class SettingsStore private constructor(
         }
     }
 
+    /** Sharing switched off is counted, whoever switches it ([Settings.syncOffs]): here,
+     *  so that no way of changing the settings can miss it. */
+    private fun counted(before: Settings, after: Settings): Settings =
+        if (before.sync && !after.sync) after.copy(syncOffs = before.syncOffs + 1) else after
+
     /**
      * Changes the settings **and has them on the disk before the change shows**: for a
      * change that must not be lost once the person has seen it made (one that waits to be
@@ -105,7 +110,7 @@ class SettingsStore private constructor(
     suspend fun commit(change: (Settings) -> Settings): Boolean = writing.withLock {
         while (true) {
             val before = current.value
-            val after = change(before)
+            val after = counted(before, change(before))
             if (after == before) return@withLock true
             // (Surely: something is about to be done on the strength of it, so the folder
             // is synced too, as for the other writes the app relies on.)
