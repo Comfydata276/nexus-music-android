@@ -1862,13 +1862,26 @@ client keeps none), its interceptors (this client has none) or its connections.
 | Between pieces of a body | no limit | 30 s |
 | The whole call | no limit, or the library's own for that call (`patience`: 5 s for ListenBrainz) | the same |
 | Redirects, Lidarr and the sign-in | never followed | never followed |
-| Redirects, MusicBrainz and ListenBrainz | followed, ten at most | followed, twenty at most (OkHttp's own) |
+| Redirects, MusicBrainz and ListenBrainz | followed, ten at most | followed by the phone's own rule, five at most (below) |
 | Idle connections kept | Lidarr 300 s, MusicBrainz 12 s, ListenBrainz 50 s | the same, a pool for each |
 | Name (`User-Agent`) | `NexusMusic/<version>` | `NexusMusic/<version> (Android)`, as the phone's music client |
 | Sent where the library names none | `Accept: */*`, `Accept-Encoding: gzip` | the same |
 
 A redirect is never followed for Lidarr because one is how a sign-in in front of it shows
-itself, and because the request carries Lidarr's key. MusicBrainz asks every application
+itself, and because the request carries Lidarr's key. **For MusicBrainz and ListenBrainz
+the client follows none by itself either: each step is taken by hand and judged**
+(`CoreHttp.onward`). Only a `GET` is sent on (a `POST` would carry its body with it);
+only from `https` to `https`; never to this phone, the link it is on, a private range or a
+carrier's shared one; never to the music server; five times at the most. Anything else
+goes back to the library as the answer it was. And those two services are **reached only
+at public addresses** in the first place: a name that turns out to be inside a network is
+refused when it is looked up, and an address written as numbers before that.
+
+**Nothing of requests is ever sent to the music server's own address** (its scheme, host
+and port), by a redirect or otherwise: not the look the library takes at where a redirect
+from Lidarr's address points, not a sign-in service that claims to live there. The one
+exception is the person's own doing: a Lidarr whose address they typed is on that very
+host and port (one proxy, two paths), and the requests that are bound to it go there. MusicBrainz asks every application
 to name itself and give a way to reach its author; neither app gives the second, and if
 that is added it should be added to both at once.
 
@@ -1986,8 +1999,10 @@ import, which the phone does not have.
   followed: the request with the key in it goes no further than where the person sent it.
   The library does look once at where a redirect from Lidarr's address points, to find
   the sign-in: that is one `GET` carrying nothing but the app's name, to an address chosen
-  by whoever answers there, and what comes back is read only for where *it* points. For
-  MusicBrainz and ListenBrainz a redirect is followed, carrying the app's name and
+  by whoever answers there, and what comes back is read only for where *it* points. To the
+  music server's own address that look is not sent at all. For MusicBrainz and
+  ListenBrainz a redirect is followed only from `https` to `https`, never into a private
+  network or to the music server and never for a `POST`, carrying the app's name and
   nothing else; there are no cookies to carry.
 - *A header that is not text.* Handed to the library as unreadable, which is what its
   rules expect (a "come back in" that can't be read means a second, and is not passed
