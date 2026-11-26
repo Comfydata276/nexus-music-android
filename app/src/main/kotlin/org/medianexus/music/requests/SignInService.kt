@@ -85,10 +85,10 @@ class SignInService : Service() {
 
         /**
          * Keeps the app running for a sign-in that has begun (from a tap: Android lets only
-         * an app in front start this), and returns what lets it go, once, when that sign-in
-         * has ended.
+         * an app in front start this). What it returns says whether the service is running
+         * now, and lets it go, once, when that sign-in has ended.
          */
-        fun hold(context: Context): () -> Unit {
+        fun hold(context: Context): Requests.Hold {
             val app = context.applicationContext
             synchronized(lock) { held++ }
             try {
@@ -97,7 +97,7 @@ class SignInService : Service() {
                 // (Started from the background after all: Android's rule.)
             }
             val once = AtomicBoolean(false)
-            return {
+            return Requests.Hold(running = { synchronized(lock) { running != null } }) {
                 if (once.compareAndSet(false, true)) {
                     synchronized(lock) {
                         held--

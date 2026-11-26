@@ -216,6 +216,7 @@ class Graph(
                     afterwards = afterwards,
                     comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
                     awake = { org.medianexus.music.requests.SignInService.hold(context) },
+                    trace = { diagnostics.replacing(org.medianexus.music.requests.Trace.PREFIX, it) },
                     note = { diagnostics.note(it) },
                     // (A sign-in is finished only with the app's own screen in front: resumed.)
                     front = resumed,

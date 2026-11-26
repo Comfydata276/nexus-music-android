@@ -186,6 +186,43 @@ internal object CoreHttp {
         NetTrouble.OTHER -> "The connection failed."
     }
 
+    // ---- what became of the last request to Lidarr or its sign-in -------------------------------
+
+    /**
+     * **What became of the last request on Lidarr's line** (Lidarr's own and its sign-in's),
+     * for the diagnostics line about the last attempt to connect requests: in fixed words
+     * ("timed out", "answered 302"), and the kind of address the connection was made to
+     * ("IPv4", "IPv6"; null if none was made). Never an address, a header or a body. `at` is
+     * [System.nanoTime] when it ended, so that whoever reads it can tell it is their own.
+     */
+    class LastOnLidarr(val at: Long, val ended: String, val family: String?)
+
+    @Volatile var lastOnLidarr: LastOnLidarr? = null
+        private set
+
+    /** The kind of address the request in flight on this thread was sent to, if it was sent. */
+    private val family = ThreadLocal<String?>()
+
+    private fun ended(asked: Asked, words: String) {
+        if (asked.line == "lidarr") lastOnLidarr = LastOnLidarr(System.nanoTime(), words, family.get())
+    }
+
+    /** The same as [words], as a fixed word for the diagnostics line. */
+    private fun word(error: IOException): String = when (netTrouble(error)) {
+        NetTrouble.REDIRECT -> "redirect refused"
+        NetTrouble.CERTIFICATE_FOR_ANOTHER -> "certificate for another name"
+        NetTrouble.CERTIFICATE_NOT_TRUSTED -> "certificate not trusted"
+        NetTrouble.NAME_NOT_FOUND -> "name not found"
+        NetTrouble.REFUSED -> "connection refused"
+        NetTrouble.TIMED_OUT -> "timed out"
+        NetTrouble.SECURE_CONNECTION -> "secure connection failed"
+        NetTrouble.NOT_ALLOWED -> "not allowed by the phone"
+        NetTrouble.NO_WAY -> "no route"
+        NetTrouble.DROPPED -> "connection dropped"
+        NetTrouble.NO_CONNECTION -> "couldn't connect"
+        NetTrouble.OTHER -> "connection failed"
+    }
+
     // ---- where a secret may go -----------------------------------------------------------------
 
     /**
@@ -341,6 +378,14 @@ internal object CoreHttp {
             val looks = base.newBuilder()
                 .connectionPool(ConnectionPool(4, idleSeconds, TimeUnit.SECONDS))
                 .apply { if (public) dns(Public) }
+                // (Lidarr's line: which kind of address the connection went to, for the
+                // diagnostics line. It looks; it changes nothing.)
+                .apply {
+                    if (!public) addNetworkInterceptor { chain ->
+                        chain.connection()?.socket()?.inetAddress?.let { family.set(if (it is java.net.Inet6Address) "IPv6" else "IPv4") }
+                        chain.proceed(chain.request())
+                    }
+                }
                 .build()
             // A request that changes something is sent once: never again by the client on
             // its own, which could not know whether the first had been acted on. (Not after
@@ -736,11 +781,33 @@ internal object CoreHttp {
     }
 
     private fun sent(asked: Asked): ByteArray {
+        family.set(null)
+        return sending(asked).also { out ->
+            when (out.firstOrNull()) {
+                FAILED -> if (lastOnLidarrNow == null) ended(asked, "not sent")
+                STOPPED -> ended(asked, "stopped")
+            }
+            lastOnLidarrNow?.let { ended(asked, it) }
+            lastOnLidarrNow = null
+        }
+    }
+
+    /** What [sending] came to on this thread, in a fixed word, when it went on its way. */
+    private var lastOnLidarrNow: String?
+        get() = endedNow.get()
+        set(value) = endedNow.set(value)
+
+    private val endedNow = ThreadLocal<String?>()
+
+    private fun sending(asked: Asked): ByteArray {
         unsent()?.let { return failed(it) }
         val doing: Doing? = if (asked.operation == 0L) null else doings[asked.operation] ?: return stopped
         when (doing?.allowance()) {
             Doing.REFUSED -> return stopped
-            Doing.SPENT -> return failed(IN_TIME)
+            Doing.SPENT -> {
+                lastOnLidarrNow = "out of time"
+                return failed(IN_TIME)
+            }
         }
 
         val url = asked.url.toHttpUrlOrNull() ?: return failed(BAD_ADDRESS)
@@ -778,7 +845,10 @@ internal object CoreHttp {
             val allowed = if (doing == null) nobodysMillis else doing.enter(call)
             if (allowed == Doing.REFUSED) return stopped
             // (Its time was spent between the look above and now: not sent.)
-            if (allowed == Doing.SPENT) return failed(IN_TIME)
+            if (allowed == Doing.SPENT) {
+                lastOnLidarrNow = "out of time"
+                return failed(IN_TIME)
+            }
             val limit = listOfNotNull(asked.patience, allowed).minOrNull()
             if (limit != null) call.timeout().timeout(limit, TimeUnit.MILLISECONDS)
             // (The name this is for, if a public service's: judged if it is looked up. See [Public].)
@@ -788,12 +858,14 @@ internal object CoreHttp {
                 call.execute()
             } catch (e: IOException) {
                 doing?.leave(call)
+                if (doing?.isStopped != true) lastOnLidarrNow = word(e)
                 return if (doing?.isStopped == true) stopped else failed(words(e))
             } finally {
                 name?.let { asking(it, -1) }
             }
             // (Sent on by a public service: followed here, a step at a time, or not at all.)
             val next = onward(asked, going.url, response, steps)
+            lastOnLidarrNow = "answered ${response.code}"
             if (next == null) return answered(response, call, doing)
             try {
                 response.close()

@@ -162,7 +162,10 @@ class Requests internal constructor(
      * go (`SignInService.hold`). Out of sight and with nothing in the foreground, Android
      * freezes the app, and the browser's return is then let in and never answered.
      */
-    private val awake: () -> () -> Unit = { {} },
+    private val awake: () -> Hold = { Hold({ false }, {}) },
+    /** Writes the diagnostics line about the last attempt to connect or sign in ([Trace]),
+     *  in place of the one before it. */
+    private val trace: (String) -> Unit = {},
     private val note: (String) -> Unit = {},
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** How long the browser is waited for (a test's own). */
@@ -278,8 +281,30 @@ class Requests internal constructor(
 
     /** A sign-in under way: the door the browser comes back through, when it must be over
      *  by, and whether it has been given up meanwhile. */
-    private class Attempt(val door: BrowserReturn, val host: String, val until: Long) {
+    private class Attempt(val door: BrowserReturn, val host: String, val until: Long, val hold: Hold) {
         val retired = MutableStateFlow(false)
+
+        /** When the browser was sent to the sign-in page ([System.nanoTime]). */
+        val began = System.nanoTime()
+    }
+
+    /** A sign-in's hold on the app's running (see [awake]): whether it is running now, and
+     *  letting it go, once. */
+    class Hold(val running: () -> Boolean, val release: () -> Unit)
+
+    /** An attempt whose end is written down ([trace]): the step it is at, and what the
+     *  browser did if it was sent to one. */
+    private class Traced(val step: Trace.Step, val browser: Trace.Browser? = null)
+
+    private fun millisSince(nanos: Long): Long = (System.nanoTime() - nanos) / 1_000_000
+
+    /** Writes the line about the last attempt. Never throws. */
+    private fun writeTrace(step: Trace.Step, ended: String, millis: Long, browser: Trace.Browser?, since: Long) {
+        try {
+            val address = runCatching { Core.lidarrTidy(settingsNow.value.address) }.getOrNull()
+            trace(Trace.line(step, ended, millis, browser, Trace.addressKind(address), Trace.last(since)?.family ?: CoreHttp.lastOnLidarr?.family))
+        } catch (_: Exception) {
+        }
     }
 
     private var attempt: Attempt? = null
@@ -511,7 +536,7 @@ class Requests internal constructor(
             stateNow.value = RequestsState.KeyForgotten
             return@withContext RequestsState.KeyForgotten
         }
-        check()
+        check(interrupted = false, traced = Traced(Trace.Step.CHECK))
     }
 
     /** Switches "singles and EPs" on or off (see [RequestsSettings.singles]). What is being
@@ -540,7 +565,7 @@ class Requests internal constructor(
      */
     suspend fun check(): RequestsState = check(interrupted = false)
 
-    private suspend fun check(interrupted: Boolean): RequestsState = withContext(io) {
+    private suspend fun check(interrupted: Boolean, traced: Traced? = null): RequestsState = withContext(io) {
         val (mine, at) = turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
@@ -558,6 +583,7 @@ class Requests internal constructor(
             verifiedNow.value = null
             ++checks to at
         }
+        val since = System.nanoTime()
         val checked = Core.lidarrCheck(at)
         turn.withLock {
             if (checks != mine) return@withContext stateNow.value
@@ -597,6 +623,21 @@ class Requests internal constructor(
             }
             // (Lidarr answered as itself, on this very connection.)
             if (stateNow.value is RequestsState.Connected) verifiedNow.value = Verified(at)
+            if (traced != null) {
+                val wire = Trace.last(since)?.ended
+                val (step, ended) = when (checked) {
+                    is Outcome.Stopped -> traced.step to "stopped"
+                    is Outcome.Failed -> traced.step to (wire ?: "failed")
+                    is Outcome.Got -> when {
+                        checked.value.version != null -> traced.step to "connected"
+                        unusable -> Trace.Step.FIND to "sign-in service not usable"
+                        found != null -> Trace.Step.FIND to "sign-in found"
+                        checked.value.doorWhy != null -> Trace.Step.FIND to (wire ?: "failed")
+                        else -> traced.step to (wire ?: "failed")
+                    }
+                }
+                writeTrace(step, ended, millisSince(since), traced.browser, since)
+            }
             stateNow.value
         }
     }
@@ -638,22 +679,31 @@ class Requests internal constructor(
                 stateNow.value = RequestsState.Unreachable(RequestsWords.SERVICE_UNUSABLE)
                 return@withContext null
             }
-            val mine = Attempt(door, host, until = clock() + waitMillis)
+            // (Taken here, with the app's screen in front: Android allows it only then. Let
+            // go however the wait ends, or if it is never begun.)
+            val hold = awake()
+            val mine = Attempt(door, host, until = clock() + waitMillis, hold)
             attempt = mine
             write(settings.copy(signingIn = true))
             stateNow.value = RequestsState.SigningIn(host)
-            // (Taken here, with the app's screen in front: Android allows it only then. Let
-            // go however the wait ends, or if it is never begun.)
-            val release = awake()
-            scope.launch(io) { waitFor(mine, found, secret) }.invokeOnCompletion { release() }
+            scope.launch(io) { waitFor(mine, found, secret) }.invokeOnCompletion { hold.release() }
             link
         }
     }
 
     private suspend fun waitFor(mine: Attempt, found: SignInDoor, secret: String) {
         val came = mine.door.await(waitMillis)
+        // (What the browser did, for the line about this attempt.)
+        val browser = when (came) {
+            is BrowserReturn.Came.Code, is BrowserReturn.Came.TurnedDown -> Trace.Browser(millisSince(mine.began) / 1_000, front.value, mine.hold.running())
+            else -> Trace.Browser(null, null, mine.hold.running())
+        }
+        var tradeSince = 0L
         try {
-            if (came is BrowserReturn.Came.GivenUp) return
+            if (came is BrowserReturn.Came.GivenUp) {
+                writeTrace(Trace.Step.BROWSER, "given up", millisSince(mine.began), browser, mine.began)
+                return
+            }
             val code = came as? BrowserReturn.Came.Code
             // Whoever signed in is looking at the browser: the app asks to come back in
             // front of it (which closes the tab, where the tab is the app's own).
@@ -674,6 +724,7 @@ class Requests internal constructor(
             // (Not to be cut off part-way, whatever becomes of the account meanwhile: a token
             // collected for nobody is handed straight back. Nor left to take for ever: see
             // `Core.gateFinish`.)
+            tradeSince = System.nanoTime()
             val done = if (code != null && returned && !mine.retired.value) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) } else null
             val token = (done as? Outcome.Got)?.value
             // 0: this sign-in has been retired meanwhile; 1: it didn't go through; 2: signed in.
@@ -718,11 +769,22 @@ class Requests internal constructor(
             mine.door.close()
             // (A token the service gave that is not in this app's keeping is handed back.)
             if (ended == 1 && token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home) }
+            if (ended != 2) {
+                val wire = Trace.last(tradeSince)?.ended
+                when {
+                    ended == 0 || mine.retired.value -> writeTrace(Trace.Step.BROWSER, "given up", millisSince(mine.began), browser, mine.began)
+                    done != null -> writeTrace(Trace.Step.FINISH, if (token != null) "token not kept" else wire ?: "failed", millisSince(tradeSince), browser, tradeSince)
+                    code != null -> writeTrace(Trace.Step.BROWSER, "app not back in front", millisSince(mine.began), browser, mine.began)
+                    came is BrowserReturn.Came.TurnedDown -> writeTrace(Trace.Step.BROWSER, "turned down by the service", millisSince(mine.began), browser, mine.began)
+                    came is BrowserReturn.Came.Failed -> writeTrace(Trace.Step.BROWSER, "return door failed", millisSince(mine.began), browser, mine.began)
+                    else -> writeTrace(Trace.Step.BROWSER, "nobody came back", millisSince(mine.began), browser, mine.began)
+                }
+            }
             if (ended == 0) {
                 if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home) }
                 return
             }
-            if (ended == 2) check()
+            if (ended == 2) check(interrupted = false, traced = Traced(Trace.Step.LOOK, browser))
         } finally {
             // (Whatever happened: the door is shut, and nobody is left waiting at it.)
             mine.door.close()

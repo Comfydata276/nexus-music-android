@@ -66,6 +66,9 @@ class RequestsTest {
      *  many have ever begun to. */
     private val awake = AtomicInteger(0)
     private val woken = AtomicInteger(0)
+
+    /** The diagnostics line about the last attempt to connect or sign in, each time it was written. */
+    private val traces = CopyOnWriteArrayList<String>()
     private val KEY = "standinkeystandinkeystandinkey12"
 
     private fun account(name: String = "tester") =
@@ -103,8 +106,9 @@ class RequestsTest {
                 awake.incrementAndGet()
                 woken.incrementAndGet()
                 val once = java.util.concurrent.atomic.AtomicBoolean(false)
-                ({ if (once.compareAndSet(false, true)) awake.decrementAndGet() })
+                Requests.Hold({ !once.get() }) { if (once.compareAndSet(false, true)) awake.decrementAndGet() }
             },
+            trace = { traces += it },
             note = { notes += it }, waitMillis = waitMillis, front = front,
         )
         return made
@@ -918,6 +922,58 @@ class RequestsTest {
         requests.cancelSignIn()
         withTimeout(5_000) { while (awake.get() != 0) delay(20) }
         assertEquals(4, woken.get())
+    }
+
+    /**
+     * The diagnostics line about the last attempt says where it ended, in fixed words, and
+     * **carries nothing of the attempt's own**: not Lidarr's address or the sign-in's, not
+     * the key, the code, the state, the check of the secret or the token, though this attempt
+     * had every one of them.
+     */
+    @Test
+    fun `the line about the last attempt says where it ended and holds no address, key, code, state or token`() = runBlocking {
+        val behind = Behind()
+        val account = account()
+        val front = MutableStateFlow(true)
+        val requests = requests(account, front = front)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} finding the sign-in, sign-in found, "))
+
+        // Signed in, after a moment at the page with the app behind the browser.
+        var link = requests.signIn()!!
+        front.value = false
+        val back = signedInAt(link)
+        browse(back)
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
+        withTimeout(5_000) { while (!traces.last().contains("first look signed in")) delay(20) }
+        val signedIn = traces.last()
+        assertTrue(signedIn, signedIn.startsWith("${Trace.PREFIX} first look signed in, connected, "))
+        assertTrue(signedIn, "; browser came back after 0 s, app in front: no; kept running: yes; address: an IPv4 number; connected over IPv4" in signedIn)
+        val secrets = mutableListOf(KEY, param(link, "state"), param(link, "code_challenge"), Core.gateParam(back.substringAfter('?'), "code")!!, tokenKept(account)!!)
+
+        // The service won't finish the next one: where it ended, and how.
+        requests.signOut()
+        behind.refusing.set(true)
+        link = requests.signIn()!!
+        front.value = true
+        val refused = signedInAt(link)
+        browse(refused)
+        requests.until { it is RequestsState.NeedsSignIn && it.why != null }
+        withTimeout(5_000) { while (!traces.last().contains("finishing the sign-in")) delay(20) }
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} finishing the sign-in, answered 400, "))
+        secrets += listOf(param(link, "state"), param(link, "code_challenge"), Core.gateParam(refused.substringAfter('?'), "code")!!)
+
+        // Lidarr turned away; nobody at all where it was.
+        requests.connect(behind.lidarr.address, "wrongkeywrongkeywrongkeywrongkey")
+        val dead = java.net.ServerSocket(0).use { it.localPort }
+        requests.connect("http://127.0.0.1:$dead", KEY)
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} checking Lidarr, connection refused, "))
+
+        val places = listOf(behind.lidarr.address, behind.host, behind.service.address, "127.0.0.1", ":$dead", "wrongkey").map { it.removePrefix("http://") }
+        for (line in traces) {
+            for (secret in secrets + places) assertFalse("$line holds $secret", secret in line)
+        }
     }
 
     @Test
