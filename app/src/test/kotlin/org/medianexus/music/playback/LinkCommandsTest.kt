@@ -459,16 +459,17 @@ class LinkCommandsTest {
         assertEquals("Study PC", linked.state.value.steering)
         assertTrue(linked.state.value.devices.single().steered)
         // What is pressed in the player is asked of the device, **each one, in the order
-        // pressed**: the first as a command, and those pressed while it is unanswered wait
-        // behind it (as many as wait), each sent as the one before is carried out. Each is
-        // one the library reads: linking has not stopped for any of them.
+        // pressed**, carrying what was pressed (where to seek to, the entry a row names):
+        // the first as a command, and those pressed while it is unanswered wait behind it
+        // (as many as wait), each sent as the one before is carried out. Each is one the
+        // library reads: linking has not stopped for any of them.
         asked.clear()
         val hands = steered.hands ?: error("the player has no hands for the device")
         fun inTurn(vararg presses: () -> Unit): List<String> {
             presses.forEach { it() }
             val arrived = ArrayList<String>()
             repeat(presses.size) {
-                val now = commandsSent()
+                val now = commandsCarried()
                 assertEquals("one command out at a time, after $arrived", 1, now.size)
                 arrived += now
                 answered(carried = true)
@@ -479,14 +480,20 @@ class LinkCommandsTest {
         // (A row is pressed by its number as the queue sheet draws it: its entry's.)
         val (x1, x2) = steered.shown.value!!.queue.uids
         assertEquals(
-            listOf("next", "pause", "previous", "seek", "volume", "shuffle", "repeat", "jump", "remove"),
-            inTurn({ hands.next() }, { hands.toggle() }, { hands.previous() }, { hands.seek(30_000) }, { hands.volume(0.4f) }, { hands.shuffle() }, { hands.repeat() }, { hands.jump(x1) }, { hands.remove(x2) }),
+            listOf(
+                "next", "pause", "previous", """seek {"to":30.0}""", """volume {"to":0.5}""", """shuffle {"on":true}""", """repeat {"mode":1}""",
+                """jump {"at":0,"id":"x1"}""", """remove {"at":1,"id":"x2"}""",
+            ),
+            inTurn({ hands.next() }, { hands.toggle() }, { hands.previous() }, { hands.seek(30_000) }, { hands.volume(0.5f) }, { hands.shuffle() }, { hands.repeat() }, { hands.jump(x1) }, { hands.remove(x2) }),
         )
         // (Its own word again, with both entries in its queue.)
         answered(full = full)
         val (again1, again2) = steered.shown.value!!.queue.uids
         assertEquals(
-            listOf("clear", "move", "add", "adopt"),
+            listOf(
+                """clear {"queued":false}""", """move {"from":1,"id":"x2","queued":true,"to":1}""", """add {"ids":["s2"],"next":false}""",
+                """adopt {"context":"A list","index":2,"position":0.0,"queued":0,"songs":["s0","s1","s2","s3","s4","s5"]}""",
+            ),
             inTurn({ hands.clear(false) }, { hands.move(again2, again1, true) }, { hands.add(listOf(Song(id = "s2")), playNext = false) }, { hands.play(mine(), 2, "A list", whole = false) }),
         )
         assertFalse(link().stopped)
@@ -603,6 +610,13 @@ class LinkCommandsTest {
     private fun commandsSent(): List<String> = asks("send").map { it.getValue("frame").jsonPrimitive.content }
         .filter { Core.linkTestIsCommand(it) }
         .map { Core.linkTestAsked(it).getValue("do").jsonPrimitive.content }
+
+    /** The same, each with what it carries as the other device reads it (its fields in
+     *  the library's order, by name): `seek {"to":30.0}`. */
+    private fun commandsCarried(): List<String> = asks("send").map { it.getValue("frame").jsonPrimitive.content }
+        .filter { Core.linkTestIsCommand(it) }
+        .map { Core.linkTestAsked(it) }
+        .map { asked -> listOfNotNull(asked.getValue("do").jsonPrimitive.content, asked["with"]?.toString()).joinToString(" ") }
 
     private fun key(code: Int) = Intent(Intent.ACTION_MEDIA_BUTTON).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, code))
 
