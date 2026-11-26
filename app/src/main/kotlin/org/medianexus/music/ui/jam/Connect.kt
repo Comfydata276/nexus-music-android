@@ -73,7 +73,8 @@ private fun ConnectSheet(choose: (() -> Unit) -> Unit) {
     // ways out; one steered the old way is as it was.
     val steering = if (linkHere) org.medianexus.music.ui.link.ConnectView.steering(link) else ""
     val shownThere by ui.graph.steered.shown.collectAsStateWithLifecycle()
-    val pausedThere = linkHere && org.medianexus.music.ui.link.ConnectView.pausedThere(link, shownThere)
+    // What is said under a device steered the new way: playing, paused, or only its name.
+    val thereSays = if (steering.isNotEmpty()) org.medianexus.music.ui.link.ConnectView.there(link, shownThere) else null
     val oldLinked = state?.linked
     val there = steering.ifEmpty { oldLinked.orEmpty() }
     // This phone's own name, over "This phone": the jam's where jams exist, else linking's.
@@ -87,7 +88,13 @@ private fun ConnectSheet(choose: (() -> Unit) -> Unit) {
                     BasicText(there.ifEmpty { own.ifEmpty { stringResource(R.string.jam_this_phone) } }, style = Theme.type.rowTitle.copy(color = colors.accentBright, fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     // (With no name for this phone, "This phone" once, not twice. With jams, as M6
                     // made it.)
-                    if (there.isNotEmpty() || own.isNotEmpty() || state != null) BasicText(stringResource(if (pausedThere) R.string.link_paused_there else if (there.isNotEmpty()) R.string.jam_playing_there else R.string.jam_this_phone), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
+                    val line = when (thereSays) {
+                        org.medianexus.music.ui.link.ConnectView.There.PLAYING -> R.string.jam_playing_there
+                        org.medianexus.music.ui.link.ConnectView.There.PAUSED -> R.string.link_paused_there
+                        org.medianexus.music.ui.link.ConnectView.There.NAME_ONLY -> null
+                        null -> if (there.isNotEmpty()) R.string.jam_playing_there else if (own.isNotEmpty() || state != null) R.string.jam_this_phone else null
+                    }
+                    if (line != null) BasicText(stringResource(line), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
                 }
                 if (steering.isEmpty() && oldLinked != null) TextButton(stringResource(R.string.jam_play_here), { choose { jams.playHere() } })
             }

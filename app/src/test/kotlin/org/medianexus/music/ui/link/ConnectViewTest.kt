@@ -97,11 +97,23 @@ class ConnectViewTest {
     @Test
     fun aPausedDeviceSteeredIsNotSaidToBePlaying() {
         val state = Linked.State(running = true, entered = true, steering = "Study PC")
-        assertTrue(ConnectView.pausedThere(state, there("Study PC", playing = false)))
-        assertFalse(ConnectView.pausedThere(state, there("Study PC", playing = true)))
-        // Picked and not heard from yet, or the player showing something else: as before.
-        assertFalse(ConnectView.pausedThere(state, null))
-        assertFalse(ConnectView.pausedThere(state, there("Jo's jam", playing = false)))
-        assertFalse("nothing steered", ConnectView.pausedThere(Linked.State(running = true), there("Study PC", playing = false)))
+        assertEquals(ConnectView.There.PAUSED, ConnectView.there(state, there("Study PC", playing = false)))
+        assertEquals(ConnectView.There.PLAYING, ConnectView.there(state, there("Study PC", playing = true)))
+        // The player showing something else, and the list saying nothing of it: only the name.
+        assertEquals(ConnectView.There.NAME_ONLY, ConnectView.there(state, there("Jo's jam", playing = true)))
+    }
+
+    @Test
+    fun beforeTheFirstViewTheTopSaysWhatTheListLastSaidOrOnlyTheName() {
+        // Picked, and its first full view held: the player shows nothing of it yet.
+        val pausedRow = Linked.State(running = true, entered = true, steering = "Study PC", devices = listOf(device("Study PC", about = "Paused on Nordlys", steered = true)))
+        assertEquals(ConnectView.There.PAUSED, ConnectView.there(pausedRow, null))
+        val playingRow = pausedRow.copy(devices = listOf(device("Study PC", about = "Playing Nordlys", playing = true, steered = true)))
+        assertEquals(ConnectView.There.PLAYING, ConnectView.there(playingRow, null))
+        // Not in the list: only its name.
+        assertEquals(ConnectView.There.NAME_ONLY, ConnectView.there(pausedRow.copy(devices = emptyList()), null))
+        // Its view in: that says.
+        assertEquals(ConnectView.There.PLAYING, ConnectView.there(pausedRow, there("Study PC", playing = true)))
+        assertEquals(ConnectView.There.PAUSED, ConnectView.there(playingRow, there("Study PC", playing = false)))
     }
 }

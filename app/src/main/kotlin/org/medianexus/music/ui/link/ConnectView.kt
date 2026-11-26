@@ -56,13 +56,19 @@ internal object ConnectView {
      */
     fun ownName(jamName: String?, me: String): String = jamName.orEmpty().ifEmpty { me }
 
+    /** What the top says under a device steered the new way. */
+    enum class There { PLAYING, PAUSED, NAME_ONLY }
+
     /**
-     * Whether the device steered the new way is paused, so the top says "Paused there" and not
-     * "Playing there" (review X4): what the player shows of it says so. Not yet heard from, or
-     * the player showing something else: as before.
+     * **Which: "Playing there" only of a device known to be playing** (review Z3). Its view in
+     * the player says, once there is one; before it (picked, its first full view not in yet),
+     * what the list last said of the device steered; and if the list says nothing of it, only
+     * its name.
      */
-    fun pausedThere(state: Linked.State, shown: org.medianexus.music.playback.Steered.Shown?): Boolean {
-        val there = steering(state)
-        return there.isNotEmpty() && shown != null && shown.where == there && !shown.playing
+    fun there(state: Linked.State, shown: org.medianexus.music.playback.Steered.Shown?): There {
+        val name = steering(state)
+        if (shown != null && shown.where == name) return if (shown.playing) There.PLAYING else There.PAUSED
+        val row = state.devices.firstOrNull { it.steered } ?: return There.NAME_ONLY
+        return if (row.playing) There.PLAYING else There.PAUSED
     }
 }
