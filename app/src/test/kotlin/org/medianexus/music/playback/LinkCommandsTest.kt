@@ -360,6 +360,8 @@ class LinkCommandsTest {
         answered()
         pass(600)
         assertTrue(linked.state.value.running)
+        // (What the phone is called among the person's devices: here, its model.)
+        assertTrue(linked.state.value.me.isNotEmpty())
         val row = linked.state.value.devices.single()
         assertEquals(Linked.Device(row.place, "Study PC", "Playing Harbour Lights", playing = true, steered = false, pickable = true, update = ""), row)
         assertTrue(linked.state.value.entered)

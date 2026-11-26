@@ -128,6 +128,9 @@ internal class Linking(
 
     private fun event(name: String) = buildJsonObject { put("event", name) }
 
+    /** What this phone is called among the person's devices, as the library was told. */
+    private var me = ""
+
     /**
      * The device being steered, in the phone's player. A press there is told to the
      * library, whose answer ends by saying whether it was asked of the device
@@ -353,6 +356,7 @@ internal class Linking(
             check(Looper.myLooper() == main.looper) { "linking is started on the player's thread" }
             relayEdit = host.relayEdit()
             val (id, name) = host.device()
+            me = name
             // The library first: until it has answered, nothing else is set up.
             val made = Core.linkNew(this, id, name, host.remembered())
             link = made.link
@@ -593,7 +597,7 @@ internal class Linking(
                     steer.steering(it.jsonPrimitive.contentOrNull)
                 }
             }
-            "shown" -> shown = act.getValue("shown").jsonObject.also(linked::shown)
+            "shown" -> shown = act.getValue("shown").jsonObject.also { linked.shown(it, me) }
             "view" -> view = act.getValue("view").also(steer::view)
             "fault" -> fault("the shared library stopped, or a call into the player failed")
             else -> Unit

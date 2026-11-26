@@ -20,9 +20,9 @@ class LinkedTest {
     fun theListIsReadAsTheLibrarySaysIt() {
         val linked = Linked()
         assertEquals(Linked.State(), linked.state.value)
-        linked.shown(shown)
+        linked.shown(shown, me = "Jo's phone")
         val state = linked.state.value
-        assertEquals(listOf(true, true, "Paused Study PC.", "Laptop", false), listOf(state.running, state.entered, state.note, state.steering, state.stopped))
+        assertEquals(listOf(true, true, "Paused Study PC.", "Laptop", false, "Jo's phone"), listOf(state.running, state.entered, state.note, state.steering, state.stopped, state.me))
         assertEquals(
             listOf(
                 Linked.Device("AAAA", "Study PC", "Playing Harbour Lights", playing = true, steered = false, pickable = true, update = ""),

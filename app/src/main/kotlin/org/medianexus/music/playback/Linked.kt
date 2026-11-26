@@ -61,6 +61,10 @@ class Linked {
         val steering: String = "",
         /** Linking has stopped on this phone until the app is next opened (a fault). */
         val stopped: Boolean = false,
+        /** **What this phone is called among the person's devices**: the name the others
+         *  list it by (the one chosen in Settings, else the phone's own, else its model),
+         *  as the linking was told it when it started. Empty with no linking. */
+        val me: String = "",
     )
 
     private val now = MutableStateFlow(State())
@@ -121,9 +125,9 @@ class Linked {
         doing?.lookedUp(ticket)
     }
 
-    /** What the library says the list shows (its `shown`). */
-    internal fun shown(shown: JsonObject) {
-        now.value = read(shown)
+    /** What the library says the list shows (its `shown`), and what this phone is called. */
+    internal fun shown(shown: JsonObject, me: String = "") {
+        now.value = read(shown).copy(me = me)
     }
 
     /** The sign-in has ended, and the linking waits for the next: nothing is listed. */
