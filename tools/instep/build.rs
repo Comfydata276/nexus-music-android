@@ -7,7 +7,10 @@
 //! * `sync.rs` from its top to where the part that drives the window begins (`impl
 //!   Controller`): the record, the merges, and `exchange` with what it calls.
 //! * From `config.rs` only `ListPrefs`, `Played`, `write_atomically` and, where it has
-//!   them, `write_surely` and `beside`.
+//!   them, `write_surely` and `beside`. From 0.40.11, where every file is written by
+//!   `write_whole` and the steps it is given, `Played` and the three runs of the file that
+//!   are that way of writing: `Placed` to `temp_for`, the note that a drive can't make hard
+//!   links, and `Steps` to `sync_folder`.
 //!
 //! From the release after 0.40.3 the record, the merges and what a server's answers are read into are in the
 //! Windows app's library (`core/`, beside `src/`), which this tool depends on as the app
@@ -72,8 +75,9 @@ fn main() {
         .lines()
         // The window and the controller aren't here, and nothing above the cut uses them.
         .filter(|line| !line.starts_with("use slint") && !line.starts_with("use crate::controller"))
-        // (Nor, in a stepped checkout, the app's settings.)
-        .filter(|line| !(stepped && line.starts_with("use crate::config")))
+        // (Nor, in a stepped checkout, the app's settings; nor, from 0.40.11, who chose
+        // what plays, which only the app's own part below the cut names.)
+        .filter(|line| !(stepped && (line.starts_with("use crate::config") || line.starts_with("use crate::ways"))))
         // What sync.rs takes from the library for its own use, the tool reaches through it
         // (`sync::merge`, `sync::Shared`): the same items, made visible, nothing changed.
         .map(|line| if split && line.starts_with("use nexus_core::sync::{") { format!("pub {line}\n") } else { format!("{line}\n") })
@@ -121,7 +125,13 @@ pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTOR
         // Nothing of the stand-in library is used; this says so, for Cargo's sake.
         parts.push_str("use nexus_core as _;\n\n");
     }
-    let wanted: &[&str] = if stepped {
+    // From 0.40.11 `write_atomically` is gone: a file is written by `write_whole`, by the
+    // steps it is given (`ONCE`, `REPLACING`), which `write_surely`, `write_in_passing` and
+    // the log of plays call.
+    let whole = stepped && config.contains("\npub fn write_whole(");
+    let wanted: &[&str] = if whole {
+        &["pub struct Played {"]
+    } else if stepped {
         &["pub struct Played {", "pub fn write_atomically(", "pub fn write_surely("]
     } else if split {
         &["pub struct Played {", "pub fn write_atomically("]
@@ -132,6 +142,14 @@ pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTOR
         parts.push_str(&item(&config, marker));
         parts.push('\n');
     }
+    // That way of writing, whole: each run from one item (with what is written above it) to
+    // the end of another, as the file has them. Nothing between is left out or changed.
+    if whole {
+        for (first, last) in [("pub enum Placed {", "pub fn temp_for("), ("static NO_LINKS:", "pub fn note_no_links("), ("pub struct Steps {", "fn sync_folder(")] {
+            parts.push_str(&run(&config, first, last));
+            parts.push('\n');
+        }
+    }
     // (From 0.40.8 the name a file is written under before it is put in place is a function
     // of its own, which `write_surely` calls.)
     if stepped && config.contains("\npub fn beside(") {
@@ -139,6 +157,21 @@ pub const TOOL_LIMITS: (u32, usize, usize, usize, usize, i64) = (VERSION, HISTOR
         parts.push('\n');
     }
     write(&out, "config.rs", &parts);
+}
+
+/// A run of a file: from the item that begins with `first` (the comments and attributes
+/// straight above it included) to the `}` that closes the **last** item beginning with
+/// `last` (an item written twice, once for each system, is taken in both forms).
+fn run(text: &str, first: &str, last: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines.iter().position(|line| line.starts_with(first)).unwrap_or_else(|| panic!("config.rs: `{first}` not found"));
+    let mut from = at;
+    while from > 0 && (lines[from - 1].starts_with("///") || lines[from - 1].starts_with("#[")) {
+        from -= 1;
+    }
+    let end = lines.iter().rposition(|line| line.starts_with(last)).filter(|&end| end >= at).unwrap_or_else(|| panic!("config.rs: `{last}` not found after `{first}`"));
+    let to = (end..lines.len()).find(|&i| lines[i] == "}").unwrap_or_else(|| panic!("config.rs: the end of `{last}` not found"));
+    lines[from..=to].iter().map(|line| format!("{line}\n")).collect()
 }
 
 fn write(out: &Path, name: &str, text: &str) {
