@@ -21,7 +21,7 @@ class App : Application(), SingletonImageLoader.Factory {
     }
 
     /** Coil's loader, made the first time a picture is shown: covers from the cover store. */
-    override fun newImageLoader(context: PlatformContext): ImageLoader = coverImageLoader(this, graph.accounts)
+    override fun newImageLoader(context: PlatformContext): ImageLoader = coverImageLoader(this, graph.accounts, offline = { graph.watch.state.value.manual })
 }
 
 /** The app's long-lived objects, from anywhere that has a context. */

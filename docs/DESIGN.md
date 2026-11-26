@@ -2323,11 +2323,17 @@ own words) are the Windows app's, in `strings.xml`.
   and asks again.
 - **Covers that are web addresses** (`WebCovers`, `CoverRule`): a client of their own (no
   cookies, interceptors, proxy or anything of the music server's), a disk cache of their own
-  (24 MB), 4 MB at most per picture, and a rule for where they may come from: `https://`, or
-  exactly Lidarr's own scheme, host and port; never a loopback, link-local or private
-  address unless it is that Lidarr's (a number judged at once, a name when it is looked up);
-  never the music server's origin; redirects judged the same, five at most. A cover turned
-  away is the placeholder.
+  (24 MB), 4 MB at most per picture, and a rule for where they may come from: `https://`
+  only; never a loopback, link-local or private address (a number judged at once, a name
+  when it is looked up); never the music server's origin; redirects judged the same, five at
+  most. **No exception for Lidarr's own address**: the library takes a cover only from where
+  Lidarr says a picture is on the web (`remoteUrl`, `remoteCover`) or from the Cover Art
+  Archive, never from Lidarr's `/MediaCover`, so a cover on Lidarr's origin could only have
+  come from somewhere else; and with every cover public, the cache holds nothing of one
+  account's that another could be shown. Nothing is fetched in offline mode or with the
+  account's requests off (what is kept, or the placeholder); what is kept is a picture by
+  its first bytes (JPEG, PNG, GIF, WebP, AVIF/HEIF); none of it is registered in the image
+  loader in a build without requests. A cover turned away is the placeholder.
 - **Not in the car.** Nothing of requests is in Android Auto's tree, its search or its voice
   commands: no browsing music the library doesn't have, and no asking, while driving.
 

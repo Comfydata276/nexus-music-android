@@ -42,7 +42,7 @@ data class CoverArt(
  * cover: going back to a page finds its covers, and what was looked at a while ago is
  * decoded again from the phone's own copy, which is quick.
  */
-fun coverImageLoader(context: Context, accounts: Accounts): ImageLoader {
+fun coverImageLoader(context: Context, accounts: Accounts, offline: () -> Boolean = { false }): ImageLoader {
     val allowance = (context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).memoryClass * 1024L * 1024L
     return ImageLoader.Builder(context)
         .components {
@@ -50,8 +50,8 @@ fun coverImageLoader(context: Context, accounts: Accounts): ImageLoader {
             add(CoverKeyer(accounts), CoverArt::class)
             // Covers that are web addresses (albums and artists not in the library): a client
             // and a small disk cache of their own, and a rule for where they may come from.
-            add(WebCoverFetcher.Factory(WebCovers(java.io.File(context.cacheDir, "web-covers")), accounts), WebCover::class)
-            add(WebCoverKeyer, WebCover::class)
+            // Only in a build that has requests (requests/RequestsBuild).
+            addWebCovers(java.io.File(context.cacheDir, "web-covers"), { accounts.state.value }, offline)
         }
         .diskCache(null)
         .memoryCache { MemoryCache.Builder().maxSizeBytes(minOf(MEMORY_CACHE_BYTES, (allowance * 0.15).toLong())).build() }

@@ -34,7 +34,6 @@ import okhttp3.Response
 import okio.FileSystem
 import okio.Path.Companion.toOkioPath
 import okio.buffer
-import org.medianexus.music.Accounts
 
 /**
  * A cover that is a **web address**, chosen by Lidarr or the Cover Art Archive: the picture of
@@ -48,34 +47,34 @@ data class WebCover(val url: String)
  * MusicBrainz through it), so a hostile or broken one can point anywhere: at the music
  * server, at the phone itself, at something on the home network. The rule:
  *
- * - only `https://` addresses, or one on exactly the scheme, host and port the person typed
- *   for Lidarr (its own pictures, wherever it is);
- * - never a loopback, link-local or private address, unless it is that Lidarr's own: an
- *   address written as a number is judged here, a name by what it turns out to be
- *   ([publicOnly], when it is looked up);
+ * - only `https://` addresses;
+ * - never a loopback, link-local or private address: an address written as a number is
+ *   judged here, a name by what it turns out to be ([publicOnly], when it is looked up);
  * - never the music server's origin (its scheme, host and port), whatever else is true;
  * - each redirect is judged the same way, and there are at most [MAX_HOPS] of them.
+ *
+ * **There is no exception for Lidarr's own address.** The library takes a picture only from
+ * where Lidarr says it is on the web (an image's `remoteUrl`, an album's `remoteCover`) or
+ * from the Cover Art Archive, never from Lidarr's own `/MediaCover`; so no cover is ever on
+ * Lidarr's origin, and an exception for it could only ever be used by an address that came
+ * from somewhere else. Everything fetched is public, and the cache holds nothing that belongs
+ * to one account rather than another.
  *
  * A cover the rule turns away is simply the placeholder.
  */
 object CoverRule {
     const val MAX_HOPS = 5
 
-    /** Whether `url` may be asked for. `lidarr` is Lidarr's address as the person typed it,
-     *  `music` the music server's; either may be null. */
-    fun allows(url: HttpUrl, lidarr: HttpUrl?, music: HttpUrl?): Boolean {
+    /** Whether `url` may be asked for; `music` is the music server's address. */
+    fun allows(url: HttpUrl, music: HttpUrl?): Boolean {
         if (music != null && sameOrigin(url, music)) return false
-        if (lidarrOwn(url, lidarr)) return true
         if (url.scheme != "https") return false
         // A name is judged when it is looked up; a number now (OkHttp never looks one up).
         val literal = literalAddress(url.host) ?: return true
         return publicAddress(literal)
     }
 
-    /** It is on exactly the scheme, host and port the person typed for Lidarr. */
-    fun lidarrOwn(url: HttpUrl, lidarr: HttpUrl?): Boolean = lidarr != null && sameOrigin(url, lidarr)
-
-    private fun sameOrigin(a: HttpUrl, b: HttpUrl) = a.scheme == b.scheme && a.host == b.host && a.port == b.port
+    fun sameOrigin(a: HttpUrl, b: HttpUrl) = a.scheme == b.scheme && a.host == b.host && a.port == b.port
 
     /** `host` as an address, if it is written as one (HttpUrl keeps an IPv6 one without its
      *  brackets); null for a name. Never looks a name up. */
@@ -137,7 +136,7 @@ object CoverRule {
  * no proxy (a proxy would look the name up where [CoverRule] can't see it), follows no
  * redirect by itself ([fetch] judges each), and reads [LIMIT] bytes at most. What it fetches
  * is kept in a small disk cache of its own ([CACHE_BYTES], least used first out), so a page
- * seen again shows its covers at once.
+ * seen again shows its covers at once, and only if it is a picture.
  */
 class WebCovers(
     dir: File,
@@ -145,47 +144,47 @@ class WebCovers(
     lookup: Dns = Dns.SYSTEM,
     private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(FETCHES_AT_ONCE),
     cacheBytes: Long = CACHE_BYTES,
+    /** Where it may go ([CoverRule]; a test lets its stand-in on this machine play a public site). */
+    private val where: (HttpUrl, HttpUrl?) -> Boolean = CoverRule::allows,
 ) {
     private val pool = ConnectionPool(2, 30, TimeUnit.SECONDS)
 
-    private fun client(dns: Dns) = OkHttpClient.Builder()
-        .dns(dns)
-        .proxy(Proxy.NO_PROXY)
-        .connectionPool(pool)
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(30, TimeUnit.SECONDS)
-        .build()
-
-    /** For anywhere out on the internet. */
-    private val outward by lazy { client(CoverRule.publicOnly(lookup)) }
-
-    /** For Lidarr's own address, which may well be on the home network. */
-    private val lidarrs by lazy { client(lookup) }
+    /** For anywhere out on the internet, and nowhere else. */
+    private val outward by lazy {
+        OkHttpClient.Builder()
+            .dns(CoverRule.publicOnly(lookup))
+            .proxy(Proxy.NO_PROXY)
+            .connectionPool(pool)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
 
     private val cache: DiskCache by lazy {
         DiskCache.Builder().directory(dir.toOkioPath()).maxSizeBytes(cacheBytes).cleanupDispatcher(Dispatchers.IO).build()
     }
 
     /**
-     * The picture at `address` as a file in the cache, fetching it first if it isn't there;
-     * null if [CoverRule] turns it (or a redirect of it) away, or it can't be had. The
-     * snapshot is the caller's to close.
+     * The picture at `address` as a file in the cache, fetching it first if it isn't there and
+     * `fetching` allows (not in offline mode, nor with requests off: then what is kept, or
+     * nothing); null if [CoverRule] turns it (or a redirect of it) away, it isn't a picture,
+     * or it can't be had. `music` is the music server's address. The snapshot is the caller's
+     * to close.
      */
-    suspend fun fetch(address: String, lidarr: String?, music: String?): DiskCache.Snapshot? = withContext(io) {
+    suspend fun fetch(address: String, music: String?, fetching: Boolean = true): DiskCache.Snapshot? = withContext(io) {
         val key = keyOf(address)
         cache.openSnapshot(key)?.let { return@withContext it }
-        val lidarrAt = lidarr?.trim()?.let(::addressOf)
+        if (!fetching) return@withContext null
         val musicAt = music?.trim()?.let(::addressOf)
         var at = addressOf(address) ?: return@withContext null
         for (hop in 0..CoverRule.MAX_HOPS) {
-            if (!CoverRule.allows(at, lidarrAt, musicAt)) return@withContext null
-            val client = if (CoverRule.lidarrOwn(at, lidarrAt)) lidarrs else outward
+            if (!where(at, musicAt)) return@withContext null
             val request = Request.Builder().url(at).header("User-Agent", NAME).header("Accept", "image/*").build()
             val response = try {
-                client.newCall(request).await()
+                outward.newCall(request).await()
             } catch (_: IOException) {
                 return@withContext null
             }
@@ -205,6 +204,9 @@ class WebCovers(
     }
 
     private fun keep(key: String, from: okio.BufferedSource): DiskCache.Snapshot? {
+        // A picture, by its first bytes (what it says it is counts for nothing): anything else
+        // is never written.
+        if (!looksLikeAPicture(from)) return null
         val editor = cache.openEditor(key) ?: return null
         try {
             var total = 0L
@@ -243,6 +245,22 @@ class WebCovers(
 
         private fun keyOf(address: String): String =
             MessageDigest.getInstance("SHA-256").digest(address.toByteArray()).joinToString("") { "%02x".format(it) }
+
+        /**
+         * Whether what is coming begins as a picture does: JPEG, PNG, GIF, WebP, or the AVIF
+         * and HEIF family. Looks at the first twelve bytes without taking them.
+         */
+        fun looksLikeAPicture(source: okio.BufferedSource): Boolean {
+            val head = try {
+                source.request(12)
+                source.peek().readByteArray(minOf(12L, source.buffer.size))
+            } catch (_: IOException) {
+                return false
+            }
+            fun starts(vararg bytes: Int) = head.size >= bytes.size && bytes.indices.all { head[it].toInt() and 0xff == bytes[it] }
+            fun at(offset: Int, text: String) = head.size >= offset + text.length && text.indices.all { head[offset + it].toInt().toChar() == text[it] }
+            return starts(0xFF, 0xD8, 0xFF) || starts(0x89, 0x50, 0x4E, 0x47) || at(0, "GIF8") || (at(0, "RIFF") && at(8, "WEBP")) || at(4, "ftyp")
+        }
     }
 }
 
@@ -260,21 +278,38 @@ private suspend fun Call.await(): Response = suspendCancellableCoroutine { going
     })
 }
 
-/** Coil's way to a [WebCover]: through [WebCovers], with Lidarr's address and the music
- *  server's as the signed-in account has them now. */
-internal class WebCoverFetcher(private val cover: WebCover, private val covers: WebCovers, private val accounts: Accounts) : Fetcher {
+/**
+ * Coil's way to a [WebCover]: through [WebCovers], with the music server's address as the
+ * signed-in account has it now. **Nothing is fetched** in offline mode (switched on by hand:
+ * `offline`) or while the account has requests off: then a cover kept from before, or the
+ * placeholder.
+ */
+internal class WebCoverFetcher(private val cover: WebCover, private val covers: WebCovers, private val signedIn: () -> org.medianexus.music.AccountGraph?, private val offline: () -> Boolean) : Fetcher {
     override suspend fun fetch(): FetchResult {
-        val account = accounts.state.value
-        val snapshot = covers.fetch(cover.url, account?.requests?.settings?.value?.address, account?.account?.server)
+        val account = signedIn()
+        val fetching = !offline() && account?.requests?.settings?.value?.on == true
+        val snapshot = covers.fetch(cover.url, account?.account?.server, fetching)
             // Coil shows nothing for a failure, and the cover's stand-in stays.
             ?: throw IOException("No cover")
         return SourceFetchResult(ImageSource(snapshot.data, FileSystem.SYSTEM, null, snapshot, null), null, DataSource.NETWORK)
     }
 
-    class Factory(private val covers: WebCovers, private val accounts: Accounts) : Fetcher.Factory<WebCover> {
+    class Factory(private val covers: WebCovers, private val signedIn: () -> org.medianexus.music.AccountGraph?, private val offline: () -> Boolean) : Fetcher.Factory<WebCover> {
         override fun create(data: WebCover, options: Options, imageLoader: ImageLoader): Fetcher? =
-            if (data.url.isEmpty()) null else WebCoverFetcher(data, covers, accounts)
+            if (data.url.isEmpty()) null else WebCoverFetcher(data, covers, signedIn, offline)
     }
+}
+
+/**
+ * Web covers in the app's image loader: **only in a build that has requests**
+ * (`RequestsBuild`); without them nothing of this is registered, and a [WebCover] is never
+ * loaded. True if it was added.
+ */
+internal fun coil3.ComponentRegistry.Builder.addWebCovers(dir: File, signedIn: () -> org.medianexus.music.AccountGraph?, offline: () -> Boolean): Boolean {
+    if (!org.medianexus.music.requests.RequestsBuild.on) return false
+    add(WebCoverFetcher.Factory(WebCovers(dir), signedIn, offline), WebCover::class)
+    add(WebCoverKeyer, WebCover::class)
+    return true
 }
 
 /** Held in memory by address and the width it was decoded at (see `CoverKeyer`). */
