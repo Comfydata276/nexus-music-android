@@ -578,6 +578,13 @@ object Core {
     /** A connection to Lidarr begins: its place, under the number handed back. */
     fun placeOpen(): Long = across(true, Boolean.serializer(), Long.serializer(), ::placeOpen)
 
+    /** The connection has changed (another address, key or sign-in): what was offered
+     *  under it as it was is let go of. Something still being found for the old one keeps
+     *  hold of the old set, and leaves nothing behind in the new. */
+    fun placeNewOffers(place: Long) {
+        across(place, Long.serializer(), Boolean.serializer(), ::placeNewOffers)
+    }
+
     /** The connection is over: what was offered while it lasted is forgotten. */
     fun placeClose(place: Long) {
         across(place, Long.serializer(), Boolean.serializer(), ::placeClose)
@@ -862,6 +869,7 @@ object Core {
     @JvmStatic private external fun discoverFavourites(input: ByteArray): ByteArray?
     @JvmStatic private external fun discoverLook(input: ByteArray): ByteArray?
     @JvmStatic private external fun discoverKept(input: ByteArray): ByteArray?
+    @JvmStatic private external fun placeNewOffers(input: ByteArray): ByteArray?
     @JvmStatic private external fun wireProbe(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?
     @JvmStatic private external fun settle(input: ByteArray): ByteArray?

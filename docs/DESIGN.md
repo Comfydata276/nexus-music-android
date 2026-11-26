@@ -2156,6 +2156,19 @@ What is the phone's own:
   library's: the note is kept on the phone first, and only then is the offer marked as
   asked for. If the note cannot be written, the ask is still said to have succeeded (it
   did) and is marked as not kept (`Said.kept`).
+- **A row acts on the connection it came from.** The connection has a number of the
+  phone's own, which moves whenever the address, the key or the sign-in changes
+  (`Requests.moved`), and starts somewhere no earlier run of the app can have been.
+  Everything a page hands to a screen carries the number it was found under
+  (`Found.Got.connection`), and `request`, `addArtist` and `cancel` take it back: for a
+  row from another connection they say one sentence (`RequestsWords.CONNECTION_CHANGED`)
+  and ask nobody. **Taking an album off the list is refused without the screen's help
+  too**: its number is Lidarr's own, and means another album on another Lidarr, so it is
+  acted on only if this very connection's list has just shown it. What a connection
+  offered is let go of when the connection changes (the place's offers are replaced whole:
+  something still being found for the old connection keeps the old set and leaves nothing
+  in the new), and an ask that finishes after a change marks nothing among the new
+  connection's offers. Its note is still written: it was asked for.
 - **What nobody can stop still ends.** Every request of something that changes Lidarr or
   the sign-in has two minutes in all, its answer included (`CoreHttp.changeMillis`), where
   the library sets no shorter limit of its own; finishing a sign-in has eight seconds for

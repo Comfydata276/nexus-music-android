@@ -318,6 +318,96 @@ class RequestsPagesTest {
         assertEquals("[]", File(made.dir, "asked.json").readText().trim())
     }
 
+    // ---- a row acts on the connection it came from ------------------------------------------------
+
+    /** Another Lidarr altogether, which takes anything: so what it was sent shows what
+     *  would have been changed on it. */
+    private fun anotherLidarr() = StandIn { asked, reply ->
+        val path = asked.target.substringAfter("/api/v1/", "")
+        when {
+            path == "system/status" -> reply.json("""{"version":"9.9.9.9"}""")
+            path.startsWith("wanted/missing") -> reply.json("""{"totalRecords":1,"records":[{"id":7,"title":"Somebody Else's","artist":{"artistName":"Another"}}]}""")
+            path.startsWith("queue") -> reply.json("""{"records":[]}""")
+            path.startsWith("album/lookup") -> reply.json("""[{"title":"One Song","foreignAlbumId":"single-1","albumType":"Album","artist":{"artistName":"Quillon Vane","foreignArtistId":"artist-1"}}]""")
+            path == "rootfolder" -> reply.json("""[{"id":1,"path":"/music","defaultMetadataProfileId":1,"defaultQualityProfileId":1}]""")
+            asked.method == "GET" -> reply.json("[]")
+            else -> reply.json("{}")
+        }
+    }.also { closing += it }
+
+    private val changedWords = "The connection to Lidarr has changed since this was shown. Open it again."
+
+    @Test
+    fun `what was shown under one Lidarr changes nothing on another`() = runBlocking {
+        val wanted = lidarrWithASingle()
+        val made = made()
+        // Under the first Lidarr: an album asked for, and listed as on its way.
+        assertTrue(made.pages.request("single-1", "One Song").done)
+        val way = made.pages.onTheirWay() as Found.Got
+        val row = way.value.pending.single().first
+        assertEquals(7L, row.id)
+        val first = way.connection
+
+        // The address is changed to another Lidarr (which has an album numbered 7 of its own).
+        val other = anotherLidarr()
+        assertTrue(made.requests.connect(other.address, "k") is RequestsState.Connected)
+        val before = other.asked.size
+
+        // The rows still on the screen were the first Lidarr's: each is refused, in one
+        // sentence, and the other Lidarr is asked nothing at all for them. Its number for
+        // an album is refused whether or not the screen says where its row came from.
+        assertEquals(Said(false, changedWords), made.pages.cancel(row.id, row.title))
+        assertEquals(Said(false, changedWords), made.pages.cancel(row.id, row.title, connection = first))
+        assertEquals(Said(false, changedWords), made.pages.request("single-1", "One Song", connection = first))
+        assertEquals(Said(false, changedWords), made.pages.addArtist("artist-1", "Quillon Vane", connection = first))
+        delay(300)
+        assertEquals("the other Lidarr was sent ${other.asked.drop(before).map { it.line }}", before, other.asked.size)
+        // And the first one's note stands: it was asked for there.
+        assertTrue(wanted())
+        assertEquals("One Song", made.pages.asked.value.single().title)
+
+        // Shown afresh under the other Lidarr, which has a 7 of its own. The old row is
+        // still the first Lidarr's, and still refused; the new one can be acted on.
+        val now = made.pages.onTheirWay() as Found.Got
+        val theirs = now.value.pending.single().first
+        assertEquals("Somebody Else's" to 7L, theirs.title to theirs.id)
+        assertTrue(now.connection != first)
+        assertEquals(Said(false, changedWords), made.pages.cancel(row.id, row.title, connection = first))
+        assertTrue(other.asked.none { it.method == "PUT" })
+        assertEquals(Said(true, "“Somebody Else's” is off the list"), made.pages.cancel(theirs.id, theirs.title, connection = now.connection))
+        assertTrue(other.asked.any { it.method == "PUT" && "\"albumIds\":[7]" in it.body })
+        // What a search hands over as it goes says which connection it is found under too.
+        route("recording?query", """{"recordings":[]}""")
+        val soFar = CopyOnWriteArrayList<Long>()
+        val found = made.pages.searchShowing("one song") { soFar += it.connection } as Found.Got
+        assertEquals(now.connection, found.connection)
+        assertTrue("$soFar", soFar.isNotEmpty() && soFar.all { it == found.connection })
+    }
+
+    @Test
+    fun `the connection changed while Lidarr was being asked, what the first Lidarr accepted is written down and the second is untouched`() = runBlocking {
+        val slow = AtomicBoolean(false)
+        val wanted = lidarrWithASingle(slow)
+        val made = made()
+        val asking = async(Dispatchers.Default) { made.pages.request("single-1", "One Song") }
+        assertTrue(server.awaitAsked(20_000) { it.method == "PUT" && it.target.endsWith("artist/1") })
+        // Lidarr has begun to be changed; and now the person points the app at another one.
+        slow.set(true)
+        val other = anotherLidarr()
+        assertTrue(made.requests.connect(other.address, "k") is RequestsState.Connected)
+        val before = other.asked.size
+        slow.set(false)
+        // The first Lidarr is seen through, and the person is told; the note is kept.
+        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives."), withTimeout(40_000) { asking.await() })
+        assertTrue(wanted())
+        assertTrue("\"One Song\"" in File(made.dir, "asked.json").readText())
+        // The second Lidarr was asked nothing for it, and what it offers is not marked by it.
+        assertEquals(before, other.asked.size)
+        val offer = got(made.pages.search("one song")).albums.single { it.album == "single-1" }
+        // (It was the first Lidarr that was asked: the second has not been, and says so.)
+        assertTrue(made.pages.asking(offer.album, offer.title) is Asking.Ask)
+    }
+
     @Test
     fun `artists the person might like are looked for once, kept, and an artist added is suggested no more`() = runBlocking {
         route("api/v1/artist", "[]")

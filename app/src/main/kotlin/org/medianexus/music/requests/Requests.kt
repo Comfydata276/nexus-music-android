@@ -60,6 +60,10 @@ object RequestsWords {
 
     /** What answered at Lidarr's address pointed at a sign-in service the app can't use. */
     const val SERVICE_UNUSABLE = "The sign-in in front of Lidarr gave an address the app can't use."
+
+    /** Something on the screen was shown under a connection to Lidarr that has since been
+     *  changed (another address, another key, another sign-in), and was pressed. */
+    const val CONNECTION_CHANGED = "The connection to Lidarr has changed since this was shown. Open it again."
 }
 
 /** Where the connection to Lidarr stands. */
@@ -177,6 +181,21 @@ class Requests internal constructor(
     /** Only the newest check counts. */
     private var checks = 0
 
+    /**
+     * **Which connection this is**: a number that moves whenever the address, the key or
+     * the sign-in changes ([moved]). Everything a page hands to a screen carries the number
+     * it was found under, and something pressed on a row from another connection is refused
+     * (see [RequestsPages]): Lidarr's own numbers for things mean something else on another
+     * Lidarr. It starts somewhere no earlier run of the app can have been, so a number kept
+     * across a restart matches nothing.
+     */
+    private var connection = (System.currentTimeMillis() shl 16) or java.security.SecureRandom().nextInt(1 shl 16).toLong()
+
+    /** The connection has changed. Under [turn]. */
+    private fun moved() {
+        connection++
+    }
+
     /** A sign-in under way: the door the browser comes back through. */
     private class Attempt(val door: BrowserReturn, val host: String)
 
@@ -222,6 +241,7 @@ class Requests internal constructor(
         secrets.forgetKey()
         key = null
         forgotten = true
+        moved()
         note("requests: the key that was kept was for another address than Lidarr's, so it was forgotten")
         return null
     }
@@ -254,7 +274,8 @@ class Requests internal constructor(
         if (unreadable || !settings.on) return null
         val place = placeOf(settings) ?: return null
         val key = keyFor(place) ?: return null
-        return LidarrAt(settings.address, key, sessionFor(settings), place)
+        val session = sessionFor(settings)
+        return LidarrAt(settings.address, key, session, place, connection)
     }
 
     /** The sign-in in front of Lidarr, opened from what is kept if it isn't open yet. */
@@ -264,6 +285,7 @@ class Requests internal constructor(
             if (now.door == door) return now.session
             // (Another sign-in's, or none any more: this one is let go of, and owns nothing.)
             open = null
+            moved()
             synchronized(owner) { if (live == now.number) live = 0 }
             afterwards { Core.gateClose(now.session) }
         }
@@ -314,6 +336,7 @@ class Requests internal constructor(
             write(settingsNow.value.copy(on = on, signingIn = false))
             key = if (on) secrets.key() else null
             forgotten = false
+            moved()
             checks++
         }
         check()
@@ -374,6 +397,8 @@ class Requests internal constructor(
                 this@Requests.key = kept
             }
             this@Requests.forgotten = forgotten
+            // (Whatever was typed, what is on the screens was shown before it was.)
+            moved()
             checks++
             forgotten
         }
@@ -525,6 +550,7 @@ class Requests internal constructor(
                         write(settings.copy(signedIn = shown(token.name), signingIn = false))
                         open?.let { old -> afterwards { Core.gateClose(old.session) } }
                         open = Open(found, Core.gateOpen(found, token.token, bound = place) { fresh -> tokenChanged(number, place, fresh) }, place, number)
+                        moved()
                         2
                     } else {
                         write(settings.copy(signingIn = false))
@@ -598,6 +624,7 @@ class Requests internal constructor(
         giveUpAttempt()
         val was = open
         open = null
+        moved()
         // From here no sign-in owns the kept token: a renewal that is on its way for the one
         // being dropped writes nothing when it comes back.
         val onFile = synchronized(owner) {

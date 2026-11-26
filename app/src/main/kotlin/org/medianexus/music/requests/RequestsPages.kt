@@ -46,7 +46,14 @@ import org.medianexus.music.core.Words
 
 /** What a page came to: found, or why not, in the library's own sentence, ready to show. */
 sealed interface Found<out T> {
-    data class Got<T>(val value: T) : Found<T>
+    /**
+     * `connection` is **which connection to Lidarr this was found under** (a number that
+     * moves whenever the address, the key or the sign-in changes). Keep it with whatever of
+     * `value` is put on a screen, and hand it back with anything pressed there
+     * ([RequestsPages.request], [RequestsPages.addArtist], [RequestsPages.cancel]): what was
+     * shown under one Lidarr is refused, in one sentence, once the app is pointed at another.
+     */
+    data class Got<T>(val value: T, val connection: Long = 0) : Found<T>
 
     data class Not(val why: String) : Found<Nothing>
 }
@@ -136,6 +143,13 @@ class RequestsPages internal constructor(
     private val turn = Mutex()
     private var place: Long? = null
     private var gone = false
+
+    /**
+     * The connection the place's offers belong to, and **Lidarr's own numbers for what is on
+     * its way as last shown under it** (see [cancel]). Under `synchronized(this)`.
+     */
+    private var shownUnder = 0L
+    private val shownPending = HashSet<Long>()
 
     /** Changes to Lidarr under way whose outcome is still to be written down: the place
      *  outlasts the account for as long as there are any (see [outlasting]). */
@@ -249,11 +263,52 @@ class RequestsPages internal constructor(
         }
     }
 
-    private suspend fun <T> page(ask: suspend (LidarrAt, Long) -> Outcome<T>): Found<T> = withContext(io) {
-        val (at, why) = way()
+    /**
+     * Makes the place the connection's that something is about to be asked under: **if the
+     * connection has changed since the last thing asked, what the old one offered is let go
+     * of** (and Lidarr's numbers that were shown under it are no longer good for anything).
+     * False if `at` is itself from before a change that has been seen here already: then
+     * whoever asks, asks again.
+     */
+    private fun under(place: Long, at: LidarrAt): Boolean {
+        val fresh = synchronized(this) {
+            when {
+                at.connection == shownUnder -> return true
+                at.connection < shownUnder -> return false
+                else -> {
+                    shownUnder = at.connection
+                    shownPending.clear()
+                    true
+                }
+            }
+        }
+        if (fresh) Core.placeNewOffers(place)
+        return true
+    }
+
+    /** The way to Lidarr with the place made its own (see [under]), or why there is none. */
+    private suspend fun connected(): Triple<LidarrAt?, Long, String> {
+        repeat(3) {
+            val (at, why) = way()
+            if (at == null) return Triple(null, 0, why)
+            val place = ready()
+            if (under(place, at)) return Triple(at, place, "")
+        }
+        return Triple(null, 0, RequestsWords.CONNECTION_CHANGED)
+    }
+
+    /** Whether something found under `connection` may still be acted on, the connection
+     *  being `at` now. (Not said which: it is not refused on that account.) */
+    private fun still(connection: Long?, at: LidarrAt): Boolean = connection == null || connection == at.connection
+
+    private suspend fun <T> page(shown: (T) -> Unit = {}, ask: suspend (LidarrAt, Long) -> Outcome<T>): Found<T> = withContext(io) {
+        val (at, place, why) = connected()
         if (at == null) return@withContext Found.Not(why)
-        when (val outcome = ask(at, ready())) {
-            is Outcome.Got -> Found.Got(outcome.value)
+        when (val outcome = ask(at, place)) {
+            is Outcome.Got -> {
+                shown(outcome.value)
+                Found.Got(outcome.value, at.connection)
+            }
             is Outcome.Failed -> Found.Not(outcome.why)
             // (Only ever with the caller cancelled, who is told nothing.)
             Outcome.Stopped -> throw CancellationException("stopped")
@@ -267,8 +322,17 @@ class RequestsPages internal constructor(
      * library"). `soFar` is handed what has been found each time more of it is known, on a
      * background thread, so the page fills as the answers arrive; all of it is returned.
      * Its `note` is the line to show above the results at each stage.
+     *
+     * (What `soFar` hands over does not say which connection it was found under; the answer
+     * does. A screen that lets rows be pressed before the search has ended uses
+     * [searchShowing].)
      */
-    suspend fun search(query: String, soFar: (Outside) -> Unit = {}): Found<Outside> = page { at, place -> Core.pageSearch(at, place, query, soFar) }
+    suspend fun search(query: String, soFar: (Outside) -> Unit = {}): Found<Outside> = searchShowing(query) { soFar(it.value) }
+
+    /** [search], with what is found so far handed over **as it will be answered**: with the
+     *  connection it is found under, to keep with its rows. */
+    suspend fun searchShowing(query: String, soFar: (Found.Got<Outside>) -> Unit): Found<Outside> =
+        page { at, place -> Core.pageSearch(at, place, query) { soFar(Found.Got(it, at.connection)) } }
 
     /** An artist as the wider world knows them: what they have made, with what the library
      *  has shown as its own and the rest there to be asked for. `id` is an
@@ -288,7 +352,20 @@ class RequestsPages internal constructor(
      *  it is also when arrivals are looked for. */
     suspend fun onTheirWay(): Found<Waiting> {
         checkArrivals()
-        return page { at, place -> Core.pageOnTheirWay(at, place) }
+        var asked: LidarrAt? = null
+        return page(shown = { waiting ->
+            // (What can be taken off the list is what this very connection has just listed.)
+            val numbers = waiting.pending.map { it.first.id }
+            synchronized(this) {
+                if (asked?.connection == shownUnder) {
+                    shownPending.clear()
+                    shownPending += numbers
+                }
+            }
+        }) { at, place ->
+            asked = at
+            Core.pageOnTheirWay(at, place)
+        }
     }
 
     // ---- asking ------------------------------------------------------------------------------------
@@ -309,11 +386,16 @@ class RequestsPages internal constructor(
      *
      * Once Lidarr has begun to be changed this runs to its end though the caller is
      * cancelled, and the note of what was asked for is kept all the same.
+     *
+     * `connection` is the one the row that was pressed was found under ([Found.Got]). If
+     * the connection has changed since (another address, key or sign-in) nothing is asked
+     * and [RequestsWords.CONNECTION_CHANGED] is said. **Pass it**: left out, the album is
+     * asked of whatever Lidarr the app is pointed at now.
      */
-    suspend fun request(album: String, title: String, song: String = ""): Said = withContext(io) {
-        val (at, why) = way()
+    suspend fun request(album: String, title: String, song: String = "", connection: Long? = null): Said = withContext(io) {
+        val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
-        val place = ready()
+        if (!still(connection, at)) return@withContext Said(false, RequestsWords.CONNECTION_CHANGED)
         val begun = Core.request(at, place, album)
         val through = outlasting(begun) { outcome ->
             when (outcome) {
@@ -325,7 +407,10 @@ class RequestsPages internal constructor(
                         val kept = askedFile.write(all)
                         if (!kept) note("requests: what was asked for couldn't be kept on the phone, so its arrival won't be said")
                         askedNow.value = all
-                        Core.marked(place, album, true)
+                        // (Marked as asked for among what this connection offers: if the
+                        // app has been pointed at another Lidarr meanwhile, that one's
+                        // offers are not this album's to mark.)
+                        if (synchronized(this@RequestsPages) { shownUnder == at.connection }) Core.marked(place, album, true)
                         kept
                     }
                     Said(true, Words.askedFor(title), kept = kept)
@@ -347,12 +432,12 @@ class RequestsPages internal constructor(
     /**
      * Has Lidarr get everything by an artist. Says "Added …. Their albums are on Lidarr's
      * list" (the screens add where to see them), or why not. Seen through like [request];
-     * and they are no longer suggested.
+     * and they are no longer suggested. `connection` as for [request].
      */
-    suspend fun addArtist(id: String, name: String): Said = withContext(io) {
-        val (at, why) = way()
+    suspend fun addArtist(id: String, name: String, connection: Long? = null): Said = withContext(io) {
+        val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
-        val place = ready()
+        if (!still(connection, at)) return@withContext Said(false, RequestsWords.CONNECTION_CHANGED)
         val begun = Core.addArtist(at, id, name)
         val through = outlasting(begun) { outcome ->
             when (outcome) {
@@ -373,11 +458,20 @@ class RequestsPages internal constructor(
      *
      * One change, in one step: left by its caller while Lidarr is answering, the answer is
      * still waited for (a short while), and if Lidarr took it off, it is forgotten here.
+     *
+     * **A number is only good under the connection that listed it.** One that this
+     * connection's own [onTheirWay] has not just listed is refused with
+     * [RequestsWords.CONNECTION_CHANGED] and nothing is asked, with or without `connection`
+     * (which, given, must be the live one too: see [request]).
      */
-    suspend fun cancel(id: Long, title: String): Said = withContext(io) {
-        val (at, why) = way()
+    suspend fun cancel(id: Long, title: String, connection: Long? = null): Said = withContext(io) {
+        val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
-        val place = ready()
+        // `id` is Lidarr's own number, and means another album on another Lidarr: it is
+        // acted on only if this very connection has listed it ([onTheirWay]), whether or
+        // not the caller says which connection its row came from.
+        val listed = synchronized(this@RequestsPages) { shownUnder == at.connection && id in shownPending }
+        if (!listed || !still(connection, at)) return@withContext Said(false, RequestsWords.CONNECTION_CHANGED)
         val begun = Core.cancelling(at, id)
         val through = outlasting(begun) { outcome ->
             when (outcome) {
@@ -452,7 +546,7 @@ class RequestsPages internal constructor(
         val place = ready()
         val read = turn.withLock { Core.discoverKept(place, keptSuggestions(), clock()) }
         suggestionsNow.value = read.shown
-        val (at, _) = way()
+        val (at, _, _) = connected()
         if (read.fresh || at == null || !haveLibrary || !looking.tryLock()) return@withContext read.shown
         try {
             val favourites = Core.discoverFavourites(played())

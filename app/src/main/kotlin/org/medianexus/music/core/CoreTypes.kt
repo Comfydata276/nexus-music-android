@@ -250,7 +250,12 @@ sealed interface Outcome<out T> {
  * itself is.
  */
 @Serializable
-class LidarrAt(val address: String, val key: String, val session: Long? = null, val origin: String? = Core.lidarrPlace(address)) {
+class LidarrAt(
+    val address: String, val key: String, val session: Long? = null, val origin: String? = Core.lidarrPlace(address),
+    /** Which connection this is, by the app's own count of them (it moves whenever the
+     *  address, the key or the sign-in changes): the app's affair, never the library's. */
+    @kotlinx.serialization.Transient val connection: Long = 0,
+) {
     override fun toString(): String = "LidarrAt"
 }
 
