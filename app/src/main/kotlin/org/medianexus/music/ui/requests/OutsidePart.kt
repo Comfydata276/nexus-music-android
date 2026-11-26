@@ -58,22 +58,21 @@ import org.medianexus.music.ui.theme.Theme
  */
 @Composable
 fun rememberOutsideSearch(here: RequestsHere?, typed: String): OutsideSearch? {
-    val ui = LocalUi.current
     if (here == null || !here.connected) return null
     val key = here.key
     val pages = here.pages
     val model = remember(key) {
-        OutsideSearch({ query, soFar -> pages.searchShowing(query, soFar) }, kept = ui.outsideKept?.takeIf { it.first == key }?.second)
+        OutsideSearch({ query, soFar -> pages.searchShowing(query, soFar) }, kept = AskedChanges.of(here.account).outsideKept?.takeIf { it.first == key }?.second)
     }
     LaunchedEffect(model, typed) { model.type(typed) }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { model.run() } }
-    val asked = ui.requestsAsked
+    val asked = askedCount(here)
     val askedBefore = remember(model) { asked }
     LaunchedEffect(model, asked) { if (asked != askedBefore) model.again() }
     val state by model.state.collectAsStateWithLifecycle()
     // (A look that finished is kept for when the search comes back with the same words.)
-    LaunchedEffect(model, state) { if (state.done && state.why == null) ui.outsideKept = key to state }
+    LaunchedEffect(model, state) { if (state.done && state.why == null) AskedChanges.of(here.account).outsideKept = key to state }
     return model
 }
 

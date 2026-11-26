@@ -115,7 +115,9 @@ class Navigator private constructor(saved: Saved?) {
     private var next = saved?.next ?: 0L
     private val stacks: Map<Tab, SnapshotStateList<Place>> = Tab.entries.associateWith { tab ->
         mutableStateListOf<Place>().apply {
-            addAll(saved?.stacks?.get(tab)?.takeIf { it.isNotEmpty() } ?: listOf(Place(tab.root, next++)))
+            // (A history saved by a build with pages this one doesn't have, requests' or jams',
+            // comes back without them: never a blank page in their place.)
+            addAll(saved?.stacks?.get(tab)?.filter { exists(it.route) }?.takeIf { it.isNotEmpty() } ?: listOf(Place(tab.root, next++)))
         }
     }
 
@@ -129,10 +131,8 @@ class Navigator private constructor(saved: Saved?) {
     val canGoBack: Boolean get() = visible.size > 1
 
     fun open(route: Route) {
-        // No way to jams in a build where they don't exist (jam/JamBuild).
-        if (route is Route.Jam && !org.medianexus.music.jam.JamBuild.on) return
-        // Nor to requests where they don't (requests/RequestsBuild).
-        if ((route is Route.OutsideArtist || route is Route.OutsideAlbum || route is Route.Requests) && !org.medianexus.music.requests.RequestsBuild.on) return
+        // No way to jams or requests in a build where they don't exist.
+        if (!exists(route)) return
         motion = Motion.PUSH
         stacks.getValue(tab) += Place(route, next++)
     }
@@ -162,6 +162,14 @@ class Navigator private constructor(saved: Saved?) {
 
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
+
+        /** Whether this build has the page: jams' only with jams (jam/JamBuild), requests' only
+         *  with requests (requests/RequestsBuild). */
+        fun exists(route: Route): Boolean = when (route) {
+            is Route.Jam -> org.medianexus.music.jam.JamBuild.on
+            is Route.OutsideArtist, is Route.OutsideAlbum, Route.Requests -> org.medianexus.music.requests.RequestsBuild.on
+            else -> true
+        }
 
         /** Kept through the activity being rebuilt and the process being stopped. A saved
          *  history that no longer reads is dropped for a fresh one. */

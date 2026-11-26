@@ -74,6 +74,41 @@ fun requestsHere(): RequestsHere? {
 }
 
 /**
+ * Something has been asked of Lidarr for an account (an album, an artist, one taken off the
+ * list, an arrival): pages that show music beyond the library ask again, to say "Requested"
+ * (Windows' `refresh_outside`), and the search's kept look is let go. **The account's, not an
+ * activity's**: an ask outlives the page that started it, and its end reaches whichever
+ * screen is alive then (a recreated activity included).
+ */
+class AskedChanges {
+    private val count = MutableStateFlow(0)
+
+    /** How many times; what a page watches. */
+    val asked: StateFlow<Int> = count.asStateFlow()
+
+    /** The last look beyond the library under a search that finished, and the connection it
+     *  was made under: shown again, not asked again, when the search comes back with the
+     *  same words. In memory only. */
+    @Volatile var outsideKept: Pair<Any, OutsideSearch.State>? = null
+
+    fun changed() {
+        outsideKept = null
+        count.update { it + 1 }
+    }
+
+    companion object {
+        private val all = java.util.WeakHashMap<Any, AskedChanges>()
+
+        /** The account's own (`account`: its graph). */
+        fun of(account: Any): AskedChanges = synchronized(all) { all.getOrPut(account) { AskedChanges() } }
+    }
+}
+
+/** How many times something has been asked of Lidarr for this account (see [AskedChanges]). */
+@Composable
+fun askedCount(here: RequestsHere): Int = AskedChanges.of(here.account).asked.collectAsStateWithLifecycle().value
+
+/**
  * What asking needs of requests (in the app, `RequestsPages`' own calls: [askOps]).
  * `connection` is the number of the connection to Lidarr that the row or page that was
  * pressed was found under (`Found.Got.connection`): what was shown under one Lidarr is
@@ -267,7 +302,7 @@ fun rememberAsker(here: RequestsHere): Asker {
                     ui.sheet = Sheet.Confirm(heading, text, word, danger = false, onConfirm = onYes)
                 }
 
-                override fun changed() = ui.requestsChanged()
+                override fun changed() = AskedChanges.of(here.account).changed()
             },
             UnderWay.of(here.account),
         )

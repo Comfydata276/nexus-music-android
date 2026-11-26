@@ -60,7 +60,7 @@ fun RequestsPage() {
     val here = requestsHere() ?: return
     val pages = here.pages
     val model = remember(here.key) { PageLoad { pages.onTheirWay() } }
-    Running(model, model::run, model::again)
+    Running(here, model, model::run, model::again)
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, lifecycle) {
         lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
@@ -71,6 +71,7 @@ fun RequestsPage() {
         }
     }
     val state by model.state.collectAsStateWithLifecycle()
+    val unreadable by pages.askedUnreadable.collectAsStateWithLifecycle()
     val waiting = state.value
     val asker = rememberAsker(here)
     // Being taken off the list (from this page or before it was left): not shown meanwhile.
@@ -91,6 +92,14 @@ fun RequestsPage() {
                     waiting == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
                     else -> {
                         state.why?.let { why -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(why, model::again) } }
+                        // What this phone asked for can't be read: the list is short of it, and says so.
+                        if (unreadable) item(key = "asked-unreadable", contentType = "said") {
+                            BasicText(
+                                stringResource(R.string.requests_asked_unreadable),
+                                Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
+                                style = Theme.type.rowDetail.copy(color = Theme.colors.warm),
+                            )
+                        }
                         if (waiting.arrived.isNotEmpty()) {
                             item(key = "arrived-title", contentType = "title") { SectionTitle(stringResource(R.string.arrived)) }
                             items(waiting.arrived, key = { (asked, _) -> "arrived/${asked.libraryAlbum}/${asked.title}" }, contentType = { "arrived" }) { (asked, about) ->

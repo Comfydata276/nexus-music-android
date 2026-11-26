@@ -78,8 +78,20 @@ fun RequestsSettings() {
     val colors = Theme.colors
 
     val title = stringResource(R.string.requests_on)
+    // What is kept can't be read: nothing can be changed until it can, and the switch says so
+    // by doing nothing rather than seeming to (it would otherwise look like an off switch
+    // that does nothing).
+    val unreadable = state == RequestsState.CantRead
     SettingRow(title, stringResource(R.string.requests_on_detail)) {
-        Toggle(settings.on, { on -> scope.launch { requests.switch(on) } }, title)
+        Toggle(settings.on, { on -> scope.launch { requests.switch(on) } }, title, enabled = !unreadable)
+    }
+    if (unreadable) {
+        val said = requests.says(state).ifEmpty { stringResource(R.string.requests_kept_unreadable) }
+        Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(10.dp).background(colors.danger, CircleShape))
+            BasicText(said, Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.body.copy(color = colors.text))
+        }
+        return
     }
     if (!settings.on) return
     val singles = stringResource(R.string.requests_singles)

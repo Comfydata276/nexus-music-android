@@ -57,23 +57,6 @@ class Ui(val graph: Graph, val navigator: Navigator) {
 
     val player get() = graph.player
 
-    /**
-     * Requests: how many times something has been asked of Lidarr from a screen (an album, an
-     * artist, one taken off the list). Pages that show music beyond the library ask again
-     * when it changes, to say "Requested" where they should (Windows' `refresh_outside`).
-     */
-    var requestsAsked by mutableIntStateOf(0)
-        private set
-
-    /** The last look beyond the library under a search that finished, and the connection it
-     *  was made under: shown again, not asked again, when the search comes back with the same
-     *  words. In memory only. */
-    internal var outsideKept: Pair<Any, org.medianexus.music.ui.requests.OutsideSearch.State>? = null
-
-    fun requestsChanged() {
-        outsideKept = null
-        requestsAsked++
-    }
 
     /** Opens a page, closing Now Playing if it's over it (its artist, say). */
     fun open(route: Route) {

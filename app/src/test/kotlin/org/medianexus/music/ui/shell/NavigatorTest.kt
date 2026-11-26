@@ -64,4 +64,26 @@ class NavigatorTest {
         // Something that no longer reads gives a fresh start, not a crash.
         assertEquals(listOf(Route.Home), Navigator.saver.restore("{not json")!!.routes())
     }
+
+    @Test
+    fun aSavedRequestsPageIsDroppedWhenTheBuildHasNoRequests() {
+        try {
+            org.medianexus.music.requests.RequestsBuild.forTests = true
+            val nav = Navigator.fresh()
+            nav.select(Tab.LIBRARY)
+            nav.open(Route.Requests)
+            nav.open(Route.OutsideAlbum("rg-1", "Paper Tides"))
+            nav.select(Tab.SEARCH)
+            nav.open(Route.OutsideArtist("qv", "Quillon Vane"))
+            val saved = with(Navigator.saver) { SaverScope { true }.save(nav) }!!
+            // Restored by a build without requests: none of their pages, and no blank ones.
+            org.medianexus.music.requests.RequestsBuild.forTests = false
+            val back = Navigator.saver.restore(saved)!!
+            assertEquals(listOf(Route.Library), back.stack(Tab.LIBRARY).map { it.route })
+            assertEquals(listOf(Route.Search), back.stack(Tab.SEARCH).map { it.route })
+            assertEquals(listOf(Route.Home, Route.Search), back.routes())
+        } finally {
+            org.medianexus.music.requests.RequestsBuild.forTests = null
+        }
+    }
 }

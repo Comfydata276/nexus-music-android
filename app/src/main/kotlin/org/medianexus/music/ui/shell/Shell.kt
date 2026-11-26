@@ -281,7 +281,7 @@ private fun RequestsNews(ui: Ui) {
             // (`shown`), and one that never gets there is offered again by the next collection.
             pages.arrivals.collect { arrival ->
                 ui.graph.toasts.show(arrival.words, res.getString(R.string.requests), onAction = { ui.open(Route.Requests) }, shown = { pages.shown(arrival) })
-                ui.requestsChanged()
+                account?.let { org.medianexus.music.ui.requests.AskedChanges.of(it).changed() }
             }
         }
     }

@@ -500,4 +500,17 @@ class RequestsScreensTest {
         assertEquals(0, show.changes)
         assertEquals("Ends a sentence once", "Done.", Asker.ended("Done."))
     }
+
+    @Test
+    fun whatWasAskedReachesWhicheverScreenIsAliveForThatAccountOnly() {
+        val account = Any()
+        val other = Any()
+        val before = AskedChanges.of(account).asked.value
+        AskedChanges.of(account).outsideKept = "connection" to OutsideSearch.State("lantern", done = true)
+        // Said by an ask that outlived its page (and its activity): what a new screen reads.
+        AskedChanges.of(account).changed()
+        assertEquals(before + 1, AskedChanges.of(account).asked.value)
+        assertNull(AskedChanges.of(account).outsideKept)
+        assertEquals(0, AskedChanges.of(other).asked.value)
+    }
 }

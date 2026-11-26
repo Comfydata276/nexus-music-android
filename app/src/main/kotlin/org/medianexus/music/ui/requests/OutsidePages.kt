@@ -58,11 +58,10 @@ import org.medianexus.music.ui.theme.Theme
  * cancels what it asked), and has it ask again when something has been asked of Lidarr.
  */
 @Composable
-internal fun Running(model: Any, run: suspend () -> Unit, again: () -> Unit) {
-    val ui = LocalUi.current
+internal fun Running(here: RequestsHere, model: Any, run: suspend () -> Unit, again: () -> Unit) {
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { run() } }
-    val asked = ui.requestsAsked
+    val asked = askedCount(here)
     val before = remember(model) { asked }
     LaunchedEffect(model, asked) { if (asked != before) again() }
 }
@@ -81,7 +80,7 @@ fun OutsideArtistPage(route: Route.OutsideArtist) {
     val here = requestsHere() ?: return
     val pages = here.pages
     val model = remember(here.key, route.id) { OutsideArtistModel({ pages.artist(route.id) }, { name -> pages.popular(route.id, name) }) }
-    Running(model, model::run, model::again)
+    Running(here, model, model::run, model::again)
     val state by model.state.collectAsStateWithLifecycle()
     val asker = rememberAsker(here)
     val artist = state.artist
@@ -199,7 +198,7 @@ fun OutsideAlbumPage(route: Route.OutsideAlbum) {
     val here = requestsHere() ?: return
     val pages = here.pages
     val model = remember(here.key, route.id) { PageLoad { pages.album(route.id) } }
-    Running(model, model::run, model::again)
+    Running(here, model, model::run, model::again)
     val state by model.state.collectAsStateWithLifecycle()
     val asker = rememberAsker(here)
     val page = state.value
