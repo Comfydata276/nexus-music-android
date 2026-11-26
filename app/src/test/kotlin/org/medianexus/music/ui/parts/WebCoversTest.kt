@@ -32,6 +32,9 @@ import org.medianexus.music.requests.RequestsBuild
  * public site (`where` lets its own address through, and nothing else past the rule), or a
  * place the rule must keep the loader away from.
  */
+@org.junit.runner.RunWith(org.robolectric.RobolectricTestRunner::class)
+// The phone's own decoder, not a stand-in: what is kept is what it can read the size of.
+@org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
 class WebCoversTest {
     @get:Rule val folder = TemporaryFolder()
     @get:Rule val limit: Timeout = Timeout.seconds(60)
@@ -71,8 +74,29 @@ class WebCoversTest {
 
     private val site get() = "http://127.0.0.1:${server.port}"
 
-    /** A picture, as far as its first bytes say (a PNG's). */
-    private val picture = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) + ByteArray(56) { it.toByte() }
+    /** A picture: a real PNG, one pixel square, made here. */
+    private val picture = png()
+
+    /** What begins as a PNG and is nothing a decoder can read past its first bytes. */
+    private val madeUp = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) + ByteArray(56) { it.toByte() }
+
+    private fun png(): ByteArray {
+        fun chunk(out: java.io.ByteArrayOutputStream, type: String, data: ByteArray) {
+            val body = type.toByteArray() + data
+            out.write(java.nio.ByteBuffer.allocate(4).putInt(data.size).array())
+            out.write(body)
+            out.write(java.nio.ByteBuffer.allocate(4).putInt(java.util.zip.CRC32().apply { update(body) }.value.toInt()).array())
+        }
+        val out = java.io.ByteArrayOutputStream()
+        out.write(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+        // 1 by 1, eight bits, true colour.
+        chunk(out, "IHDR", java.nio.ByteBuffer.allocate(13).putInt(1).putInt(1).put(8).put(2).put(0).put(0).put(0).array())
+        val pixels = java.io.ByteArrayOutputStream()
+        java.util.zip.DeflaterOutputStream(pixels).use { it.write(byteArrayOf(0, 0xF0.toByte(), 0x80.toByte(), 0x30)) }
+        chunk(out, "IDAT", pixels.toByteArray())
+        chunk(out, "IEND", ByteArray(0))
+        return out.toByteArray()
+    }
 
     private fun pictureReply() = MockResponse.Builder().setHeader("Content-Type", "image/png").body(okio.Buffer().write(picture)).build()
 
@@ -230,6 +254,17 @@ class WebCoversTest {
             assertTrue(brand, WebCovers.looksLikeAPicture(first12(24, "ftyp", brand)))
         }
         assertTrue(WebCovers.looksLikeAPicture(okio.Buffer().write(picture)))
+    }
+
+    @Test
+    fun whatBeginsAsAPictureButCanNotBeReadIsNeverKept() = runBlocking {
+        val fake = MockResponse.Builder().setHeader("Content-Type", "image/png").body(okio.Buffer().write(madeUp)).build()
+        server.enqueue(fake)
+        server.enqueue(fake)
+        val covers = covers()
+        assertNull(covers.fetch("$site/x.png", null))
+        assertNull(covers.fetch("$site/x.png", null))
+        assertEquals("nothing kept, so asked again", 2, server.requestCount)
     }
 
     @Test

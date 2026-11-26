@@ -226,6 +226,9 @@ class WebCovers(
                 }
             }
             if (!fetching()) throw IOException("offline now")
+            // Kept only if the phone's own decoder can read its size: a file that merely begins
+            // as a picture does is not one.
+            if (!readsAsAPicture(editor.data.toFile())) throw IOException("not a picture")
             return editor.commitAndOpenSnapshot()
         } catch (_: IOException) {
             editor.abort()
@@ -253,7 +256,18 @@ class WebCovers(
             MessageDigest.getInstance("SHA-256").digest(address.toByteArray()).joinToString("") { "%02x".format(it) }
 
         /**
-         * Whether what is coming begins as a picture the phone can open does: JPEG, PNG, GIF,
+         * Whether the phone's decoder can read the size of the picture in `file` (its own
+         * bounds check, nothing decoded): what is kept is only what it can.
+         */
+        fun readsAsAPicture(file: File): Boolean {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(file.path, bounds)
+            return bounds.outWidth > 0 && bounds.outHeight > 0
+        }
+
+        /**
+         * Whether what is coming begins as a picture the phone can open does (a first look,
+         * before anything is written: [readsAsAPicture] decides what is kept): JPEG, PNG, GIF,
          * WebP, AVIF or HEIF (all of them from Android 12, the least the app runs on). AVIF and
          * HEIF begin as MP4 does, with a `ftyp` box: its brand says which, and a video's is
          * not taken. Looks at the first twelve bytes without taking them.
