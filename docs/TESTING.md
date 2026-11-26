@@ -2659,8 +2659,8 @@ compile, and their new `SwitchedOffTest`.)
 Requests are switched off in every build so far (`RequestsBuild`), and there are no screens
 for them yet. What is below the screens is driven three ways.
 
-**In the JVM, against stand-ins written into the tests**: `CoreHttpTest` (the boundary: 33
-tests against a server that answers in bytes of the test's choosing; none may take more than two
+**In the JVM, against stand-ins written into the tests**: `CoreHttpTest` (the boundary: tests
+against a server that answers in bytes of the test's choosing; none may take more than two
 minutes, so that a change which makes one wait for ever fails it instead of holding the machine's builds), `RequestsTest` (the
 connection: an address and a key, the browser sign-in played by the test, what is kept and
 what is handed back), `requests/SwitchedOffTest` (with the build's switch off an account
@@ -2797,6 +2797,51 @@ by: the memory comes in steps of about 4 MB from one start to the next, in eithe
 `shots/m7a/how/idle-memory.sh` takes several.) Another engineer's build was loading the
 machine during the timings, so the scrolling numbers in those reports mean nothing: 0.5.1
 itself read 46% slow frames there against 4.5% the day before.
+
+### After the review (the second round)
+
+A reviewer read all of the above, and the round that followed is tested as below. Each
+test named here was written before its fix and seen to fail for the reason given (but the
+one about being busy, which was written first and first run after).
+
+| The rule | Where it is tested | What the test saw before the fix |
+|---|---|---|
+| A change is sent once | `CoreHttpTest`, "a change is sent once, whatever answer would have a client send it again" | A `POST` answered 503 with `Retry-After: 0` was sent twice |
+| A key or a token goes to the place it was given for | `RequestsTest`, "a secret and the place it is for" (ten tests); `CoreHttpTest`, "what carries a secret goes to the place the secret was given for" | Stopped between the two writes of connecting, the old key was sent to the new address; `https` for `http` reused it; `http://b\@a` took it to `b`; an address with a password in it was kept |
+| One sign-in owns the kept token | `RequestsTest`, "one sign-in owns the token that is kept" (two tests) | Signed out and in again at once, the new token was deleted by the old sign-in's clean-up, or overwritten by its late renewal |
+| The browser's door cannot be held | `BrowserReturnTest` (seven tests) | A client sending a letter at a time held the reader; the wait overran; closing left sockets open; a `POST` was taken for the browser |
+| What Lidarr accepted is written down | `RequestsPagesTest`, "asked for, and the account signed out before Lidarr had finished…", "taken off the list, and the screen gone…"; `CoreHttpTest`, "what nobody can stop still ends" | No note; no forgetting |
+| A row acts on the connection it came from | `RequestsPagesTest`, "what was shown under one Lidarr changes nothing on another", "the connection changed while Lidarr was being asked…" | Another Lidarr's album was taken off its list |
+| Where the public services may lead | `CoreHttpTest`, three tests on following | A redirect from one plain-http address on this machine to another was followed |
+| Arrival news, neither lost nor said twice | `RequestsPagesTest`, "an arrival found and never said…", "news is for the account it happened to" | Never said by a later run; a listener to an account that had gone went on listening |
+| A wait with an end; a list put together again | `CoreHttpTest`, "more at once than there are threads and places in the queue…"; `RequestsPagesTest`, "a list that couldn't be read is put together again once it can be" | |
+
+The tests' own stand-in sign-in service (`RequestsTest.Behind`) checks the secret half of
+a sign-in as a real one does (PKCE, S256), and so does the kit's for the emulator
+(`shots/m7a/how/make-standin`, which also follows the kit's stand-in as the Windows side
+has since changed it).
+
+**What only the emulator found.** The rule that the browser's page says how the sign-in
+ended had the app trade the code for its token before coming forward. Every test in the
+JVM passed. On the Android 16 emulator every sign-in then ended "Couldn't reach the
+sign-in service. It didn't answer in time.", and the stand-in never saw the trade: from
+Android 15 an app nobody is looking at has its network taken away after a few seconds, and
+the app had been behind the browser for as long as signing in took. The app now comes
+forward first and trades in front (`RequestsTest`, "the app comes forward before it trades
+the code…", plays an app that cannot come forward and has no network until its screen is
+back).
+
+**The walks again, at the round's head** (`~/.cache/nexus-music-android/shots/m7a/round2/`):
+
+- The sign-in on Android 16 and on Android 12, each with its index: signing in after ten
+  seconds and more on the sign-in page, the service refusing, the tab closed, the app
+  killed behind the tab, a restart, signing out. All as before the round. On Android 12
+  the build went over an earlier debug build whose kept key and token had no place with
+  them: both were taken for none ("Not connected yet."), which is the rule.
+- One walk of each action on Android 17 against the stand-in, and its calls beside the
+  Windows walk's (`asking/compare.txt`): the 29 calls the two walks share are the same,
+  bodies included, as before the round. Taking an album off the list by a number the list
+  had never shown was refused in one sentence.
 
 ## What is not covered
 
