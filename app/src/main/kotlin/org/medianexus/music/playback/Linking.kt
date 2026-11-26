@@ -71,6 +71,9 @@ internal class Linking(
     private val linked: Linked = Linked(),
     /** Whether the phone is in a jam with other people. */
     private val inAJam: () -> Boolean = { false },
+    /** The library's sentence for a stop ([Core.linkStoppedWords]). (Given, so that a test
+     *  can have the call for it fail.) */
+    private val stoppedWordsOf: () -> String = Core::linkStoppedWords,
 ) : Core.LinkPlayer {
     /** What only the app knows. */
     interface Host {
@@ -394,13 +397,16 @@ internal class Linking(
         if (faulted) {
             stopped = true
             host.note("linking: it stopped for a fault earlier in this run of the app, and is not started again")
+            // (The list says so all the same, in the words the person was told then.)
+            stoppedWords = faultWords.ifEmpty { runCatching { host.ownStoppedWords() }.getOrDefault("") }
+            runCatching { linked.over(true, stoppedWords) }
             return false
         }
         try {
             // What the person is told if it stops: the phone's own words until the
             // library's are in hand, which are asked for before anything is started.
             stoppedWords = host.ownStoppedWords()
-            stoppedWords = Core.linkStoppedWords()
+            stoppedWords = stoppedWordsOf()
             // (The library ties a linking to the thread that starts it.)
             check(Looper.myLooper() == main.looper) { "linking is started on the player's thread" }
             relayEdit = host.relayEdit()
@@ -430,6 +436,7 @@ internal class Linking(
             // it is not tried again in this run of the app, and the person is told.
             stopped = true
             faulted = true
+            faultWords = stoppedWords
             clean(putRight = false)
             runCatching { Core.linkClose(0) }
             runCatching { host.note("linking: could not be started, and is off until the app is next started") }
@@ -591,6 +598,7 @@ internal class Linking(
         if (stopped) return
         stopped = true
         faulted = true
+        faultWords = stoppedWords
         clean(putRight = true)
         runCatching { host.note("linking: stopped on this phone until the app is next started ($why)") }
         if (stoppedWords.isNotEmpty()) runCatching { host.say(stoppedWords) }
@@ -612,7 +620,9 @@ internal class Linking(
         if (putRight) runCatching { side.stopped() }
         runCatching { steer.steering(null) }
         runCatching { side.beforeTake = null }
-        runCatching { if (linked.doing === doing) linked.over(stopped, stoppedWords) }
+        // (Stopped for a fault, the list says so whether or not it had been handed this
+        // linking's doings yet: a fault at the very start is said under it too.)
+        runCatching { if (stopped || linked.doing === doing) linked.over(stopped, stoppedWords) }
         runCatching { side.detach() }
         if (current.get() === this) {
             org.medianexus.music.link.LinkShown.wanted = { false }
@@ -925,9 +935,14 @@ internal class Linking(
         @Volatile var faulted = false
             private set
 
+        /** What the person was told when it stopped: what the list says under itself for
+         *  the rest of the run, whichever playback service draws it. */
+        @Volatile private var faultWords = ""
+
         @androidx.annotation.VisibleForTesting
         internal fun forgetFaultForTests() {
             faulted = false
+            faultWords = ""
         }
 
         /** The one there is, if linking exists and has been started: for the debug walk. */

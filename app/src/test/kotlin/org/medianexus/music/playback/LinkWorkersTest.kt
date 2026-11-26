@@ -291,6 +291,44 @@ class LinkWorkersTest {
     }
 
     /**
+     * **A stop is said even when nothing was listening.** Linking stops for a fault at its
+     * very start, before any screen has been handed the list's doings and with nothing to
+     * show the note: the list of devices carries the sentence all the same, and so does the
+     * list a playback service made again in the same run of the app draws. In the library's
+     * words; in the phone's own where the call for those is what failed. The note itself
+     * is still said once, to whatever is there to show it.
+     */
+    @Test
+    fun aStopIsSaidUnderTheListEvenWhenNothingWasListening() {
+        val sentence = "Linking has stopped on this phone until the app is next opened."
+        val stopped = Linked.State(stopped = true, note = sentence)
+        // The start fails before anything is attached.
+        val linked = Linked()
+        host.deviceFails = true
+        link = Linking(side, host, linked = linked)
+        assertFalse(link.start())
+        assertEquals(stopped, linked.state.value)
+        // A service made again in this run: it starts nothing, and its list says why.
+        host.deviceFails = false
+        val again = Linked()
+        assertFalse(Linking(side, host, linked = again).start())
+        assertEquals(stopped, again.state.value)
+        assertEquals(listOf(sentence), host.said.toList())
+        // The library's words cannot be had: the phone's own, under the list and said.
+        Linking.forgetFaultForTests()
+        host.said.clear()
+        val own = Linked.State(stopped = true, note = "The phone's own words for it.")
+        val unanswered = Linked()
+        link = Linking(side, host, linked = unanswered, stoppedWordsOf = { error("the library did not answer") })
+        assertFalse(link.start())
+        assertEquals(own, unanswered.state.value)
+        val afterThat = Linked()
+        assertFalse(Linking(side, host, linked = afterThat).start())
+        assertEquals(own, afterThat.state.value)
+        assertEquals(listOf("The phone's own words for it."), host.said.toList())
+    }
+
+    /**
      * The relay and its key are one thing: saved again, the session that was using the
      * old ones is ended, and the next begins with what is saved now, read afresh.
      */
