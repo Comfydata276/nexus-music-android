@@ -76,6 +76,23 @@ class Diagnostics(
         save(now)
     }
 
+    /**
+     * Notes something that only ever matters as it last was (the last attempt to connect
+     * requests, say): every line beginning with `prefix` goes, and `text`, which begins with
+     * it, takes their place.
+     */
+    fun replacing(prefix: String, text: String, now: Boolean = false) {
+        synchronized(entries) {
+            replaced += prefix
+            if (entries.removeAll { it.text.startsWith(prefix) }) dirty = true
+        }
+        note(text, now)
+    }
+
+    /** What [replacing] has replaced in this run: one of those read back from the phone
+     *  afterwards is older still, and is not put back. */
+    private val replaced = HashSet<String>()
+
     /** What has been noted, the most lately seen last. */
     fun entries(): List<Entry> = synchronized(entries) { entries.toList() }
 
@@ -119,7 +136,7 @@ class Diagnostics(
             loaded = true
             val since = entries.toList()
             entries.clear()
-            entries += before.takeLast(most)
+            entries += before.filter { entry -> replaced.none { entry.text.startsWith(it) } }.takeLast(most)
             for (entry in since) {
                 val index = entries.indexOfFirst { it.text == entry.text }
                 if (index >= 0) {

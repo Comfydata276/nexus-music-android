@@ -57,6 +57,23 @@ class DiagnosticsTest {
     }
 
     @Test
+    fun aLineThatMattersOnlyAsItLastWasReplacesTheOneBeforeItAcrossARestart() {
+        val log = open()
+        settle()
+        log.note("connection from an.app: refused")
+        log.replacing("requests: last connect or sign-in:", "requests: last connect or sign-in: checking Lidarr, timed out, 8012 ms", now = true)
+        settle()
+        // Read back by the next run, whose own attempt is noted before the file has been read.
+        val next = open()
+        next.replacing("requests: last connect or sign-in:", "requests: last connect or sign-in: checking Lidarr, connected, 310 ms")
+        settle()
+        val lines = next.entries().map { it.text }
+        assertEquals(listOf("connection from an.app: refused", "requests: last connect or sign-in: checking Lidarr, connected, 310 ms"), lines)
+        next.replacing("requests: last connect or sign-in:", "requests: last connect or sign-in: checking Lidarr, connected, 310 ms")
+        assertEquals(1, next.entries().count { it.text.startsWith("requests: last") })
+    }
+
+    @Test
     fun itIsBoundedInMemoryAndOnThePhone() {
         val log = open(most = 50)
         for (i in 1..500) log.note("thing number $i " + "x".repeat(1_000), now = true)
