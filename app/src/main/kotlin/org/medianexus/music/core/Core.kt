@@ -1073,14 +1073,15 @@ object Core {
     internal fun linkTestAsked(frame: String): JsonObject = across(frame, String.serializer(), JsonObject.serializer(), ::linkTestAsked)
 
     @Serializable
-    private class LinkTestAnsweredIn(val session: Long, val frames: List<String>, val speaks: Long?, val name: String, val playing: Boolean, val title: String, val full: JsonObject?, val queue: JsonObject?, val at: LinkAt)
+    private class LinkTestAnsweredIn(val session: Long, val frames: List<String>, val speaks: Long?, val name: String, val playing: Boolean, val title: String, val full: JsonObject?, val queue: JsonObject?, val at: LinkAt, val carried: Boolean = false)
 
     /** The other device answers the last look among what the phone asked to be sent: as a
      *  device of this name, playing this, that speaks as this build does (`null`) or says
      *  this number (1: says none). `full` and `queue`: what a look that asked for one is
-     *  answered with (the library's `Full` and `Handed`). */
-    internal fun linkTestAnswered(session: Long, frames: List<String>, speaks: Long?, name: String, playing: Boolean, title: String, now: Long, today: Long, full: JsonObject? = null, queue: JsonObject? = null): LinkCame =
-        across(LinkTestAnsweredIn(session, frames, speaks, name, playing, title, full, queue, LinkAt(now, today)), LinkTestAnsweredIn.serializer(), LinkCame.serializer(), ::linkTestAnswered)
+     *  answered with (the library's `Full` and `Handed`). `carried`: the last command among
+     *  them is answered instead, as carried out. */
+    internal fun linkTestAnswered(session: Long, frames: List<String>, speaks: Long?, name: String, playing: Boolean, title: String, now: Long, today: Long, full: JsonObject? = null, queue: JsonObject? = null, carried: Boolean = false): LinkCame =
+        across(LinkTestAnsweredIn(session, frames, speaks, name, playing, title, full, queue, LinkAt(now, today), carried), LinkTestAnsweredIn.serializer(), LinkCame.serializer(), ::linkTestAnswered)
 
     // ---- For the tests of the boundary itself ----
 

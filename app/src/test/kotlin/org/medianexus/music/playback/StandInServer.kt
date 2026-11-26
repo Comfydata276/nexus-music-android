@@ -22,6 +22,11 @@ class StandInServer {
     /** What was asked, as "endpoint id" ("star s3"), in order. */
     val asked = CopyOnWriteArrayList<String>()
 
+    /** Set, a song asked for is not answered until the server stops: the player waits for
+     *  it, making it ready, and nothing fails. */
+    @Volatile var holdStreams = false
+    private val streamsHeld = java.util.concurrent.CountDownLatch(1)
+
     /** Endpoints the server refuses, with its own words for why. */
     val refuses = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -33,6 +38,7 @@ class StandInServer {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val endpoint = request.url.encodedPath.substringAfterLast('/').removeSuffix(".view")
                 asked += listOfNotNull(endpoint, request.url.queryParameter("id")).joinToString(" ")
+                if (endpoint == "stream" && holdStreams) streamsHeld.await(60, java.util.concurrent.TimeUnit.SECONDS)
                 val refusal = refuses[endpoint]
                 val body = if (refusal != null) {
                     """{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"$refusal"}}}"""
@@ -46,7 +52,10 @@ class StandInServer {
         server.start()
     }
 
-    fun stop() = server.close()
+    fun stop() {
+        streamsHeld.countDown()
+        server.close()
+    }
 
     val address: String get() = server.url("/").toString()
 

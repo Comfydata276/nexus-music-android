@@ -1383,6 +1383,10 @@ class PlaybackService : MediaLibraryService() {
      *  main thread, with the copy it is of). */
     private var linkSongs: Pair<org.medianexus.music.library.LibrarySnapshot, Map<String, Int>>? = null
 
+    /** (For a test: how many songs linking can make from the phone's copy of the library.) */
+    @androidx.annotation.VisibleForTesting
+    internal val linkSongsForTests: Int get() = linkSongs?.second?.size ?: 0
+
     private fun startLinking() {
         val side = LinkSide(
             player, exo,

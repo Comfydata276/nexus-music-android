@@ -635,6 +635,10 @@ internal class Linking(
         link = 0
     }
 
+    /** (For a test: the half that knows the player.) */
+    @androidx.annotation.VisibleForTesting
+    internal val sideForTests: LinkSide get() = side
+
     // ---- What the library says to do -----------------------------------------------------------
 
     /** What the list last said, and the device being steered: for the debug walk. */

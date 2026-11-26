@@ -253,6 +253,12 @@ internal class LinkSide(
         return (timeline.getWindow(eventTime.windowIndex, Timeline.Window()).mediaItem.localConfiguration?.tag as? QueuePlayer.SongTag)?.uid
     }
 
+    /** (For a test of the whole service, whose player has no sound to play: playing, and
+     *  this many seconds into the entry, in place of what ExoPlayer says. Null, and
+     *  ExoPlayer is asked.) */
+    @androidx.annotation.VisibleForTesting
+    @Volatile internal var soundForTests: Double? = null
+
     /** (For the tests too, which hand it an event as the player would have made it.) */
     internal val hears = object : AnalyticsListener {
         override fun onAudioPositionAdvancing(eventTime: AnalyticsListener.EventTime, playoutStartSystemTimeMs: Long) {
@@ -313,10 +319,11 @@ internal class LinkSide(
             proof = null
             return null
         }
-        if (!waiting.heard || !isPlaying() || queue.isEmpty) return null
+        val standIn = soundForTests
+        if (!waiting.heard || !(standIn != null || isPlaying()) || queue.isEmpty) return null
         return buildJsonObject {
             put("queue", waiting.whole)
-            put("at", position())
+            put("at", standIn ?: position())
         }
     }
 

@@ -423,23 +423,18 @@ class LinkCommandsTest {
      */
     @Test
     fun aDeviceSteeredIsInThePhonesPlayerAndWhatIsPressedThereIsAskedOfIt() {
+        // The phone's copy of the library has the PC's songs, so that "Play here" can put
+        // them in its player; and the player is left making them ready, never failing for
+        // want of a sound this machine cannot play.
+        server.holdStreams = true
+        libraryHas(listOf(Song(id = "x1", title = "One", duration = 200), Song(id = "x2", title = "Two", duration = 180)))
         inside.player.play(mine(), 0, "A list", playNow = false)
         settle()
         join()
         hear(look())
         val linked = app.graph.linked
         val steered = app.graph.steered
-        fun commandsSent(): Int = asks("send").map { it.getValue("frame").jsonPrimitive.content }.count { Core.linkTestIsCommand(it) }
-        fun answered(full: JsonObject? = null, queue: JsonObject? = null) {
-            val sent = asks("send").map { it.getValue("frame").jsonPrimitive.content }
-            asked.clear()
-            link().forTests { now, today -> Core.linkTestAnswered(session, sent, null, "Study PC", true, "Harbour Lights", now, today, full, queue) }
-        }
-        val full = kotlinx.serialization.json.Json.parseToJsonElement(
-            """{"position":12.0,"now":{"id":"x0","title":"Harbour Lights","artist":"The Tide","album":"Harbour","duration":240},
-               "queue":[{"id":"x1","title":"One","duration":200,"queued":true},{"id":"x2","title":"Two","duration":180}],
-               "more":3,"context":"Harbour","shuffle":false,"repeat":0,"volume":0.8}""",
-        ).jsonObject
+        val full = STUDY_PC
         // The list, as the screens are handed it.
         pass(31_000)
         answered()
@@ -462,19 +457,35 @@ class LinkCommandsTest {
         pass(600)
         assertEquals("Study PC", linked.state.value.steering)
         assertTrue(linked.state.value.devices.single().steered)
-        // What is pressed in the player is asked of the device: the first as a command,
-        // and those pressed while it is unanswered wait behind it. Each is one the
-        // library reads: linking has not stopped for any of them.
+        // What is pressed in the player is asked of the device, **each one, in the order
+        // pressed**: the first as a command, and those pressed while it is unanswered wait
+        // behind it (as many as wait), each sent as the one before is carried out. Each is
+        // one the library reads: linking has not stopped for any of them.
         asked.clear()
         val hands = steered.hands ?: error("the player has no hands for the device")
-        hands.next()
-        assertEquals(1, commandsSent())
-        hands.toggle(); hands.previous(); hands.seek(30_000); hands.volume(0.4f); hands.shuffle(); hands.repeat()
-        hands.jump(LinkSteer.ROW); hands.remove(LinkSteer.ROW + 1); hands.clear(false); hands.move(LinkSteer.ROW + 1, LinkSteer.ROW, true)
-        hands.add(listOf(Song(id = "s2")), playNext = false)
-        hands.play(mine(), 2, "A list", whole = false)
+        fun inTurn(vararg presses: () -> Unit): List<String> {
+            presses.forEach { it() }
+            val arrived = ArrayList<String>()
+            repeat(presses.size) {
+                val now = commandsSent()
+                assertEquals("one command out at a time, after $arrived", 1, now.size)
+                arrived += now
+                answered(carried = true)
+            }
+            assertEquals("more was sent than was pressed, after $arrived", emptyList<String>(), commandsSent())
+            return arrived
+        }
+        assertEquals(
+            listOf("next", "pause", "previous", "seek", "volume", "shuffle", "repeat", "jump", "remove"),
+            inTurn({ hands.next() }, { hands.toggle() }, { hands.previous() }, { hands.seek(30_000) }, { hands.volume(0.4f) }, { hands.shuffle() }, { hands.repeat() }, { hands.jump(LinkSteer.ROW) }, { hands.remove(LinkSteer.ROW + 1) }),
+        )
+        // (Its own word again, with both entries in its queue.)
+        answered(full = full)
+        assertEquals(
+            listOf("clear", "move", "add", "adopt"),
+            inTurn({ hands.clear(false) }, { hands.move(LinkSteer.ROW + 1, LinkSteer.ROW, true) }, { hands.add(listOf(Song(id = "s2")), playNext = false) }, { hands.play(mine(), 2, "A list", whole = false) }),
+        )
         assertFalse(link().stopped)
-        assertEquals(1, commandsSent())
         // The phone's own player is where it was.
         assertEquals("s0", inside.player.queue.current()?.id)
         assertFalse(inside.exo.playWhenReady)
@@ -496,7 +507,8 @@ class LinkCommandsTest {
         pass(600)
         assertEquals("", linked.state.value.steering)
         // Steered again, and "Play here": its queue is asked for, and as it arrives the
-        // device is out of the phone's player, whatever the phone can play of it.
+        // device is out of the phone's player; its queue is put in the phone's player and
+        // started; and once the phone sounds, the device is told the music has moved.
         linked.choose(row.place)
         answered(full = full)
         assertEquals("Study PC", steered.shown.value?.where)
@@ -509,7 +521,19 @@ class LinkCommandsTest {
             put("more", 0)
         })
         assertNull("the device is still in the phone's player", steered.shown.value)
-        pass(600)
+        assertEquals(listOf("x1", "x2"), inside.player.queue.playingOrder().map { it.id })
+        assertTrue("the queue taken was not started", inside.exo.playWhenReady)
+        assertEquals("the device was told to stop before the phone sounded", emptyList<String>(), commandsSent())
+        // (Its sound, as the player would say it: heard at 5 seconds, and then moving on.)
+        val side = link().sideForTests
+        side.soundForTests = 5.0
+        side.hears.onAudioPositionAdvancing(sounding(), 0)
+        pass(300)
+        assertEquals("the device was told to stop as soon as the song was open", emptyList<String>(), commandsSent())
+        side.soundForTests = 5.5
+        pass(300)
+        assertEquals(listOf("moved"), commandsSent())
+        side.soundForTests = null
         assertEquals("", linked.state.value.steering)
         // Something chosen to play is being looked up: the phone is busy to the others
         // until the look-up is over.
@@ -539,11 +563,35 @@ class LinkCommandsTest {
         asked.clear()
     }
 
-    /** The other device answers the last look the phone sent it. */
-    private fun answered(full: JsonObject? = null, queue: JsonObject? = null) {
+    /** The phone's copy of the library holds these songs, and linking can make each of them. */
+    private fun libraryHas(songs: List<Song>) {
+        val json = songs.joinToString(",", "[", "]") { """{"id":"${it.id}","title":"${it.title}","artist":"Someone","album":"Somewhere","albumId":"al","created":"2026-01-01T10:00:00Z","duration":${it.duration}}""" }
+        server.answers["getScanStatus"] = """"scanStatus":{"scanning":false,"count":${songs.size},"lastScan":"2026-03-01T00:00:00Z"}"""
+        server.answers["search3"] = """"searchResult3":{"song":$json}"""
+        kotlinx.coroutines.runBlocking { app.graph.accounts.state.value!!.copy.check() }
+        val limit = System.nanoTime() + 30_000_000_000L
+        while (service.linkSongsForTests != songs.size) {
+            settle()
+            check(System.nanoTime() < limit) { "the copy of the library did not reach linking within thirty seconds" }
+            Thread.yield()
+        }
+        // (And the library has its ids, read for this sign-in: said now, as well as when
+        // the service gets to it.)
+        link().library(link().signIn, songs.map { it.id })
+    }
+
+    /** What the player says of its audio, as it says it: of the entry that is current. */
+    private fun sounding() = androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime(
+        0, inside.exo.currentTimeline, inside.exo.currentMediaItemIndex, androidx.media3.exoplayer.source.MediaSource.MediaPeriodId(Any(), 1), 0,
+        inside.exo.currentTimeline, inside.exo.currentMediaItemIndex, null, 0, 0,
+    )
+
+    /** The other device answers the last look the phone sent it (or, `carried`, the last
+     *  command, as carried out). */
+    private fun answered(full: JsonObject? = null, queue: JsonObject? = null, carried: Boolean = false) {
         val sent = asks("send").map { it.getValue("frame").jsonPrimitive.content }
         asked.clear()
-        link().forTests { now, today -> Core.linkTestAnswered(session, sent, null, "Study PC", true, "Harbour Lights", now, today, full, queue) }
+        link().forTests { now, today -> Core.linkTestAnswered(session, sent, null, "Study PC", true, "Harbour Lights", now, today, full, queue, carried) }
     }
 
     /** The commands the phone asked to be sent to the other device, by name, in order. */

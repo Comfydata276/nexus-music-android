@@ -977,6 +977,9 @@ mod for_tests {
         /// What it is playing and has to come, if the look asked for that.
         #[serde(default)]
         queue: Option<message::Handed>,
+        /// The last command among the frames is answered instead, as carried out.
+        #[serde(default)]
+        carried: bool,
         at: At,
     }
 
@@ -985,19 +988,20 @@ mod for_tests {
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_org_medianexus_music_core_Core_linkTestAnswered<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
         call(env, input, |given: Answered| {
-            let looks = given.frames.iter().filter_map(|sealed| frame::open(&keys(), sealed, &MINE, &OTHER)).filter(|opened| opened.kind == ASK);
-            let look = looks.last().ok_or("The phone has sent the other device no look.")?;
+            let is_command = |opened: &frame::Opened| matches!(message::read_ask(&opened.message), Some((Ask::Do { .. }, _)));
+            let looks = given.frames.iter().filter_map(|sealed| frame::open(&keys(), sealed, &MINE, &OTHER)).filter(|opened| opened.kind == ASK && (!given.carried || is_command(opened)));
+            let look = looks.last().ok_or(if given.carried { "The phone has sent the other device no command." } else { "The phone has sent the other device no look." })?;
             let tell = message::Tell {
                 re: Some(look.nonce),
-                ok: None,
+                ok: given.carried.then_some(true),
                 why: None,
                 device: [9; 16],
                 name: given.name,
                 speaks: message::SPEAKS,
                 at: message::At { generation: 1, minute: nexus_core::link::minute(given.at.now) },
                 busy: false,
-                by: None,
-                done: false,
+                by: given.carried.then_some(look.nonce),
+                done: given.carried,
                 playing: given.playing,
                 title: given.title,
                 artist: String::new(),
