@@ -133,6 +133,9 @@ class SameAccountAgainTest {
         // (The person's toggle, turned on: what brings the account's requests into being.)
         if (graph.requests == null) graph.turnRequestsOn()
         val requests = graph.requests!!
+        // (As a person does: the address is typed once the card has said where things
+        // stand, not while the account's own first look at Lidarr is still on its way.)
+        withTimeout(10_000) { requests.state.first { it != RequestsState.Off && it != RequestsState.Connecting } }
         requests.connect(behind.lidarr.address, KEY)
         signInWith(requests.signIn()!!)
         withTimeout(20_000) { requests.state.first { it is RequestsState.Connected } }

@@ -184,7 +184,8 @@ class RequestsOwners internal constructor(
         }
         owner.seat = seat
         owner.present(seat.sources)
-        owner.requests.start()
+        // (Switched on just now: that has read what is kept and asked Lidarr already.)
+        if (!switchOn) owner.requests.start()
         if (!seat.left) seat.state.value = RequestsNow.On(owner.requests, owner.pages)
     }
 
