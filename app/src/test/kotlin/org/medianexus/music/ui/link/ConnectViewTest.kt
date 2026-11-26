@@ -86,4 +86,22 @@ class ConnectViewTest {
         assertEquals("with jams and no name there: linking's", "Pixel of Sam", ConnectView.ownName(jamName = "", me = "Pixel of Sam"))
         assertEquals("no linking, no jams: none (the sheet says \"This phone\")", "", ConnectView.ownName(jamName = null, me = ""))
     }
+
+    // ---- "Playing there" says what is so (review X4) --------------------------------------
+
+    private fun there(where: String, playing: Boolean) = org.medianexus.music.playback.Steered.Shown(
+        song = null, playing = playing, positionMs = 0, at = 0, durationMs = 0,
+        queue = org.medianexus.music.playback.UpNext(), shuffle = false, repeat = 0, volume = 1f, where = where,
+    )
+
+    @Test
+    fun aPausedDeviceSteeredIsNotSaidToBePlaying() {
+        val state = Linked.State(running = true, entered = true, steering = "Study PC")
+        assertTrue(ConnectView.pausedThere(state, there("Study PC", playing = false)))
+        assertFalse(ConnectView.pausedThere(state, there("Study PC", playing = true)))
+        // Picked and not heard from yet, or the player showing something else: as before.
+        assertFalse(ConnectView.pausedThere(state, null))
+        assertFalse(ConnectView.pausedThere(state, there("Jo's jam", playing = false)))
+        assertFalse("nothing steered", ConnectView.pausedThere(Linked.State(running = true), there("Study PC", playing = false)))
+    }
 }

@@ -72,6 +72,8 @@ private fun ConnectSheet(choose: (() -> Unit) -> Unit) {
     // A device steered the new way is named at the top, as Windows names it, with its two
     // ways out; one steered the old way is as it was.
     val steering = if (linkHere) org.medianexus.music.ui.link.ConnectView.steering(link) else ""
+    val shownThere by ui.graph.steered.shown.collectAsStateWithLifecycle()
+    val pausedThere = linkHere && org.medianexus.music.ui.link.ConnectView.pausedThere(link, shownThere)
     val oldLinked = state?.linked
     val there = steering.ifEmpty { oldLinked.orEmpty() }
     // This phone's own name, over "This phone": the jam's where jams exist, else linking's.
@@ -85,7 +87,7 @@ private fun ConnectSheet(choose: (() -> Unit) -> Unit) {
                     BasicText(there.ifEmpty { own.ifEmpty { stringResource(R.string.jam_this_phone) } }, style = Theme.type.rowTitle.copy(color = colors.accentBright, fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     // (With no name for this phone, "This phone" once, not twice. With jams, as M6
                     // made it.)
-                    if (there.isNotEmpty() || own.isNotEmpty() || state != null) BasicText(stringResource(if (there.isNotEmpty()) R.string.jam_playing_there else R.string.jam_this_phone), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
+                    if (there.isNotEmpty() || own.isNotEmpty() || state != null) BasicText(stringResource(if (pausedThere) R.string.link_paused_there else if (there.isNotEmpty()) R.string.jam_playing_there else R.string.jam_this_phone), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
                 }
                 if (steering.isEmpty() && oldLinked != null) TextButton(stringResource(R.string.jam_play_here), { choose { jams.playHere() } })
             }

@@ -266,6 +266,8 @@
     <string name="link_linked_devices">Linked devices (new)</string>
     <string name="link_stop_steering">Stop steering</string>
     <string name="link_pause_device">Pause %1$s</string>
+    <!-- At the top of Connect, under the name of a device steered while it is paused. -->
+    <string name="link_paused_there">Paused there</string>
     <!-- A Play or Add whose songs were looked up first, by the time they were in the music
          was playing somewhere else (another device steered, or no longer): nothing done. -->
     <string name="moved_while_looking_up">Nothing was done: where the music plays changed while that was loading.</string>

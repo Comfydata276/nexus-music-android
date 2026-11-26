@@ -55,4 +55,14 @@ internal object ConnectView {
      * for none: the sheet then says "This phone" once.
      */
     fun ownName(jamName: String?, me: String): String = jamName.orEmpty().ifEmpty { me }
+
+    /**
+     * Whether the device steered the new way is paused, so the top says "Paused there" and not
+     * "Playing there" (review X4): what the player shows of it says so. Not yet heard from, or
+     * the player showing something else: as before.
+     */
+    fun pausedThere(state: Linked.State, shown: org.medianexus.music.playback.Steered.Shown?): Boolean {
+        val there = steering(state)
+        return there.isNotEmpty() && shown != null && shown.where == there && !shown.playing
+    }
 }
