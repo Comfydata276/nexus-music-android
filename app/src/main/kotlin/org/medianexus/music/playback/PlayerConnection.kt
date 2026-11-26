@@ -137,7 +137,7 @@ class PlayerConnection(
     /** The song playing (or paused on); null with an empty queue. */
     val song: StateFlow<Song?> = shown(currentSong) { it.song }
     /** The queue entry playing, by its own number: the same song twice in a row is two. */
-    val entry: StateFlow<Long> = shown(entryNow) { AppCommands.NONE }
+    val entry: StateFlow<Long> = shown(entryNow) { steeredEntry(it) }
     val playing: StateFlow<Boolean> = shown(playingNow) { it.playing }
     /** Waiting for the stream. */
     val buffering: StateFlow<Boolean> = shown(bufferingNow) { false }
@@ -533,6 +533,25 @@ class PlayerConnection(
 
     companion object {
         private const val TICK_MILLIS = 250L
+
+        /**
+         * **The entry another player is on, as the seek bar keys a drag by it** (review X3): one
+         * number for each song it plays, far from the phone's own entries, so a drag begun on
+         * one song is dropped when that player moves to another. (Its view names no entry
+         * beyond the song: the same song again straight after is the same to this.) [AppCommands.NONE]
+         * with nothing playing there.
+         */
+        fun steeredEntry(shown: Steered.Shown): Long {
+            val id = shown.song?.id ?: return AppCommands.NONE
+            return synchronized(steeredEntries) { steeredEntries.getOrPut(id) { STEERED_ENTRY + steeredEntries.size } }
+        }
+
+        /** The numbers [steeredEntry] has given, by song. */
+        private val steeredEntries = HashMap<String, Long>()
+
+        /** Where [steeredEntry]'s numbers begin: far from the phone's own (which count up from
+         *  1) and from the numbers of another player's rows. */
+        private const val STEERED_ENTRY = Long.MIN_VALUE / 2
 
         /**
          * What a PLAY from a screen carries (see [play]). The list itself, as drawn, is left
