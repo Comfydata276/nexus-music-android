@@ -2683,14 +2683,13 @@ How it is built (M1b):
   song's radio, as Windows does (M3b).
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
-  a like the server refused). They come one after another, oldest first; a newer one never
-  cuts the showing one short (`NoteLine`, M7b: an arrival's note was replaced a second after
-  it came). The same words twice: without a button, one is enough; with a button, the newer
-  takes the older's place, showing or waiting, since the older's button is the stale one (two
-  playlist moves offer the second's Undo, which is the one that works). At most four wait:
-  past that the oldest with no button goes, then the oldest of any kind; the one showing is
-  never cut short by it. Three seconds; with a button eight, or five while others wait. At
-  sign-out or another account the line is emptied, the note showing too. A note's button acts
+  a like the server refused). The newest takes the place of the one showing at once, as
+  0.5.1 and Windows do (`NoteLine`): nothing waits, so after a playlist move and then a
+  removal the Undo on screen is the removal's, the one that works. (M7b queued them instead,
+  and a working Undo then waited behind a stale one; taken out.) An arrival's note may be
+  replaced like any other: the Requests page's Arrived row is its record, and it counts as
+  said once it has been up with the app in front. Three seconds; with a button eight. At
+  sign-out or another account the note showing goes. A note's button acts
   on the screen alive when it is pressed (`LiveScreen`), not on the activity that made the
   note, which may have been made again since (the phone turned, the type size changed).
 - **Notifications** are asked for once, at the first download (by the shell, `Ui.askToDownload`,

@@ -148,10 +148,9 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
 
 /**
  * The toast: a few words at the foot of the screen for three seconds, as the Windows app's
- * (a pill in the text colour with the words in the background's). Notes come one after
- * another, each for its time, oldest first ([NoteLine]): a newer one waits for the one
- * showing. `account` is whoever is signed in: when it changes, the line is emptied. Screen
- * readers read it out.
+ * (a pill in the text colour with the words in the background's). The newest replaces any
+ * still showing ([NoteLine]). `account` is whoever is signed in: when it changes, the note
+ * showing goes. Screen readers read it out.
  */
 @Composable
 fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier, account: Any? = null) {

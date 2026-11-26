@@ -9,8 +9,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlinx.serialization.builtins.ListSerializer
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -530,6 +532,38 @@ class PlaylistsTest {
         // The second's own Undo puts back what it took.
         assertTrue(made { playlists.undo(second, it) })
         assertEquals("a c d e", server.now("p1"))
+    }
+
+    @Test
+    fun aMoveThenARemovalTheUndoOnScreenIsTheRemovalsAndWorks() = runBlocking<Unit> {
+        // The notes as the screen shows them (one thread, as on the phone's main thread).
+        val line = org.medianexus.music.ui.parts.NoteLine(now = { System.nanoTime() / 1_000_000 })
+        var showing: org.medianexus.music.Toasts.Toast? = null
+        val host = launch { line.run({ note, up -> showing = if (up) note else null }) }
+        val undone = CompletableDeferred<Boolean>()
+        fun offer(words: String, undo: PlaylistUndo) =
+            line.add(org.medianexus.music.Toasts.Toast(words, "Undo") { assertNull(playlists.undo(undo) { undone.complete(it) }) })
+        try {
+            val page = opened()
+            offer("Moved", undoable { playlists.move(page, 0, 2, it) }!!)
+            yield()
+            assertEquals("Moved", showing?.text)
+            assertEquals("b c a d e", server.now("p1"))
+            // While "Moved" shows, a song is taken out of the same playlist: the move's Undo is
+            // stale now, and the one on screen is at once the removal's.
+            val moved = pages.kept(spec("p1"))!!
+            offer("Removed from the playlist", undoable { playlists.remove(moved, listOf(3), it) }!!)
+            yield()
+            val note = showing!!
+            assertEquals("Removed from the playlist", note.text)
+            line.dismiss()
+            note.onAction!!()
+            // Pressed, it works: the song is back, the move left as it is.
+            assertTrue(withTimeout(10_000) { undone.await() })
+            assertEquals("b c a d e", server.now("p1"))
+        } finally {
+            host.cancel()
+        }
     }
 
     @Test

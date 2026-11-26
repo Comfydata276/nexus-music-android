@@ -13,7 +13,10 @@ import org.junit.Test
 import org.junit.rules.Timeout
 import org.medianexus.music.Toasts.Toast
 
-/** The passing notes as they are shown: one after another, each for its time ([NoteLine]). */
+/**
+ * The passing notes as they are shown ([NoteLine]): as 0.5.1 and Windows, the newest takes
+ * the place of the one showing at once; and the line is emptied at sign-out.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class NoteLineTest {
     @get:Rule val limit: Timeout = Timeout.seconds(60)
@@ -29,6 +32,13 @@ class NoteLineTest {
             seen += "${now()} ${if (up) "up" else "down"}: ${note.text}"
             showing = if (up) note else null
         }
+
+        /** The button on screen pressed, as the host does it. */
+        fun press(line: NoteLine) {
+            val note = showing!!
+            line.dismiss()
+            note.onAction!!()
+        }
     }
 
     private fun TestScope.running(line: NoteLine): Screen {
@@ -41,7 +51,7 @@ class NoteLineTest {
     private fun TestScope.line() = NoteLine(now = { testScheduler.currentTime })
 
     @Test
-    fun aNoteAloneLastsItsTimeAsBefore() = runTest {
+    fun aNoteAloneLastsItsTimeAsIn051() = runTest {
         val line = line()
         val screen = running(line)
         line.add(playlist)
@@ -55,28 +65,44 @@ class NoteLineTest {
     }
 
     @Test
-    fun aNewerNoteWaitsForTheOneShowingAndANoteWithAButtonIsShorterWhenOthersWait() = runTest {
+    fun aNewerNoteTakesThePlaceOfTheOneShowingAtOnce() = runTest {
         val line = line()
         val screen = running(line)
         line.add(arrival)
         runCurrent()
         advanceTimeBy(1_000)
-        // The queue's own note, a second later: it doesn't cut the arrival short, and the
-        // arrival, with something waiting behind it, has five seconds rather than eight.
+        // The queue's own note, a second later: it is shown now, for its own time from now.
         line.add(playlist)
         runCurrent()
+        assertEquals(playlist, screen.showing)
         advanceTimeBy(20_000)
-        assertEquals(
-            listOf(
-                "0 up: ${arrival.text}", "5000 down: ${arrival.text}",
-                "${5000 + NoteLine.BETWEEN_MILLIS} up: ${playlist.text}", "${5000 + NoteLine.BETWEEN_MILLIS + 3200} down: ${playlist.text}",
-            ),
-            screen.seen,
-        )
+        assertEquals(listOf("0 up: ${arrival.text}", "1000 up: ${playlist.text}", "4200 down: ${playlist.text}"), screen.seen)
     }
 
     @Test
-    fun twoPlaylistMovesTheUndoOfferedIsTheSeconds() = runTest {
+    fun aMoveThenARemovalTheUndoOnScreenIsTheRemovals() = runTest {
+        val line = line()
+        val screen = running(line)
+        val undone = mutableListOf<String>()
+        line.add(Toast("Moved", "Undo") { undone += "move" })
+        runCurrent()
+        advanceTimeBy(2_000)
+        // A removal from the same playlist while "Moved" shows: the move's Undo is stale now,
+        // and the one on screen at once is the removal's, which works.
+        line.add(Toast("Removed from playlist", "Undo") { undone += "removal" })
+        runCurrent()
+        assertEquals("Removed from playlist", screen.showing?.text)
+        screen.press(line)
+        runCurrent()
+        assertEquals(listOf("removal"), undone)
+        assertNull(screen.showing)
+        // Nothing comes up after it: the stale "Moved" is gone, not waiting.
+        advanceTimeBy(20_000)
+        assertEquals(listOf("0 up: Moved", "2000 up: Removed from playlist", "2000 down: Removed from playlist"), screen.seen)
+    }
+
+    @Test
+    fun twoPlaylistMovesTheUndoOnScreenIsTheSeconds() = runTest {
         val line = line()
         val screen = running(line)
         val undone = mutableListOf<Int>()
@@ -86,10 +112,23 @@ class NoteLineTest {
         line.add(Toast("Moved", "Undo") { undone += 2 })
         runCurrent()
         // One "Moved" on screen, and it is the second's: its Undo is the one that works.
-        screen.showing!!.onAction!!()
+        screen.press(line)
         assertEquals(listOf(2), undone)
-        assertEquals(emptyList<Toast>(), line.queued)
-        // And it has its own time from when it took the place.
+        runCurrent()
+        assertNull(screen.showing)
+        advanceTimeBy(20_000)
+        assertEquals(listOf("0 up: Moved", "1000 up: Moved", "1000 down: Moved"), screen.seen)
+    }
+
+    @Test
+    fun theSecondMoveHasItsOwnTimeFromWhenItCame() = runTest {
+        val line = line()
+        val screen = running(line)
+        line.add(Toast("Moved", "Undo") {})
+        runCurrent()
+        advanceTimeBy(1_000)
+        line.add(Toast("Moved", "Undo") {})
+        runCurrent()
         advanceTimeBy(7_999)
         assertEquals("Moved", screen.showing?.text)
         advanceTimeBy(2)
@@ -97,126 +136,71 @@ class NoteLineTest {
     }
 
     @Test
-    fun aNewerNoteWithAButtonTakesTheOldersPlaceWhereItWaits() = runTest {
+    fun anErrorAfterASuccessShowsAtOnce() = runTest {
         val line = line()
-        running(line)
-        line.add(playlist)
+        val screen = running(line)
+        line.add(Toast("Added to playlist"))
         runCurrent()
-        val first = Toast("Moved", "Undo") {}
-        val second = Toast("Moved", "Undo") {}
-        line.add(first)
-        line.add(Toast("Saved"))
-        line.add(second)
-        assertEquals(listOf("Moved", "Saved"), line.queued.map { it.text })
-        assert(line.queued[0] === second)
-    }
-
-    @Test
-    fun aPlainSentenceTwiceIsOne() = runTest {
-        val line = line()
-        running(line)
-        line.add(playlist)
-        runCurrent()
-        line.add(Toast(playlist.text))
-        line.add(Toast("Saved"))
-        line.add(Toast("Saved"))
-        assertEquals(listOf("Saved"), line.queued.map { it.text })
-    }
-
-    @Test
-    fun anErrorAmongFourPlainNotesIsKept() = runTest {
-        val line = line()
-        running(line)
-        line.add(Toast("Added to queue"))
-        runCurrent()
+        advanceTimeBy(500)
         val error = Toast("That didn't save. The server said no.")
-        line.add(Toast("one"))
         line.add(error)
-        line.add(Toast("two"))
-        line.add(Toast("three"))
-        assertEquals(listOf("one", error.text, "two", "three"), line.queued.map { it.text })
-    }
-
-    @Test
-    fun fiveNotesWithButtonsAtMostFourWaitTheOldestGoes() = runTest {
-        val line = line()
-        val screen = running(line)
-        line.add(Toast("Showing", "Undo") {})
         runCurrent()
-        for (n in 1..5) line.add(Toast("Moved $n", "Undo") {})
-        assertEquals(listOf("Moved 2", "Moved 3", "Moved 4", "Moved 5"), line.queued.map { it.text })
-        // A plain one waiting goes before any with a button.
-        line.add(Toast("Saved"))
-        line.add(Toast("Moved 6", "Undo") {})
-        assertEquals(listOf("Moved 3", "Moved 4", "Moved 5", "Moved 6"), line.queued.map { it.text })
-        // Each with others behind it has five seconds; the last, alone, eight.
-        advanceTimeBy(60_000)
-        val ups = screen.seen.filter { " up: " in it }.map { it.substringBefore(' ').toLong() }
-        assertEquals(listOf(0L, 5300, 10600, 15900, 21200), ups)
-        assertEquals("29200 down: Moved 6", screen.seen.last())
-    }
-
-    @Test
-    fun pressingTheButtonTakesTheNoteDownAndTheNextComes() = runTest {
-        val line = line()
-        val screen = running(line)
-        line.add(arrival)
-        line.add(playlist)
-        runCurrent()
-        advanceTimeBy(2_000)
-        line.dismiss()
-        runCurrent()
-        advanceTimeBy(NoteLine.BETWEEN_MILLIS + 1)
-        assertEquals(listOf("0 up: ${arrival.text}", "2000 down: ${arrival.text}", "${2000 + NoteLine.BETWEEN_MILLIS} up: ${playlist.text}"), screen.seen)
+        assertEquals(error, screen.showing)
+        advanceTimeBy(3_199)
+        assertEquals(error, screen.showing)
+        advanceTimeBy(2)
+        assertNull(screen.showing)
     }
 
     @Test
     fun signingOutEmptiesTheLineTheNoteShowingIncluded() = runTest {
         val line = line()
         val screen = running(line)
-        line.add(arrival)
         line.add(Toast("Moved", "Undo") {})
-        line.add(playlist)
         runCurrent()
         advanceTimeBy(1_000)
         line.clear()
         runCurrent()
         assertNull(screen.showing)
-        assertEquals(emptyList<Toast>(), line.queued)
         advanceTimeBy(20_000)
-        assertEquals(listOf("0 up: ${arrival.text}", "1000 down: ${arrival.text}"), screen.seen)
+        assertEquals(listOf("0 up: Moved", "1000 down: Moved"), screen.seen)
         // The next account's notes come as ever.
         line.add(Toast("Signed in"))
         runCurrent()
         assertEquals("Signed in", screen.showing?.text)
     }
 
+    @Test
+    fun aNoteGivenAndClearedBeforeItIsPutUpNeverShows() = runTest {
+        val line = line()
+        val screen = running(line)
+        var said = 0
+        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
+        line.clear()
+        runCurrent()
+        advanceTimeBy(30_000)
+        assertEquals(emptyList<String>(), screen.seen)
+        assertEquals(0, said)
+    }
+
     // ---- a note that must know it was seen (an arrival's) ------------------------------------------
 
     @Test
-    fun anArrivalIsSaidWhenItsNoteGoesUpNotWhenItIsQueued() = runTest {
+    fun anArrivalIsSaidWhenItsNoteIsTheOneShowing() = runTest {
         val line = line()
         running(line)
         var said = 0
         line.add(Toast("Moved", "Undo") {})
-        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
         runCurrent()
-        assertEquals("queued behind another: not yet said", 0, said)
-        advanceTimeBy(5_000 + NoteLine.BETWEEN_MILLIS + 1)
+        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
+        assertEquals("given, not yet up", 0, said)
+        runCurrent()
         assertEquals(1, said)
-    }
-
-    @Test
-    fun anArrivalDroppedOrClearedBeforeItGoesUpIsNeverSaid() = runTest {
-        val line = line()
-        running(line)
-        var said = 0
-        line.add(Toast("Moved", "Undo") {})
-        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
+        // Replaced a second later, it was still said once, and not again.
+        advanceTimeBy(1_000)
+        line.add(playlist)
         runCurrent()
-        line.clear()
-        advanceTimeBy(30_000)
-        assertEquals(0, said)
+        assertEquals(1, said)
     }
 
     @Test
@@ -228,8 +212,7 @@ class NoteLineTest {
         line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
         runCurrent()
         assertEquals(0, said)
-        // Offered again when the app is back (the next collection), and seen then: the newer
-        // takes the older's place, and is said.
+        // Offered again when the app is back (the next collection), and seen then.
         inFront = true
         line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
         runCurrent()

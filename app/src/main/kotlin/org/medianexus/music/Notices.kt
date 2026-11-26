@@ -69,7 +69,7 @@ class Toasts {
     }
 
     /** The same, told when it is on the screen (see [Toast.shown]). One that never gets
-     *  there (refused here, dropped from the line, the account changed) is never told. */
+     *  there (replaced before it went up, the account changed, the app hidden) is never told. */
     fun show(text: String, action: String, onAction: () -> Unit, shown: () -> Unit) {
         said.tryEmit(Toast(text, action, shown = shown, onAction = onAction))
     }
