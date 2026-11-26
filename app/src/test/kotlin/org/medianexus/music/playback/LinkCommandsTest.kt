@@ -131,14 +131,18 @@ class LinkCommandsTest {
         asked.clear()
     }
 
-    private fun look(): JsonObject = buildJsonObject {
+    /** (`speaks`: how the device that asks speaks, if not as this build does. 1: it says no
+     *  number, as a build from before the number was said.) */
+    private fun look(want: String = "brief", speaks: Int? = null): JsonObject = buildJsonObject {
         put("n", ++nonce)
-        put("look", "brief")
+        put("look", want)
+        speaks?.let { put("speaks", it) }
     }
 
-    private fun command(name: String, generation: Long, with: JsonObject? = null): JsonObject = buildJsonObject {
+    private fun command(name: String, generation: Long, with: JsonObject? = null, speaks: Int? = null): JsonObject = buildJsonObject {
         put("n", ++nonce)
         put("generation", generation)
+        speaks?.let { put("speaks", it) }
         put("command", buildJsonObject {
             put("do", name)
             with?.let { put("with", it) }
@@ -196,6 +200,122 @@ class LinkCommandsTest {
         // looking (a seek), is told before anything else is asked of the library.
         link().chose()
         assertEquals(at + 4, generation())
+    }
+
+    /**
+     * **A device that does not speak as the phone does commands it** (the Windows
+     * repository's `docs/linking-design.md`, 5.10): one that says no number, which is every
+     * build from before the number was said, and one that says a higher. Each command is
+     * refused as "not one this version carries out", the phone's player is as it was, its
+     * order of choices has not moved, and its queue is not marked as handed on. A look is
+     * answered as any is, but the look for the phone's queue is given none: the phone's
+     * music is not given to a device that would then tell it to stop in words it refuses.
+     */
+    @Test
+    fun aCommandFromADeviceThatSpeaksOtherwiseIsRefusedAndThePlayerIsAsItWas() {
+        inside.player.play(mine(), 0, "A list", playNow = false)
+        settle()
+        join()
+        val at = generation()
+        for (theirs in listOf(1, 3)) {
+            val asks = listOf(
+                command("next", at, speaks = theirs),
+                command("play", at, speaks = theirs),
+                command("seek", at, buildJsonObject { put("to", 30.0) }, speaks = theirs),
+                command("moved", at, speaks = theirs),
+                command("adopt", at, buildJsonObject {
+                    put("songs", kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("s3"), JsonPrimitive("s4"))))
+                    put("index", 0)
+                    put("queued", 0)
+                    put("position", 0.0)
+                    put("context", "Another list")
+                }, speaks = theirs),
+            )
+            for (ask in asks) {
+                val refused = hear(ask).single()
+                assertEquals("$theirs: $ask", false, refused.getValue("ok").jsonPrimitive.booleanOrNull)
+                assertEquals("invalid", refused.getValue("why").jsonPrimitive.contentOrNull)
+                // (The phone says how it speaks in what it answers, as in everything it says.)
+                assertEquals(2L, refused.getValue("speaks").jsonPrimitive.long)
+                assertEquals("Song 0", refused.getValue("title").jsonPrimitive.content)
+                assertEquals(at, refused.getValue("generation").jsonPrimitive.long)
+                assertFalse(refused.getValue("busy").jsonPrimitive.boolean)
+            }
+            // A look is answered; the one for its queue with no queue in it.
+            assertEquals("Song 0", hear(look(speaks = theirs)).single().getValue("title").jsonPrimitive.content)
+            assertEquals(0, hear(look("queue", speaks = theirs)).single().getValue("queue").jsonPrimitive.intOrNull)
+        }
+        settle()
+        pass(1_000)
+        assertEquals("s0", inside.player.queue.current()?.id)
+        assertEquals(6, inside.player.queue.playingOrder().size)
+        assertEquals(0L, inside.exo.currentPosition)
+        assertFalse(inside.exo.playWhenReady)
+        assertFalse("its queue was marked as handed on", app.graph.accounts.state.value?.queueStep?.here?.taken() == LinkSide.HANDED)
+        assertEquals(at, generation())
+        // The same asks from a device that speaks as the phone does go through.
+        assertEquals(6, hear(look("queue")).single().getValue("queue").jsonPrimitive.intOrNull)
+        val next = hear(command("next", at)).single()
+        assertEquals(true, next.getValue("ok").jsonPrimitive.booleanOrNull)
+        assertEquals("Song 1", next.getValue("title").jsonPrimitive.content)
+    }
+
+    /**
+     * **The phone among a device that does not speak as it does** (5.10). The device is
+     * listed with its name and what it is playing, and with which of the two to update;
+     * it is not to be picked, and picking it all the same sends it nothing: no command is
+     * sealed for it, and the phone steers nothing.
+     */
+    @Test
+    fun aDeviceThatSpeaksOtherwiseIsListedWithWhichToUpdateAndIsSentNothingButLooks() {
+        inside.player.play(mine(), 0, "A list", playNow = false)
+        settle()
+        join()
+        // The other device is in the room: the phone hears of it, and looks at it.
+        hear(look())
+        fun answered(speaks: Long?) {
+            pass(31_000)
+            val sent = asks("send").map { it.getValue("frame").jsonPrimitive.content }
+            asked.clear()
+            link().forTests { now, today -> Core.linkTestAnswered(session, sent, speaks, "Study PC", true, "Harbour Lights", now, today) }
+            pass(600)
+        }
+        fun row(): JsonObject = link().shown?.getValue("rows")?.let { it as kotlinx.serialization.json.JsonArray }?.map { it.jsonObject }?.singleOrNull { it.getValue("name").jsonPrimitive.content == "Study PC" } ?: error("not listed: ${link().shown}")
+        fun commandsSent(): List<String> = asks("send").map { it.getValue("frame").jsonPrimitive.content }.filter { Core.linkTestIsCommand(it) }
+        val cases = listOf(
+            Triple(1L, "Update Nexus Music on Study PC to control it from here", "Update Nexus Music on Study PC to control it from here"),
+            Triple(3L, "Update Nexus Music on this phone to control it from here", "Update Nexus Music on this phone to control Study PC from here"),
+        )
+        for ((theirs, under, aloud) in cases) {
+            answered(theirs)
+            val listed = row()
+            assertEquals("Playing Harbour Lights", listed.getValue("about").jsonPrimitive.content)
+            assertEquals(under, listed.getValue("update").jsonPrimitive.content)
+            assertFalse(listed.getValue("ready").jsonPrimitive.boolean)
+            // Picked all the same.
+            asked.clear()
+            link().happened(buildJsonObject {
+                put("event", "choose")
+                put("place", listed.getValue("place").jsonPrimitive.content)
+                put("in_a_jam", false)
+            })
+            pass(600)
+            assertEquals("$theirs", emptyList<String>(), commandsSent())
+            assertEquals(aloud, link().shown?.getValue("note")?.jsonPrimitive?.content)
+            assertEquals("", link().shown?.getValue("steering")?.jsonPrimitive?.content)
+        }
+        // Once it speaks as the phone does, it is to be picked, and picking it steers it.
+        answered(null)
+        val listed = row()
+        assertEquals("", listed.getValue("update").jsonPrimitive.content)
+        assertTrue(listed.getValue("ready").jsonPrimitive.boolean)
+        link().happened(buildJsonObject {
+            put("event", "choose")
+            put("place", listed.getValue("place").jsonPrimitive.content)
+            put("in_a_jam", false)
+        })
+        pass(600)
+        assertEquals("Study PC", link().shown?.getValue("steering")?.jsonPrimitive?.content)
     }
 
     /**

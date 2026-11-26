@@ -1061,6 +1061,18 @@ object Core {
     /** A frame the phone asked to be sent, opened as the other device would open it. */
     internal fun linkTestOpen(frame: String): JsonObject = across(frame, String.serializer(), JsonObject.serializer(), ::linkTestOpen)
 
+    /** Whether a frame the phone asked to be sent to the other device is a command. */
+    internal fun linkTestIsCommand(frame: String): Boolean = across(frame, String.serializer(), Boolean.serializer(), ::linkTestIsCommand)
+
+    @Serializable
+    private class LinkTestAnsweredIn(val session: Long, val frames: List<String>, val speaks: Long?, val name: String, val playing: Boolean, val title: String, val at: LinkAt)
+
+    /** The other device answers the last look among what the phone asked to be sent: as a
+     *  device of this name, playing this, that speaks as this build does (`null`) or says
+     *  this number (1: says none). */
+    internal fun linkTestAnswered(session: Long, frames: List<String>, speaks: Long?, name: String, playing: Boolean, title: String, now: Long, today: Long): LinkCame =
+        across(LinkTestAnsweredIn(session, frames, speaks, name, playing, title, LinkAt(now, today)), LinkTestAnsweredIn.serializer(), LinkCame.serializer(), ::linkTestAnswered)
+
     // ---- For the tests of the boundary itself ----
 
     /** The text handed across and back, read as text on the other side and written again. */
@@ -1192,6 +1204,8 @@ object Core {
     @JvmStatic private external fun linkTestEntered(input: ByteArray): ByteArray?
     @JvmStatic private external fun linkTestHeard(input: ByteArray): ByteArray?
     @JvmStatic private external fun linkTestOpen(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTestAnswered(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTestIsCommand(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?
     @JvmStatic private external fun settle(input: ByteArray): ByteArray?
     @JvmStatic private external fun take(input: ByteArray): ByteArray?

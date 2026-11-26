@@ -821,7 +821,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_linkFindFailed<'l>(en
 /// relay and no request. The secret, the phone's place and the other device's are fixed.
 #[cfg(feature = "test-seams")]
 mod for_tests {
-    use nexus_core::link::frame::{self, ASK, Keys};
+    use nexus_core::link::frame::{self, ASK, Keys, TELL};
     use nexus_core::link::look::Looked;
     use nexus_core::link::message::{self, Ask, Want, read_tell};
     use nexus_core::link::relay::FromRelay;
@@ -880,6 +880,22 @@ mod for_tests {
         command: Option<Command>,
         #[serde(default)]
         generation: u64,
+        /// How the device that asks speaks, if not as this build does: 1 is the number
+        /// left out, as a build from before it was said leaves it.
+        #[serde(default)]
+        speaks: Option<u64>,
+    }
+
+    /// A message as a device that speaks otherwise would have written it.
+    fn respoken(message: String, speaks: Option<u64>) -> Result<String, String> {
+        let Some(speaks) = speaks else { return Ok(message) };
+        let mut fields: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&message).map_err(|_| "That is not a message.")?;
+        if speaks == 1 {
+            fields.remove("speaks");
+        } else {
+            fields.insert("speaks".into(), speaks.into());
+        }
+        Ok(serde_json::Value::Object(fields).to_string())
     }
 
     #[derive(Deserialize)]
@@ -903,7 +919,8 @@ mod for_tests {
                     (None, Some(command)) => Ask::Do { command, at: message::At { generation: asked.generation, minute: nexus_core::link::minute(given.at.now) } },
                     (None, None) => return Err("An ask is a look or a command.".to_string()),
                 };
-                let sealed = frame::seal(&keys(), ASK, &[asked.n; 24], &OTHER, &MINE, ask.text().as_bytes()).ok_or("That ask is too large to seal.")?;
+                let text = respoken(ask.text(), asked.speaks)?;
+                let sealed = frame::seal(&keys(), ASK, &[asked.n; 24], &OTHER, &MINE, text.as_bytes()).ok_or("That ask is too large to seal.")?;
                 frames.push((text::place(&OTHER), sealed));
             }
             let from = FromRelay::Heard { places: vec![text::place(&MINE), text::place(&OTHER)], frames };
@@ -924,6 +941,66 @@ mod for_tests {
         playing: bool,
         title: String,
         generation: u64,
+        /// How the phone says it speaks.
+        speaks: u64,
+        /// How many songs the queue it carries has, if it carries one.
+        queue: Option<usize>,
+    }
+
+    #[derive(Deserialize)]
+    struct Answered {
+        session: u64,
+        /// What the phone asked to be sent, sealed: the last look among them is answered.
+        frames: Vec<String>,
+        /// How the device that answers speaks, if not as this build does.
+        speaks: Option<u64>,
+        name: String,
+        playing: bool,
+        title: String,
+        at: At,
+    }
+
+    /// The other device answers a look the phone sent it: with what it is called, what it
+    /// is playing, and how it speaks.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_org_medianexus_music_core_Core_linkTestAnswered<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+        call(env, input, |given: Answered| {
+            let looks = given.frames.iter().filter_map(|sealed| frame::open(&keys(), sealed, &MINE, &OTHER)).filter(|opened| opened.kind == ASK);
+            let look = looks.last().ok_or("The phone has sent the other device no look.")?;
+            let tell = message::Tell {
+                re: Some(look.nonce),
+                ok: None,
+                why: None,
+                device: [9; 16],
+                name: given.name,
+                speaks: message::SPEAKS,
+                at: message::At { generation: 1, minute: nexus_core::link::minute(given.at.now) },
+                busy: false,
+                by: None,
+                done: false,
+                playing: given.playing,
+                title: given.title,
+                artist: String::new(),
+                steering: String::new(),
+                full: None,
+                queue: None,
+            };
+            // (A frame's own nonce: any that the look's is not.)
+            let mut nonce = look.nonce;
+            nonce[0] ^= 0xff;
+            let sealed = frame::seal(&keys(), TELL, &nonce, &OTHER, &MINE, respoken(tell.text(), given.speaks)?.as_bytes()).ok_or("That tell is too large to seal.")?;
+            let from = FromRelay::Heard { places: vec![text::place(&MINE), text::place(&OTHER)], frames: vec![(text::place(&OTHER), sealed)] };
+            decide(Happened::FromRelay { session: given.session, from }, &given.at)
+        })
+    }
+
+    /// Whether a frame the phone asked to be sent to the other device is a command.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_org_medianexus_music_core_Core_linkTestIsCommand<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+        call(env, input, |sealed: String| {
+            let opened = frame::open(&keys(), &sealed, &MINE, &OTHER).ok_or("That frame does not open.")?;
+            Ok(opened.kind == ASK && matches!(message::read_ask(&opened.message), Some((Ask::Do { .. }, _))))
+        })
     }
 
     /// A frame the phone asked to be sent to the other device, opened as that device would.
@@ -942,6 +1019,8 @@ mod for_tests {
                 playing: tell.playing,
                 title: tell.title,
                 generation: tell.at.generation,
+                speaks: tell.speaks,
+                queue: tell.queue.map(|queue| queue.songs.len()),
             })
         })
     }
