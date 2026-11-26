@@ -122,8 +122,10 @@ class SignInService : Service() {
                     },
                 )
             }
+            // (A request code of its own: the player's notification opens the same screen with
+            // code 0, and the first made of two with the same code lends the other its flags.)
             val open = PendingIntent.getActivity(
-                context, 0,
+                context, ID,
                 Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
