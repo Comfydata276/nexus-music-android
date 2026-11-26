@@ -378,7 +378,7 @@ class Graph(
     val linked = org.medianexus.music.playback.Linked()
 
     /** The screens' one way to the player (the playback service's session). */
-    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), steered)
+    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), steered, linked)
 
     /** The jam relay's host key, sealed as the password is (see `jam/KeyVault`). */
     val relayKey = org.medianexus.music.jam.KeyVault(java.io.File(context.noBackupFilesDir, "relay-key.sealed"), KeystoreBox())

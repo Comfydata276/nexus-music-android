@@ -24,6 +24,18 @@ class AimedPressTest {
     @get:Rule val limit: Timeout = Timeout.seconds(20)
 
     private val steered = Steered()
+    private val linked = Linked()
+
+    /** The list as the library says it: these devices, by place and name, the one at
+     *  `steering` the one steered. */
+    private fun listed(steering: String?, vararg rows: Pair<String, String>) = linked.shown(
+        kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"entered":true,"note":"","steering":"${rows.firstOrNull { it.first == steering }?.second.orEmpty()}","rows":[${
+                rows.joinToString(",") { (place, name) -> """{"place":"$place","name":"$name","about":"","playing":true,"active":${place == steering},"ready":true,"update":""}""" }
+            }]}""",
+        ) as kotlinx.serialization.json.JsonObject,
+        me = "",
+    )
     private var acted = 0
     private var moved = 0
     private val held = CompletableDeferred<List<Song>>()
@@ -53,7 +65,7 @@ class AimedPressTest {
     private fun TestScope.tapThen(then: () -> Unit) {
         PlayerConnection.afterLookup(
             this, StandardTestDispatcher(testScheduler), { held.await() },
-            stands = { true }, aim = { PlayerConnection.aimOf(steered) },
+            stands = { true }, aim = { PlayerConnection.aimOf(steered, linked) },
             act = { acted++ }, moved = { moved++ },
         )
         advanceUntilIdle()
@@ -94,5 +106,17 @@ class AimedPressTest {
     fun onThePhoneThroughoutItIsDone() = runTest {
         tapThen { }
         assertEquals(listOf(1, 0), listOf(acted, moved))
+    }
+
+    @Test
+    fun twoDevicesOfOneNameAreTwoDevices() = runTest {
+        // Two computers both called "PC": the first steered at the tap, the second picked meanwhile.
+        listed("p1", "p1" to "PC", "p2" to "PC")
+        steered.show(device("PC"), hands)
+        tapThen {
+            listed("p2", "p1" to "PC", "p2" to "PC")
+            steered.show(device("PC"), hands)
+        }
+        assertEquals("not on the second PC's queue", listOf(0, 1), listOf(acted, moved))
     }
 }

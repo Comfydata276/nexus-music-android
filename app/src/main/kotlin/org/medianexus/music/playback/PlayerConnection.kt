@@ -93,6 +93,9 @@ class PlayerConnection(
     /** Another player this one shows while the phone is in a jam or steering another of the
      *  person's devices (M6; see [Steered]). */
     private val steered: Steered = Steered(),
+    /** The person's other devices as the new linking knows them: which one is steered, by its
+     *  place in the room (review Z1). Null where there is none to know (the jam's own player). */
+    private val linked: Linked? = null,
 ) {
     private var future: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -383,7 +386,7 @@ class PlayerConnection(
     fun afterLookup(scope: kotlinx.coroutines.CoroutineScope, lookup: suspend () -> List<Song>?, moved: () -> Unit = {}, act: (List<Song>) -> Unit) {
         val asked = Choices.take()
         val who = accounts.state.value
-        afterLookup(scope, kotlinx.coroutines.Dispatchers.Main.immediate, lookup, stands = { Choices.stands(asked) && accounts.state.value === who }, aim = { aimOf(steered) }, act = act, moved = moved)
+        afterLookup(scope, kotlinx.coroutines.Dispatchers.Main.immediate, lookup, stands = { Choices.stands(asked) && accounts.state.value === who }, aim = { aimOf(steered, linked) }, act = act, moved = moved)
     }
 
     /** Plays these straight after the song playing, ahead of anything else queued. */
@@ -532,10 +535,13 @@ class PlayerConnection(
 
         /**
          * **Where a press is aimed**: this phone's own player (null), or the player it shows
-         * (a device steered, a friend's jam) by what carries its presses and the name it is
-         * shown by: so another device steered, even with the same hands, is somewhere else.
+         * (a device steered, a friend's jam) by what carries its presses, the name it is shown
+         * by and, for a device steered, **its place in the room** (review Z1): two devices of
+         * one name are two devices, and another steered meanwhile is somewhere else.
          */
-        fun aimOf(steered: Steered): Any? = steered.hands?.let { it to steered.shown.value?.where }
+        fun aimOf(steered: Steered, linked: Linked?): Any? = steered.hands?.let { hands ->
+            Triple(hands, steered.shown.value?.where, linked?.state?.value?.devices?.firstOrNull { it.steered }?.place)
+        }
 
         /**
          * A look-up, then `act` with what it found, on `on`: only if `stands` still holds then
