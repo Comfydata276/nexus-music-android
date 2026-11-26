@@ -227,12 +227,31 @@ class RequestsDebugActivity : Activity() {
     override fun onStop() {
         super.onStop()
         showing?.cancel()
+        // (This screen stands for the app's own in the walks: see `Graph.front`.)
+        graph.front.value = false
     }
 
     override fun onResume() {
         super.onResume()
+        // In front, as the app's own screen says of itself. (Said again in a moment: if the
+        // app's own screen was under this one it says "not in front" as it stops, after
+        // this one has resumed.)
+        graph.front.value = true
+        window.decorView.postDelayed({ if (lifecycleResumed) graph.front.value = true }, 700)
         // (As the real screen will: the browser's part may have been left unfinished.)
         requests?.cameBack()
+    }
+
+    private var lifecycleResumed = false
+
+    override fun onPostResume() {
+        super.onPostResume()
+        lifecycleResumed = true
+    }
+
+    override fun onPause() {
+        lifecycleResumed = false
+        super.onPause()
     }
 
     override fun onDestroy() {

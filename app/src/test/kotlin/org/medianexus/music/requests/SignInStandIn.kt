@@ -18,6 +18,9 @@ import org.medianexus.music.core.StandIn
 internal class SignInStandIn(private val closing: MutableList<StandIn>, private val key: String) {
     val passes = CopyOnWriteArrayList<String>()
     val refusing = AtomicBoolean(false)
+
+    /** Lidarr answers without a pass (the sign-in in front of it has been taken away). */
+    val unguarded = AtomicBoolean(false)
     val revoked = CopyOnWriteArrayList<String>()
 
     /** Who the service says signed in, as it is written inside its JSON answer. */
@@ -70,7 +73,7 @@ internal class SignInStandIn(private val closing: MutableList<StandIn>, private 
         when {
             asked.target.startsWith("/outpost.goauthentik.io/start") ->
                 reply.send(302, "", "Location" to "${service.address}/application/o/authorize/?client_id=lidarr-proxy&redirect_uri=x&response_type=code")
-            pass !in passes -> reply.send(302, "", "Location" to "/outpost.goauthentik.io/start?rd=x")
+            !unguarded.get() && pass !in passes -> reply.send(302, "", "Location" to "/outpost.goauthentik.io/start?rd=x")
             asked.header("X-Api-Key") != key -> reply.send(401)
             asked.target == "/api/v1/system/status" -> reply.json("""{"version":"2.9.6.4552"}""")
             else -> reply.send(404)

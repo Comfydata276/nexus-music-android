@@ -214,6 +214,8 @@ class Graph(
                         afterwards = { work -> scope.launch { work() } },
                         comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
                         note = { diagnostics.note(it) },
+                        // (A sign-in is finished only with the app's own screen in front.)
+                        front = front,
                     )
                 },
                 afterwards = { work -> scope.launch { work() } },

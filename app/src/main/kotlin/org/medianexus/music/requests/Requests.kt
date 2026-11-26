@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -66,6 +67,15 @@ object RequestsWords {
 
     /** What answered at Lidarr's address pointed at a sign-in service the app can't use. */
     const val SERVICE_UNUSABLE = "The sign-in in front of Lidarr gave an address the app can't use."
+
+    /** The browser's page when the sign-in is still to be finished in the app, which
+     *  Android has not brought forward: its heading and its text. (The phone's own until
+     *  the library has this page, in its next release.) */
+    const val PAGE_GO_BACK_HEADING = "One more step"
+    const val PAGE_GO_BACK_TEXT = "Go back to Nexus Music to finish signing in."
+
+    /** The sign-in service gave a token and the phone could not put it away. */
+    const val TOKEN_NOT_KEPT = "The sign-in went through, but this phone couldn't keep it. Try again."
 
     /** Something on the screen was shown under a connection to Lidarr that has since been
      *  changed (another address, another key, another sign-in), and was pressed. */
@@ -139,9 +149,16 @@ class Requests internal constructor(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** How long the browser is waited for (a test's own). */
     private val waitMillis: Long = Words.signInWaitMillis,
-    /** How long the app's own screen is waited for, to trade a code for its token a second
-     *  time, when the first try was made with the app out of sight (see [waitFor]). */
-    private val secondChanceMillis: Long = 60_000,
+    /**
+     * Whether the app's own screens are in front (`Graph.front`). **A code is traded for
+     * its token only then** (see [waitFor]): behind the browser the app has no network on
+     * Android 15 and later.
+     */
+    private val front: StateFlow<Boolean> = MutableStateFlow(true),
+    /** How long the app is given to come forward by itself before the browser's page tells
+     *  the person to go back to it. */
+    private val frontMillis: Long = 2_500,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val kept = Kept(File(account.dirs.data, "requests.json"), RequestsSettings.serializer(), RequestsSettings(), note)
 
@@ -214,10 +231,10 @@ class Requests internal constructor(
         connection++
     }
 
-    /** A sign-in under way: the door the browser comes back through, and how many times
-     *  the app's own screen has come to the front since it began ([cameBack]). */
-    private class Attempt(val door: BrowserReturn, val host: String) {
-        val fronts = MutableStateFlow(0)
+    /** A sign-in under way: the door the browser comes back through, when it must be over
+     *  by, and whether it has been given up meanwhile. */
+    private class Attempt(val door: BrowserReturn, val host: String, val until: Long) {
+        val retired = MutableStateFlow(false)
     }
 
     private var attempt: Attempt? = null
@@ -499,7 +516,9 @@ class Requests internal constructor(
                 is Outcome.Got -> {
                     val got = checked.value
                     when {
-                        got.version != null -> RequestsState.Connected(got.version, signedInAs = if (door == null) null else settings.signedIn)
+                        // (Signed in to nothing where there is no sign-in, or one that
+                        // is remembered and nobody is signed in to.)
+                        got.version != null -> RequestsState.Connected(got.version, signedInAs = if (door == null || signedOut) null else settings.signedIn)
                         unusable -> RequestsState.Unreachable(RequestsWords.SERVICE_UNUSABLE)
                         found != null -> RequestsState.NeedsSignIn(hostOf(found), interrupted = interrupted)
                         got.doorWhy != null -> RequestsState.Unreachable(got.doorWhy)
@@ -544,7 +563,7 @@ class Requests internal constructor(
                 stateNow.value = RequestsState.Unreachable(RequestsWords.SERVICE_UNUSABLE)
                 return@withContext null
             }
-            val mine = Attempt(door, host)
+            val mine = Attempt(door, host, until = clock() + waitMillis)
             attempt = mine
             write(settings.copy(signingIn = true))
             stateNow.value = RequestsState.SigningIn(host)
@@ -558,29 +577,26 @@ class Requests internal constructor(
         try {
             if (came is BrowserReturn.Came.GivenUp) return
             val code = came as? BrowserReturn.Came.Code
-            // **The app comes forward first, and trades the code for its token then.** An
-            // app nobody is looking at has its network taken away after a few seconds
-            // (Android 15 and later), and it has been behind the browser for as long as
-            // signing in took: a trade begun there never reaches the service. In front, it
-            // does. (The tab is closed by coming forward; a browser that kept a window of
-            // its own is shown its page when the trade is done, below.)
-            val fronted = mine.fronts.value
+            // Whoever signed in is looking at the browser: the app asks to come back in
+            // front of it (which closes the tab, where the tab is the app's own).
             if (code != null || came is BrowserReturn.Came.TurnedDown) comeBack()
-            // Collecting the token is not to be cut off part-way, whatever becomes of the
-            // account meanwhile: a token collected for nobody is handed straight back. (It
-            // is not left to take for ever either: see `Core.gateFinish`.)
-            var done = if (code != null) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) } else null
-            if (code != null && done is Outcome.Failed && mine.fronts.value == fronted && secondChanceMillis > 0) {
-                // It failed, and the app's screen has not come to the front since the
-                // browser came back: Android would not let it come forward by itself, so
-                // the trade was tried out of sight. When the person comes back to the app
-                // it is tried once more. (A code is good for a minute or so, and one the
-                // service never saw has not been used.)
-                val back = withTimeoutOrNull(secondChanceMillis) { mine.fronts.first { it > fronted } }
-                if (back != null && turn.withLock { attempt === mine }) {
-                    done = withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) }
-                }
+            // **The code is traded for its token when the app's own screen is in front, and
+            // only then; and it is offered to the service once.** An app nobody is looking
+            // at has its network taken away after a few seconds (Android 15 and later), and
+            // the app has been behind the browser for as long as signing in took: a trade
+            // begun there goes nowhere, or half-way, and a code the service has seen is
+            // spent. If Android does not bring the app forward (a browser with a window of
+            // its own), the browser's page tells the person to go back to it, and the trade
+            // is made when they do, within what is left of the sign-in's five minutes.
+            var returned = true
+            if (code != null && !inFront(mine, frontMillis)) {
+                code.say(BrowserReturn.Page.GO_BACK)
+                returned = inFront(mine, mine.until - clock())
             }
+            // (Not to be cut off part-way, whatever becomes of the account meanwhile: a token
+            // collected for nobody is handed straight back. Nor left to take for ever: see
+            // `Core.gateFinish`.)
+            val done = if (code != null && returned && !mine.retired.value) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) } else null
             val token = (done as? Outcome.Got)?.value
             // 0: this sign-in has been retired meanwhile; 1: it didn't go through; 2: signed in.
             val ended = withContext(NonCancellable) {
@@ -589,14 +605,10 @@ class Requests internal constructor(
                     attempt = null
                     val settings = settingsNow.value
                     val place = Core.servicePlace(found.service)
-                    if (token != null && place != null) {
-                        // This sign-in owns the kept token from here: whatever an earlier one
-                        // still has on its way writes nothing.
-                        val (number, kept) = synchronized(owner) {
-                            live = ++numbers
-                            live to secrets.keepToken(place, token.token)
-                        }
-                        if (!kept) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
+                    // This sign-in owns the kept token from here: whatever an earlier one
+                    // still has on its way writes nothing.
+                    val number = if (token != null && place != null) synchronized(owner) { (++numbers).also { live = it }.takeIf { secrets.keepToken(place, token.token) } ?: 0L.also { live = 0 } } else 0L
+                    if (token != null && place != null && number != 0L) {
                         write(settings.copy(signedIn = shown(token.name), signingIn = false))
                         open?.let { old -> afterwards { Core.gateClose(old.session) } }
                         open = Open(found, Core.gateOpen(found, token.token, bound = place, home = home) { fresh -> tokenChanged(number, place, fresh) }, place, number)
@@ -606,8 +618,13 @@ class Requests internal constructor(
                         write(settings.copy(signingIn = false))
                         val why = when {
                             done is Outcome.Failed -> done.why
+                            // (A sign-in whose token can't be put away is no sign-in: it
+                            // would last until the app closed and then be gone, and the
+                            // browser would have been told it was done.)
+                            token != null -> RequestsWords.TOKEN_NOT_KEPT.also { note("requests: the sign-in's token couldn't be kept on the phone, so nobody is signed in") }
                             came is BrowserReturn.Came.TurnedDown -> Words.turnedDown(came.why)
-                            came is BrowserReturn.Came.Nobody -> Words.nobodySignedIn
+                            // (Signed in at the service, and never came back to the app.)
+                            came is BrowserReturn.Came.Nobody || code != null -> Words.nobodySignedIn
                             came is BrowserReturn.Came.Failed -> Words.notHeard(came.why)
                             else -> null
                         }
@@ -619,8 +636,10 @@ class Requests internal constructor(
             // **The browser is shown how it ended, now that it is known**: "You're signed
             // in" only if the token is in this app's keeping. (A sign-in the service turned
             // down was shown so as it arrived.)
-            code?.say(signedIn = ended == 2)
+            code?.say(if (ended == 2) BrowserReturn.Page.SIGNED_IN else BrowserReturn.Page.NOT_THROUGH)
             mine.door.close()
+            // (A token the service gave that is not in this app's keeping is handed back.)
+            if (ended == 1 && token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home) }
             if (ended == 0) {
                 if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home) }
                 return
@@ -640,7 +659,6 @@ class Requests internal constructor(
      */
     fun cameBack() {
         val waiting = attempt ?: return
-        waiting.fronts.update { it + 1 }
         scope.launch(io) {
             delay(LATE_MILLIS)
             turn.withLock {
@@ -663,8 +681,19 @@ class Requests internal constructor(
     }
 
     private fun giveUpAttempt() {
-        attempt?.door?.close()
+        attempt?.let {
+            it.retired.value = true
+            it.door.close()
+        }
         attempt = null
+    }
+
+    /** Waits, `millis` at the longest, for the app's own screen to be in front. False if it
+     *  was not by then, or the sign-in was given up meanwhile. */
+    private suspend fun inFront(mine: Attempt, millis: Long): Boolean {
+        if (millis <= 0) return front.value && !mine.retired.value
+        val seen = withTimeoutOrNull(millis) { combine(front, mine.retired) { there, retired -> there || retired }.first { it } }
+        return seen != null && !mine.retired.value
     }
 
     /** Forgets the sign-in in front of Lidarr and hands its token back to the service.

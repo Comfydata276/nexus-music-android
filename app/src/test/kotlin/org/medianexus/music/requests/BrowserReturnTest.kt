@@ -177,14 +177,14 @@ class BrowserReturnTest {
                 assertEquals("…", answerTo(browser, 700))
                 // And the door takes no more knocks meanwhile.
                 assertTrue(runCatching { Socket(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), door.back.removePrefix("http://127.0.0.1:").removeSuffix("/callback").toInt()).use { it.getOutputStream().write(1); hungUpWithin(it, 500) } }.getOrDefault(true))
-                code.say(signedIn)
+                code.say(if (signedIn) BrowserReturn.Page.SIGNED_IN else BrowserReturn.Page.NOT_THROUGH)
                 val page = answerTo(browser)
                 assertTrue(page, page.startsWith("HTTP/1.1 200 OK\r\n"))
                 assertTrue(page, (if (signedIn) "You're signed in" else "The sign-in didn't go through") in page)
                 assertFalse(page, (if (signedIn) "The sign-in didn't go through" else "You're signed in") in page)
                 assertTrue(page, "Referrer-Policy: no-referrer\r\n" in page && "Cache-Control: no-store\r\n" in page)
                 // Said once.
-                code.say(!signedIn)
+                code.say(BrowserReturn.Page.GO_BACK)
             } finally {
                 door.close()
             }

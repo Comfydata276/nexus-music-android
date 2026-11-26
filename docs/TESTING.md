@@ -2826,10 +2826,14 @@ ended had the app trade the code for its token before coming forward. Every test
 JVM passed. On the Android 16 emulator every sign-in then ended "Couldn't reach the
 sign-in service. It didn't answer in time.", and the stand-in never saw the trade: from
 Android 15 an app nobody is looking at has its network taken away after a few seconds, and
-the app had been behind the browser for as long as signing in took. The app now comes
-forward first and trades in front (`RequestsTest`, "the app comes forward before it trades
-the code…", plays an app that cannot come forward and has no network until its screen is
-back).
+the app had been behind the browser for as long as signing in took. The app now trades
+only with its own screen in front, and once (`RequestsTest`, "the code is traded when the
+app's own screen is in front, and not while it is behind the browser", which plays an app
+that Android does not bring forward; "a code is offered to the service once, whatever
+comes of it"; "nobody comes back to the app, the sign-in is given up at its end and the
+code was never offered"; "a sign-in whose token this phone can't keep is no sign-in, and
+the browser is not told it is"; "a sign-in that is remembered and not signed in to is
+never shown as signed in").
 
 **The walks again, at the round's head** (`~/.cache/nexus-music-android/shots/m7a/round2/`):
 

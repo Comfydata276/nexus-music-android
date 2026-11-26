@@ -10,6 +10,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -68,7 +70,16 @@ class RequestsTest {
 
     /** `comesForward`: whether Android lets the app bring its own screen back in front of
      *  the browser (then the screen says it has come back, as a real one does). */
-    private fun requests(account: Account = account(), waitMillis: Long = 60_000, comesForward: Boolean = true, secondChanceMillis: Long = 20_000): Requests {
+    /**
+     * `front`: whether the app's own screens are in front, which the test says (a real
+     * screen is behind the browser while that is open; most tests here leave it in front
+     * throughout, which changes nothing they look at). `comesForward`: whether Android lets
+     * the app bring its own screen back in front of the browser when it asks.
+     */
+    private fun requests(
+        account: Account = account(), waitMillis: Long = 60_000, comesForward: Boolean = true,
+        front: MutableStateFlow<Boolean> = MutableStateFlow(true),
+    ): Requests {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         lateinit var made: Requests
         made = Requests(
@@ -76,9 +87,12 @@ class RequestsTest {
             afterwards = { work -> behind.launch { work() } },
             comeBack = {
                 cameBack.incrementAndGet()
-                if (comesForward) made.cameBack()
+                if (comesForward) {
+                    front.value = true
+                    made.cameBack()
+                }
             },
-            note = { notes += it }, waitMillis = waitMillis, secondChanceMillis = secondChanceMillis,
+            note = { notes += it }, waitMillis = waitMillis, front = front,
         )
         return made
     }
@@ -576,37 +590,114 @@ class RequestsTest {
         }
     }
 
+    private fun trades(behind: SignInStandIn) = behind.service.asked.count { "grant_type=authorization_code" in it.body }
+
     @Test
-    fun `the app comes forward before it trades the code, and a trade made out of sight is tried again when the person comes back`() = runBlocking<Unit> {
+    fun `the code is traded when the app's own screen is in front, and not while it is behind the browser`() = runBlocking<Unit> {
         val behind = Behind()
         val account = account()
         // (Android will not let this app come forward by itself: the browser has a window
-        // of its own. And an app out of sight has no network: its trade goes nowhere.)
-        val requests = requests(account, comesForward = false)
+        // of its own. An app out of sight has no network on Android 15 and later, so a
+        // trade begun there would go nowhere, or worse, half-way.)
+        val front = MutableStateFlow(true)
+        val requests = requests(account, comesForward = false, front = front)
         requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         val link = requests.signIn()!!
-        val home = signedInAt(link)
-        val unsent = org.medianexus.music.core.CoreHttp.unsent
-        org.medianexus.music.core.CoreHttp.unsent = { "It didn't answer in time." }
-        try {
-            val page = java.util.concurrent.CompletableFuture.supplyAsync { runCatching { browse(home) } }
-            // It asked to come forward as soon as the browser came back, before any trade.
-            withTimeout(10_000) { while (cameBack.get() == 0) kotlinx.coroutines.delay(20) }
-            kotlinx.coroutines.delay(800)
-            assertTrue(behind.service.asked.none { "grant_type=authorization_code" in it.body })
-            assertEquals(RequestsState.SigningIn(behind.host), requests.state.value)
-            assertNull(tokenKept(account))
-            // The person closes the browser and is back in the app, which has its network again.
-            org.medianexus.music.core.CoreHttp.unsent = unsent
-            requests.cameBack()
-            assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
-            assertEquals(1, behind.service.asked.count { "grant_type=authorization_code" in it.body })
-            assertNotNull(tokenKept(account))
-            page.get(10, java.util.concurrent.TimeUnit.SECONDS)
-        } finally {
-            org.medianexus.music.core.CoreHttp.unsent = unsent
-        }
+        front.value = false
+        val page = java.util.concurrent.CompletableFuture.supplyAsync { browse(signedInAt(link)) }
+        // The app asks to come forward, and is not brought. The browser is told to send the
+        // person back; nothing is offered to the service.
+        val (status, shown) = page.get(15, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals(200, status)
+        assertTrue(shown, "Go back to Nexus Music to finish signing in." in shown)
+        assertTrue(shown, "You're signed in" !in shown && "didn't go through" !in shown)
+        assertEquals(1, cameBack.get())
+        delay(700)
+        assertEquals(0, trades(behind))
+        assertEquals(RequestsState.SigningIn(behind.host), requests.state.value)
+        assertNull(tokenKept(account))
+        // The person goes back to the app: now it is traded, once.
+        front.value = true
+        requests.cameBack()
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
+        assertEquals(1, trades(behind))
+        assertNotNull(tokenKept(account))
+    }
+
+    @Test
+    fun `a code is offered to the service once, whatever comes of it`() = runBlocking<Unit> {
+        val behind = Behind()
+        val front = MutableStateFlow(true)
+        val requests = requests(comesForward = false, front = front)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        // The service takes the code and then will not finish (it has used the code up).
+        behind.refusing.set(true)
+        browse(signedInAt(link))
+        assertEquals(RequestsState.NeedsSignIn(behind.host, why = "The sign-in service wouldn't finish the sign-in. Try again."), requests.until { it is RequestsState.NeedsSignIn && it.why != null })
+        assertEquals(1, trades(behind))
+        // Leaving the app and coming back to it does not offer the code again.
+        behind.refusing.set(false)
+        front.value = false
+        front.value = true
+        requests.cameBack()
+        delay(2_500)
+        assertEquals(1, trades(behind))
+        assertTrue(requests.state.value is RequestsState.NeedsSignIn)
+    }
+
+    @Test
+    fun `nobody comes back to the app, the sign-in is given up at its end and the code was never offered`() = runBlocking<Unit> {
+        val behind = Behind()
+        val front = MutableStateFlow(true)
+        val requests = requests(waitMillis = 4_000, comesForward = false, front = front)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        front.value = false
+        browse(signedInAt(link))
+        assertEquals(RequestsState.NeedsSignIn(behind.host, why = "Nobody signed in within five minutes. Try again when you're ready."), requests.until { it is RequestsState.NeedsSignIn })
+        assertEquals(0, trades(behind))
+    }
+
+    @Test
+    fun `a sign-in whose token this phone can't keep is no sign-in, and the browser is not told it is`() = runBlocking<Unit> {
+        val behind = Behind()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        // (Where the token would be kept there is now something that can't be written over.)
+        File(secretsDir(account), "lidarr-token.sealed").mkdirs()
+        val (_, shown) = browse(signedInAt(link))
+        assertTrue(shown, "You're signed in" !in shown)
+        val state = requests.until { it is RequestsState.NeedsSignIn && it.why != null } as RequestsState.NeedsSignIn
+        assertEquals("The sign-in went through, but this phone couldn't keep it. Try again.", state.why)
+        // The token is handed straight back: nobody holds it.
+        withTimeout(10_000) { while (behind.revoked.isEmpty()) delay(20) }
+        assertNull(requests.lidarr()?.session)
+    }
+
+    @Test
+    fun `a sign-in that is remembered and not signed in to is never shown as signed in`() = runBlocking<Unit> {
+        val behind = Behind()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        signInWith(requests.signIn()!!)
+        requests.until { it is RequestsState.Connected }
+        scopes.last().cancel()
+        // The token is gone, and the sign-in in front of Lidarr has been taken away since:
+        // Lidarr answers as itself. Connected, and nobody is signed in to anything.
+        File(secretsDir(account), "lidarr-token.sealed").delete()
+        behind.unguarded.set(true)
+        val again = requests(account)
+        again.start()
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = null), again.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
     }
 
     @Test

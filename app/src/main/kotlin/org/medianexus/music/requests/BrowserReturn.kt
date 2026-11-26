@@ -67,10 +67,11 @@ internal class BrowserReturn private constructor(private val server: ServerSocke
         class Code internal constructor(val code: String, private val waiting: Socket, private val door: BrowserReturn) : Came {
             private val said = AtomicBoolean(false)
 
-            /** Shows the browser "You're signed in", or "The sign-in didn't go through". Once. */
-            fun say(signedIn: Boolean) {
+            /** Shows the browser its page: [Page.SIGNED_IN], [Page.NOT_THROUGH], or, when the
+             *  app has not been brought forward to finish, [Page.GO_BACK]. Once. */
+            fun say(page: Page) {
                 if (!said.compareAndSet(false, true)) return
-                door.reply(waiting, "200 OK", if (signedIn) Words.pageSignedIn else Words.pageNotThrough)
+                door.reply(waiting, "200 OK", page.html())
                 door.hangUp(waiting)
             }
         }
@@ -87,6 +88,29 @@ internal class BrowserReturn private constructor(private val server: ServerSocke
 
         /** The door itself failed. */
         class Failed(val why: String) : Came
+    }
+
+    /** What the browser is shown once it has come back with a code. */
+    enum class Page {
+        /** The token is in the app's keeping. */
+        SIGNED_IN,
+
+        /** It is not, and will not be from this sign-in. */
+        NOT_THROUGH,
+
+        /** Nothing is known yet: the app finishes the sign-in when its own screen is in
+         *  front, and Android has not brought it there. The person is to go back to it. */
+        GO_BACK;
+
+        fun html(): String = when (this) {
+            SIGNED_IN -> Words.pageSignedIn
+            NOT_THROUGH -> Words.pageNotThrough
+            // (The library's own page, with the phone's words in it until the library has
+            // a page for this: its next release does.)
+            GO_BACK -> Words.pageSignedIn
+                .replace(Regex("(<h1[^>]*>).*?(</h1>)"), "$1${RequestsWords.PAGE_GO_BACK_HEADING}$2")
+                .replace(Regex("(<p[^>]*>).*?(</p>)"), "$1${RequestsWords.PAGE_GO_BACK_TEXT}$2")
+        }
     }
 
     /** The browser has knocked with the right [state]: whatever follows, somebody came. */

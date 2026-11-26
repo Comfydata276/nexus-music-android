@@ -2102,21 +2102,30 @@ it up. As on Windows:
   at once; the wait ends when it is due whoever is connected; and shutting the door hangs
   up on everyone it had let in. The pages it shows carry `Referrer-Policy: no-referrer`
   and are kept nowhere.
-- **The app comes forward first, and trades the code for its token then.** From Android
-  15 an app nobody is looking at has its network taken away after a few seconds, and by
-  the time the browser comes back the app has been behind it for as long as signing in
-  took: a trade begun there never reaches the service (found on the Android 16 emulator,
-  where every sign-in failed with "didn't answer in time" until the order was changed).
-  So the app brings its own screen forward as soon as the browser comes back, which also
-  closes the tab, and trades in front. If Android will not let it come forward (a browser
-  that kept a window of its own) the first trade is made out of sight and may fail; then,
-  if the person comes back to the app within a minute, it is tried once more.
-- **The page the browser is shown is the truth, where there is still a page to show.** A
-  browser that is still there when the trade is done is shown "You're signed in" or "The
-  sign-in didn't go through" accordingly, and not before. (Where the app could not come
-  forward and its first trade failed for want of a network, the page says it didn't go
-  through, and coming back to the app finishes it: the one case in which the page is
-  wrong, and it errs towards sending the person back to the app.) The trade never waits
+- **The code is traded for its token when the app's own screen is in front, once.** From
+  Android 15 an app nobody is looking at has its network taken away after a few seconds,
+  and by the time the browser comes back the app has been behind it for as long as signing
+  in took: a trade begun there never reaches the service, or reaches it and loses the
+  answer (found on the Android 16 emulator, where every sign-in failed with "didn't answer
+  in time" until the order was changed). So the app asks to come forward as soon as the
+  browser comes back, which also closes the tab, and **nothing is sent until its screen is
+  in front** (`Graph.front`, which the activity says as it starts and stops). There is no
+  attempt out of sight and no second attempt: a code the service has seen is spent, and
+  whatever comes of the one trade is how the sign-in ended.
+- **If Android does not bring the app forward** (a browser that keeps a window of its
+  own), after two and a half seconds the browser is shown a third page, "One more step.
+  Go back to Nexus Music to finish signing in.", and the trade is made when the person
+  does, within what is left of the five minutes the sign-in had from its start. If nobody
+  comes back the code was never offered to anyone, and the app says nobody signed in.
+  (The third page is the library's page with the phone's two sentences in it, until the
+  library has one of its own.)
+- **"You're signed in" means the token is in the app's keeping.** A browser still waiting
+  when the trade is done is shown "You're signed in" or "The sign-in didn't go through"
+  accordingly, and not before. A token the phone could not put away is no sign-in: it is
+  handed back to the service, the page says it didn't go through, and the app says "The
+  sign-in went through, but this phone couldn't keep it. Try again." And nobody is ever
+  shown as signed in with no name: a sign-in that is remembered and not signed in to, in
+  front of a Lidarr that answers anyway, is "connected" and no more. The trade never waits
   behind other changes (a thread of its own) and each of its requests has eight seconds in
   all, after which the library says in its own words that the service didn't answer in
   time.
