@@ -724,25 +724,31 @@ class RequestsPages internal constructor(
     }
 
     /**
-     * Takes an album off Lidarr's list (`id` is its [org.medianexus.music.core.Pending]
-     * number), and stops watching for it. Says "“…” is off the list", or why not.
+     * Takes an album off Lidarr's list (`entry`: its row on the Requests page, as it was
+     * shown), and stops watching for it. Says "“…” is off the list", or why not.
      *
      * One change, in one step: left by its caller while Lidarr is answering, the answer is
      * still waited for (a short while), and if Lidarr took it off, it is forgotten here.
      *
-     * **It is the entry that is taken off, not the number.** `connection` as for [request];
-     * and `id` and `title` must be an entry this connection's own [onTheirWay] has just
-     * listed, as it listed it: a number the list never showed, or showed for another
-     * album, is refused in the same way, whatever connection it is said to be from.
+     * **It is the entry that is taken off, not the number.** `entry` and `connection` are
+     * **the row and the connection its list was found under, as they were when the row was
+     * shown** (when its menu was opened: a choice made later is still for that row). The
+     * connection must still be the one there is, as for [request]; and the entry must be
+     * what this connection's own [onTheirWay] last listed under that number: Lidarr's
+     * number, its own name for the album, the title and who it is by. A number the list
+     * never showed, or now shows for another album (of the same title, even), is refused
+     * in the same way, and nothing is sent.
      */
-    suspend fun cancel(id: Long, title: String, connection: Long): Said = withContext(io) {
+    suspend fun cancel(entry: org.medianexus.music.core.Pending, connection: Long): Said = withContext(io) {
         val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
-        // `id` is Lidarr's own number, and means another album on another Lidarr: besides
-        // coming from a row of this connection, it must be **the entry this very
-        // connection's list has just shown** ([onTheirWay]): that number, for that album.
-        val entry = synchronized(this@RequestsPages) { shownPending[id].takeIf { shownUnder == at.connection && it?.title == title } }
-        if (entry == null || !still(connection, at)) return@withContext changed
+        val (id, title) = entry.id to entry.title
+        // Lidarr's own number means another album on another Lidarr, and can come to mean
+        // another on the same one: besides coming from a row of this connection, the row
+        // must be **the entry this very connection's list last showed** under it.
+        val listed = synchronized(this@RequestsPages) { shownPending[id].takeIf { shownUnder == at.connection } }
+        val same = listed != null && listed.album == entry.album && listed.title == entry.title && listed.artist == entry.artist
+        if (!same || !still(connection, at)) return@withContext changed
         val begun = Core.cancelling(at, id)
         val through = outlasting(begun) { outcome ->
             when (outcome) {

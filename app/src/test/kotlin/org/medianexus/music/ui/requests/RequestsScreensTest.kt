@@ -330,10 +330,10 @@ class RequestsScreensTest {
             return Said(true, "Added $name. Their albums are on Lidarr's list")
         }
 
-        override suspend fun cancel(id: Long, title: String, connection: Long): Said {
-            calls += "cancel $id $title"
+        override suspend fun cancel(entry: org.medianexus.music.core.Pending, connection: Long): Said {
+            calls += "cancel ${entry.id} ${entry.title}"
             gate?.await()
-            return Said(true, "“$title” is off the list")
+            return Said(true, "“${entry.title}” is off the list")
         }
     }
 
@@ -423,11 +423,11 @@ class RequestsScreensTest {
         val underWay = UnderWay()
         val asker = Asker(backgroundScope, backgroundScope, ops, show, underWay)
         // Taking number 7 off the first Lidarr's list is under way...
-        asker.takeOff(7, "Night Ferry", under = 1)
+        asker.takeOff(org.medianexus.music.core.Pending(7, "Night Ferry", "Them"), under = 1)
         runCurrent()
         // ...when the app is pointed at another Lidarr, which has a 7 of its own. Pressing
         // that one is not "the same thing again", and is not swallowed.
-        asker.takeOff(7, "Somebody Else's", under = 2)
+        asker.takeOff(org.medianexus.music.core.Pending(7, "Somebody Else's", "Them"), under = 2)
         runCurrent()
         assertEquals(listOf("cancel 7 Night Ferry", "cancel 7 Somebody Else's"), ops.calls)
         ops.gate!!.complete(Unit)
@@ -442,7 +442,7 @@ class RequestsScreensTest {
         val underWay = UnderWay()
         // (The account went, signed out of, in the moment between the press and its start.)
         val gone = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job().apply { cancel() })
-        Asker(backgroundScope, gone, ops, show, underWay).takeOff(7, "Night Ferry", under = 1)
+        Asker(backgroundScope, gone, ops, show, underWay).takeOff(org.medianexus.music.core.Pending(7, "Night Ferry", "Them"), under = 1)
         runCurrent()
         assertTrue(ops.calls.isEmpty())
         assertTrue("left under way for ever: ${underWay.going.value}", underWay.going.value.isEmpty())
@@ -456,8 +456,8 @@ class RequestsScreensTest {
         val page = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
         val asker = Asker(page, backgroundScope, ops, show, underWay)
         var heard: Boolean? = null
-        asker.takeOff(7, "Night Ferry", under = 1) { heard = it }
-        asker.takeOff(7, "Night Ferry", under = 1)
+        asker.takeOff(org.medianexus.music.core.Pending(7, "Night Ferry", "Them"), under = 1) { heard = it }
+        asker.takeOff(org.medianexus.music.core.Pending(7, "Night Ferry", "Them"), under = 1)
         runCurrent()
         assertEquals(setOf(UnderWay.offList(7, 1)), underWay.going.value)
         page.coroutineContext[kotlinx.coroutines.Job]!!.cancel()

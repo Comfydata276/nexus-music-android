@@ -86,7 +86,7 @@ fun RequestsPage() {
     // A take-off acts on the row as it was shown: its own entry, and the number of the
     // connection the list was found under then, fixed as the row is drawn, so a menu opened
     // before a reconnect or a new key can't carry the new connection's number when chosen.
-    fun takeOff(album: Pending, under: Long) = asker.takeOff(album.id, album.title, under = under) { done -> if (done) taken += album.id }
+    fun takeOff(album: Pending, under: Long) = asker.takeOff(album, under = under) { done -> if (done) taken += album.id }
 
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)

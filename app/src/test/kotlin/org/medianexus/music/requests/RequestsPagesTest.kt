@@ -210,11 +210,43 @@ class RequestsPagesTest {
         val pending = got(made.pages.onTheirWay()).pending.map { it.first }
         assertEquals(listOf(7L to "live-1", 8L to "live-2"), pending.map { it.id to it.album })
         // The second is taken off the list: its note goes, and the first's stays.
-        assertTrue(made.pages.cancel(8, "Live", connection = made.now()).done)
+        assertTrue(made.pages.cancel(pending[1], connection = made.now()).done)
         assertEquals(""""albumIds":[8]""", Regex(""""albumIds":\[\d+]""").find(server.asked.last { it.method == "PUT" }.body)?.value)
         assertEquals(listOf("live-1"), made.pages.asked.value.map { it.album })
         val kept = File(dir, "asked.json").readText()
         assertTrue(kept, "\"live-1\"" in kept && "\"live-2\"" !in kept)
+    }
+
+    @Test
+    fun `a row taken off the list is the row as it was shown, the same number and title standing for another album now is refused and nothing is sent`() = runBlocking {
+        // Lidarr's number 7 is "Live", one release of it; later, another release of the
+        // same title has that number (the list was made again: another Lidarr behind the
+        // same address, or its database restored).
+        var album = "live-1"
+        route("/api/v1/") { asked, reply ->
+            val path = asked.target.substringAfter("/api/v1/")
+            when {
+                path == "system/status" -> reply.json("""{"version":"2.9.6.4552"}""")
+                path.startsWith("wanted/missing") -> reply.json("""{"totalRecords":1,"records":[{"id":7,"title":"Live","foreignAlbumId":"$album","artist":{"artistName":"Quillon Vane"}}]}""")
+                path.startsWith("queue") -> reply.json("""{"records":[]}""")
+                asked.method == "PUT" && path == "album/monitor" -> reply.json("[]")
+                else -> reply.send(404)
+            }
+        }
+        val made = made()
+        // The page shows the row, and its menu is opened: the row, and the connection it
+        // was shown under, are what the menu holds.
+        val row = got(made.pages.onTheirWay()).pending.single().first
+        val under = made.now()
+        assertEquals(listOf(7L, "live-1"), listOf(row.id, row.album))
+        // The list changes under it, and the page has asked again.
+        album = "live-2"
+        assertEquals("live-2", got(made.pages.onTheirWay()).pending.single().first.album)
+        // The menu's choice is made now: it is for the row as it was shown, which is no
+        // longer what Lidarr's number 7 is.
+        val said = made.pages.cancel(row, connection = under)
+        assertEquals(Said(false, changedWords, stale = true), said)
+        assertEquals(emptyList<String>(), server.asked.filter { it.method != "GET" }.map { it.line })
     }
 
     @Test
@@ -226,7 +258,7 @@ class RequestsPagesTest {
         assertTrue(made.pages.request("single-1", "One Song", connection = made.now()).done)
         assertEquals(Asking.Already("That one has already been asked for."), asking())
         val pending = got(made.pages.onTheirWay()).pending.single().first
-        assertTrue(made.pages.cancel(pending.id, pending.title, connection = made.now()).done)
+        assertTrue(made.pages.cancel(pending, connection = made.now()).done)
         // Off the list, forgotten, and the offer is as it was before it was asked for.
         assertEquals(emptyList<Any>(), made.pages.asked.value)
         assertTrue("${asking()}", asking() is Asking.Ask)
@@ -474,7 +506,7 @@ class RequestsPagesTest {
         val before = server.asked.size
         // Lidarr is slow to answer the change, and the screen that asked is left meanwhile.
         slow.set(true)
-        val taking = async(Dispatchers.Default) { runCatching { made.pages.cancel(pending.id, pending.title, connection = made.now()) } }
+        val taking = async(Dispatchers.Default) { runCatching { made.pages.cancel(pending, connection = made.now()) } }
         assertTrue(server.awaitAsked(10_000) { asked -> server.asked.drop(before).any { it === asked && it.method == "PUT" && "\"monitored\":false" in it.body } })
         taking.cancel()
         delay(300)
@@ -492,7 +524,7 @@ class RequestsPagesTest {
         val made = made()
         made.pages.request("single-1", "One Song", connection = made.now())
         val pending = got(made.pages.onTheirWay()).pending.single().first
-        assertEquals(Said(true, "“One Song” is off the list"), made.pages.cancel(pending.id, pending.title, connection = made.now()))
+        assertEquals(Said(true, "“One Song” is off the list"), made.pages.cancel(pending, connection = made.now()))
         assertFalse(wanted())
         assertEquals(emptyList<Any>(), made.pages.asked.value)
         assertEquals("[]", File(made.dir, "asked.json").readText().trim())
@@ -515,7 +547,7 @@ class RequestsPagesTest {
         // write that down, so what it kept still says the album is waited for.
         assertEquals(
             Said(true, "“One Song” is off the list, but this phone couldn't note that, so its arrival may still be announced.", kept = false),
-            made.pages.cancel(pending.id, pending.title, connection = made.now()),
+            made.pages.cancel(pending, connection = made.now()),
         )
         assertFalse(wanted())
         assertTrue("$notes", notes.any { "asked.json couldn't be written" in it })
@@ -718,8 +750,8 @@ class RequestsPagesTest {
         // The rows still on the screen were the first Lidarr's: each is refused, in one
         // sentence, and the other Lidarr is asked nothing at all for them. Its number for
         // an album is refused whether or not the screen says where its row came from.
-        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = made.now()))
-        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = first))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row, connection = made.now()))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row, connection = first))
         assertEquals(Asking.Refused(changedWords, stale = true), made.pages.asking("single-1", "One Song", connection = first))
         assertEquals(Said(false, changedWords, stale = true), made.pages.request("single-1", "One Song", connection = first))
         assertEquals(Said(false, changedWords, stale = true), made.pages.addArtist("artist-1", "Quillon Vane", connection = first))
@@ -735,14 +767,14 @@ class RequestsPagesTest {
         val theirs = now.value.pending.single().first
         assertEquals("Somebody Else's" to 7L, theirs.title to theirs.id)
         assertTrue(now.connection != first)
-        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = first))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row, connection = first))
         assertTrue(other.asked.none { it.method == "PUT" })
         // The old row with the new page's number on it (as a screen that kept its rows and
         // took the number from wherever was handy would send): the number is listed here,
         // but as another album. It is the entry that is taken off, not the number.
-        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = now.connection))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row, connection = now.connection))
         assertTrue(other.asked.none { it.method == "PUT" })
-        assertEquals(Said(true, "“Somebody Else's” is off the list"), made.pages.cancel(theirs.id, theirs.title, connection = now.connection))
+        assertEquals(Said(true, "“Somebody Else's” is off the list"), made.pages.cancel(theirs, connection = now.connection))
         assertTrue(other.asked.any { it.method == "PUT" && "\"albumIds\":[7]" in it.body })
         // What a search hands over as it goes says which connection it is found under too.
         route("recording?query", """{"recordings":[]}""")
@@ -789,7 +821,7 @@ class RequestsPagesTest {
 
         // A row of the Requests page is pressed: refused, in the one sentence, and the pages
         // are told to ask again.
-        asker.takeOff(row.id, row.title, under = onTheirWay.connection)
+        asker.takeOff(row, under = onTheirWay.connection)
         withTimeout(10_000) { while (said.size < 1) delay(20) }
         assertEquals(listOf(changedWords), said.toList())
         assertEquals(1, askedAgain.get())
@@ -940,7 +972,7 @@ class RequestsPagesTest {
         assertTrue(kept, "\"Earlier Album\"" in kept && "\"One Song\"" in kept)
         // And from here it is written as ever: taking the new one off the list forgets it.
         val pending = got(made.pages.onTheirWay()).pending.single().first
-        assertTrue(made.pages.cancel(pending.id, pending.title, connection = made.now()).done)
+        assertTrue(made.pages.cancel(pending, connection = made.now()).done)
         assertEquals(listOf("Earlier Album"), made.pages.asked.value.map { it.title })
         assertFalse("\"One Song\"" in file.readText())
     }

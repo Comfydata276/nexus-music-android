@@ -127,7 +127,8 @@ interface AskOps {
     suspend fun adding(name: String, open: Int): Pair<String, String>
     fun addingNow(name: String): String
     suspend fun addArtist(id: String, name: String, connection: Long): Said
-    suspend fun cancel(id: Long, title: String, connection: Long): Said
+    /** `entry`: the row as it was shown, with `connection` the one its list was found under then. */
+    suspend fun cancel(entry: org.medianexus.music.core.Pending, connection: Long): Said
 }
 
 /** [AskOps] as the app has them: each is the account's `RequestsPages`' own call. */
@@ -138,7 +139,7 @@ fun askOps(pages: RequestsPages): AskOps = object : AskOps {
     override suspend fun adding(name: String, open: Int) = pages.adding(name, open)
     override fun addingNow(name: String) = pages.addingNow(name)
     override suspend fun addArtist(id: String, name: String, connection: Long) = pages.addArtist(id, name, connection)
-    override suspend fun cancel(id: Long, title: String, connection: Long) = pages.cancel(id, title, connection)
+    override suspend fun cancel(entry: org.medianexus.music.core.Pending, connection: Long) = pages.cancel(entry, connection)
 }
 
 /** What asking shows (in the app, the shell's sheet and passing notes). */
@@ -266,12 +267,13 @@ class Asker(
         }
     }
 
-    /** Takes an album off Lidarr's list (`number` is Lidarr's, from the page's row; `under`
-     *  the connection the page was found under). `done` is told how it went, if anyone is
-     *  still there to hear. */
-    fun takeOff(number: Long, title: String, under: Long, done: (Boolean) -> Unit = {}) {
-        confirmed(UnderWay.offList(number, under)) {
-            val said = ops.cancel(number, title, under)
+    /** Takes an album off Lidarr's list: `entry` is the page's row **as it was shown**, and
+     *  `under` the connection its list was found under then (both fixed when the row's menu
+     *  is opened, not read when the choice is made). `done` is told how it went, if anyone
+     *  is still there to hear. */
+    fun takeOff(entry: org.medianexus.music.core.Pending, under: Long, done: (Boolean) -> Unit = {}) {
+        confirmed(UnderWay.offList(entry.id, under)) {
+            val said = ops.cancel(entry, under)
             show.say(said.words)
             done(said.done)
             if (said.done || said.stale) show.changed()

@@ -58,6 +58,9 @@ class RequestsDebugActivity : Activity() {
     private lateinit var text: TextView
     private var showing: Job? = null
     private var last = ""
+
+    /** What is on its way, as the last "way" listed it. */
+    private var lastWay: List<org.medianexus.music.core.Pending> = emptyList()
     /** [org.medianexus.music.core.OutsideArtist.open] of the artist's page last shown here,
      *  as the real page will have it by it when "Add artist" is pressed. */
     private var open = 0
@@ -186,6 +189,7 @@ class RequestsDebugActivity : Activity() {
                         if (waiting is org.medianexus.music.core.Waiting) {
                             lines += waiting.arrived.map { (asked, line) -> "arrived: ${asked.title} | $line | library=${asked.libraryAlbum}" }
                             lines += "heading: ${waiting.heading.ifEmpty { "(none)" }}"
+                            lastWay = waiting.pending.map { it.first }
                             lines += waiting.pending.map { (album, line) -> "pending: ${album.title} | $line | number=${album.id}" }
                             lines += "empty: ${waiting.empty}${if (waiting.failed) " (failed)" else ""}"
                         } else {
@@ -193,7 +197,8 @@ class RequestsDebugActivity : Activity() {
                         }
                         lines += "asked for through this phone: ${pages.asked.value.map { "${it.title}${if (it.arrived != 0L) " (arrived)" else ""}" }}"
                     }
-                    "offlist" -> lines += pages.cancel(about.toLongOrNull() ?: -1, name, under).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
+                    // (The row as the last "way" showed it; one it never showed is refused, as the rule is.)
+                    "offlist" -> lines += pages.cancel(lastWay.firstOrNull { it.id == about.toLongOrNull() && (name.isEmpty() || it.title == name) } ?: org.medianexus.music.core.Pending(about.toLongOrNull() ?: -1, name, ""), under).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
                     "suggest" -> lines += pages.suggest().map { "suggested: ${it.name} | like ${it.like} | id=${it.id}" }.ifEmpty { listOf("(no suggestions)") }
                     "singles" -> {
                         requests.setSingles(about == "on")

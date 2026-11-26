@@ -2359,9 +2359,14 @@ What is the phone's own:
   models keeps the number beside what it shows (`OutsideSearch.State`, `PageLoad.State`,
   `OutsideArtistModel.State`, whose most played songs have a number of their own), and
   every press hands it to `Asker` (`under`). **Taking an album off the list has a second
-  guard**: its number is Lidarr's own, and means another album on another Lidarr, so it is
-  acted on only if it is **the entry** this very connection's list has just shown: that
-  number for that album. The question before asking looks at the row's number before
+  guard**: its number is Lidarr's own, means another album on another Lidarr and can come
+  to mean another on the same one, so it is acted on only if it is **the entry** this very
+  connection's list last showed: that number for that album, by Lidarr's own name for
+  it, its title and who it is by. And what is admitted is **the row as it was shown**: the
+  page fixes the row and the connection its list was found under as it draws the row,
+  and the menu, the swipe and the screen reader's action hand over those two
+  (`RequestsPages.cancel(entry, connection)`), never the connection there is when the
+  choice is made. The question before asking looks at the row's number before
   anything else can answer, so the Lidarr there is now is never asked what it thinks of an
   album a stale row names. **An operation's Lidarr and its offers are one connection's by
   construction**: the number travels with the connection into the library's side, and
