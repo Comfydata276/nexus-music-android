@@ -743,6 +743,10 @@ object Core {
      *  Asks nobody. */
     fun askedArrivals(place: Long, now: Long): Arrivals = across(NowIn(place, now), NowIn.serializer(), Arrivals.serializer(), ::askedArrivals)
 
+    /** `requests::arrived_news`: what to say of albums that were asked for and have arrived
+     *  (their notes as they were when that was found); empty for none. Asks nobody. */
+    fun arrivedNews(told: List<Asked>): String = across(told, ListSerializer(Asked.serializer()), String.serializer(), ::arrivedNews)
+
     /** A song of the library's, as far as choosing favourites needs it. */
     @Serializable
     class Played(val artistId: String, val artist: String, val plays: Int)
@@ -870,6 +874,7 @@ object Core {
     @JvmStatic private external fun discoverLook(input: ByteArray): ByteArray?
     @JvmStatic private external fun discoverKept(input: ByteArray): ByteArray?
     @JvmStatic private external fun placeNewOffers(input: ByteArray): ByteArray?
+    @JvmStatic private external fun arrivedNews(input: ByteArray): ByteArray?
     @JvmStatic private external fun wireProbe(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?
     @JvmStatic private external fun settle(input: ByteArray): ByteArray?

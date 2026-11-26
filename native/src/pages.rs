@@ -452,6 +452,13 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_askedArrivals<'l>(env
     })
 }
 
+/// `requests::arrived_news`: what to say of albums that were asked for and have arrived
+/// (the notes as they were when it was found). Empty for none.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_arrivedNews<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |told: Vec<Asked>| Ok(requests::arrived_news(&told)))
+}
+
 // ---- artists you might like ------------------------------------------------------------------------
 
 /// A song of the library's, as far as choosing favourites needs it.

@@ -11,21 +11,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import org.medianexus.music.core.AlbumPage
 import org.medianexus.music.core.Asked
@@ -56,6 +56,18 @@ sealed interface Found<out T> {
     data class Got<T>(val value: T, val connection: Long = 0) : Found<T>
 
     data class Not(val why: String) : Found<Nothing>
+}
+
+/**
+ * An album that was asked for and has turned up, **with whether that has been said**: kept
+ * on the phone (`arrivals.json`) from the moment it is found until the note of the album is
+ * done with. `note` is the note as it was when the arrival was found, which is what the
+ * sentence is made from.
+ */
+@Serializable
+internal data class Arrived(val note: Asked, val said: Boolean = false) {
+    /** Which asking this is the arrival of: an album asked for again later is another. */
+    fun isOf(other: Asked): Boolean = note.album == other.album && note.at == other.at
 }
 
 /**
@@ -118,8 +130,18 @@ class RequestsPages internal constructor(
     private val askedFile = Kept(File(dir, "asked.json"), ListSerializer(Asked.serializer()), emptyList(), note)
     private val suggestionsFile = Kept(File(dir, "suggestions.json"), KeptSuggestions.serializer(), KeptSuggestions(), note)
 
+    private val arrivalsFile = Kept(File(dir, "arrivals.json"), ListSerializer(Arrived.serializer()), emptyList(), note)
+
     private val askedNow = MutableStateFlow<List<Asked>>(emptyList())
-    private val newsNow = Channel<String>(8, BufferOverflow.DROP_OLDEST)
+
+    /** Moves when there may be news to say, and when the account goes. */
+    private val wake = MutableStateFlow(0L)
+
+    /** One listener at a time is handed the news. */
+    private val saying = Mutex()
+
+    /** What has arrived, said or not, as kept; read when first wanted. Under [turn]. */
+    private var arrivals: List<Arrived>? = null
     private val suggestionsNow = MutableStateFlow<List<Suggestion>>(emptyList())
 
     /** What was asked for through this phone and is still followed up, newest note last. */
@@ -129,12 +151,41 @@ class RequestsPages internal constructor(
      * Said when albums that were asked for have turned up in the library ("“Yellow” has
      * arrived, on “Parachutes”."), once for each arrival. The screens add where to see it.
      *
-     * **Kept until somebody is there to say it**: an arrival found as the app starts, before
-     * any screen is listening, is handed to the first that does (the last eight, if nobody
-     * listens for a long while). Each is handed over once, to one listener: collect this in
-     * one place, where the app shows its passing notes, and nowhere else.
+     * **Neither lost nor said twice.** Whether an arrival has been said is kept with it on
+     * the phone, and it is marked said when a listener has taken the sentence (when its
+     * `collect` block has returned for it), not when it was found: an arrival found as the
+     * app starts, before any screen is listening, waits; one found just before the app is
+     * stopped is said by its next run; and one that has been said is not said again by any
+     * run, whatever else failed to be written meanwhile.
+     *
+     * **One listener at a time, and only this account's.** Collect it in one place, where
+     * the app shows its passing notes. When the account goes (signed out of the music
+     * server) the flow ends: whoever was listening is let go and hears no more of it.
      */
-    val news: Flow<String> = newsNow.receiveAsFlow()
+    val news: Flow<String> = flow {
+        wake.takeWhile { !isGone() }.collect {
+            saying.withLock {
+                while (!isGone()) {
+                    val unsaid = turn.withLock { arrivalsKept().filter { !it.said } }
+                    if (unsaid.isEmpty()) break
+                    val sentence = withContext(io) { Core.arrivedNews(unsaid.map { it.note }) }
+                    if (sentence.isNotEmpty() && !isGone()) emit(sentence)
+                    // Taken (the listener's own block has returned): said, and kept as said.
+                    withContext(NonCancellable + io) {
+                        turn.withLock {
+                            val all = arrivalsKept().map { kept -> if (unsaid.any { it.isOf(kept.note) }) kept.copy(said = true) else kept }
+                            arrivals = all
+                            arrivalsFile.write(all)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isGone(): Boolean = synchronized(this) { gone }
+
+    private fun arrivalsKept(): List<Arrived> = arrivals ?: (arrivalsFile.read() ?: emptyList()).also { arrivals = it }
 
     /** Artists the person might like, as last found; empty until [suggest] has been asked. */
     val suggestions: StateFlow<List<Suggestion>> = suggestionsNow.asStateFlow()
@@ -181,6 +232,8 @@ class RequestsPages internal constructor(
                 // down: then it goes when that is done.)
                 if (owed == 0) place.also { place = null } else null
             }
+            // (Whoever is listening for this account's news is let go.)
+            wake.update { it + 1 }
             was?.let { runCatching { Core.placeClose(it) } }
         }
     }
@@ -238,7 +291,10 @@ class RequestsPages internal constructor(
                 val tidied = Core.askedTidy(opened, clock())
                 if (tidied.changed) askedFile.write(tidied.asked)
                 askedNow.value = tidied.asked
+                arrivalsFor(tidied.asked, found = emptyList())
             }
+            // (An arrival the last run of the app found and never got to say.)
+            if (arrivalsKept().any { !it.said }) wake.update { it + 1 }
             val late = synchronized(this@RequestsPages) {
                 if (!gone) place = opened
                 gone
@@ -506,19 +562,42 @@ class RequestsPages internal constructor(
     suspend fun checkArrivals() = withContext(io) {
         val place = ready()
         if (!haveLibrary) return@withContext
-        val arrived = turn.withLock {
+        val news = turn.withLock {
             val arrived = try {
                 Core.askedArrivals(place, clock())
             } catch (_: CoreException) {
-                return@withLock null
+                return@withLock false
             }
+            // In this order: that there is something to say is written down before the
+            // note is written as arrived. Stopped between the two, the next run finds the
+            // arrival again and finds it already down, said or not; stopped before both,
+            // it finds it again and says it then. It is never lost, and never said twice.
+            val news = arrivalsFor(arrived.asked, found = arrived.told)
             if (arrived.changed) {
                 askedFile.write(arrived.asked)
                 askedNow.value = arrived.asked
             }
-            arrived
-        } ?: return@withContext
-        if (arrived.news.isNotEmpty()) newsNow.trySend(arrived.news)
+            news
+        }
+        if (news) wake.update { it + 1 }
+    }
+
+    /**
+     * Brings what is kept of arrivals up to date: `found` are the notes of arrivals that are
+     * news (as they were when found), `asked` everything still followed up. An arrival is
+     * kept until its note is done with, said or not, so that it is known to have been said
+     * for as long as it could be found again. True if there is something still to say.
+     * Under [turn].
+     */
+    private fun arrivalsFor(asked: List<Asked>, found: List<Asked>): Boolean {
+        val before = arrivalsKept()
+        val still = before.filter { kept -> asked.any { kept.isOf(it) } }
+        val after = still + found.filter { note -> still.none { it.isOf(note) } }.map { Arrived(it) }
+        if (after != before) {
+            arrivals = after
+            arrivalsFile.write(after)
+        }
+        return after.any { !it.said }
     }
 
     // ---- artists the person might like -------------------------------------------------------------

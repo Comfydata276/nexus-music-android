@@ -232,6 +232,60 @@ class RequestsPagesTest {
         assertEquals("al-9", got(again.onTheirWay()).arrived.single().first.libraryAlbum)
     }
 
+    /** The account's pages as a new run of the app makes them, over what the last one kept. */
+    private fun anotherRun(made: Made): Pair<RequestsPages, CoroutineScope> {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        return RequestsPages(made.requests, scope, made.dir, library, { emptyList() }, { emptyList() }, note = { notes += it }, clock = { now.get() }, afterwards = { work -> behind.launch { work() } }) to scope
+    }
+
+    @Test
+    fun `an arrival found and never said, the app having stopped first, is said by its next run, and only once ever`() = runBlocking {
+        lidarrWithASingle()
+        val made = made()
+        assertTrue(made.pages.request("single-1", "One Song", song = "Its Song").done)
+        // It turns up in the library, and is found; nobody is listening; and the app stops.
+        now.set(start + 4_000)
+        library.value = LibraryLists(albums = listOf(LibraryAlbum("al-9", "One Song", "Quillon Vane", "cover-9")), songs = listOf(listOf("Its Song", "Quillon Vane")), artists = listOf("Quillon Vane"))
+        withTimeout(20_000) { made.pages.asked.first { it.singleOrNull()?.arrived == start + 4_000 } }
+        delay(300)
+        made.scope.cancel()
+
+        // The next run says it, to whoever listens first.
+        val (second, secondScope) = anotherRun(made)
+        val said = CopyOnWriteArrayList<String>()
+        val listening = launch(Dispatchers.Default) { second.news.collect { said += it } }
+        withTimeout(20_000) { while (said.isEmpty()) delay(20) }
+        delay(500)
+        assertEquals(listOf("“Its Song” has arrived, on “One Song”."), said.toList())
+        listening.cancel()
+        secondScope.cancel()
+
+        // And no run after that says it again: it was said.
+        val (third, _) = anotherRun(made)
+        val again = launch(Dispatchers.Default) { third.news.collect { said += it } }
+        third.checkArrivals()
+        delay(1_500)
+        assertEquals(1, said.size)
+        again.cancel()
+    }
+
+    @Test
+    fun `news is for the account it happened to, an account that has gone says nothing more`() = runBlocking {
+        lidarrWithASingle()
+        val made = made()
+        val said = CopyOnWriteArrayList<String>()
+        val listening = launch(Dispatchers.Default) { made.pages.news.collect { said += it } }
+        delay(300)
+        // The account goes (signed out of the music server): whoever was listening to it is
+        // let go, and hears nothing that happens afterwards.
+        made.scope.cancel()
+        withTimeout(5_000) { listening.join() }
+        assertTrue(said.isEmpty())
+        // One who starts listening to it now hears nothing either, and is let go at once.
+        withTimeout(5_000) { made.pages.news.collect { said += it } }
+        assertTrue(said.isEmpty())
+    }
+
     @Test
     fun `asked for and then the screen gone, a request that had begun is finished and written down, and one that hadn't changes nothing`() = runBlocking {
         val slow = AtomicBoolean(false)

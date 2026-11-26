@@ -2139,7 +2139,7 @@ each thing as one call of the surface above and nothing past it.
 | The Requests page | `onTheirWay()` | `Found<Waiting>`: what has arrived lately, "On their way (3)", each album still to come with its line, or what to say when there is nothing |
 | Taking one off the list | `cancel(number, title)` | `Said`: "“…” is off the list" |
 | "Artists you might like" | `suggest()`, and the flow `suggestions` | A list of `Suggestion` |
-| An arrival to announce | the flow `news` | The sentence, once for each arrival. Kept until somebody listens (an arrival found as the app starts is said to the first screen that does), and handed to one listener only: collect it in one place |
+| An arrival to announce | the flow `news` | The sentence, once for each arrival, to one listener at a time. Neither lost nor said twice (below); it ends when the account goes |
 | What this phone asked for | the flow `asked` | The notes as they are kept |
 
 Every caption, heading and sentence in those answers is the shared library's
@@ -2201,6 +2201,17 @@ What is the phone's own:
   app makes while it is in use) and when the Requests page is opened. An album that
   arrives while the app is closed is said the next time it is opened. Nothing is asked of
   Lidarr or anyone else for it.
+- **Arrival news is neither lost nor said twice.** Whether an arrival has been said is
+  kept with the arrival (`arrivals.json`: the note as it was when the arrival was found,
+  and "said"). It is written down as still to be said *before* the note itself is written
+  as arrived, and marked said when a listener has taken the sentence, not when it was
+  found. So an arrival found as the app starts, before any screen listens, waits; one
+  found just before the app is stopped is said by its next run; and one that was said is
+  known to have been for as long as it could be found again (until its note is done with),
+  whatever else failed to be written. The one moment that cannot be closed is the app
+  dying between showing a sentence and writing down that it was shown: then it is shown
+  once more. The news is its account's: when the account goes, the flow ends and whoever
+  was listening hears no more of it.
 - **Suggestions** are looked for when the screen that shows them asks (`suggest()`) and
   what is kept has gone stale: who the music server says each of the ten most played
   artists is like (four questions at a time), then Lidarr for who each of those is. A look
