@@ -14,6 +14,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -70,6 +72,12 @@ class LinkCommandsTest {
 
     private val relayKey get() = java.io.File(app.noBackupFilesDir, "link-relay.sealed")
 
+    /** What linking has said to the person, through the app's own notes. */
+    private val said = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val listening = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).also { scope ->
+        scope.launch { app.graph.toasts.all.collect { said += it.text } }
+    }
+
     /** Every ask the library made of the network, in order: none is carried out. */
     private val asked = ArrayList<JsonElement>()
     private var session = 0L
@@ -100,6 +108,7 @@ class LinkCommandsTest {
 
     @After
     fun stop() {
+        listening.cancel()
         Linking.current.get()?.let {
             it.insideForTests = null
             it.asksForTests = null
@@ -560,8 +569,8 @@ class LinkCommandsTest {
         val after = calls
         pass(2_000)
         assertEquals("the player was asked something after a fault", after, calls)
-        assertEquals("Linking has stopped on this phone until the app is next opened.", org.robolectric.shadows.ShadowToast.getTextOfLatestToast().toString())
-        assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount())
+        assertEquals(listOf("Linking has stopped on this phone until the app is next opened."), said.toList())
+        assertEquals("linking spoke through an Android toast", 0, org.robolectric.shadows.ShadowToast.shownToastCount())
         // No request of linking's can be made either: neither line leads anywhere, and
         // nothing in this run of the app starts it again.
         link.insideForTests = null

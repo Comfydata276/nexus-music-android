@@ -95,9 +95,11 @@ internal class LinkHost(private val context: Context, private val graph: Graph, 
 
     override fun remember(list: JsonElement) = keep { was -> JsonObject(was + ("remembered" to list)) }
 
+    /** Through the app's own notes, as everything else it says: it looks like the rest of
+     *  the app, and one said while the app is behind waits until the person is looking. */
     override fun say(text: String) {
         graph.diagnostics.note("linking said: $text")
-        runCatching { android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show() }
+        graph.toasts.show(text)
     }
 
     override fun note(text: String) = graph.diagnostics.note(text)

@@ -3,6 +3,8 @@ package org.medianexus.music.playback
 import android.app.Notification
 import android.os.Looper
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -64,6 +66,7 @@ class LinkingTest {
 
     @After
     fun stop() {
+        listening.cancel()
         service.onDestroy()
         settle()
         server.stop()
@@ -102,7 +105,13 @@ class LinkingTest {
         settle()
     }
 
-    private fun toasts(): List<String> = org.robolectric.shadows.ShadowToast.shownToastCount().let { count -> if (count == 0) emptyList() else List(count) { org.robolectric.shadows.ShadowToast.getTextOfLatestToast().toString() } }
+    /** What linking has said to the person, through the app's own notes. */
+    private val said = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val listening = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).also { scope ->
+        scope.launch { app.graph.toasts.all.collect { said += it.text } }
+    }
+
+    private fun toasts(): List<String> = said.toList()
 
     /**
      * A call into the player that fails is a fault: nothing stands in for its answer.
@@ -148,7 +157,7 @@ class LinkingTest {
         pass(1_000)
         assertEquals("the library asked the player something after a fault", 1, asked)
         assertTrue(link.stopped)
-        assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount())
+        assertEquals(1, said.size)
         // The player itself is as it was: playing what it was playing.
         assertTrue(inside.exo.playWhenReady)
         assertEquals("s0", inside.player.queue.current()?.id)
@@ -162,7 +171,7 @@ class LinkingTest {
         pass(1_000)
         assertNull("a service made again brought linking back after a fault", Linking.current.get())
         assertNull(org.medianexus.music.core.CoreHttp.linkClient())
-        assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount())
+        assertEquals(1, said.size)
     }
 
     /** The end of a sign-in is said to linking before the player is switched, and the
