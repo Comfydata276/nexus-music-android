@@ -1958,13 +1958,19 @@ MusicBrainz through an operation's own way out.
 **Threads.** The library's calls block, some for a minute and a half (asking for an album
 waits while Lidarr learns an artist). They run on threads kept for them and nothing else,
 as the Windows app's do: **four at once for looking, two for changing**, made when first
-wanted and let go after thirty seconds idle. None is ever the main thread: the only way
+wanted and let go after thirty seconds idle. **The wait for one has an end**: thirty-two
+more may wait their turn to look and eight to change, and whatever comes when those places
+are taken is told at once, as its outcome, "The app is busy with other requests. Try again
+in a moment." (in a sudden burst, a moment early). Nothing waits without limit. (Opening
+and letting go of a sign-in is never refused: it gets a thread of its own if it must.) None is ever the main thread: the only way
 to them is `Core`'s `suspend` functions, which hop there themselves. A call up from the
 library is made on whichever thread the library is on; a thread the library started
 itself is joined to the Java machine for the length of the call and let go again.
 **Whatever the Kotlin side throws** is caught, cleared and turned into the library's own
 "couldn't be reached", so no exception is ever left waiting in the Java machine. A panic
 in the library is still the one `CoreException`, and an answer it was holding is let go.
+What goes to the phone's log of a panic is **where it happened and nothing of what it
+said**: a panic's own words can quote whatever the code was holding.
 
 **Secrets.** Lidarr's key, a pass, the sign-in's code, its check and its token cross as
 bytes inside the call's argument or answer, like everything else. Neither side ever logs
@@ -2195,6 +2201,14 @@ What is the phone's own:
   through this phone, as the library makes them) and `suggestions.json` (three days; six
   hours when there were none to be had, both the library's numbers). Nothing asked for on
   another device is known here: the list is each device's own, as on Windows.
+- **A list that can't be read.** If `asked.json` is on the phone and can't be read when
+  it is wanted, nothing is written over it, asking still works and is said to have worked
+  (`Said.kept` false), and `askedUnreadable` is true for the Requests page to say so. What
+  is asked for and taken off meanwhile is remembered in order, and the file is tried again
+  at each change and each opening of the Requests page: once it can be read, what was done
+  since is done again on top of what it holds, and that is what is kept. Suggestions that
+  can't be read are read again each time they are wanted, and nothing is settled on from a
+  file that couldn't be.
 - **When arrivals are looked for.** There is no background job. The phone's copy of the
   library is looked through, by the library's own rule for "the same album", each time
   that copy is read or replaced (as the app starts; at each refresh of the copy, which the

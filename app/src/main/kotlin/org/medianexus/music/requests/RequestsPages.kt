@@ -187,6 +187,21 @@ class RequestsPages internal constructor(
 
     private fun arrivalsKept(): List<Arrived> = arrivals ?: (arrivalsFile.read() ?: emptyList()).also { arrivals = it }
 
+    private val askedUnreadableNow = MutableStateFlow(false)
+
+    /**
+     * True while **what this phone asked for is on the phone and can't be read**. Asking
+     * still works, and is said to have worked; what is asked meanwhile is kept in memory,
+     * and put together with what the file holds as soon as the file can be read again. Until
+     * then the Requests page's list is short of whatever the file holds, and should say so
+     * (the library's sentence for it, `asked_unreadable`, comes with its next release).
+     */
+    val askedUnreadable: StateFlow<Boolean> = askedUnreadableNow.asStateFlow()
+
+    /** What has been done to the list since it couldn't be read, in order: done again on
+     *  top of what the file holds once it can be. Each answers with the whole list. */
+    private val sinceUnread = ArrayList<(Long) -> List<Asked>>()
+
     /** Artists the person might like, as last found; empty until [suggest] has been asked. */
     val suggestions: StateFlow<List<Suggestion>> = suggestionsNow.asStateFlow()
 
@@ -249,7 +264,15 @@ class RequestsPages internal constructor(
         val done = CompletableDeferred<R?>()
         afterwards {
             val ended = runCatching {
-                when (val outcome = runCatching { begun.done.await() }.getOrNull()) {
+                val outcome = try {
+                    begun.done.await()
+                } catch (_: CoreHttp.Busy) {
+                    // (No room for it: it was never begun, and is said as any failure.)
+                    Outcome.Failed(CoreHttp.BUSY)
+                } catch (_: Exception) {
+                    null
+                }
+                when (outcome) {
                     null, Outcome.Stopped -> null
                     else -> withContext(NonCancellable) { finish(outcome) }
                 }
@@ -284,6 +307,7 @@ class RequestsPages internal constructor(
             }?.let { return@withLock it }
             val opened = Core.placeOpen()
             val kept = askedFile.read()
+            askedUnreadableNow.value = kept == null
             if (kept != null) {
                 Core.placeAsked(opened, kept)
                 // (As the account starts, as on Windows: what has been listed long enough,
@@ -305,6 +329,35 @@ class RequestsPages internal constructor(
             }
             opened
         }
+    }
+
+    /**
+     * Writes down what has been asked for (`all`, the whole list as it now is; `again` does
+     * to a list what was just done to this one). **If the list couldn't be read when it was
+     * wanted**, it is tried again first: still unreadable, nothing is written (never over a
+     * file that can't be read) and what was done is remembered; readable now, what was done
+     * since is done again on top of what the file holds, and that is what is kept. False if
+     * it is not on the phone at the end of this. Under [turn].
+     */
+    private fun keepAsked(place: Long, all: List<Asked>, again: ((Long) -> List<Asked>)? = null): Boolean {
+        if (!askedUnreadableNow.value) {
+            askedNow.value = all
+            return askedFile.write(all)
+        }
+        if (again != null) sinceUnread += again
+        val kept = askedFile.read()
+        if (kept == null) {
+            askedNow.value = all
+            return false
+        }
+        Core.placeAsked(place, kept)
+        var merged = Core.askedTidy(place, clock()).asked
+        for (done in sinceUnread) merged = done(place)
+        sinceUnread.clear()
+        askedUnreadableNow.value = false
+        askedNow.value = merged
+        note("requests: asked.json can be read again; what was asked for meanwhile was added to it")
+        return askedFile.write(merged)
     }
 
     /** The way to Lidarr, or why there is none: the library's sentence for where the
@@ -459,10 +512,11 @@ class RequestsPages internal constructor(
                     val kept = turn.withLock {
                         // The order the library asks of every app: the note is kept
                         // first, and only then is the offer marked as asked for.
-                        val all = Core.noted(place, album, title, outcome.value, song, clock())
-                        val kept = askedFile.write(all)
+                        val by = outcome.value
+                        val time = clock()
+                        val all = Core.noted(place, album, title, by, song, time)
+                        val kept = keepAsked(place, all) { where -> Core.noted(where, album, title, by, song, time) }
                         if (!kept) note("requests: what was asked for couldn't be kept on the phone, so its arrival won't be said")
-                        askedNow.value = all
                         // (Marked as asked for among what this connection offers: if the
                         // app has been pointed at another Lidarr meanwhile, that one's
                         // offers are not this album's to mark.)
@@ -534,10 +588,7 @@ class RequestsPages internal constructor(
                 is Outcome.Got -> {
                     turn.withLock {
                         val forgotten = Core.askedForget(place, title)
-                        if (forgotten.changed) {
-                            askedFile.write(forgotten.asked)
-                            askedNow.value = forgotten.asked
-                        }
+                        if (forgotten.changed || askedUnreadableNow.value) keepAsked(place, forgotten.asked) { where -> Core.askedForget(where, title).asked }
                     }
                     Said(true, Words.offTheList(title))
                 }
@@ -561,6 +612,8 @@ class RequestsPages internal constructor(
      */
     suspend fun checkArrivals() = withContext(io) {
         val place = ready()
+        // (Also the moment a list that couldn't be read is tried again: see [keepAsked].)
+        if (askedUnreadableNow.value) turn.withLock { if (askedUnreadableNow.value) keepAsked(place, askedNow.value) }
         if (!haveLibrary) return@withContext
         val news = turn.withLock {
             val arrived = try {
@@ -573,10 +626,7 @@ class RequestsPages internal constructor(
             // arrival again and finds it already down, said or not; stopped before both,
             // it finds it again and says it then. It is never lost, and never said twice.
             val news = arrivalsFor(arrived.asked, found = arrived.told)
-            if (arrived.changed) {
-                askedFile.write(arrived.asked)
-                askedNow.value = arrived.asked
-            }
+            if (arrived.changed) keepAsked(place, arrived.asked)
             news
         }
         if (news) wake.update { it + 1 }
@@ -602,14 +652,28 @@ class RequestsPages internal constructor(
 
     // ---- artists the person might like -------------------------------------------------------------
 
-    private fun keptSuggestions(): KeptSuggestions = suggested ?: (suggestionsFile.read() ?: KeptSuggestions()).also { suggested = it }
+    /** What is kept of suggestions; nothing if it can't be read just now, **and then it is
+     *  read again each time it is wanted**, so that nothing is settled on, or written,
+     *  from a file that couldn't be read. */
+    private fun keptSuggestions(): KeptSuggestions {
+        suggested?.let { return it }
+        val read = suggestionsFile.read() ?: return KeptSuggestions()
+        suggested = read
+        return read
+    }
+
+    /** Keeps suggestions that have just been found (or changed). If what was kept couldn't
+     *  be read before, it is tried again now, so that a file that has become readable is
+     *  written and one that still can't be read is left alone. Under [turn]. */
+    private fun keepSuggestions(value: KeptSuggestions): Boolean {
+        suggested = value
+        suggestionsFile.read()
+        return suggestionsFile.write(value)
+    }
 
     private fun forgetSuggestion(place: Long, id: String) {
         val read = Core.discoverKept(place, keptSuggestions(), clock(), forget = id)
-        if (read.changed) {
-            suggested = read.kept
-            suggestionsFile.write(read.kept)
-        }
+        if (read.changed) keepSuggestions(read.kept)
         suggestionsNow.value = read.shown
     }
 
@@ -637,8 +701,7 @@ class RequestsPages internal constructor(
             }
             when (val found = Core.discoverLook(at, place, alike, clock())) {
                 is Outcome.Got -> turn.withLock {
-                    suggested = found.value
-                    suggestionsFile.write(found.value)
+                    keepSuggestions(found.value)
                     Core.discoverKept(place, found.value, clock()).shown.also { suggestionsNow.value = it }
                 }
                 // (Not kept: what was there before stands, and is tried again next time.)

@@ -520,6 +520,35 @@ class RequestsPagesTest {
     }
 
     @Test
+    fun `a list that couldn't be read is put together again once it can be, with what was asked for meanwhile`() = runBlocking {
+        lidarrWithASingle()
+        val dir = File(folder.root, "data").apply { mkdirs() }
+        val file = File(dir, "asked.json")
+        // (A folder where the file should be: there, and not to be read.)
+        file.mkdirs()
+        val made = made()
+        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song"))
+        assertTrue(made.pages.askedUnreadable.value)
+        assertEquals(listOf("One Song"), made.pages.asked.value.map { it.title })
+
+        // It can be read again, and holds what an earlier run of the app had asked for.
+        assertTrue(file.delete())
+        file.writeText("""[{"album":"earlier","title":"Earlier Album","artist":"Someone","at":${start - 100},"song":"","fills":[],"arrived":0,"libraryAlbum":"","cover":"","unfilled":false}]""")
+        // Opening the Requests page is one of the moments it is tried again: neither list
+        // is lost to the other.
+        made.pages.onTheirWay()
+        assertFalse(made.pages.askedUnreadable.value)
+        assertEquals(listOf("Earlier Album", "One Song"), made.pages.asked.value.map { it.title })
+        val kept = file.readText()
+        assertTrue(kept, "\"Earlier Album\"" in kept && "\"One Song\"" in kept)
+        // And from here it is written as ever: taking the new one off the list forgets it.
+        val pending = got(made.pages.onTheirWay()).pending.single().first
+        assertTrue(made.pages.cancel(pending.id, pending.title).done)
+        assertEquals(listOf("Earlier Album"), made.pages.asked.value.map { it.title })
+        assertFalse("\"One Song\"" in file.readText())
+    }
+
+    @Test
     fun `once the account has gone nothing more is asked for it`() = runBlocking {
         quietBand()
         val made = made()

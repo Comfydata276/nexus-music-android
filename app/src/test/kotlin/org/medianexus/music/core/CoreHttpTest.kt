@@ -898,6 +898,42 @@ class CoreHttpTest {
     }
 
     @Test
+    fun `more at once than there are threads and places in the queue is told the app is busy, at once`() = runBlocking {
+        val go = java.util.concurrent.CountDownLatch(1)
+        val server = standIn { _, reply ->
+            go.await(30, TimeUnit.SECONDS)
+            reply.json("""{"version":"2.9.6"}""")
+        }
+        val busy = Outcome.Failed("The app is busy with other requests. Try again in a moment.")
+        fun look() = async(Dispatchers.Default) { Core.lidarrVersion(LidarrAt(server.address, "k")) }
+        fun change() = async(Dispatchers.Default) { Core.wireProbe(Core.Probe(method = "PUT", url = server.address, body = "{}"), changing = true) }
+        // Four are being answered...
+        val looking = (1..CoreHttp.LOOKING).map { look() }
+        assertTrue(server.awaitAsked { server.asked.size == 4 })
+        // ...thirty-two more wait their turn: that is all there is room for.
+        val waiting = (1..CoreHttp.LOOKING_WAITING).map { look() }
+        delay(500)
+        val began = System.nanoTime()
+        assertEquals(busy, withTimeout(5_000) { Core.lidarrVersion(LidarrAt(server.address, "k")) })
+        assertTrue((System.nanoTime() - began) / 1_000_000 < 1_000)
+        // The same for changes: two under way, eight waiting.
+        val changing = (1..CoreHttp.CHANGING).map { change() }
+        assertTrue(server.awaitAsked { server.asked.size == 6 })
+        val changes = (1..CoreHttp.CHANGING_WAITING).map { change() }
+        delay(500)
+        assertEquals(busy, withTimeout(5_000) { Core.wireProbe(Core.Probe(method = "PUT", url = server.address, body = "{}"), changing = true) })
+        // Something begun and not waited for says so too, when its end is asked for.
+        val begun = Core.wireProbeSeenThrough(Core.Probe(method = "PUT", url = server.address, body = "{}"))
+        assertTrue(withTimeout(5_000) { runCatching { begun.done.await() }.exceptionOrNull() } is CoreHttp.Busy)
+        // What had room is answered once there is someone to answer it.
+        go.countDown()
+        assertTrue((looking + waiting).awaitAll().all { it == Outcome.Got("2.9.6") })
+        assertEquals(10, (changing + changes).awaitAll().count { it is Outcome.Got })
+        // And then there is room again.
+        assertEquals(Outcome.Got("2.9.6"), Core.lidarrVersion(LidarrAt(server.address, "k")))
+    }
+
+    @Test
     fun `something thrown on the phone's side of a request is the library's failure, and nothing is left behind`() {
         val server = standIn { _, reply -> reply.json("""{"version":"2.9.6"}""") }
         // Not an ordinary failure, which the phone's side answers in words itself: an error

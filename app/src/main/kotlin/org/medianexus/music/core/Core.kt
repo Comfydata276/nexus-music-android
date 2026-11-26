@@ -388,7 +388,7 @@ object Core {
      * `gate::find`: what answers at Lidarr's address. Null if it is Lidarr itself; otherwise
      * the sign-in in front of it.
      */
-    suspend fun gateFind(address: String): Outcome<SignInDoor?> = CoreHttp.looking { operation ->
+    suspend fun gateFind(address: String): Outcome<SignInDoor?> = orBusy { CoreHttp.looking { operation ->
         wired
         val out = acrossPrivately(GateFindIn(operation, address), GateFindIn.serializer(), Out.serializer(SignInDoor.serializer().nullable), ::gateFind)
         when (out.kind) {
@@ -397,6 +397,14 @@ object Core {
             "stopped" -> Outcome.Stopped
             else -> throw CoreException("The shared library's answer couldn't be read.")
         }
+    } }
+
+    /** Whatever waits on the network, asked for when there is no thread for it and no
+     *  place left in the queue: told so as its outcome, in words, like any other failure. */
+    private inline fun <T> orBusy(ask: () -> Outcome<T>): Outcome<T> = try {
+        ask()
+    } catch (_: CoreHttp.Busy) {
+        Outcome.Failed(CoreHttp.BUSY)
     }
 
     @Serializable
@@ -439,9 +447,9 @@ object Core {
      * changes, and each of its requests has a few seconds and no more
      * ([CoreHttp.finishing]): the browser is waiting for its page.
      */
-    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String): Outcome<SignedIn> = CoreHttp.finishing { operation ->
+    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String): Outcome<SignedIn> = orBusy { CoreHttp.finishing { operation ->
         over(GateFinishIn(operation, door, code, back, secret, servicePlace(door.service)), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
-    }
+    } }
 
     @Serializable
     private class GateOpenIn(val door: SignInDoor, val token: String, val bound: String?)
@@ -473,9 +481,13 @@ object Core {
     /** `gate::give_up_token`: tells the service a token is no longer wanted. Best effort.
      *  `bound` is the place the token was given for: it is handed back there or not at all. */
     suspend fun gateGiveUp(door: SignInDoor, token: String, bound: String? = servicePlace(door.service)) {
-        CoreHttp.changing { operation ->
-            wired
-            acrossPrivately(GateGiveUpIn(operation, door.service, token, bound), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
+        try {
+            CoreHttp.changing { operation ->
+                wired
+                acrossPrivately(GateGiveUpIn(operation, door.service, token, bound), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
+            }
+        } catch (_: CoreHttp.Busy) {
+            // (Best effort, as it always was: the token is forgotten here all the same.)
         }
     }
 
@@ -484,9 +496,9 @@ object Core {
 
     /** `Lidarr::version`: checks the address and the key (and the sign-in, if there is one)
      *  by asking Lidarr which version it is. */
-    suspend fun lidarrVersion(lidarr: LidarrAt): Outcome<String> = CoreHttp.looking { operation ->
+    suspend fun lidarrVersion(lidarr: LidarrAt): Outcome<String> = orBusy { CoreHttp.looking { operation ->
         over(Of(operation, lidarr), Of.serializer(), String.serializer(), ::lidarrVersion)
-    }
+    } }
 
     @Serializable
     private class SayIn(val what: String, val with: List<String>)
@@ -500,9 +512,9 @@ object Core {
      * The check of the connection, as the Windows app makes it: [lidarrVersion], and if the
      * answer is that a sign-in is needed, [gateFind] for which.
      */
-    suspend fun lidarrCheck(lidarr: LidarrAt): Outcome<Checked> = CoreHttp.looking { operation ->
+    suspend fun lidarrCheck(lidarr: LidarrAt): Outcome<Checked> = orBusy { CoreHttp.looking { operation ->
         over(Of(operation, lidarr), Of.serializer(), Checked.serializer(), ::lidarrCheck)
-    }
+    } }
 
     /** `lidarr::tidy`: an address as it is used, whatever was typed around it. */
     fun lidarrTidy(address: String): String = across(address, String.serializer(), String.serializer(), ::lidarrTidy)
@@ -524,9 +536,9 @@ object Core {
      * and has Lidarr start looking for it. Can take a minute and a half. Stopped, it still
      * puts back what it changed on Lidarr to do it.
      */
-    suspend fun lidarrRequest(lidarr: LidarrAt, wanted: Offer): Outcome<Boolean> = CoreHttp.seenThrough { operation ->
+    suspend fun lidarrRequest(lidarr: LidarrAt, wanted: Offer): Outcome<Boolean> = orBusy { CoreHttp.seenThrough { operation ->
         over(RequestIn(operation, lidarr, wanted), RequestIn.serializer(), Boolean.serializer(), ::lidarrRequest)
-    }
+    } }
 
     @Serializable
     private class AddArtistIn(val operation: Long, val lidarr: LidarrAt, val artist: String, val name: String)
@@ -534,22 +546,22 @@ object Core {
     /** `Lidarr::add_artist`: has Lidarr get everything by an artist (`artist` is Lidarr's
      *  name for them). Answers with how many of their albums were newly asked for; none for
      *  an artist new to Lidarr, which learns their albums in its own time. */
-    suspend fun lidarrAddArtist(lidarr: LidarrAt, artist: String, name: String): Outcome<Int> = CoreHttp.seenThrough { operation ->
+    suspend fun lidarrAddArtist(lidarr: LidarrAt, artist: String, name: String): Outcome<Int> = orBusy { CoreHttp.seenThrough { operation ->
         over(AddArtistIn(operation, lidarr, artist, name), AddArtistIn.serializer(), Int.serializer(), ::lidarrAddArtist)
-    }
+    } }
 
     /** `Lidarr::pending`: what is on its way, those being fetched first. */
-    suspend fun lidarrPending(lidarr: LidarrAt): Outcome<List<Pending>> = CoreHttp.looking { operation ->
+    suspend fun lidarrPending(lidarr: LidarrAt): Outcome<List<Pending>> = orBusy { CoreHttp.looking { operation ->
         over(Of(operation, lidarr), Of.serializer(), ListSerializer(Pending.serializer()), ::lidarrPending)
-    }
+    } }
 
     @Serializable
     private class CancelIn(val operation: Long, val lidarr: LidarrAt, val id: Long)
 
     /** `Lidarr::cancel`: takes an album off Lidarr's list ([Pending.id]). */
-    suspend fun lidarrCancel(lidarr: LidarrAt, id: Long): Outcome<Boolean> = CoreHttp.changing { operation ->
+    suspend fun lidarrCancel(lidarr: LidarrAt, id: Long): Outcome<Boolean> = orBusy { CoreHttp.changing { operation ->
         over(CancelIn(operation, lidarr, id), CancelIn.serializer(), Boolean.serializer(), ::lidarrCancel)
-    }
+    } }
 
     /** [lidarrCancel], **begun and not waited for** (see [request]): whoever begins it must
      *  then forget, here, what Lidarr has taken off its list, whoever has gone away
@@ -563,9 +575,9 @@ object Core {
 
     /** `MusicBrainz::album_tracks`: what is on an album (`album` is MusicBrainz's name for
      *  it, which is Lidarr's too). */
-    suspend fun albumTracks(album: String): Outcome<List<TrackName>> = CoreHttp.looking { operation ->
+    suspend fun albumTracks(album: String): Outcome<List<TrackName>> = orBusy { CoreHttp.looking { operation ->
         over(TracksIn(operation, album), TracksIn.serializer(), ListSerializer(TrackName.serializer()), ::albumTracks)
-    }
+    } }
 
     // ---- The pages and actions of requests ----
     //
@@ -624,31 +636,31 @@ object Core {
      * of the library's threads, never after a stop); all of it is the answer.
      */
     suspend fun pageSearch(lidarr: LidarrAt, place: Long, query: String, soFar: (Outside) -> Unit): Outcome<Outside> =
-        CoreHttp.looking(published = { found -> soFar(json.decodeFromString(Outside.serializer(), found.decodeToString())) }) { operation ->
+        orBusy { CoreHttp.looking(published = { found -> soFar(json.decodeFromString(Outside.serializer(), found.decodeToString())) }) { operation ->
             over(PageIn(operation, lidarr, place, query), PageIn.serializer(), Outside.serializer(), ::pageSearch)
-        }
+        } }
 
     /** `requests::artist`: an artist as the wider world knows them; `id` is MusicBrainz's
      *  name for them (an [ArtistOffer]'s, a [SongOffer]'s `artistId`). */
-    suspend fun pageArtist(lidarr: LidarrAt, place: Long, id: String): Outcome<OutsideArtist> = CoreHttp.looking { operation ->
+    suspend fun pageArtist(lidarr: LidarrAt, place: Long, id: String): Outcome<OutsideArtist> = orBusy { CoreHttp.looking { operation ->
         over(PageIn(operation, lidarr, place, id), PageIn.serializer(), OutsideArtist.serializer(), ::pageArtist)
-    }
+    } }
 
     /** `requests::artist_popular`: the songs an artist is most played for that the library
      *  doesn't have, found after their page since it takes a few more questions; `name` is
      *  what the page calls them. No songs in it: there are none to show. */
-    suspend fun pageArtistPopular(lidarr: LidarrAt, place: Long, id: String, name: String): Outcome<Popular> = CoreHttp.looking { operation ->
+    suspend fun pageArtistPopular(lidarr: LidarrAt, place: Long, id: String, name: String): Outcome<Popular> = orBusy { CoreHttp.looking { operation ->
         over(PageIn(operation, lidarr, place, id, name), PageIn.serializer(), Popular.serializer(), ::pageArtistPopular)
-    }
+    } }
 
     /** `requests::album`: an album that isn't in the library; `id` is Lidarr's name for it. */
-    suspend fun pageAlbum(lidarr: LidarrAt, place: Long, id: String): Outcome<AlbumPage> = CoreHttp.looking { operation ->
+    suspend fun pageAlbum(lidarr: LidarrAt, place: Long, id: String): Outcome<AlbumPage> = orBusy { CoreHttp.looking { operation ->
         when (val out = over(PageIn(operation, lidarr, place, id), PageIn.serializer(), JsonElement.serializer(), ::pageAlbum)) {
             is Outcome.Got -> Outcome.Got(albumPage(out.value))
             is Outcome.Failed -> out
             Outcome.Stopped -> Outcome.Stopped
         }
-    }
+    } }
 
     private fun albumPage(answer: JsonElement): AlbumPage {
         val one = (answer as? JsonObject)?.entries?.singleOrNull() ?: throw CoreException("The shared library's answer couldn't be read.")
@@ -660,9 +672,9 @@ object Core {
     }
 
     /** `requests::on_their_way`: what has arrived lately, and what Lidarr has still to get. */
-    suspend fun pageOnTheirWay(lidarr: LidarrAt, place: Long): Outcome<Waiting> = CoreHttp.looking { operation ->
+    suspend fun pageOnTheirWay(lidarr: LidarrAt, place: Long): Outcome<Waiting> = orBusy { CoreHttp.looking { operation ->
         over(PageIn(operation, lidarr, place, ""), PageIn.serializer(), Waiting.serializer(), ::pageOnTheirWay)
-    }
+    } }
 
     @Serializable
     private class AskingIn(val place: Long, val album: String, val title: String, val by: String, val song: String, val kind: String)
@@ -762,9 +774,9 @@ object Core {
     /** `discover::look`: suggestions looked for afresh, from who the music server says each
      *  favourite is like (in the favourites' order, most alike first). **Kept only if it is
      *  got**: a stopped look is no answer. Slow: a question to Lidarr for each. */
-    suspend fun discoverLook(lidarr: LidarrAt, place: Long, similar: List<Pair<String, List<String>>>, now: Long): Outcome<KeptSuggestions> = CoreHttp.looking { operation ->
+    suspend fun discoverLook(lidarr: LidarrAt, place: Long, similar: List<Pair<String, List<String>>>, now: Long): Outcome<KeptSuggestions> = orBusy { CoreHttp.looking { operation ->
         over(SuggestIn(operation, lidarr, place, similar, now), SuggestIn.serializer(), KeptSuggestions.serializer(), ::discoverLook)
-    }
+    } }
 
     @Serializable
     private class KeptIn(val place: Long, val kept: KeptSuggestions, val now: Long, val forget: String)
@@ -827,7 +839,7 @@ object Core {
     }
 
     internal suspend fun wireProbe(probe: Probe, changing: Boolean = false): Outcome<Probed> =
-        if (changing) CoreHttp.changing(probing(probe)) else CoreHttp.looking(probing(probe))
+        orBusy { if (changing) CoreHttp.changing(probing(probe)) else CoreHttp.looking(probing(probe)) }
 
     /** The same, run as something that is seen through once the library says so. */
     internal fun wireProbeSeenThrough(probe: Probe): CoreHttp.Begun<Outcome<Probed>> = CoreHttp.seeingThrough(probing(probe))

@@ -5,6 +5,7 @@ import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -100,6 +101,18 @@ internal object CoreHttp {
 
     const val LOOKING = 4
     const val CHANGING = 2
+
+    /** How many more may wait their turn for a thread, of each kind. One more than that is
+     *  told the app is busy ([Busy]) and is not left waiting. */
+    const val LOOKING_WAITING = 32
+    const val CHANGING_WAITING = 8
+
+    /** What is said to whoever asks while every thread is taken and every place in the
+     *  queue too. */
+    const val BUSY = "The app is busy with other requests. Try again in a moment."
+
+    /** There was no room for it (see [LOOKING_WAITING]): it was not begun. */
+    class Busy : RuntimeException(BUSY)
 
     /** After an operation that changes something has been stopped: how long each of its
      *  requests may still take. */
@@ -422,15 +435,16 @@ internal object CoreHttp {
         }
     }
 
-    private fun pool(name: String, threads: Int): Lazy<Executor> = lazy {
+    private fun pool(name: String, threads: Int, waiting: Int): Lazy<Executor> = lazy {
         val count = AtomicInteger(0)
-        ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS, LinkedBlockingQueue()) { work ->
+        // (A queue with an end to it: what it has no room for is refused, and told so.)
+        ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS, LinkedBlockingQueue(waiting)) { work ->
             Thread(work, "requests-$name-${count.incrementAndGet()}").apply { isDaemon = true }
         }.apply { allowCoreThreadTimeOut(true) }
     }
 
-    private val lookers by pool("look", LOOKING)
-    private val changers by pool("change", CHANGING)
+    private val lookers by pool("look", LOOKING, LOOKING_WAITING)
+    private val changers by pool("change", CHANGING, CHANGING_WAITING)
 
     /**
      * Runs something of the library's that only looks, on a thread kept for that, and waits
@@ -502,10 +516,15 @@ internal object CoreHttp {
 
     private fun <T> begun(doing: Doing, act: (operation: Long) -> T): Begun<T> {
         val done = CompletableDeferred<T>()
-        changers.execute {
-            val outcome = if (doing.isStopped) Result.failure(CancellationException(STOPPED_WORDS)) else runCatching { act(doing.id) }
+        try {
+            changers.execute {
+                val outcome = if (doing.isStopped) Result.failure(CancellationException(STOPPED_WORDS)) else runCatching { act(doing.id) }
+                end(doing)
+                outcome.fold(done::complete, done::completeExceptionally)
+            }
+        } catch (_: RejectedExecutionException) {
             end(doing)
-            outcome.fold(done::complete, done::completeExceptionally)
+            done.completeExceptionally(Busy())
         }
         return Begun(done, doing)
     }
@@ -514,18 +533,31 @@ internal object CoreHttp {
      *  and closing a sign-in, which can wait on a renewal) off the caller's thread. It is
      *  not stopped by cancelling the caller: it finishes behind it. */
     suspend fun <T> aside(act: () -> T): T = suspendCancellableCoroutine { waiting ->
-        changers.execute { waiting.resumeWith(runCatching(act)) }
+        val work = Runnable { waiting.resumeWith(runCatching(act)) }
+        try {
+            changers.execute(work)
+        } catch (_: RejectedExecutionException) {
+            // (Never refused: these are a sign-in being opened or let go of, which nobody
+            // can be told to try again. A thread of its own, this once.)
+            apart.execute(work)
+        }
     }
 
     private suspend fun <T> run(doing: Doing, pool: Executor, act: (Long) -> T): T = suspendCancellableCoroutine { waiting ->
         waiting.invokeOnCancellation { doing.stop() }
-        pool.execute {
-            // (Stopped while it waited its turn: it never starts.)
-            val outcome = if (doing.isStopped) Result.failure(CancellationException(STOPPED_WORDS)) else runCatching { act(doing.id) }
+        try {
+            pool.execute {
+                // (Stopped while it waited its turn: it never starts.)
+                val outcome = if (doing.isStopped) Result.failure(CancellationException(STOPPED_WORDS)) else runCatching { act(doing.id) }
+                end(doing)
+                // (Ignored if the caller has been cancelled meanwhile: nothing is published
+                // after a stop.)
+                waiting.resumeWith(outcome)
+            }
+        } catch (_: RejectedExecutionException) {
+            // (No thread and no place in the queue: said at once, not waited out.)
             end(doing)
-            // (Ignored if the caller has been cancelled meanwhile: nothing is published
-            // after a stop.)
-            waiting.resumeWith(outcome)
+            waiting.resumeWith(Result.failure(Busy()))
         }
     }
 

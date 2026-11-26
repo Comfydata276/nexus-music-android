@@ -12,7 +12,8 @@
 //!
 //! **What going wrong looks like.** An argument that isn't what the function takes, and a
 //! panic anywhere below, both reach Kotlin as one exception (`CoreException`) carrying the
-//! reason in words. A panic's place (file and line) goes to the phone's log.
+//! reason in words. A panic's place (file and line) goes to the phone's log, and nothing
+//! of what it said.
 
 mod pages;
 mod requests;
@@ -50,7 +51,14 @@ fn log_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         std::panic::set_hook(Box::new(|info| {
-            let text = std::ffi::CString::new(format!("{info}")).unwrap_or_default();
+            // **Where it panicked, and nothing of what it said**: a panic's own words can
+            // quote whatever the code was holding (an answer, an address, a secret), and
+            // the phone's log is read by more than this app.
+            let place = match info.location() {
+                Some(place) => format!("panicked at {}:{}:{}", place.file(), place.line(), place.column()),
+                None => "panicked".to_string(),
+            };
+            let text = std::ffi::CString::new(place).unwrap_or_default();
             #[cfg(target_os = "android")]
             // (6 is ANDROID_LOG_ERROR. Both pointers are to text that ends in a zero and
             // lives until the call returns.)
