@@ -261,6 +261,11 @@
     <string name="link_relay_kept">Saved for %1$s.</string>
     <string name="link_relay_not_kept">This phone couldn\'t keep the key safe, so it wasn\'t saved.</string>
     <string name="link_relay_wrong">That isn\'t a host link: it is the relay\'s address, then #, then its key.</string>
+    <!-- The Connect sheet's own words for the new linking: the Windows app's. Every sentence
+         the list shows is the library's, as handed. -->
+    <string name="link_linked_devices">Linked devices (new)</string>
+    <string name="link_stop_steering">Stop steering</string>
+    <string name="link_pause_device">Pause %1$s</string>
     <string name="car_open_to_play">When it\'s safe, open Nexus Music on your phone to start playing</string>
     <string name="car_local_network">When it\'s safe, open Nexus Music on your phone and allow it to reach your home network</string>
     <string name="local_network_maybe">Can\'t reach your server. If it\'s on your home network, that may be because Nexus Music isn\'t allowed to reach it.</string>

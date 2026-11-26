@@ -54,53 +54,78 @@ fun ConnectButton() {
 
 /**
  * Where the music is playing, a way into a jam, and the person's other devices to move it to
- * (Windows' `ConnectPanel`, in a sheet).
+ * (Windows' `ConnectPanel`, in a sheet). The jam and the old linking's devices only in a
+ * build with jams ([org.medianexus.music.jam.JamBuild]); the new linking's list only in a
+ * build with it ([org.medianexus.music.link.LinkBuild]), whether or not jams exist.
  */
 @Composable
 private fun ConnectSheet(choose: (() -> Unit) -> Unit) {
     val ui = LocalUi.current
-    val jams = ui.graph.jams
-    val state by jams.ui.collectAsStateWithLifecycle()
     val colors = Theme.colors
+    // (Jams are made the first time they are asked for, and can't be in a build without
+    // them: asked only where they exist.)
+    val jams = if (org.medianexus.music.jam.JamBuild.on) ui.graph.jams else null
+    val state = jams?.let { it.ui.collectAsStateWithLifecycle().value }
+    val linkHere = org.medianexus.music.link.LinkBuild.on
+    val linked = ui.graph.linked
+    val link by linked.state.collectAsStateWithLifecycle()
+    // A device steered the new way is named at the top, as Windows names it, with its two
+    // ways out; one steered the old way is as it was.
+    val steering = if (linkHere) org.medianexus.music.ui.link.ConnectView.steering(link) else ""
+    val oldLinked = state?.linked
+    val there = steering.ifEmpty { oldLinked.orEmpty() }
     Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         BasicText(stringResource(R.string.jam_connect), Modifier.semantics { heading() }, style = Theme.type.heading.copy(color = colors.text))
         Column(Modifier.fillMaxWidth().background(colors.raised, RoundedCornerShape(Theme.dimens.radius)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(R.drawable.ic_monitor_speaker, size = 22.dp, tint = colors.accentBright)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    BasicText(state.linked ?: state.device.ifEmpty { stringResource(R.string.jam_this_phone) }, style = Theme.type.rowTitle.copy(color = colors.accentBright, fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    BasicText(stringResource(if (state.linked != null) R.string.jam_playing_there else R.string.jam_this_phone), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
+                    BasicText(there.ifEmpty { state?.device.orEmpty().ifEmpty { stringResource(R.string.jam_this_phone) } }, style = Theme.type.rowTitle.copy(color = colors.accentBright, fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    BasicText(stringResource(if (there.isNotEmpty()) R.string.jam_playing_there else R.string.jam_this_phone), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
                 }
-                if (state.linked != null) TextButton(stringResource(R.string.jam_play_here), { choose { jams.playHere() } })
+                if (steering.isEmpty() && oldLinked != null) TextButton(stringResource(R.string.jam_play_here), { choose { jams.playHere() } })
             }
-            Box(Modifier.fillMaxWidth().heightIn(min = 1.dp).background(colors.line))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                BasicText(jamLine(state), Modifier.weight(1f), style = Theme.type.body.copy(color = colors.muted))
-                TextButton(
-                    stringResource(
-                        when {
-                            state.hosting != null -> R.string.jam_manage
-                            state.joined != null -> R.string.jam_leave
-                            state.canHost -> R.string.jam_start
-                            else -> R.string.jam_join_a_jam
+            // Steered the new way: "Play here" and "Stop steering" (Windows' strip has both),
+            // on a line of their own, so that a long name keeps its room on a narrow phone.
+            if (steering.isNotEmpty()) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                TextButton(stringResource(R.string.jam_play_here), { choose { linked.playHere() } })
+                TextButton(stringResource(R.string.link_stop_steering), { choose { linked.letGo() } })
+            }
+            if (state != null) {
+                Box(Modifier.fillMaxWidth().heightIn(min = 1.dp).background(colors.line))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    BasicText(jamLine(state), Modifier.weight(1f), style = Theme.type.body.copy(color = colors.muted))
+                    TextButton(
+                        stringResource(
+                            when {
+                                state.hosting != null -> R.string.jam_manage
+                                state.joined != null -> R.string.jam_leave
+                                state.canHost -> R.string.jam_start
+                                else -> R.string.jam_join_a_jam
+                            },
+                        ),
+                        {
+                            if (state.joined != null) choose { jams.leave() } else choose { ui.open(Route.Jam()) }
                         },
-                    ),
-                    {
-                        if (state.joined != null) choose { jams.leave() } else choose { ui.open(Route.Jam()) }
-                    },
-                )
+                    )
+                }
             }
         }
-        val others = state.devices.filter { !it.active }
-        if (others.isNotEmpty()) {
-            BasicText(stringResource(R.string.jam_your_devices), Modifier.padding(start = 12.dp, top = 8.dp).semantics { heading() }, style = Theme.type.label.copy(color = colors.muted, fontWeight = FontWeight.SemiBold))
-            for (device in others) DeviceRow(device) { choose { jams.pick(device.id) } }
-        } else {
-            BasicText(
-                stringResource(if (state.linking) R.string.jam_devices_none_linked else R.string.jam_devices_none_unlinked),
-                Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                style = Theme.type.body.copy(color = colors.muted),
-            )
+        // The new linking's devices (Windows' "Linked devices (new)").
+        if (linkHere) org.medianexus.music.ui.link.LinkedDevices(link, choose)
+        // The old linking's, through a jam's session: only where jams exist, as it was.
+        if (state != null) {
+            val others = state.devices.filter { !it.active }
+            if (others.isNotEmpty()) {
+                BasicText(stringResource(R.string.jam_your_devices), Modifier.padding(start = 12.dp, top = 8.dp).semantics { heading() }, style = Theme.type.label.copy(color = colors.muted, fontWeight = FontWeight.SemiBold))
+                for (device in others) DeviceRow(device) { choose { jams.pick(device.id) } }
+            } else {
+                BasicText(
+                    stringResource(if (state.linking) R.string.jam_devices_none_linked else R.string.jam_devices_none_unlinked),
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = Theme.type.body.copy(color = colors.muted),
+                )
+            }
         }
     }
 }

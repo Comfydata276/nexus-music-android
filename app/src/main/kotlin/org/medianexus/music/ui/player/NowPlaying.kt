@@ -349,8 +349,9 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         SleepButton()
         IconButton(R.drawable.ic_mic_vocal, stringResource(if (lyrics) R.string.hide_lyrics else R.string.lyrics), onLyrics, active = lyrics)
-        // Windows' "Connect to a device": the person's other devices, and jams (M6).
-        if (org.medianexus.music.jam.JamBuild.on) org.medianexus.music.ui.jam.ConnectButton()
+        // Windows' "Connect to a device": the person's other devices, and jams (M6); in a
+        // build with the new linking whether or not it has jams. With neither, not there.
+        if (org.medianexus.music.ui.link.ConnectView.reachable(jams = org.medianexus.music.jam.JamBuild.on, link = org.medianexus.music.link.LinkBuild.on)) org.medianexus.music.ui.jam.ConnectButton()
         Spacer(Modifier.weight(1f))
         if (queueButton) IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
     }
