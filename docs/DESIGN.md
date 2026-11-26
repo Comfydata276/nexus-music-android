@@ -2202,11 +2202,20 @@ What is the phone's own:
   `OutsideArtistModel.State`, whose most played songs have a number of their own), and
   every press hands it to `Asker` (`under`). **Taking an album off the list has a second
   guard**: its number is Lidarr's own, and means another album on another Lidarr, so it is
-  acted on only if this very connection's list has just shown it. What a connection
-  offered is let go of when the connection changes (the place's offers are replaced whole:
-  something still being found for the old connection keeps the old set and leaves nothing
-  in the new), and an ask that finishes after a change marks nothing among the new
-  connection's offers. Its note is still written: it was asked for.
+  acted on only if it is **the entry** this very connection's list has just shown: that
+  number for that album. The question before asking looks at the row's number before
+  anything else can answer, so the Lidarr there is now is never asked what it thinks of an
+  album a stale row names. **An operation's Lidarr and its offers are one connection's by
+  construction**: the number travels with the connection into the library's side, and
+  whatever is done takes what has been offered *by that number* (`pages::Place::offers`).
+  A newer number moves the place on and starts its offers from nothing; an older one
+  (something begun, or still waiting its turn, before the change) gets a set of its own
+  that nobody else reads. So it cannot matter in what order a change of connection and
+  an operation of the old one happen, and an ask that finishes after a change marks
+  nothing among the new connection's offers. Its note is still written: it was asked for.
+  And "the same thing, already under way" (`UnderWay`, which swallows a second press)
+  includes the connection: the album, the artist or the number by the same name on
+  another Lidarr is another thing. Nothing stays under way that never started.
 - **What nobody can stop still ends.** Every request of something that changes Lidarr or
   the sign-in has two minutes in all, its answer included (`CoreHttp.changeMillis`), where
   the library sets no shorter limit of its own; finishing a sign-in has eight seconds for

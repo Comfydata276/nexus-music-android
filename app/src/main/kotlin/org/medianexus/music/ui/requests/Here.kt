@@ -80,7 +80,7 @@ fun requestsHere(): RequestsHere? {
  * never acted on once the app is pointed at another.
  */
 interface AskOps {
-    suspend fun asking(album: String, title: String, by: String, song: String, kind: String): Asking
+    suspend fun asking(album: String, title: String, by: String, song: String, kind: String, connection: Long): Asking
     fun askingFor(title: String): String
     suspend fun request(album: String, title: String, song: String, connection: Long): Said
     suspend fun adding(name: String, open: Int): Pair<String, String>
@@ -91,7 +91,7 @@ interface AskOps {
 
 /** [AskOps] as the app has them: each is the account's `RequestsPages`' own call. */
 fun askOps(pages: RequestsPages): AskOps = object : AskOps {
-    override suspend fun asking(album: String, title: String, by: String, song: String, kind: String) = pages.asking(album, title, by, song, kind)
+    override suspend fun asking(album: String, title: String, by: String, song: String, kind: String, connection: Long) = pages.asking(album, title, by, song, kind, connection)
     override fun askingFor(title: String) = pages.askingFor(title)
     override suspend fun request(album: String, title: String, song: String, connection: Long) = pages.request(album, title, song, connection)
     override suspend fun adding(name: String, open: Int) = pages.adding(name, open)
@@ -118,6 +118,10 @@ interface AskShow {
  * What an account has under way that the person asked for (an album, an artist, one taken
  * off the list), by what it is: so that a second press of the same thing while the first is
  * under way does nothing, wherever it is pressed, and a page can show what is going.
+ *
+ * **What it is includes the connection it was shown under**: after the account has been
+ * pointed at another Lidarr, the album, the artist or the number by the same name there is
+ * another thing, and pressing it is not swallowed for the first one's sake.
  */
 class UnderWay {
     private val now = MutableStateFlow<Set<String>>(emptySet())
@@ -135,9 +139,9 @@ class UnderWay {
     fun end(what: String) = now.update { it - what }
 
     companion object {
-        fun album(id: String) = "album:$id"
-        fun artist(id: String) = "artist:$id"
-        fun offList(number: Long) = "off:$number"
+        fun album(id: String, under: Long) = "album:$under:$id"
+        fun artist(id: String, under: Long) = "artist:$under:$id"
+        fun offList(number: Long, under: Long) = "off:$under:$number"
 
         private val all = java.util.WeakHashMap<AccountGraph, UnderWay>()
 
@@ -166,16 +170,11 @@ class Asker(
     private val show: AskShow,
     private val underWay: UnderWay,
 ) {
-    /** Runs what the person confirmed, once, in the account's scope. */
+    /** Runs what the person confirmed, once, in the account's scope. It is no longer under
+     *  way however that ends: finished, failed, or never begun (the account gone first). */
     private fun confirmed(what: String, work: suspend () -> Unit) {
         if (!underWay.begin(what)) return
-        account.launch {
-            try {
-                work()
-            } finally {
-                underWay.end(what)
-            }
-        }
+        account.launch { work() }.invokeOnCompletion { underWay.end(what) }
     }
 
     /**
@@ -186,12 +185,17 @@ class Asker(
      * and the pages ask again.
      */
     fun album(album: String, title: String, by: String, song: String = "", kind: String = "", under: Long) {
-        if (album.isEmpty() || UnderWay.album(album) in underWay.going.value) return
+        if (album.isEmpty() || UnderWay.album(album, under) in underWay.going.value) return
         page.launch {
-            when (val asking = ops.asking(album, title, by, song, kind)) {
+            when (val asking = ops.asking(album, title, by, song, kind, under)) {
+                // (Not from this page any more: said, and if the page is stale, asked again.)
+                is Asking.Refused -> {
+                    show.say(asking.said)
+                    if (asking.stale) show.changed()
+                }
                 is Asking.Already -> show.say(asking.said, wayIn = true)
                 is Asking.Ask -> show.confirm(asking.heading, asking.text, AskShow.Button.REQUEST) {
-                    confirmed(UnderWay.album(album)) {
+                    confirmed(UnderWay.album(album, under)) {
                         show.say(ops.askingFor(title))
                         val said = ops.request(album, title, song, under)
                         show.say(said.words)
@@ -205,11 +209,11 @@ class Asker(
     /** "Add artist": has Lidarr get everything by them. `open` is the page's own count of
      *  what could be asked for; `under` the connection their page was found under. */
     fun artist(id: String, name: String, open: Int, under: Long) {
-        if (id.isEmpty() || open <= 0 || UnderWay.artist(id) in underWay.going.value) return
+        if (id.isEmpty() || open <= 0 || UnderWay.artist(id, under) in underWay.going.value) return
         page.launch {
             val (heading, text) = ops.adding(name, open)
             show.confirm(heading, text, AskShow.Button.ADD_ARTIST) {
-                confirmed(UnderWay.artist(id)) {
+                confirmed(UnderWay.artist(id, under)) {
                     show.say(ops.addingNow(name))
                     val said = ops.addArtist(id, name, under)
                     // The library's sentence stops before where to see them; the note's
@@ -225,7 +229,7 @@ class Asker(
      *  the connection the page was found under). `done` is told how it went, if anyone is
      *  still there to hear. */
     fun takeOff(number: Long, title: String, under: Long, done: (Boolean) -> Unit = {}) {
-        confirmed(UnderWay.offList(number)) {
+        confirmed(UnderWay.offList(number, under)) {
             val said = ops.cancel(number, title, under)
             show.say(said.words)
             done(said.done)

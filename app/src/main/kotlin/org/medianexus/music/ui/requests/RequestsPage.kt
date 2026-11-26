@@ -97,7 +97,7 @@ fun RequestsPage() {
                                 ArrivedRow(asked, about, onOpen = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) })
                             }
                         }
-                        val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id) !in going && album.id !in taken }
+                        val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id, state.connection) !in going && album.id !in taken }
                         if (waiting.heading.isNotEmpty() && pending.isNotEmpty()) {
                             item(key = "pending-title", contentType = "title") { SectionTitle(waiting.heading) }
                             items(pending, key = { (album, _) -> "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->

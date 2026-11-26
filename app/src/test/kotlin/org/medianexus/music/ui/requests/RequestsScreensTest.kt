@@ -307,7 +307,7 @@ class RequestsScreensTest {
         /** Held until opened, while set. */
         var gate: CompletableDeferred<Unit>? = null
 
-        override suspend fun asking(album: String, title: String, by: String, song: String, kind: String): Asking {
+        override suspend fun asking(album: String, title: String, by: String, song: String, kind: String, connection: Long): Asking {
             calls += "asking $album $title $by $song $kind"
             return asked
         }
@@ -417,6 +417,38 @@ class RequestsScreensTest {
     }
 
     @Test
+    fun theSameThingUnderAnotherConnectionIsAnotherThing() = runTest {
+        val ops = Ops().apply { gate = CompletableDeferred() }
+        val show = Seen()
+        val underWay = UnderWay()
+        val asker = Asker(backgroundScope, backgroundScope, ops, show, underWay)
+        // Taking number 7 off the first Lidarr's list is under way...
+        asker.takeOff(7, "Night Ferry", under = 1)
+        runCurrent()
+        // ...when the app is pointed at another Lidarr, which has a 7 of its own. Pressing
+        // that one is not "the same thing again", and is not swallowed.
+        asker.takeOff(7, "Somebody Else's", under = 2)
+        runCurrent()
+        assertEquals(listOf("cancel 7 Night Ferry", "cancel 7 Somebody Else's"), ops.calls)
+        ops.gate!!.complete(Unit)
+        runCurrent()
+        assertTrue(underWay.going.value.isEmpty())
+    }
+
+    @Test
+    fun whatNeverStartedIsNotLeftUnderWay() = runTest {
+        val ops = Ops()
+        val show = Seen()
+        val underWay = UnderWay()
+        // (The account went, signed out of, in the moment between the press and its start.)
+        val gone = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job().apply { cancel() })
+        Asker(backgroundScope, gone, ops, show, underWay).takeOff(7, "Night Ferry", under = 1)
+        runCurrent()
+        assertTrue(ops.calls.isEmpty())
+        assertTrue("left under way for ever: ${underWay.going.value}", underWay.going.value.isEmpty())
+    }
+
+    @Test
     fun takingOneOffTheListOutlivesThePageAndIsDoneOnce() = runTest {
         val ops = Ops().apply { gate = CompletableDeferred() }
         val show = Seen()
@@ -427,7 +459,7 @@ class RequestsScreensTest {
         asker.takeOff(7, "Night Ferry", under = 1) { heard = it }
         asker.takeOff(7, "Night Ferry", under = 1)
         runCurrent()
-        assertEquals(setOf(UnderWay.offList(7)), underWay.going.value)
+        assertEquals(setOf(UnderWay.offList(7, 1)), underWay.going.value)
         page.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
         ops.gate!!.complete(Unit)
         runCurrent()

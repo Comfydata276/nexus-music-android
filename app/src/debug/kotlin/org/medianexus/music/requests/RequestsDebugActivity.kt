@@ -147,8 +147,9 @@ class RequestsDebugActivity : Activity() {
                         is org.medianexus.music.core.AlbumPage.Unavailable -> listOf("unavailable: ${page.why}")
                         else -> listOf("$page")
                     }
-                    "question" -> lines += when (val asking = pages.asking(about, name, by = by, song = song, kind = kind)) {
+                    "question" -> lines += when (val asking = pages.asking(about, name, by = by, song = song, kind = kind, connection = under)) {
                         is org.medianexus.music.core.Asking.Already -> listOf("already: ${asking.said}")
+                        is org.medianexus.music.core.Asking.Refused -> listOf("refused${if (asking.stale) " (stale)" else ""}: ${asking.said}")
                         is org.medianexus.music.core.Asking.Ask -> listOf("heading: ${asking.heading}", "text: ${asking.text}")
                     }
                     "ask" -> {

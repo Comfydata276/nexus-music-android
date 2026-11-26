@@ -250,11 +250,12 @@ class RequestsPages internal constructor(
     private var gone = false
 
     /**
-     * The connection the place's offers belong to, and **Lidarr's own numbers for what is on
-     * its way as last shown under it** (see [cancel]). Under `synchronized(this)`.
+     * The newest connection anything has been asked under here, and **what is on its way
+     * as that connection's list last showed it**: Lidarr's own number for each entry, and
+     * the entry's title (see [cancel]). Under `synchronized(this)`.
      */
     private var shownUnder = 0L
-    private val shownPending = HashSet<Long>()
+    private val shownPending = HashMap<Long, String>()
 
     /** Changes to Lidarr under way whose outcome is still to be written down: the place
      *  outlasts the account for as long as there are any (see [outlasting]). */
@@ -416,26 +417,26 @@ class RequestsPages internal constructor(
     }
 
     /**
-     * Makes the place the connection's that something is about to be asked under: **if the
-     * connection has changed since the last thing asked, what the old one offered is let go
-     * of** (and Lidarr's numbers that were shown under it are no longer good for anything).
-     * False if `at` is itself from before a change that has been seen here already: then
-     * whoever asks, asks again.
+     * Notes the connection something is about to be asked under. **If it is a newer one
+     * than anything was asked under before, Lidarr's numbers that the old one's list showed
+     * are no longer good for anything.** False if `at` is itself from before a change that
+     * has been seen here already: then whoever asks, asks again.
+     *
+     * (What a connection has been offered needs nothing done here. Each operation takes
+     * its offers on the Rust side by its own connection's number, together with its own
+     * Lidarr: see `pages::Place::offers`. So it cannot matter in what order this, the
+     * change of connection and an operation that was waiting its turn happen.)
      */
-    private fun under(place: Long, at: LidarrAt): Boolean {
-        val fresh = synchronized(this) {
-            when {
-                at.connection == shownUnder -> return true
-                at.connection < shownUnder -> return false
-                else -> {
-                    shownUnder = at.connection
-                    shownPending.clear()
-                    true
-                }
+    private fun under(at: LidarrAt): Boolean = synchronized(this) {
+        when {
+            at.connection == shownUnder -> true
+            at.connection < shownUnder -> false
+            else -> {
+                shownUnder = at.connection
+                shownPending.clear()
+                true
             }
         }
-        if (fresh) Core.placeNewOffers(place)
-        return true
     }
 
     /** The way to Lidarr with the place made its own (see [under]), or why there is none. */
@@ -444,7 +445,7 @@ class RequestsPages internal constructor(
             val (at, why) = way()
             if (at == null) return Triple(null, 0, why)
             val place = ready()
-            if (under(place, at)) return Triple(at, place, "")
+            if (under(at)) return Triple(at, place, "")
         }
         return Triple(null, 0, RequestsWords.CONNECTION_CHANGED)
     }
@@ -510,11 +511,11 @@ class RequestsPages internal constructor(
         var asked: LidarrAt? = null
         return page(shown = { waiting ->
             // (What can be taken off the list is what this very connection has just listed.)
-            val numbers = waiting.pending.map { it.first.id }
+            val entries = waiting.pending.map { it.first.id to it.first.title }
             synchronized(this) {
                 if (asked?.connection == shownUnder) {
                     shownPending.clear()
-                    shownPending += numbers
+                    shownPending += entries
                 }
             }
         }) { at, place ->
@@ -525,12 +526,25 @@ class RequestsPages internal constructor(
 
     // ---- asking ------------------------------------------------------------------------------------
 
-    /** Whether to ask for an album, and how the question is put, in the library's words:
-     *  its heading and its text, or that it has been asked for already. `album` is Lidarr's
-     *  name for it; `song` the song that led here, if it was one; `kind` "EP" or "Single" if
-     *  the caller knows. Asks nobody. */
-    suspend fun asking(album: String, title: String, by: String = "", song: String = "", kind: String = ""): Asking =
-        withContext(io) { Core.asking(ready(), album, title, by, song, kind) }
+    /**
+     * Whether to ask for an album, and how the question is put, in the library's words: its
+     * heading and its text, or that it has been asked for already. `album` is Lidarr's name
+     * for it; `song` the song that led here, if it was one; `kind` "EP" or "Single" if the
+     * caller knows. Asks nobody.
+     *
+     * `connection` is the one the row or page that was pressed was found under. **That is
+     * looked at before anything else can answer**: if the connection has changed since,
+     * the answer is [Asking.Refused] (stale), whatever the Lidarr there is now would have
+     * said of an album by that name.
+     */
+    suspend fun asking(album: String, title: String, by: String = "", song: String = "", kind: String = "", connection: Long): Asking = withContext(io) {
+        val (at, place, why) = connected()
+        when {
+            at == null -> Asking.Refused(why, stale = false)
+            !still(connection, at) -> Asking.Refused(RequestsWords.CONNECTION_CHANGED, stale = true)
+            else -> Core.asking(place, album, title, by, song, kind, connection)
+        }
+    }
 
     /** What to say while an album is being asked for ("Asking for “Parachutes”…"). */
     fun askingFor(title: String): String = Words.askingFor(title)
@@ -563,10 +577,10 @@ class RequestsPages internal constructor(
                         val all = Core.noted(place, album, title, by, song, time)
                         val kept = keepAsked(place, all) { where -> Core.noted(where, album, title, by, song, time) }
                         if (!kept) note("requests: what was asked for couldn't be kept on the phone, so its arrival won't be said")
-                        // (Marked as asked for among what this connection offers: if the
-                        // app has been pointed at another Lidarr meanwhile, that one's
-                        // offers are not this album's to mark.)
-                        if (synchronized(this@RequestsPages) { shownUnder == at.connection }) Core.marked(place, album, true)
+                        // (Marked as asked for among what the connection it was asked under
+                        // has been offered: if the app has been pointed at another Lidarr
+                        // meanwhile, that one's offers are not this album's to mark.)
+                        Core.marked(place, album, true, at.connection)
                         kept
                     }
                     Said(true, Words.askedFor(title), kept = kept)
@@ -615,17 +629,18 @@ class RequestsPages internal constructor(
      * One change, in one step: left by its caller while Lidarr is answering, the answer is
      * still waited for (a short while), and if Lidarr took it off, it is forgotten here.
      *
-     * **A number is only good under the connection that listed it.** `connection` as for
-     * [request]; and a number that this connection's own [onTheirWay] has not just listed
-     * is refused in the same way, whatever connection it is said to be from.
+     * **It is the entry that is taken off, not the number.** `connection` as for [request];
+     * and `id` and `title` must be an entry this connection's own [onTheirWay] has just
+     * listed, as it listed it: a number the list never showed, or showed for another
+     * album, is refused in the same way, whatever connection it is said to be from.
      */
     suspend fun cancel(id: Long, title: String, connection: Long): Said = withContext(io) {
         val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
         // `id` is Lidarr's own number, and means another album on another Lidarr: besides
-        // coming from a row of this connection, it must be one this very connection's list
-        // has just shown ([onTheirWay]).
-        val listed = synchronized(this@RequestsPages) { shownUnder == at.connection && id in shownPending }
+        // coming from a row of this connection, it must be **the entry this very
+        // connection's list has just shown** ([onTheirWay]): that number, for that album.
+        val listed = synchronized(this@RequestsPages) { shownUnder == at.connection && shownPending[id] == title }
         if (!listed || !still(connection, at)) return@withContext changed
         val begun = Core.cancelling(at, id)
         val through = outlasting(begun) { outcome ->

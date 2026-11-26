@@ -189,7 +189,7 @@ class RequestsPagesTest {
         assertEquals(listOf("Looking for songs beyond your library…", found.note), stages.toList())
         val song = found.songs.single().first
         // The song's album can be asked about, in the library's words, without asking anyone.
-        val asking = made.pages.asking(song.album, song.albumTitle, by = song.artistName, song = song.title) as Asking.Ask
+        val asking = made.pages.asking(song.album, song.albumTitle, by = song.artistName, song = song.title, connection = made.now()) as Asking.Ask
         assertEquals("Ask for this album?", asking.heading)
         assertEquals("“Soft Song” is on “Soft” by Quiet Band. That album will go on Lidarr's list, and Lidarr will start looking for it. The whole album is fetched.", asking.text)
         // And its page opens from what was offered.
@@ -209,7 +209,7 @@ class RequestsPagesTest {
         val note = made.pages.asked.value.single()
         assertEquals(listOf("single-1", "One Song", "Quillon Vane", "Its Song", start), listOf(note.album, note.title, note.artist, note.song, note.at))
         assertTrue(File(made.dir, "asked.json").readText().contains("\"One Song\""))
-        assertEquals(Asking.Already("That one has already been asked for."), made.pages.asking("single-1", "One Song"))
+        assertEquals(Asking.Already("That one has already been asked for."), made.pages.asking("single-1", "One Song", connection = made.now()))
         assertEquals("On their way (1)", got(made.pages.onTheirWay()).heading)
 
         // It turns up in the phone's copy of the library while no screen is listening: the
@@ -373,7 +373,7 @@ class RequestsPagesTest {
         withTimeout(40_000) { made.pages.asked.first { it.isNotEmpty() } }
         assertTrue(wanted())
         assertEquals("One Song", made.pages.asked.value.single().title)
-        assertEquals(Asking.Already("That one has already been asked for."), made.pages.asking("single-1", "One Song"))
+        assertEquals(Asking.Already("That one has already been asked for."), made.pages.asking("single-1", "One Song", connection = made.now()))
     }
 
     @Test
@@ -475,6 +475,7 @@ class RequestsPagesTest {
         // an album is refused whether or not the screen says where its row came from.
         assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = made.now()))
         assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = first))
+        assertEquals(Asking.Refused(changedWords, stale = true), made.pages.asking("single-1", "One Song", connection = first))
         assertEquals(Said(false, changedWords, stale = true), made.pages.request("single-1", "One Song", connection = first))
         assertEquals(Said(false, changedWords, stale = true), made.pages.addArtist("artist-1", "Quillon Vane", connection = first))
         delay(300)
@@ -490,6 +491,11 @@ class RequestsPagesTest {
         assertEquals("Somebody Else's" to 7L, theirs.title to theirs.id)
         assertTrue(now.connection != first)
         assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = first))
+        assertTrue(other.asked.none { it.method == "PUT" })
+        // The old row with the new page's number on it (as a screen that kept its rows and
+        // took the number from wherever was handy would send): the number is listed here,
+        // but as another album. It is the entry that is taken off, not the number.
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = now.connection))
         assertTrue(other.asked.none { it.method == "PUT" })
         assertEquals(Said(true, "“Somebody Else's” is off the list"), made.pages.cancel(theirs.id, theirs.title, connection = now.connection))
         assertTrue(other.asked.any { it.method == "PUT" && "\"albumIds\":[7]" in it.body })
@@ -542,10 +548,12 @@ class RequestsPagesTest {
         withTimeout(10_000) { while (said.size < 1) delay(20) }
         assertEquals(listOf(changedWords), said.toList())
         assertEquals(1, askedAgain.get())
-        // The album page's button: the question, yes, and the same.
+        // The album page's button: refused before any question is put (the Lidarr there is
+        // now is not asked what it thinks of an album by that name).
         asker.album("single-1", "One Song", "Quillon Vane", under = album.connection)
-        withTimeout(10_000) { while (said.none { it == "Asking for “One Song”…" } || said.count { it == changedWords } < 2) delay(20) }
+        withTimeout(10_000) { while (said.count { it == changedWords } < 2) delay(20) }
         assertEquals(2, askedAgain.get())
+        assertTrue(said.none { it.startsWith("Asking for") })
         // "Add artist", from a page of the old connection.
         asker.artist("artist-1", "Quillon Vane", open = 1, under = album.connection)
         withTimeout(10_000) { while (said.count { it == changedWords } < 3) delay(20) }
@@ -577,7 +585,7 @@ class RequestsPagesTest {
         assertEquals(before, other.asked.size)
         val offer = got(made.pages.search("one song")).albums.single { it.album == "single-1" }
         // (It was the first Lidarr that was asked: the second has not been, and says so.)
-        assertTrue(made.pages.asking(offer.album, offer.title) is Asking.Ask)
+        assertTrue(made.pages.asking(offer.album, offer.title, connection = made.now()) is Asking.Ask)
     }
 
     @Test

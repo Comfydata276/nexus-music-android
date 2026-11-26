@@ -134,6 +134,11 @@ sealed interface Asking {
     data class Already(val said: String) : Asking
 
     data class Ask(val heading: String, val text: String) : Asking
+
+    /** It can't be asked for from where it was pressed, and this is why. `stale`: because
+     *  the page it was on was shown under a connection to Lidarr that has since changed,
+     *  and is to be asked for again. (The phone's own: the library is not asked.) */
+    data class Refused(val said: String, val stale: Boolean) : Asking
 }
 
 /**

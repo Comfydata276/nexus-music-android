@@ -590,13 +590,6 @@ object Core {
     /** A connection to Lidarr begins: its place, under the number handed back. */
     fun placeOpen(): Long = across(true, Boolean.serializer(), Long.serializer(), ::placeOpen)
 
-    /** The connection has changed (another address, key or sign-in): what was offered
-     *  under it as it was is let go of. Something still being found for the old one keeps
-     *  hold of the old set, and leaves nothing behind in the new. */
-    fun placeNewOffers(place: Long) {
-        across(place, Long.serializer(), Boolean.serializer(), ::placeNewOffers)
-    }
-
     /** The connection is over: what was offered while it lasted is forgotten. */
     fun placeClose(place: Long) {
         across(place, Long.serializer(), Boolean.serializer(), ::placeClose)
@@ -677,16 +670,18 @@ object Core {
     } }
 
     @Serializable
-    private class AskingIn(val place: Long, val album: String, val title: String, val by: String, val song: String, val kind: String)
+    private class AskingIn(val place: Long, val album: String, val title: String, val by: String, val song: String, val kind: String, val connection: Long)
 
     @Serializable
     private class AskWords(val heading: String, val text: String)
 
     /** `requests::asking`: whether to ask for an album, and how the question is put: Lidarr's
      *  name for it, its title, whose it is (may be empty), the song that led here if it was
-     *  one, and what kind of release it is if the caller knows. Asks nobody. */
-    fun asking(place: Long, album: String, title: String, by: String = "", song: String = "", kind: String = ""): Asking {
-        val answer = across(AskingIn(place, album, title, by, song, kind), AskingIn.serializer(), JsonElement.serializer(), ::asking)
+     *  one, and what kind of release it is if the caller knows. `connection` is the one it
+     *  was offered under: the question is put from what that connection was offered. Asks
+     *  nobody. */
+    fun asking(place: Long, album: String, title: String, by: String = "", song: String = "", kind: String = "", connection: Long = 0): Asking {
+        val answer = across(AskingIn(place, album, title, by, song, kind, connection), AskingIn.serializer(), JsonElement.serializer(), ::asking)
         val one = (answer as? JsonObject)?.entries?.singleOrNull() ?: throw CoreException("The shared library's answer couldn't be read.")
         return when (one.key) {
             "Already" -> Asking.Already(json.decodeFromJsonElement(String.serializer(), one.value))
@@ -723,11 +718,12 @@ object Core {
         across(NotedIn(place, album, title, artist, song, now), NotedIn.serializer(), ListSerializer(Asked.serializer()), ::noted)
 
     @Serializable
-    private class MarkedIn(val place: Long, val album: String, val requested: Boolean)
+    private class MarkedIn(val place: Long, val album: String, val requested: Boolean, val connection: Long)
 
-    /** `Offers::mark`: an album has been asked for (or no longer is), so it is shown that way. */
-    fun marked(place: Long, album: String, requested: Boolean) {
-        across(MarkedIn(place, album, requested), MarkedIn.serializer(), Boolean.serializer(), ::marked)
+    /** `Offers::mark`: an album has been asked for (or no longer is), so it is shown that
+     *  way, among what the connection it was asked under has been offered. */
+    fun marked(place: Long, album: String, requested: Boolean, connection: Long = 0) {
+        across(MarkedIn(place, album, requested, connection), MarkedIn.serializer(), Boolean.serializer(), ::marked)
     }
 
     @Serializable
@@ -885,7 +881,6 @@ object Core {
     @JvmStatic private external fun discoverFavourites(input: ByteArray): ByteArray?
     @JvmStatic private external fun discoverLook(input: ByteArray): ByteArray?
     @JvmStatic private external fun discoverKept(input: ByteArray): ByteArray?
-    @JvmStatic private external fun placeNewOffers(input: ByteArray): ByteArray?
     @JvmStatic private external fun arrivedNews(input: ByteArray): ByteArray?
     @JvmStatic private external fun wireProbe(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?

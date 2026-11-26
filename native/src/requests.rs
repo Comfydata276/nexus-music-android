@@ -104,6 +104,10 @@ pub(crate) struct Connection {
     /// request with the key in it is sent (`wire::Host::bound`).
     #[serde(default)]
     origin: Option<String>,
+    /// Which connection this is, by the app's own count of them: what an operation takes
+    /// its offers by (`pages::Place::offers`).
+    #[serde(default)]
+    pub(crate) connection: u64,
 }
 
 impl Connection {

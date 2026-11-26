@@ -35,11 +35,12 @@ use crate::{call, call_private};
 
 /// What one connection to Lidarr has by it (see this file's own comment).
 struct Place {
-    /// What has been offered under the connection as it now is. **Replaced whole when the
-    /// connection changes** (another address, another key, another sign-in): what one
-    /// Lidarr offered is nothing to another, and something still being found for the old
-    /// one keeps hold of the old set and leaves nothing behind in the new.
-    offers: RwLock<Arc<Offers>>,
+    /// What has been offered, **and the number of the connection it was offered under**
+    /// (the app's own count: it moves whenever the address, the key or the sign-in
+    /// changes). Whatever is done is done under a connection's number, and takes its
+    /// offers by that number ([`Place::offers`]): so an operation's Lidarr and its offers
+    /// are one connection's, whatever order things run in.
+    offers: Mutex<(u64, Arc<Offers>)>,
     library: RwLock<Arc<Snapshot>>,
     asked: RwLock<Vec<Asked>>,
     singles: AtomicBool,
@@ -71,9 +72,21 @@ impl Place {
         self.singles.load(Ordering::SeqCst)
     }
 
-    /// What has been offered, as it is now: held by whoever asks for as long as they are at it.
-    fn offers(&self) -> Arc<Offers> {
-        self.offers.read().unwrap_or_else(|stuck| stuck.into_inner()).clone()
+    /// What connection `connection` has been offered, held by whoever asks for as long as
+    /// they are at it.
+    ///
+    /// - The connection the place is at: its offers.
+    /// - A newer one: the place moves to it, and its offers start from nothing. What the
+    ///   connection before was offered is let go of.
+    /// - An older one (something that was begun, or was still waiting its turn, before the
+    ///   connection changed): a set of its own, which nobody else will ever read. What the
+    ///   old Lidarr offers it is nothing to the connection there is now.
+    fn offers(&self, connection: u64) -> Arc<Offers> {
+        let mut now = self.offers.lock().unwrap_or_else(|stuck| stuck.into_inner());
+        if connection > now.0 {
+            *now = (connection, Arc::new(Offers::new()));
+        }
+        if connection == now.0 { now.1.clone() } else { Arc::new(Offers::new()) }
     }
 
     /// Changes what has been asked for, and says what it now is, for the Kotlin side to keep.
@@ -89,19 +102,9 @@ impl Place {
 pub extern "system" fn Java_org_medianexus_music_core_Core_placeOpen<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |_: bool| {
         let id = NEXT_PLACE.fetch_add(1, Ordering::SeqCst);
-        let made = Place { offers: RwLock::new(Arc::new(Offers::new())), library: RwLock::new(Arc::new(Snapshot::default())), asked: RwLock::new(Vec::new()), singles: AtomicBool::new(false) };
+        let made = Place { offers: Mutex::new((0, Arc::new(Offers::new()))), library: RwLock::new(Arc::new(Snapshot::default())), asked: RwLock::new(Vec::new()), singles: AtomicBool::new(false) };
         places(|open| open.insert(id, Arc::new(made)));
         Ok(id)
-    })
-}
-
-/// The connection has changed (see [`Place`]): what was offered under it as it was is let
-/// go of, and what is offered from now on starts from nothing.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_medianexus_music_core_Core_placeNewOffers<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
-    call(env, input, |id: u64| {
-        *place(id)?.offers.write().unwrap_or_else(|stuck| stuck.into_inner()) = Arc::new(Offers::new());
-        Ok(true)
     })
 }
 
@@ -220,7 +223,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageSearch<'l>(env: J
                 wire::publish(operation, &bytes);
             }
         };
-        Ok(found(requests::search(asking.services(), &|| place.library(), &place.offers(), &|| place.singles(), &|| place.asked(), &given.what, &mut publish)))
+        Ok(found(requests::search(asking.services(), &|| place.library(), &place.offers(given.lidarr.connection), &|| place.singles(), &|| place.asked(), &given.what, &mut publish)))
     })
 }
 
@@ -234,7 +237,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageArtist<'l>(env: J
             Ok(asking) => asking,
             Err(why) => return Ok(outcome(Err(why))),
         };
-        Ok(found(requests::artist(asking.services(), &|| place.library(), &place.offers(), &|| place.singles(), &given.what)))
+        Ok(found(requests::artist(asking.services(), &|| place.library(), &place.offers(given.lidarr.connection), &|| place.singles(), &given.what)))
     })
 }
 
@@ -250,7 +253,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageArtistPopular<'l>
             Err(why) => return Ok(outcome(Err(why))),
         };
         // (None: said as one with no songs, which is what the screens are told.)
-        let popular = requests::artist_popular(asking.services(), &|| place.library(), &place.offers(), &|| place.singles(), &|| place.asked(), &given.what, &given.name);
+        let popular = requests::artist_popular(asking.services(), &|| place.library(), &place.offers(given.lidarr.connection), &|| place.singles(), &|| place.asked(), &given.what, &given.name);
         Ok(found(popular.map(Option::unwrap_or_default)))
     })
 }
@@ -265,7 +268,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageAlbum<'l>(env: JN
             Ok(asking) => asking,
             Err(why) => return Ok(outcome(Err(why))),
         };
-        Ok(found(requests::album(asking.services(), &place.offers(), &given.what)))
+        Ok(found(requests::album(asking.services(), &place.offers(given.lidarr.connection), &given.what)))
     })
 }
 
@@ -288,6 +291,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageOnTheirWay<'l>(en
 #[derive(Deserialize)]
 struct AskingIn {
     place: u64,
+    /// The connection the album was offered under (the row that was pressed says).
+    #[serde(default)]
+    connection: u64,
     album: String,
     title: String,
     #[serde(default)]
@@ -301,7 +307,7 @@ struct AskingIn {
 /// `requests::asking`: whether to ask, and how the question is put. Asks nobody.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_asking<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
-    call(env, input, |given: AskingIn| Ok(requests::asking(&place(given.place)?.offers(), &given.album, &given.title, &given.by, &given.song, &given.kind)))
+    call(env, input, |given: AskingIn| Ok(requests::asking(&place(given.place)?.offers(given.connection), &given.album, &given.title, &given.by, &given.song, &given.kind)))
 }
 
 /// `requests::request`: asks Lidarr for an album that has been offered. The value is who it
@@ -315,7 +321,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_request<'l>(env: JNIE
             Ok(lidarr) => lidarr,
             Err(why) => return Ok(outcome(Err(why))),
         };
-        Ok(match requests::request(&lidarr, &place.offers(), &given.what) {
+        Ok(match requests::request(&lidarr, &place.offers(given.lidarr.connection), &given.what) {
             Ok(result) => outcome(result),
             Err(Stopped) => Outcome::Stopped,
         })
@@ -348,6 +354,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_noted<'l>(env: JNIEnv
 #[derive(Deserialize)]
 struct MarkedIn {
     place: u64,
+    /// The connection it was asked for under: marked among that connection's offers only.
+    #[serde(default)]
+    connection: u64,
     album: String,
     requested: bool,
 }
@@ -356,7 +365,7 @@ struct MarkedIn {
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_marked<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |given: MarkedIn| {
-        place(given.place)?.offers().mark(&given.album, given.requested);
+        place(given.place)?.offers(given.connection).mark(&given.album, given.requested);
         Ok(true)
     })
 }

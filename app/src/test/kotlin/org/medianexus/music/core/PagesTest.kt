@@ -290,6 +290,32 @@ class PagesTest {
     }
 
     @Test
+    fun `what one connection is offered is nothing to another, whichever is asked first or last`() {
+        // (The first Lidarr offers a soundtrack, which the question about it then says.)
+        val various = "89ad4ac3-39f7-470e-963a-56509c546377"
+        route("recording?query", """{"recordings":[]}""")
+        route("artist/lookup", "[]")
+        route("album/lookup", """[{"title":"Film Music","foreignAlbumId":"ost-1","albumType":"Album","secondaryTypes":["Soundtrack"],"artist":{"artistName":"Various Artists","foreignArtistId":"$various"}}]""")
+        val first = LidarrAt(server.address, "k", connection = 1)
+        val second = LidarrAt(server.address, "k", connection = 2)
+        fun said(under: Long): String = (Core.asking(place, "ost-1", "Film Music", by = "Various Artists", connection = under) as Asking.Ask).text
+        fun said(): String = said(2)
+        got(wait { Core.pageSearch(first, place, "film music") {} })
+        assertTrue(said(1), "soundtrack" in said(1))
+        // The connection changes: something is asked under the second.
+        route("album/lookup", "[]")
+        got(wait { Core.pageSearch(second, place, "anything") {} })
+        assertFalse(said(), "soundtrack" in said())
+        // (And the first connection's offers are gone: nothing can be asked of it any more.)
+        assertFalse(said(1), "soundtrack" in said(1))
+        // Something of the first connection's that was still waiting its turn runs only now.
+        // What it is offered is the first Lidarr's, and is nothing to the second.
+        route("album/lookup", """[{"title":"Film Music","foreignAlbumId":"ost-1","albumType":"Album","secondaryTypes":["Soundtrack"],"artist":{"artistName":"Various Artists","foreignArtistId":"$various"}}]""")
+        got(wait { Core.pageSearch(first, place, "film music") {} })
+        assertFalse("the second connection was handed what the first Lidarr offered: ${said()}", "soundtrack" in said())
+    }
+
+    @Test
     fun `an album taken off Lidarr's list is no longer watched for`() {
         val wanted = lidarrWithASingle()
         assertEquals(Outcome.Got("Quillon Vane"), wait { Core.request(lidarr, place, "single-1").done.await() })
