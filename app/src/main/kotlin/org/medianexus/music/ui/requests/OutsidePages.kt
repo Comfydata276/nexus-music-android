@@ -109,14 +109,15 @@ fun OutsideArtistPage(route: Route.OutsideArtist) {
                     else -> {
                         if (artist.open > 0) item(key = "add", contentType = "actions") {
                             Row(Modifier.fillMaxWidth().height(80.dp).padding(horizontal = Theme.dimens.pagePad), verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(stringResource(R.string.add_artist), { asker.artist(route.id, artist.name, artist.open) }, primary = true)
+                                TextButton(stringResource(R.string.add_artist), { asker.artist(route.id, artist.name, artist.open, under = state.connection) }, primary = true)
                             }
                         }
                         // A failure to ask again, with the page on show: said above it.
                         state.why?.let { why -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(why, model::again) } }
-                        popular(state.popular, covers, asker)
-                        releases("albums", albumsTitle, artist.albums, columns, asker, res)
-                        releases("smaller", smallerTitle, artist.smaller, columns, asker, res)
+                        // (Each press goes back with the connection its own part was found under.)
+                        popular(state.popular, covers, asker, state.popularUnder)
+                        releases("albums", albumsTitle, artist.albums, columns, asker, res, state.connection)
+                        releases("smaller", smallerTitle, artist.smaller, columns, asker, res, state.connection)
                         if (artist.albums.isEmpty() && artist.smaller.isEmpty() && artist.empty.isNotEmpty()) {
                             item(key = "empty", contentType = "said") { Said(artist.empty) }
                         }
@@ -129,7 +130,7 @@ fun OutsideArtistPage(route: Route.OutsideArtist) {
 
 /** "Popular": the songs the artist is most played for that the library doesn't have, each
  *  as a search shows one. Room is kept for them while they are asked for. */
-private fun LazyListScope.popular(popular: org.medianexus.music.core.Popular?, covers: Map<String, String>, asker: Asker) {
+private fun LazyListScope.popular(popular: org.medianexus.music.core.Popular?, covers: Map<String, String>, asker: Asker, under: Long) {
     if (popular == null) {
         item(key = "popular-waiting", contentType = "popular-waiting") {
             Column {
@@ -144,7 +145,7 @@ private fun LazyListScope.popular(popular: org.medianexus.music.core.Popular?, c
     itemsIndexed(popular.songs, key = { index, (song, _) -> "popular/$index/${song.album}/${song.title}" }, contentType = { _, _ -> "offer" }) { _, (song, requested) ->
         val ui = LocalUi.current
         val cover = covers[song.album].orEmpty()
-        OfferRow(song, requested, cover, onOpen = { ui.openAlbumOf(song, cover) }, onAsk = { asker.album(song.album, song.albumTitle, song.artist, song.title, song.kind) })
+        OfferRow(song, requested, cover, onOpen = { ui.openAlbumOf(song, cover) }, onAsk = { asker.album(song.album, song.albumTitle, song.artist, song.title, song.kind, under = under) })
     }
 }
 
@@ -153,7 +154,7 @@ private const val POPULAR_ROWS = 5
 
 /** An artist's releases under a heading, as the library's artist page shows its albums:
  *  cards a few to a line, each line an item of its own. */
-private fun LazyListScope.releases(name: String, title: String, releases: List<Release>, columns: Int, asker: Asker, res: android.content.res.Resources) {
+private fun LazyListScope.releases(name: String, title: String, releases: List<Release>, columns: Int, asker: Asker, res: android.content.res.Resources, under: Long) {
     if (releases.isEmpty()) return
     item(key = "title/$name", contentType = "title") { SectionTitle(title) }
     val lines = (releases.size + columns - 1) / columns
@@ -176,7 +177,7 @@ private fun LazyListScope.releases(name: String, title: String, releases: List<R
                         else ui.open(Route.OutsideAlbum(release.offer.album, release.offer.title, release.offer.artist, release.offer.cover))
                     },
                     modifier = Modifier.weight(1f),
-                    onPlay = if (askable) ({ asker.album(release.offer.album, release.offer.title, release.offer.artist, kind = release.offer.kind) }) else null,
+                    onPlay = if (askable) ({ asker.album(release.offer.album, release.offer.title, release.offer.artist, kind = release.offer.kind, under = under) }) else null,
                     adds = true,
                     playLabel = res.getString(R.string.request_named, card.title),
                 )
@@ -232,7 +233,7 @@ fun OutsideAlbumPage(route: Route.OutsideAlbum) {
                     found != null && offer != null -> {
                         item(key = "action", contentType = "actions") {
                             Row(Modifier.fillMaxWidth().height(80.dp).padding(horizontal = Theme.dimens.pagePad), verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(found.action, { asker.album(offer.album, offer.title, offer.artist, kind = offer.kind) }, primary = !offer.requested)
+                                TextButton(found.action, { asker.album(offer.album, offer.title, offer.artist, kind = offer.kind, under = state.connection) }, primary = !offer.requested)
                             }
                         }
                         state.why?.let { why -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(why, model::again) } }

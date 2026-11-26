@@ -73,15 +73,31 @@ fun requestsHere(): RequestsHere? {
     return remember(account, state, settings, reach.manual) { RequestsHere(account, requests, pages, state, settings, reach.manual) }
 }
 
-/** What asking needs of requests (in the app, `RequestsPages`' own calls). */
+/**
+ * What asking needs of requests (in the app, `RequestsPages`' own calls: [askOps]).
+ * `connection` is the number of the connection to Lidarr that the row or page that was
+ * pressed was found under (`Found.Got.connection`): what was shown under one Lidarr is
+ * never acted on once the app is pointed at another.
+ */
 interface AskOps {
     suspend fun asking(album: String, title: String, by: String, song: String, kind: String): Asking
     fun askingFor(title: String): String
-    suspend fun request(album: String, title: String, song: String): Said
+    suspend fun request(album: String, title: String, song: String, connection: Long): Said
     suspend fun adding(name: String, open: Int): Pair<String, String>
     fun addingNow(name: String): String
-    suspend fun addArtist(id: String, name: String): Said
-    suspend fun cancel(id: Long, title: String): Said
+    suspend fun addArtist(id: String, name: String, connection: Long): Said
+    suspend fun cancel(id: Long, title: String, connection: Long): Said
+}
+
+/** [AskOps] as the app has them: each is the account's `RequestsPages`' own call. */
+fun askOps(pages: RequestsPages): AskOps = object : AskOps {
+    override suspend fun asking(album: String, title: String, by: String, song: String, kind: String) = pages.asking(album, title, by, song, kind)
+    override fun askingFor(title: String) = pages.askingFor(title)
+    override suspend fun request(album: String, title: String, song: String, connection: Long) = pages.request(album, title, song, connection)
+    override suspend fun adding(name: String, open: Int) = pages.adding(name, open)
+    override fun addingNow(name: String) = pages.addingNow(name)
+    override suspend fun addArtist(id: String, name: String, connection: Long) = pages.addArtist(id, name, connection)
+    override suspend fun cancel(id: Long, title: String, connection: Long) = pages.cancel(id, title, connection)
 }
 
 /** What asking shows (in the app, the shell's sheet and passing notes). */
@@ -165,9 +181,11 @@ class Asker(
     /**
      * Asks for an album, by Lidarr's name for it. `by` is who it is by, `song` the song that
      * led here (if one did), `kind` "EP", "Single" or empty, from the offer in hand: the
-     * question is put by them.
+     * question is put by them. `under` is the connection the row or page it was pressed on
+     * was found under: if that has changed by the time it is asked, it is refused, said,
+     * and the pages ask again.
      */
-    fun album(album: String, title: String, by: String, song: String = "", kind: String = "") {
+    fun album(album: String, title: String, by: String, song: String = "", kind: String = "", under: Long) {
         if (album.isEmpty() || UnderWay.album(album) in underWay.going.value) return
         page.launch {
             when (val asking = ops.asking(album, title, by, song, kind)) {
@@ -175,9 +193,9 @@ class Asker(
                 is Asking.Ask -> show.confirm(asking.heading, asking.text, AskShow.Button.REQUEST) {
                     confirmed(UnderWay.album(album)) {
                         show.say(ops.askingFor(title))
-                        val said = ops.request(album, title, song)
+                        val said = ops.request(album, title, song, under)
                         show.say(said.words)
-                        if (said.done) show.changed()
+                        if (said.done || said.stale) show.changed()
                     }
                 }
             }
@@ -185,32 +203,33 @@ class Asker(
     }
 
     /** "Add artist": has Lidarr get everything by them. `open` is the page's own count of
-     *  what could be asked for. */
-    fun artist(id: String, name: String, open: Int) {
+     *  what could be asked for; `under` the connection their page was found under. */
+    fun artist(id: String, name: String, open: Int, under: Long) {
         if (id.isEmpty() || open <= 0 || UnderWay.artist(id) in underWay.going.value) return
         page.launch {
             val (heading, text) = ops.adding(name, open)
             show.confirm(heading, text, AskShow.Button.ADD_ARTIST) {
                 confirmed(UnderWay.artist(id)) {
                     show.say(ops.addingNow(name))
-                    val said = ops.addArtist(id, name)
+                    val said = ops.addArtist(id, name, under)
                     // The library's sentence stops before where to see them; the note's
                     // "Requests" says that, so the sentence is only ended.
                     show.say(if (said.done) ended(said.words) else said.words, wayIn = said.done)
-                    if (said.done) show.changed()
+                    if (said.done || said.stale) show.changed()
                 }
             }
         }
     }
 
-    /** Takes an album off Lidarr's list (`number` is Lidarr's, from the page's row). `done`
-     *  is told how it went, if anyone is still there to hear. */
-    fun takeOff(number: Long, title: String, done: (Boolean) -> Unit = {}) {
+    /** Takes an album off Lidarr's list (`number` is Lidarr's, from the page's row; `under`
+     *  the connection the page was found under). `done` is told how it went, if anyone is
+     *  still there to hear. */
+    fun takeOff(number: Long, title: String, under: Long, done: (Boolean) -> Unit = {}) {
         confirmed(UnderWay.offList(number)) {
-            val said = ops.cancel(number, title)
+            val said = ops.cancel(number, title, under)
             show.say(said.words)
             done(said.done)
-            if (said.done) show.changed()
+            if (said.done || said.stale) show.changed()
         }
     }
 
@@ -233,15 +252,7 @@ fun rememberAsker(here: RequestsHere): Asker {
             scope,
             // (On the main thread: what it says goes to the notes and the pages.)
             CoroutineScope(here.account.scope.coroutineContext + kotlinx.coroutines.Dispatchers.Main.immediate),
-            object : AskOps {
-                override suspend fun asking(album: String, title: String, by: String, song: String, kind: String) = pages.asking(album, title, by, song, kind)
-                override fun askingFor(title: String) = pages.askingFor(title)
-                override suspend fun request(album: String, title: String, song: String) = pages.request(album, title, song)
-                override suspend fun adding(name: String, open: Int) = pages.adding(name, open)
-                override fun addingNow(name: String) = pages.addingNow(name)
-                override suspend fun addArtist(id: String, name: String) = pages.addArtist(id, name)
-                override suspend fun cancel(id: Long, title: String) = pages.cancel(id, title)
-            },
+            askOps(pages),
             object : AskShow {
                 override fun say(words: String, wayIn: Boolean) {
                     if (wayIn) ui.graph.toasts.show(words, res.getString(R.string.requests)) { ui.open(Route.Requests) } else ui.toast(words)

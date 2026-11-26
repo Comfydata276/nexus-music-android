@@ -1881,7 +1881,9 @@ refused when it is looked up, and an address written as numbers before that.
 and port), by a redirect or otherwise: not the look the library takes at where a redirect
 from Lidarr's address points, not a sign-in service that claims to live there. The one
 exception is the person's own doing: a Lidarr whose address they typed is on that very
-host and port (one proxy, two paths), and the requests that are bound to it go there. MusicBrainz asks every application
+host and port (one proxy, two paths), and the requests that are bound to it go there. The
+rule is about where an answer may lead the app, not about what the person typed: what they
+typed is where their key goes. MusicBrainz asks every application
 to name itself and give a way to reach its author; neither app gives the second, and if
 that is added it should be added to both at once.
 
@@ -2192,10 +2194,14 @@ What is the phone's own:
   phone's own, which moves whenever the address, the key or the sign-in changes
   (`Requests.moved`), and starts somewhere no earlier run of the app can have been.
   Everything a page hands to a screen carries the number it was found under
-  (`Found.Got.connection`), and `request`, `addArtist` and `cancel` take it back: for a
-  row from another connection they say one sentence (`RequestsWords.CONNECTION_CHANGED`)
-  and ask nobody. **Taking an album off the list is refused without the screen's help
-  too**: its number is Lidarr's own, and means another album on another Lidarr, so it is
+  (`Found.Got.connection`), and `request`, `addArtist` and `cancel` **cannot be called
+  without it**: for a row from another connection they say one sentence
+  (`RequestsWords.CONNECTION_CHANGED`), ask nobody, and answer that the page is stale
+  (`Said.stale`), on which the screens ask for their pages again. Each of the screens'
+  models keeps the number beside what it shows (`OutsideSearch.State`, `PageLoad.State`,
+  `OutsideArtistModel.State`, whose most played songs have a number of their own), and
+  every press hands it to `Asker` (`under`). **Taking an album off the list has a second
+  guard**: its number is Lidarr's own, and means another album on another Lidarr, so it is
   acted on only if this very connection's list has just shown it. What a connection
   offered is let go of when the connection changes (the place's offers are replaced whole:
   something still being found for the old connection keeps the old set and leaves nothing

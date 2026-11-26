@@ -61,6 +61,10 @@ class RequestsDebugActivity : Activity() {
     /** [org.medianexus.music.core.OutsideArtist.open] of the artist's page last shown here,
      *  as the real page will have it by it when "Add artist" is pressed. */
     private var open = 0
+
+    /** The connection the page last shown here was found under: what goes back with
+     *  anything done from it (see [Found.Got]). */
+    private var under = 0L
     private var hearing: Job? = null
 
     private val requests: Requests? get() = graph.accounts.state.value?.requests
@@ -111,7 +115,10 @@ class RequestsDebugActivity : Activity() {
         scope.launch {
             val lines = ArrayList<String>()
             fun found(found: Found<*>): Any? = when (found) {
-                is Found.Got -> found.value
+                is Found.Got -> {
+                    under = found.connection
+                    found.value
+                }
                 is Found.Not -> "NOT: ${found.why}"
             }
             try {
@@ -124,6 +131,7 @@ class RequestsDebugActivity : Activity() {
                         when (all) {
                             is Found.Not -> lines += "NOT: ${all.why}"
                             is Found.Got -> {
+                                under = all.connection
                                 lines += "note: ${all.value.note}"
                                 lines += all.value.songs.map { (song, asked) -> "song: ${song.title} | ${song.artist} | on ${song.albumTitle} (${song.kind.ifEmpty { "Album" }}) | album=${song.album} | artist=${song.artistId}${if (asked) " | asked for" else ""}" }
                                 lines += all.value.artists.map { "artist: ${it.name} | ${it.about} | id=${it.id} | cover=${it.cover.isNotEmpty()}" }
@@ -145,7 +153,7 @@ class RequestsDebugActivity : Activity() {
                     }
                     "ask" -> {
                         lines += "saying: ${pages.askingFor(name)}"
-                        lines += pages.request(about, name, song).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
+                        lines += pages.request(about, name, song, under).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
                     }
                     "artist" -> {
                         val page = found(pages.artist(about))
@@ -168,7 +176,7 @@ class RequestsDebugActivity : Activity() {
                     "add" -> {
                         val (heading, text) = pages.adding(name, open)
                         lines += listOf("heading: $heading", "text: $text", "saying: ${pages.addingNow(name)}")
-                        lines += pages.addArtist(about, name).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
+                        lines += pages.addArtist(about, name, under).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
                     }
                     "way" -> {
                         val waiting = found(pages.onTheirWay())
@@ -182,7 +190,7 @@ class RequestsDebugActivity : Activity() {
                         }
                         lines += "asked for through this phone: ${pages.asked.value.map { "${it.title}${if (it.arrived != 0L) " (arrived)" else ""}" }}"
                     }
-                    "offlist" -> lines += pages.cancel(about.toLongOrNull() ?: -1, name).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
+                    "offlist" -> lines += pages.cancel(about.toLongOrNull() ?: -1, name, under).let { "${if (it.done) "done" else "NOT done"}: ${it.words}" }
                     "suggest" -> lines += pages.suggest().map { "suggested: ${it.name} | like ${it.like} | id=${it.id}" }.ifEmpty { listOf("(no suggestions)") }
                     "singles" -> {
                         requests.setSingles(about == "on")

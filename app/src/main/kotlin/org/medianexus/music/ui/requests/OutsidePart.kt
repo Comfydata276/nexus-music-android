@@ -63,7 +63,7 @@ fun rememberOutsideSearch(here: RequestsHere?, typed: String): OutsideSearch? {
     val key = here.key
     val pages = here.pages
     val model = remember(key) {
-        OutsideSearch({ query, soFar -> pages.search(query, soFar) }, kept = ui.outsideKept?.takeIf { it.first == key }?.second)
+        OutsideSearch({ query, soFar -> pages.searchShowing(query, soFar) }, kept = ui.outsideKept?.takeIf { it.first == key }?.second)
     }
     LaunchedEffect(model, typed) { model.type(typed) }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -117,7 +117,7 @@ fun LazyListScope.notInYourLibrary(
         }
         itemsIndexed(songs, key = { index, (song, _) -> "outside-song/$index/${song.album}/${song.title}" }, contentType = { _, _ -> "offer" }) { _, (song, requested) ->
             val ui = LocalUi.current
-            OfferRow(song, requested, coverOf(song, found), onOpen = { ui.openAlbumOf(song, coverOf(song, found)) }, onAsk = { asker?.album(song.album, song.albumTitle, song.artist, song.title, song.kind) })
+            OfferRow(song, requested, coverOf(song, found), onOpen = { ui.openAlbumOf(song, coverOf(song, found)) }, onAsk = { asker?.album(song.album, song.albumTitle, song.artist, song.title, song.kind, under = look.connection) })
         }
     }
     if (artists.isNotEmpty()) {
@@ -140,14 +140,14 @@ fun LazyListScope.notInYourLibrary(
                 Shelf(
                     stringResource(R.string.albums), cards,
                     onOpen = { card -> ui.openOutsideAlbum(card, albums) },
-                    onPlay = { card -> albums.firstOrNull { it.album == card.id }?.let { offer -> asker?.album(offer.album, offer.title, offer.artist, kind = offer.kind) } },
+                    onPlay = { card -> albums.firstOrNull { it.album == card.id }?.let { offer -> asker?.album(offer.album, offer.title, offer.artist, kind = offer.kind, under = look.connection) } },
                     adds = true,
                     playLabel = { card -> res.getString(R.string.request_named, card.title) },
                     playable = { card -> albums.firstOrNull { it.album == card.id }?.requested == false },
                 )
             }
         } else {
-            outsideGrid("outside-albums", albums, columns, { res -> card(res) }, onAsk = asker?.let { ask -> { offer: Offer -> ask.album(offer.album, offer.title, offer.artist, kind = offer.kind) } })
+            outsideGrid("outside-albums", albums, columns, { res -> card(res) }, onAsk = asker?.let { ask -> { offer: Offer -> ask.album(offer.album, offer.title, offer.artist, kind = offer.kind, under = look.connection) } })
         }
     }
 }

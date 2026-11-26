@@ -80,7 +80,7 @@ fun RequestsPage() {
     val taken = remember(here.key) { mutableStateListOf<Long>() }
     LaunchedEffect(waiting) { taken.clear() }
 
-    fun takeOff(album: Pending) = asker.takeOff(album.id, album.title) { done -> if (done) taken += album.id }
+    fun takeOff(album: Pending) = asker.takeOff(album.id, album.title, under = state.connection) { done -> if (done) taken += album.id }
 
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)

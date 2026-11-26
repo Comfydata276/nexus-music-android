@@ -29,13 +29,15 @@ import org.medianexus.music.requests.Found
  * back ([kept]).
  */
 class OutsideSearch(
-    private val find: suspend (String, (Outside) -> Unit) -> Found<Outside>,
+    private val find: suspend (String, (Found.Got<Outside>) -> Unit) -> Found<Outside>,
     private val waitMillis: Long = WAIT_MILLIS,
     kept: State? = null,
 ) {
     /** Where the look for `query` stands: what has been found so far (null before anything
-     *  is), whether it has finished, and why not, in the library's sentence, if it failed. */
-    data class State(val query: String = "", val found: Outside? = null, val done: Boolean = false, val why: String? = null) {
+     *  is), whether it has finished, and why not, in the library's sentence, if it failed.
+     *  `connection` is the connection to Lidarr that `found` was found under: what goes
+     *  back with anything pressed in it. */
+    data class State(val query: String = "", val found: Outside? = null, val done: Boolean = false, val why: String? = null, val connection: Long = 0) {
         val looking: Boolean get() = query.isNotEmpty() && !done
     }
 
@@ -88,13 +90,13 @@ class OutsideSearch(
         now.update { if (it.query == query) it.copy(done = false, why = null) else State(query) }
         try {
             val found = find(query) { soFar ->
-                if (looks.get() == mine) now.update { if (it.query == query && !it.done) it.copy(found = soFar) else it }
+                if (looks.get() == mine) now.update { if (it.query == query && !it.done) it.copy(found = soFar.value, connection = soFar.connection) else it }
             }
             if (looks.get() != mine) return
             now.update {
                 if (it.query != query) it
                 else when (found) {
-                    is Found.Got -> it.copy(found = found.value, done = true, why = null)
+                    is Found.Got -> it.copy(found = found.value, done = true, why = null, connection = found.connection)
                     is Found.Not -> it.copy(done = true, why = found.why)
                 }
             }
@@ -118,8 +120,10 @@ class OutsideSearch(
  */
 class PageLoad<T>(private val ask: suspend () -> Found<T>) {
     /** What is shown (null until something is), why the last ask didn't come to anything
-     *  (the library's sentence), and whether it is being asked. */
-    data class State<T>(val value: T? = null, val why: String? = null, val asking: Boolean = true)
+     *  (the library's sentence), and whether it is being asked. `connection` is the
+     *  connection to Lidarr that `value` was found under: what goes back with anything
+     *  pressed on the page. */
+    data class State<T>(val value: T? = null, val why: String? = null, val asking: Boolean = true, val connection: Long = 0)
 
     private val asks = MutableStateFlow(0)
     private val now = MutableStateFlow(State<T>())
@@ -137,7 +141,7 @@ class PageLoad<T>(private val ask: suspend () -> Found<T>) {
             val found = ask()
             now.update {
                 when (found) {
-                    is Found.Got -> State(found.value, null, asking = false)
+                    is Found.Got -> State(found.value, null, asking = false, connection = found.connection)
                     is Found.Not -> it.copy(why = found.why, asking = false)
                 }
             }
@@ -160,6 +164,10 @@ class OutsideArtistModel(
         val asking: Boolean = true,
         /** Null while being asked; then what to show (with no songs, nothing). */
         val popular: Popular? = null,
+        /** The connection to Lidarr the page was found under, and the one its most played
+         *  songs were: what goes back with anything pressed in each. */
+        val connection: Long = 0,
+        val popularUnder: Long = 0,
     )
 
     private val asks = MutableStateFlow(0)
@@ -180,13 +188,13 @@ class OutsideArtistModel(
                     val artist = found.value
                     // (What was most played is kept while it is asked again: it doesn't
                     // change from one minute to the next.)
-                    now.update { State(artist, null, asking = false, popular = it.popular) }
+                    now.update { State(artist, null, asking = false, popular = it.popular, connection = found.connection, popularUnder = it.popularUnder) }
                     if (artist.failed || artist.name.isEmpty()) {
                         now.update { it.copy(popular = Popular()) }
                         return@collectLatest
                     }
-                    val most = (popular(artist.name) as? Found.Got)?.value ?: Popular()
-                    now.update { it.copy(popular = most) }
+                    val most = popular(artist.name) as? Found.Got
+                    now.update { it.copy(popular = most?.value ?: Popular(), popularUnder = most?.connection ?: it.popularUnder) }
                 }
             }
         }

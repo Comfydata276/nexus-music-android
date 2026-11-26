@@ -50,8 +50,9 @@ sealed interface Found<out T> {
      * `connection` is **which connection to Lidarr this was found under** (a number that
      * moves whenever the address, the key or the sign-in changes). Keep it with whatever of
      * `value` is put on a screen, and hand it back with anything pressed there
-     * ([RequestsPages.request], [RequestsPages.addArtist], [RequestsPages.cancel]): what was
-     * shown under one Lidarr is refused, in one sentence, once the app is pointed at another.
+     * ([RequestsPages.request], [RequestsPages.addArtist], [RequestsPages.cancel], which
+     * will not be called without it): what was shown under one Lidarr is refused, in one
+     * sentence, once the app is pointed at another.
      */
     data class Got<T>(val value: T, val connection: Long = 0) : Found<T>
 
@@ -78,7 +79,13 @@ internal data class Arrived(val note: Asked, val said: Boolean = false) {
  * the library's sentence for exactly that once the phone's library has one (`asked_unnoted`,
  * in the Windows repository's next release); until then it is the usual sentence.
  */
-data class Said(val done: Boolean, val words: String, val kept: Boolean = true)
+data class Said(
+    val done: Boolean, val words: String, val kept: Boolean = true,
+    /** Nothing was asked, because **what was pressed was shown under a connection to Lidarr
+     *  that has since changed** (see [Found.Got]): the page it was on is to be asked for
+     *  again. `words` says so ([RequestsWords.CONNECTION_CHANGED]). */
+    val stale: Boolean = false,
+)
 
 /**
  * **Everything the screens of requests ask for**, for one account: the pages (what is not
@@ -407,8 +414,11 @@ class RequestsPages internal constructor(
     }
 
     /** Whether something found under `connection` may still be acted on, the connection
-     *  being `at` now. (Not said which: it is not refused on that account.) */
-    private fun still(connection: Long?, at: LidarrAt): Boolean = connection == null || connection == at.connection
+     *  being `at` now. */
+    private fun still(connection: Long, at: LidarrAt): Boolean = connection == at.connection
+
+    /** What is said of something pressed that was shown under another connection. */
+    private val changed = Said(false, RequestsWords.CONNECTION_CHANGED, stale = true)
 
     private suspend fun <T> page(shown: (T) -> Unit = {}, ask: suspend (LidarrAt, Long) -> Outcome<T>): Found<T> = withContext(io) {
         val (at, place, why) = connected()
@@ -497,14 +507,14 @@ class RequestsPages internal constructor(
      * cancelled, and the note of what was asked for is kept all the same.
      *
      * `connection` is the one the row that was pressed was found under ([Found.Got]). If
-     * the connection has changed since (another address, key or sign-in) nothing is asked
-     * and [RequestsWords.CONNECTION_CHANGED] is said. **Pass it**: left out, the album is
-     * asked of whatever Lidarr the app is pointed at now.
+     * the connection has changed since (another address, key or sign-in) nothing is asked,
+     * [RequestsWords.CONNECTION_CHANGED] is said, and the answer is [Said.stale]: the page
+     * is to be asked for again.
      */
-    suspend fun request(album: String, title: String, song: String = "", connection: Long? = null): Said = withContext(io) {
+    suspend fun request(album: String, title: String, song: String = "", connection: Long): Said = withContext(io) {
         val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
-        if (!still(connection, at)) return@withContext Said(false, RequestsWords.CONNECTION_CHANGED)
+        if (!still(connection, at)) return@withContext changed
         val begun = Core.request(at, place, album)
         val through = outlasting(begun) { outcome ->
             when (outcome) {
@@ -544,10 +554,10 @@ class RequestsPages internal constructor(
      * list" (the screens add where to see them), or why not. Seen through like [request];
      * and they are no longer suggested. `connection` as for [request].
      */
-    suspend fun addArtist(id: String, name: String, connection: Long? = null): Said = withContext(io) {
+    suspend fun addArtist(id: String, name: String, connection: Long): Said = withContext(io) {
         val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
-        if (!still(connection, at)) return@withContext Said(false, RequestsWords.CONNECTION_CHANGED)
+        if (!still(connection, at)) return@withContext changed
         val begun = Core.addArtist(at, id, name)
         val through = outlasting(begun) { outcome ->
             when (outcome) {
@@ -569,19 +579,18 @@ class RequestsPages internal constructor(
      * One change, in one step: left by its caller while Lidarr is answering, the answer is
      * still waited for (a short while), and if Lidarr took it off, it is forgotten here.
      *
-     * **A number is only good under the connection that listed it.** One that this
-     * connection's own [onTheirWay] has not just listed is refused with
-     * [RequestsWords.CONNECTION_CHANGED] and nothing is asked, with or without `connection`
-     * (which, given, must be the live one too: see [request]).
+     * **A number is only good under the connection that listed it.** `connection` as for
+     * [request]; and a number that this connection's own [onTheirWay] has not just listed
+     * is refused in the same way, whatever connection it is said to be from.
      */
-    suspend fun cancel(id: Long, title: String, connection: Long? = null): Said = withContext(io) {
+    suspend fun cancel(id: Long, title: String, connection: Long): Said = withContext(io) {
         val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
-        // `id` is Lidarr's own number, and means another album on another Lidarr: it is
-        // acted on only if this very connection has listed it ([onTheirWay]), whether or
-        // not the caller says which connection its row came from.
+        // `id` is Lidarr's own number, and means another album on another Lidarr: besides
+        // coming from a row of this connection, it must be one this very connection's list
+        // has just shown ([onTheirWay]).
         val listed = synchronized(this@RequestsPages) { shownUnder == at.connection && id in shownPending }
-        if (!listed || !still(connection, at)) return@withContext Said(false, RequestsWords.CONNECTION_CHANGED)
+        if (!listed || !still(connection, at)) return@withContext changed
         val begun = Core.cancelling(at, id)
         val through = outlasting(begun) { outcome ->
             when (outcome) {

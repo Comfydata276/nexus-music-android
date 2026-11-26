@@ -113,6 +113,9 @@ class RequestsPagesTest {
         Made(requests, RequestsPages(requests, scope, dir, library, played, similar, note = { notes += it }, clock = { now.get() }, afterwards = { work -> behind.launch { work() } }), scope, dir)
     }
 
+    /** The connection as it is now: what a page shown this moment would be found under. */
+    private suspend fun Made.now(): Long = requests.lidarr()!!.connection
+
     private fun <T> got(found: Found<T>): T = (found as? Found.Got<T>)?.value ?: throw AssertionError("expected something found, got $found")
 
     private fun quietBand() {
@@ -171,7 +174,7 @@ class RequestsPagesTest {
         assertEquals(Found.Not("Not connected yet."), made.pages.search("quiet band"))
         assertEquals(Found.Not("Not connected yet."), made.pages.artist("qb"))
         assertEquals(Found.Not("Not connected yet."), made.pages.onTheirWay())
-        assertEquals(Said(false, "Not connected yet."), made.pages.request("rg-s", "Soft"))
+        assertEquals(Said(false, "Not connected yet."), made.pages.request("rg-s", "Soft", connection = 0))
         assertEquals(emptyList<Any>(), made.pages.suggest())
         assertTrue(server.asked.isEmpty())
     }
@@ -199,7 +202,7 @@ class RequestsPagesTest {
         val wanted = lidarrWithASingle()
         val made = made()
         assertEquals("Asking for “One Song”…", made.pages.askingFor("One Song"))
-        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives."), made.pages.request("single-1", "One Song", song = "Its Song"))
+        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives."), made.pages.request("single-1", "One Song", song = "Its Song", connection = made.now()))
         assertTrue(wanted())
         // Kept on the phone, and shown as asked for.
         val note = made.pages.asked.value.single()
@@ -242,7 +245,7 @@ class RequestsPagesTest {
     fun `an arrival found and never said, the app having stopped first, is said by its next run, and only once ever`() = runBlocking {
         lidarrWithASingle()
         val made = made()
-        assertTrue(made.pages.request("single-1", "One Song", song = "Its Song").done)
+        assertTrue(made.pages.request("single-1", "One Song", song = "Its Song", connection = made.now()).done)
         // It turns up in the library, and is found; nobody is listening; and the app stops.
         now.set(start + 4_000)
         library.value = LibraryLists(albums = listOf(LibraryAlbum("al-9", "One Song", "Quillon Vane", "cover-9")), songs = listOf(listOf("Its Song", "Quillon Vane")), artists = listOf("Quillon Vane"))
@@ -293,7 +296,7 @@ class RequestsPagesTest {
         val made = made()
         // Stopped before Lidarr has been changed at all: nothing is asked for, nothing kept.
         slow.set(true)
-        val early = async(Dispatchers.Default) { made.pages.request("single-1", "One Song") }
+        val early = async(Dispatchers.Default) { made.pages.request("single-1", "One Song", connection = made.now()) }
         assertTrue(server.awaitAsked { "album/lookup" in it.target })
         early.cancelAndJoin()
         slow.set(false)
@@ -303,7 +306,7 @@ class RequestsPagesTest {
         assertFalse(server.asked.any { it.method != "GET" })
 
         // Stopped once Lidarr has begun to be changed: it is seen through, and noted.
-        val late = async(Dispatchers.Default) { made.pages.request("single-1", "One Song") }
+        val late = async(Dispatchers.Default) { made.pages.request("single-1", "One Song", connection = made.now()) }
         assertTrue(server.awaitAsked(20_000) { it.method == "PUT" && it.target.endsWith("artist/1") })
         late.cancelAndJoin()
         assertTrue(late.isCancelled)
@@ -318,7 +321,7 @@ class RequestsPagesTest {
         val slow = AtomicBoolean(false)
         val wanted = lidarrWithASingle(slow)
         val made = made()
-        val asking = async(Dispatchers.Default) { runCatching { made.pages.request("single-1", "One Song", song = "Its Song") } }
+        val asking = async(Dispatchers.Default) { runCatching { made.pages.request("single-1", "One Song", song = "Its Song", connection = made.now()) } }
         // Lidarr has begun to be changed...
         assertTrue(server.awaitAsked(20_000) { it.method == "PUT" && it.target.endsWith("artist/1") })
         // ...and now the screen goes, and the account with it (signed out of the music server).
@@ -343,12 +346,12 @@ class RequestsPagesTest {
         val slow = AtomicBoolean(false)
         val wanted = lidarrWithASingle(slow)
         val made = made()
-        assertTrue(made.pages.request("single-1", "One Song").done)
+        assertTrue(made.pages.request("single-1", "One Song", connection = made.now()).done)
         val pending = got(made.pages.onTheirWay()).pending.single().first
         val before = server.asked.size
         // Lidarr is slow to answer the change, and the screen that asked is left meanwhile.
         slow.set(true)
-        val taking = async(Dispatchers.Default) { runCatching { made.pages.cancel(pending.id, pending.title) } }
+        val taking = async(Dispatchers.Default) { runCatching { made.pages.cancel(pending.id, pending.title, connection = made.now()) } }
         assertTrue(server.awaitAsked(10_000) { asked -> server.asked.drop(before).any { it === asked && it.method == "PUT" && "\"monitored\":false" in it.body } })
         taking.cancel()
         delay(300)
@@ -364,9 +367,9 @@ class RequestsPagesTest {
     fun `an album taken off the list is no longer watched for`() = runBlocking {
         val wanted = lidarrWithASingle()
         val made = made()
-        made.pages.request("single-1", "One Song")
+        made.pages.request("single-1", "One Song", connection = made.now())
         val pending = got(made.pages.onTheirWay()).pending.single().first
-        assertEquals(Said(true, "“One Song” is off the list"), made.pages.cancel(pending.id, pending.title))
+        assertEquals(Said(true, "“One Song” is off the list"), made.pages.cancel(pending.id, pending.title, connection = made.now()))
         assertFalse(wanted())
         assertEquals(emptyList<Any>(), made.pages.asked.value)
         assertEquals("[]", File(made.dir, "asked.json").readText().trim())
@@ -396,7 +399,7 @@ class RequestsPagesTest {
         val wanted = lidarrWithASingle()
         val made = made()
         // Under the first Lidarr: an album asked for, and listed as on its way.
-        assertTrue(made.pages.request("single-1", "One Song").done)
+        assertTrue(made.pages.request("single-1", "One Song", connection = made.now()).done)
         val way = made.pages.onTheirWay() as Found.Got
         val row = way.value.pending.single().first
         assertEquals(7L, row.id)
@@ -410,10 +413,10 @@ class RequestsPagesTest {
         // The rows still on the screen were the first Lidarr's: each is refused, in one
         // sentence, and the other Lidarr is asked nothing at all for them. Its number for
         // an album is refused whether or not the screen says where its row came from.
-        assertEquals(Said(false, changedWords), made.pages.cancel(row.id, row.title))
-        assertEquals(Said(false, changedWords), made.pages.cancel(row.id, row.title, connection = first))
-        assertEquals(Said(false, changedWords), made.pages.request("single-1", "One Song", connection = first))
-        assertEquals(Said(false, changedWords), made.pages.addArtist("artist-1", "Quillon Vane", connection = first))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = made.now()))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = first))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.request("single-1", "One Song", connection = first))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.addArtist("artist-1", "Quillon Vane", connection = first))
         delay(300)
         assertEquals("the other Lidarr was sent ${other.asked.drop(before).map { it.line }}", before, other.asked.size)
         // And the first one's note stands: it was asked for there.
@@ -426,7 +429,7 @@ class RequestsPagesTest {
         val theirs = now.value.pending.single().first
         assertEquals("Somebody Else's" to 7L, theirs.title to theirs.id)
         assertTrue(now.connection != first)
-        assertEquals(Said(false, changedWords), made.pages.cancel(row.id, row.title, connection = first))
+        assertEquals(Said(false, changedWords, stale = true), made.pages.cancel(row.id, row.title, connection = first))
         assertTrue(other.asked.none { it.method == "PUT" })
         assertEquals(Said(true, "“Somebody Else's” is off the list"), made.pages.cancel(theirs.id, theirs.title, connection = now.connection))
         assertTrue(other.asked.any { it.method == "PUT" && "\"albumIds\":[7]" in it.body })
@@ -439,11 +442,66 @@ class RequestsPagesTest {
     }
 
     @Test
+    fun `a page loaded under one connection and pressed after the address has changed, the press is refused and said, the page asks again, and nothing is sent`() = runBlocking<Unit> {
+        lidarrWithASingle()
+        val made = made()
+        assertTrue(made.pages.request("single-1", "One Song", connection = made.now()).done)
+        // The screens' own pieces, as the app puts them together: the Requests page and an
+        // album's page, each loaded now; and the asker their rows and buttons press.
+        val requestsPage = org.medianexus.music.ui.requests.PageLoad { made.pages.onTheirWay() }
+        val albumPage = org.medianexus.music.ui.requests.PageLoad { made.pages.album("single-1") }
+        val loading = listOf(launch(Dispatchers.Default) { requestsPage.run() }, launch(Dispatchers.Default) { albumPage.run() })
+        val onTheirWay = withTimeout(30_000) { requestsPage.state.first { it.value != null } }
+        val album = withTimeout(30_000) { albumPage.state.first { it.value != null } }
+        val row = onTheirWay.value!!.pending.single().first
+        assertTrue(onTheirWay.connection != 0L && onTheirWay.connection == album.connection)
+        val said = CopyOnWriteArrayList<String>()
+        val askedAgain = java.util.concurrent.atomic.AtomicInteger()
+        val show = object : org.medianexus.music.ui.requests.AskShow {
+            override fun say(words: String, wayIn: Boolean) {
+                said += words
+            }
+
+            // (The person says yes to every question.)
+            override fun confirm(heading: String, text: String, button: org.medianexus.music.ui.requests.AskShow.Button, onYes: () -> Unit) = onYes()
+
+            override fun changed() {
+                askedAgain.incrementAndGet()
+            }
+        }
+        val asker = org.medianexus.music.ui.requests.Asker(behind, behind, org.medianexus.music.ui.requests.askOps(made.pages), show, org.medianexus.music.ui.requests.UnderWay())
+
+        // The address is changed to another Lidarr; the pages are still on the screen.
+        val other = anotherLidarr()
+        assertTrue(made.requests.connect(other.address, "k") is RequestsState.Connected)
+        val before = other.asked.size
+
+        // A row of the Requests page is pressed: refused, in the one sentence, and the pages
+        // are told to ask again.
+        asker.takeOff(row.id, row.title, under = onTheirWay.connection)
+        withTimeout(10_000) { while (said.size < 1) delay(20) }
+        assertEquals(listOf(changedWords), said.toList())
+        assertEquals(1, askedAgain.get())
+        // The album page's button: the question, yes, and the same.
+        asker.album("single-1", "One Song", "Quillon Vane", under = album.connection)
+        withTimeout(10_000) { while (said.none { it == "Asking for “One Song”…" } || said.count { it == changedWords } < 2) delay(20) }
+        assertEquals(2, askedAgain.get())
+        // "Add artist", from a page of the old connection.
+        asker.artist("artist-1", "Quillon Vane", open = 1, under = album.connection)
+        withTimeout(10_000) { while (said.count { it == changedWords } < 3) delay(20) }
+        assertEquals(3, askedAgain.get())
+        delay(300)
+        // Nothing was sent to the Lidarr the app is now pointed at.
+        assertEquals("the other Lidarr was sent ${other.asked.drop(before).map { it.line }}", before, other.asked.size)
+        loading.forEach { it.cancel() }
+    }
+
+    @Test
     fun `the connection changed while Lidarr was being asked, what the first Lidarr accepted is written down and the second is untouched`() = runBlocking {
         val slow = AtomicBoolean(false)
         val wanted = lidarrWithASingle(slow)
         val made = made()
-        val asking = async(Dispatchers.Default) { made.pages.request("single-1", "One Song") }
+        val asking = async(Dispatchers.Default) { made.pages.request("single-1", "One Song", connection = made.now()) }
         assertTrue(server.awaitAsked(20_000) { it.method == "PUT" && it.target.endsWith("artist/1") })
         // Lidarr has begun to be changed; and now the person points the app at another one.
         slow.set(true)
@@ -496,7 +554,7 @@ class RequestsPagesTest {
         route("POST /api/v1/command", "{}")
         val (heading, _) = made.pages.adding("New One", 2)
         assertEquals("Add New One?", heading)
-        assertEquals(Said(true, "Added New One. Their albums are on Lidarr's list"), made.pages.addArtist("new-one", "New One"))
+        assertEquals(Said(true, "Added New One. Their albums are on Lidarr's list"), made.pages.addArtist("new-one", "New One", connection = made.now()))
         assertEquals(listOf("New Two"), made.pages.suggestions.value.map { it.name })
         val again = RequestsPages(made.requests, made.scope, made.dir, library, { emptyList() }, { emptyList() }, clock = { now.get() }, afterwards = { work -> behind.launch { work() } })
         delay(300)
@@ -511,7 +569,7 @@ class RequestsPagesTest {
         File(dir, "asked.json").mkdirs()
         val made = made()
         // Lidarr took it, and that is what is said; and that this phone could not write it down.
-        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song"))
+        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song", connection = made.now()))
         assertTrue(File(dir, "asked.json").isDirectory)
         assertTrue("$notes", notes.any { "asked.json" in it && "couldn't be read" in it })
         assertTrue("$notes", notes.any { "couldn't be kept on the phone" in it })
@@ -527,7 +585,7 @@ class RequestsPagesTest {
         // (A folder where the file should be: there, and not to be read.)
         file.mkdirs()
         val made = made()
-        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song"))
+        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song", connection = made.now()))
         assertTrue(made.pages.askedUnreadable.value)
         assertEquals(listOf("One Song"), made.pages.asked.value.map { it.title })
 
@@ -543,7 +601,7 @@ class RequestsPagesTest {
         assertTrue(kept, "\"Earlier Album\"" in kept && "\"One Song\"" in kept)
         // And from here it is written as ever: taking the new one off the list forgets it.
         val pending = got(made.pages.onTheirWay()).pending.single().first
-        assertTrue(made.pages.cancel(pending.id, pending.title).done)
+        assertTrue(made.pages.cancel(pending.id, pending.title, connection = made.now()).done)
         assertEquals(listOf("Earlier Album"), made.pages.asked.value.map { it.title })
         assertFalse("\"One Song\"" in file.readText())
     }

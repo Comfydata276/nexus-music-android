@@ -44,7 +44,7 @@ class RequestsScreensTest {
         val gate = CompletableDeferred<Unit>()
         val model = OutsideSearch({ query, soFar ->
             asked += query
-            soFar(outside("Looking for songs beyond your library…", "Quillon Vane"))
+            soFar(Found.Got(outside("Looking for songs beyond your library…", "Quillon Vane")))
             gate.await()
             Found.Got(outside("Ask Lidarr for any of these.", "Quillon Vane", "Marrow Lake"))
         })
@@ -74,7 +74,7 @@ class RequestsScreensTest {
         var late: ((Outside) -> Unit)? = null
         val model = OutsideSearch({ query, soFar ->
             if (query == "old") {
-                late = soFar
+                late = { found -> soFar(Found.Got(found)) }
                 try {
                     awaitCancellation()
                 } finally {
@@ -106,7 +106,7 @@ class RequestsScreensTest {
         var stopped = false
         var late: ((Outside) -> Unit)? = null
         val model = OutsideSearch({ _, soFar ->
-            late = soFar
+            late = { found -> soFar(Found.Got(found)) }
             try {
                 awaitCancellation()
             } finally {
@@ -314,7 +314,7 @@ class RequestsScreensTest {
 
         override fun askingFor(title: String) = "Asking for “$title”…"
 
-        override suspend fun request(album: String, title: String, song: String): Said {
+        override suspend fun request(album: String, title: String, song: String, connection: Long): Said {
             calls += "request $album $title $song"
             gate?.await()
             return Said(true, "Asked for “$title”. It'll be in your library once it arrives.")
@@ -324,13 +324,13 @@ class RequestsScreensTest {
 
         override fun addingNow(name: String) = "Adding $name…"
 
-        override suspend fun addArtist(id: String, name: String): Said {
+        override suspend fun addArtist(id: String, name: String, connection: Long): Said {
             calls += "add $id $name"
             gate?.await()
             return Said(true, "Added $name. Their albums are on Lidarr's list")
         }
 
-        override suspend fun cancel(id: Long, title: String): Said {
+        override suspend fun cancel(id: Long, title: String, connection: Long): Said {
             calls += "cancel $id $title"
             gate?.await()
             return Said(true, "“$title” is off the list")
@@ -342,7 +342,7 @@ class RequestsScreensTest {
         val ops = Ops()
         val show = Seen()
         val asker = Asker(backgroundScope, backgroundScope, ops, show, UnderWay())
-        asker.album("rg-pt", "Paper Tides", "Quillon Vane", song = "Low Water", kind = "EP")
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane", song = "Low Water", kind = "EP", under = 1)
         runCurrent()
         assertEquals(listOf("asking rg-pt Paper Tides Quillon Vane Low Water EP"), ops.calls)
         assertEquals(AskShow.Button.REQUEST, show.question?.third)
@@ -359,7 +359,7 @@ class RequestsScreensTest {
     fun somethingAskedForAlreadyIsSaidNotAskedAgain() = runTest {
         val ops = Ops(Asking.Already("“Paper Tides” has been asked for already."))
         val show = Seen()
-        Asker(backgroundScope, backgroundScope, ops, show, UnderWay()).album("rg-pt", "Paper Tides", "Quillon Vane")
+        Asker(backgroundScope, backgroundScope, ops, show, UnderWay()).album("rg-pt", "Paper Tides", "Quillon Vane", under = 1)
         runCurrent()
         assertNull(show.question)
         assertEquals(listOf("“Paper Tides” has been asked for already." to true), show.said)
@@ -372,7 +372,7 @@ class RequestsScreensTest {
         val show = Seen()
         val page = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
         val asker = Asker(page, backgroundScope, ops, show, UnderWay())
-        asker.album("rg-pt", "Paper Tides", "Quillon Vane")
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane", under = 1)
         runCurrent()
         show.yes!!()
         runCurrent()
@@ -393,15 +393,15 @@ class RequestsScreensTest {
         val show = Seen()
         val underWay = UnderWay()
         val asker = Asker(backgroundScope, backgroundScope, ops, show, underWay)
-        asker.album("rg-pt", "Paper Tides", "Quillon Vane")
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane", under = 1)
         runCurrent()
         val yes = show.yes!!
         yes()
         runCurrent()
         // Pressed again, from this page or another (the same account's), while it goes on.
         show.question = null
-        asker.album("rg-pt", "Paper Tides", "Quillon Vane")
-        Asker(backgroundScope, backgroundScope, ops, show, underWay).album("rg-pt", "Paper Tides", "Quillon Vane")
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane", under = 1)
+        Asker(backgroundScope, backgroundScope, ops, show, underWay).album("rg-pt", "Paper Tides", "Quillon Vane", under = 1)
         yes()
         runCurrent()
         assertNull("not asked again", show.question)
@@ -411,7 +411,7 @@ class RequestsScreensTest {
         runCurrent()
         assertTrue(underWay.going.value.isEmpty())
         // Once it has finished, it can be pressed again (and the library says "already").
-        asker.album("rg-pt", "Paper Tides", "Quillon Vane")
+        asker.album("rg-pt", "Paper Tides", "Quillon Vane", under = 1)
         runCurrent()
         assertEquals(2, ops.calls.count { it.startsWith("asking") })
     }
@@ -424,8 +424,8 @@ class RequestsScreensTest {
         val page = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
         val asker = Asker(page, backgroundScope, ops, show, underWay)
         var heard: Boolean? = null
-        asker.takeOff(7, "Night Ferry") { heard = it }
-        asker.takeOff(7, "Night Ferry")
+        asker.takeOff(7, "Night Ferry", under = 1) { heard = it }
+        asker.takeOff(7, "Night Ferry", under = 1)
         runCurrent()
         assertEquals(setOf(UnderWay.offList(7)), underWay.going.value)
         page.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
@@ -442,10 +442,10 @@ class RequestsScreensTest {
         val ops = Ops()
         val show = Seen()
         val asker = Asker(backgroundScope, backgroundScope, ops, show, UnderWay())
-        asker.artist("qv", "Quillon Vane", open = 0)
+        asker.artist("qv", "Quillon Vane", open = 0, under = 1)
         runCurrent()
         assertNull("nothing to ask for: no question", show.question)
-        asker.artist("qv", "Quillon Vane", open = 1)
+        asker.artist("qv", "Quillon Vane", open = 1, under = 1)
         runCurrent()
         assertEquals(AskShow.Button.ADD_ARTIST, show.question?.third)
         show.yes!!()
@@ -457,10 +457,10 @@ class RequestsScreensTest {
     @Test
     fun aRefusalIsSaidAsTheLibrarySaysIt() = runTest {
         val ops = object : Ops() {
-            override suspend fun request(album: String, title: String, song: String) = Said(false, "Couldn't reach Lidarr. The connection was refused.")
+            override suspend fun request(album: String, title: String, song: String, connection: Long) = Said(false, "Couldn't reach Lidarr. The connection was refused.")
         }
         val show = Seen()
-        Asker(backgroundScope, backgroundScope, ops, show, UnderWay()).album("rg-pt", "Paper Tides", "Quillon Vane")
+        Asker(backgroundScope, backgroundScope, ops, show, UnderWay()).album("rg-pt", "Paper Tides", "Quillon Vane", under = 1)
         runCurrent()
         show.yes!!()
         runCurrent()
