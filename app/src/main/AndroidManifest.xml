@@ -149,7 +149,7 @@
         <service
             android:name=".requests.SignInService"
             android:exported="false"
-            android:foregroundServiceType="shortService" />
+            android:foregroundServiceType="dataSync" />
 
         <!-- Jams and linked devices: their activity and service are in src/jam/AndroidManifest.xml,
              merged only into a build where they exist (jamsExist in app/build.gradle.kts). -->

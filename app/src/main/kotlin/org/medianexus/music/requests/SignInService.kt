@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -26,19 +25,21 @@ import org.medianexus.music.R
  * nobody answers it, so the browser waits on a blank page until it gives up. That is what a
  * real sign-in, which takes longer than the stand-ins' did, ran into in 0.6.0.
  *
- * A foreground service of the short kind (Android 14 and later: three minutes at the most,
- * then Android asks for it to stop, and it does) gives the app its standing while the
- * sign-in waits, with a quiet notification that says so. It holds nothing itself: the wait
- * is [Requests]'s, in the app's process. Started when a sign-in begins, which is a tap on
- * the app's own screen; stopped when the last sign-in under way has ended.
+ * A foreground service of the data-sync kind gives the app its standing for the whole of
+ * the wait (five minutes at the most), with a quiet notification that says so. (The short
+ * kind would have needed no permission of its own, but Android gives it three minutes, and
+ * a sign-in with a second factor can take longer; the data-sync permission is held for
+ * downloads already. Downloads use this kind only before Android 14, so they never share
+ * the six hours a day Android 15 and later allow it.) It holds nothing itself: the wait is
+ * [Requests]'s, in the app's process. Started when a sign-in begins, which is a tap on the
+ * app's own screen; stopped when the last sign-in under way has ended.
  */
 class SignInService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE else 0
-            ServiceCompat.startForeground(this, ID, notification(this), type)
+            ServiceCompat.startForeground(this, ID, notification(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } catch (_: RuntimeException) {
             // Android wouldn't have it: the sign-in goes on as it did before, and is
             // answered only while the app is in front.
@@ -53,12 +54,7 @@ class SignInService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Android's three minutes for a short service are up (Android 14). */
-    override fun onTimeout(startId: Int) {
-        synchronized(lock) { quit() }
-    }
-
-    /** The same from Android 15. */
+    /** Android 15 and later: the app's six hours a day of data-sync are used up. */
     override fun onTimeout(startId: Int, fgsType: Int) {
         synchronized(lock) { quit() }
     }
