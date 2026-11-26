@@ -215,6 +215,7 @@ class Graph(
                     account, work, secretsOf(account),
                     afterwards = afterwards,
                     comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
+                    awake = { org.medianexus.music.requests.SignInService.hold(context) },
                     note = { diagnostics.note(it) },
                     // (A sign-in is finished only with the app's own screen in front: resumed.)
                     front = resumed,

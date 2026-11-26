@@ -61,6 +61,11 @@ class RequestsTest {
 
     private val notes = CopyOnWriteArrayList<String>()
     private val cameBack = AtomicInteger(0)
+
+    /** How many sign-ins are keeping the app running now (`SignInService.hold`), and how
+     *  many have ever begun to. */
+    private val awake = AtomicInteger(0)
+    private val woken = AtomicInteger(0)
     private val KEY = "standinkeystandinkeystandinkey12"
 
     private fun account(name: String = "tester") =
@@ -93,6 +98,12 @@ class RequestsTest {
                     front.value = true
                     made.cameBack()
                 }
+            },
+            awake = {
+                awake.incrementAndGet()
+                woken.incrementAndGet()
+                val once = java.util.concurrent.atomic.AtomicBoolean(false)
+                ({ if (once.compareAndSet(false, true)) awake.decrementAndGet() })
             },
             note = { notes += it }, waitMillis = waitMillis, front = front,
         )
@@ -866,6 +877,47 @@ class RequestsTest {
         assertEquals(RequestsState.NeedsSignIn(behind.host, why = "The sign-in service wouldn't finish the sign-in. Try again."), requests.until { it is RequestsState.NeedsSignIn && it.why != null })
         assertFalse(File(secretsDir(account), "lidarr-token.sealed").exists())
         assertTrue(behind.passes.isEmpty())
+    }
+
+    /**
+     * **0.6.0's sign-in that timed out.** The browser comes back to the app's door on the
+     * loopback address, which only a running app answers; behind the browser and with
+     * nothing in the foreground, Android froze the app, and the browser's return hung until
+     * it gave up. The app is kept running for as long as a sign-in waits, from its first
+     * moment (the screen is in front then, and Android allows it only then), and let go
+     * however the wait ends.
+     */
+    @Test
+    fun `the app is kept running while a sign-in waits for the browser, and let go however it ends`() = runBlocking {
+        val behind = Behind()
+        val front = MutableStateFlow(true)
+        val requests = requests(waitMillis = 1_500, front = front)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        assertEquals(0, woken.get())
+
+        // Signed in: held from the moment the sign-in begins until it has ended.
+        val link = requests.signIn()!!
+        assertEquals(1, awake.get())
+        front.value = false
+        signInWith(link)
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
+        withTimeout(5_000) { while (awake.get() != 0) delay(20) }
+
+        // Nobody comes back in time.
+        requests.signOut()
+        requests.signIn()!!
+        assertEquals(1, awake.get())
+        requests.until { it is RequestsState.NeedsSignIn && it.why != null }
+        withTimeout(5_000) { while (awake.get() != 0) delay(20) }
+
+        // Given up by hand, and one sign-in begun over another.
+        requests.signIn()!!
+        requests.signIn()!!
+        assertTrue(awake.get() in 1..2)
+        requests.cancelSignIn()
+        withTimeout(5_000) { while (awake.get() != 0) delay(20) }
+        assertEquals(4, woken.get())
     }
 
     @Test

@@ -157,6 +157,12 @@ class Requests internal constructor(
     private val afterwards: (suspend () -> Unit) -> Unit,
     /** Brings the app's own screen back in front of the browser. */
     private val comeBack: () -> Unit = {},
+    /**
+     * Keeps the app running while a sign-in waits for the browser, and returns what lets it
+     * go (`SignInService.hold`). Out of sight and with nothing in the foreground, Android
+     * freezes the app, and the browser's return is then let in and never answered.
+     */
+    private val awake: () -> () -> Unit = { {} },
     private val note: (String) -> Unit = {},
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** How long the browser is waited for (a test's own). */
@@ -636,7 +642,10 @@ class Requests internal constructor(
             attempt = mine
             write(settings.copy(signingIn = true))
             stateNow.value = RequestsState.SigningIn(host)
-            scope.launch(io) { waitFor(mine, found, secret) }
+            // (Taken here, with the app's screen in front: Android allows it only then. Let
+            // go however the wait ends, or if it is never begun.)
+            val release = awake()
+            scope.launch(io) { waitFor(mine, found, secret) }.invokeOnCompletion { release() }
             link
         }
     }
