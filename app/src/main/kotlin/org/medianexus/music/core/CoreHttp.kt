@@ -199,6 +199,20 @@ internal object CoreHttp {
 
     private fun origin(url: HttpUrl): String = "${url.scheme}://${url.host}:${url.port}"
 
+    /**
+     * Whether this client takes `address` for the place the library takes it for (its
+     * scheme, host and port, as `lidarr::origin` read them), with no name or password in
+     * it. An address the two would read differently is one neither may use.
+     */
+    fun readsAs(address: String, scheme: String, host: String, port: Int): Boolean {
+        val url = address.trim().toHttpUrlOrNull() ?: return false
+        if (url.username.isNotEmpty() || url.password.isNotEmpty()) return false
+        if (url.scheme != scheme || url.port != port) return false
+        // (An IPv6 address can be written many ways, and each reader has its own: its
+        // spelling is not compared.)
+        return host.startsWith("[") || url.host == host
+    }
+
     /** Whether an address has a name or a password written into it (`http://me:secret@host`). */
     fun namesSomeone(address: String): Boolean = address.trim().toHttpUrlOrNull()?.let { it.username.isNotEmpty() || it.password.isNotEmpty() } ?: false
 

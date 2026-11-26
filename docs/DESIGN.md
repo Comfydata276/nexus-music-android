@@ -2100,13 +2100,25 @@ it up. As on Windows:
     address can be written so that one reader takes it for one host while the client
     connects to another (`http://a.example\@b.example`), and what matters is where the
     bytes go.
-- **An address with a name and password written into it** (`http://me:secret@host`) is
-  refused, in the phone's own words (`RequestsWords`), and nothing of it is kept: Lidarr is
-  given its key instead, and a settings file is no place for a password. The same for an
-  address the client can make nothing of. **What a sign-in service says of itself is not
-  trusted to be fit to keep**: a service whose address can't be used, or has a name in it,
-  is not kept or signed in to, and the name it gives whoever signed in is cut to eighty
-  printable characters on one line before it is written down.
+- **An address is judged by the library's rule, in the library's words** (`lidarr::origin`,
+  from the Windows app's 0.40.11; the phone holds every address to it, typed or kept).
+  Only the scheme, the host and the port are judged, strictly: a name and password in the
+  address (`http://me:secret@host`: Lidarr is given its key instead, and a settings file
+  is no place for a password), a backslash, a space, letters beyond plain ASCII, a port
+  that isn't a number, a scheme that isn't http or https are each refused, and nothing of
+  the address is kept. **And the app's client must read the address as that very place**
+  (`CoreHttp.readsAs`): one the two would take differently is refused too.
+- **A sign-in is believed only on https, or where Lidarr's own address is**
+  (`gate::Found::trusted`): anywhere else, signing in would cross the network
+  unprotected, and the library says so with what makes it work. The library judges a
+  sign-in as it finds one, and every address on the way to it. The phone applies the same
+  rule to **one that was kept** (`Requests.believed`): a remembered sign-in the rule
+  refuses is as none at all. Nobody is signed in to it, the token kept for it is shown to
+  nobody, no browser is sent to it, and at signing out the token is forgotten here and
+  nothing is handed back there. One rule of the phone's own stays beside it: a sign-in
+  service at the music server's own address is not kept or signed in to
+  (`RequestsWords.SERVICE_UNUSABLE`). The name a service gives whoever signed in is cut
+  to eighty printable characters on one line before it is written down.
 - **The sign-in uses the same way back as Windows**: `http://127.0.0.1:<port>/callback`.
   The app listens on the loopback address (`BrowserReturn`: one request, the `state` it
   made itself checked before anything else is believed) while the browser is open, so

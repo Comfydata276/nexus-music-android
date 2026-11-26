@@ -52,6 +52,9 @@ object Words {
     val checking: String get() = say("lidarr.checking")
     val keyForgotten: String get() = say("lidarr.key_forgotten")
 
+    /** An address the app can't be sure of reaching as written. */
+    val addressUnusable: String get() = say("lidarr.address_unusable")
+
     /** Lidarr is behind a sign-in, and nobody is signed in. (It names where the Windows app
      *  has the sign-in: "In Settings, under Requests". The phone's is in the same place.) */
     val signInNeeded: String get() = say("lidarr.needed")

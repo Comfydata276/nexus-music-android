@@ -272,7 +272,7 @@ class RequestsTest {
     }
 
     @Test
-    fun `an address that reads as one place and is another to the client is taken as the client takes it`() = runBlocking {
+    fun `an address that reads as one place and is another to the client is refused, in the library's words, and changes nothing`() = runBlocking {
         val lidarr = lidarr()
         val other = elsewhere()
         val account = account()
@@ -280,11 +280,21 @@ class RequestsTest {
         requests.switch(true)
         requests.connect(lidarr.address, KEY)
         // To the eye, and to a reader that splits at the "@", this is still the first address.
-        // The client connects to what is before the backslash.
+        // The client would connect to what is before the backslash. The library's rule for
+        // an address refuses anything two readers might take differently.
         val port = lidarr.address.substringAfterLast(':')
         val looks = "${other.address}\\@127.0.0.1:$port"
-        assertEquals(RequestsState.KeyForgotten, requests.connect(looks, ""))
+        val unusable = "That isn't an address the app can use. Enter it as, say, https://lidarr.example.org or 192.168.1.5:8686."
+        assertEquals(RequestsState.Unreachable(unusable), requests.connect(looks, ""))
         assertTrue(other.asked.isEmpty())
+        // Nothing of it was kept, and what was there before stands: the address, and its key.
+        assertEquals(lidarr.address, requests.settings.value.address)
+        assertTrue(File(secretsDir(account), "lidarr-key.sealed").exists())
+        // The other things the library's rule refuses, each asked of nobody.
+        for (odd in listOf("http://lidarr .example:8686", "ftp://lidarr.example", "http://lidarr.example:port", "http://lidarr.example:0", "http://lïdarr.example")) {
+            assertEquals(odd, RequestsState.Unreachable(unusable), requests.connect(odd, KEY))
+        }
+        assertEquals(lidarr.address, requests.settings.value.address)
     }
 
     @Test
@@ -294,7 +304,7 @@ class RequestsTest {
         val requests = requests(account)
         requests.switch(true)
         val named = lidarr.address.replace("http://", "http://admin:hunter2@")
-        assertEquals(RequestsState.Unreachable("Leave the name and password out of the address. Lidarr is given its key instead."), requests.connect(named, KEY))
+        assertEquals(RequestsState.Unreachable("That address has a name and password in it. Enter the address alone: Lidarr is reached with its API key."), requests.connect(named, KEY))
         assertTrue(lidarr.asked.isEmpty())
         assertFalse("hunter2" in everythingKept(account))
         assertEquals("", requests.settings.value.address)
@@ -411,6 +421,68 @@ class RequestsTest {
         assertNull(requests.signIn())
         assertEquals("", requests.settings.value.service)
         assertTrue("the music server's address was sent ${behind.service.asked.map { it.line }}", behind.service.asked.isEmpty())
+    }
+
+    // ---- a sign-in is believed only on https, or where Lidarr's own address is ----------------------
+    //
+    // (The library's rule, `gate::Found::trusted`, from the Windows app's 0.40.11. Here the
+    // sign-in service is on this machine by another name than Lidarr is: plain http, and
+    // to the rule another host.)
+
+    private fun refusedAt(host: String) =
+        "The sign-in at $host is refused because it isn't on https, or where Lidarr's own address is, so signing in would cross the network unprotected: " +
+            "put the sign-in on https, or, with Lidarr on plain http, on Lidarr's own host."
+
+    @Test
+    fun `a sign-in found on plain http away from Lidarr's own host is refused in the library's words, and nothing is sent there`() = runBlocking {
+        val behind = Behind()
+        behind.named = behind.service.address.replace("127.0.0.1", "localhost")
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        assertEquals(RequestsState.Unreachable(refusedAt(behind.named!!.removePrefix("http://"))), requests.connect(behind.lidarr.address, KEY))
+        // Not kept, not signed in to, and no browser is sent there.
+        assertEquals("", requests.settings.value.service)
+        assertNull(requests.signIn())
+        assertTrue("the service was sent ${behind.service.asked.map { it.line }}", behind.service.asked.isEmpty())
+    }
+
+    @Test
+    fun `a sign-in remembered at an address the rule refuses is not signed in to, sent no token, and handed nothing back`() = runBlocking {
+        val behind = Behind()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        signInWith(requests.signIn()!!)
+        requests.until { it is RequestsState.Connected }
+        scopes.last().cancel()
+        // What is kept now names the service by another host (as a build before the rule
+        // could have kept it, from a Lidarr that pointed there): the settings, and the
+        // token sealed for that place. Lidarr's sign-in points there too.
+        val elsewhere = behind.service.address.replace("127.0.0.1", "localhost")
+        val token = tokenKept(account)!!
+        settingsFile(account).let { it.writeText(it.readText().replace(behind.service.address, elsewhere)) }
+        File(secretsDir(account), "lidarr-token.sealed").writeBytes(Turned.seal("${account.key}\n${Core.servicePlace(elsewhere)}\n$token".toByteArray()))
+        behind.named = elsewhere
+        val asked = behind.service.asked.size
+        fun sent() = behind.service.asked.drop(asked).map { it.line }
+
+        val again = requests(account)
+        again.start()
+        // Said in the library's words; and the token was not shown to the service.
+        val refused = RequestsState.Unreachable(refusedAt(elsewhere.removePrefix("http://")))
+        assertEquals(refused, again.until { it is RequestsState.Unreachable })
+        assertEquals(refused, again.check())
+        assertEquals("the service was sent ${sent()}", emptyList<String>(), sent())
+        // No browser is sent there, and the state says why.
+        assertNull(again.signIn())
+        assertEquals(refused, again.state.value)
+        // Signed out of: the token is forgotten here, and nothing is handed to that address.
+        again.signOut()
+        delay(500)
+        assertFalse(File(secretsDir(account), "lidarr-token.sealed").exists())
+        assertEquals("the service was sent ${sent()}", emptyList<String>(), sent())
     }
 
     @Test

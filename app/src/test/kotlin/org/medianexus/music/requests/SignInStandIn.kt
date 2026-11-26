@@ -23,6 +23,10 @@ internal class SignInStandIn(private val closing: MutableList<StandIn>, private 
     val unguarded = AtomicBoolean(false)
     val revoked = CopyOnWriteArrayList<String>()
 
+    /** The address Lidarr's sign-in names the service by, if not the one it listens at
+     *  (the same machine by another name, say: to the app, another host). */
+    @Volatile var named: String? = null
+
     /** Who the service says signed in, as it is written inside its JSON answer. */
     @Volatile var username = "walker"
     private val made = AtomicInteger(0)
@@ -72,7 +76,7 @@ internal class SignInStandIn(private val closing: MutableList<StandIn>, private 
         val pass = asked.header("Authorization").orEmpty().removePrefix("Bearer ")
         when {
             asked.target.startsWith("/outpost.goauthentik.io/start") ->
-                reply.send(302, "", "Location" to "${service.address}/application/o/authorize/?client_id=lidarr-proxy&redirect_uri=x&response_type=code")
+                reply.send(302, "", "Location" to "${named ?: service.address}/application/o/authorize/?client_id=lidarr-proxy&redirect_uri=x&response_type=code")
             !unguarded.get() && pass !in passes -> reply.send(302, "", "Location" to "/outpost.goauthentik.io/start?rd=x")
             asked.header("X-Api-Key") != key -> reply.send(401)
             asked.target == "/api/v1/system/status" -> reply.json("""{"version":"2.9.6.4552"}""")

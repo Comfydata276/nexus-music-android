@@ -260,6 +260,44 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_gateGiveUp<'l>(env: J
     })
 }
 
+#[derive(Deserialize)]
+struct RefusedIn {
+    door: Door,
+    /// Lidarr's address, as it is kept.
+    lidarr: String,
+}
+
+/// `gate::Found::trusted`: why the sign-in at `door` is not one to believe, for a Lidarr at
+/// this address (it is not on https, nor where Lidarr's own address is; or its address is
+/// one the library can't be sure of); nothing if it is believed. Asks nobody.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_gateRefused<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: RefusedIn| Ok(given.door.found().trusted(&nexus_core::lidarr::tidy(&given.lidarr)).err()))
+}
+
+/// Where the library takes an address to lead, or why it can't be used.
+#[derive(Serialize, Default)]
+struct Judged {
+    scheme: String,
+    host: String,
+    port: u16,
+    /// The library's sentence, if the address is refused.
+    why: String,
+}
+
+/// `lidarr::origin`: where an address typed for Lidarr leads (its scheme, host and port,
+/// read strictly: anything a client might take differently is refused, and so is a name
+/// and password in it), or why it can't be used, in the library's words.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrOrigin<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |address: String| {
+        Ok(match nexus_core::lidarr::origin(&address) {
+            Ok(origin) => Judged { scheme: origin.scheme, host: origin.host, port: origin.port, why: String::new() },
+            Err(why) => Judged { why, ..Default::default() },
+        })
+    })
+}
+
 // ---- the library's own words -----------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -296,6 +334,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_say<'l>(env: JNIEnv<'
             "lidarr.checking" => lidarr::CHECKING.to_string(),
             "lidarr.key_forgotten" => lidarr::KEY_FORGOTTEN.to_string(),
             "lidarr.needed" => lidarr::NEEDED.to_string(),
+            "lidarr.address_unusable" => lidarr::ADDRESS_UNUSABLE.to_string(),
+            "lidarr.address_with_name" => lidarr::ADDRESS_WITH_NAME.to_string(),
+            "gate.not_trusted" => gate::not_trusted(with(0)),
             "requests.not_listed" => requests::NOT_LISTED.to_string(),
             "requests.no_longer_listed" => requests::NO_LONGER_LISTED.to_string(),
             "requests.asking_for" => requests::asking_for(with(0)),

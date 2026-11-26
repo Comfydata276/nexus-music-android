@@ -432,6 +432,37 @@ object Core {
      */
     fun lidarrPlace(address: String): String? = CoreHttp.originOf(lidarrTidy(address))
 
+    @Serializable
+    private class Judged(val scheme: String = "", val host: String = "", val port: Int = 0, val why: String = "")
+
+    /**
+     * Why an address is not one Lidarr can be typed at; null if it may be used.
+     *
+     * **The library's rule** (`lidarr::origin`, the Windows app's): only the scheme, the
+     * host and the port are judged, strictly: a name and password in the address, a
+     * backslash, a space, letters beyond plain ASCII, a port that isn't a number, a scheme
+     * that isn't http or https are each refused, in the library's own sentence. **And the
+     * app's client must take the address for that very place** ([CoreHttp.readsAs]): where
+     * the bytes go is what a key is kept for.
+     */
+    fun lidarrRefused(address: String): String? {
+        val judged = across(lidarrTidy(address), String.serializer(), Judged.serializer(), ::lidarrOrigin)
+        if (judged.why.isNotEmpty()) return judged.why
+        return if (CoreHttp.readsAs(lidarrTidy(address), judged.scheme, judged.host, judged.port)) null else Words.addressUnusable
+    }
+
+    @Serializable
+    private class RefusedIn(val door: SignInDoor, val lidarr: String)
+
+    /**
+     * `gate::Found::trusted`: why the sign-in at `door` is **not one to believe** for a
+     * Lidarr at `lidarr` (its address, as kept); null if it is believed. A sign-in is
+     * believed on https, or, with Lidarr on plain http, on Lidarr's own host: anywhere
+     * else, signing in would cross the network unprotected. Asks nobody.
+     */
+    fun gateRefused(door: SignInDoor, lidarr: String): String? =
+        across(RefusedIn(door, lidarr), RefusedIn.serializer(), String.serializer().nullable, ::gateRefused)
+
     /** The same for a sign-in service: where its code, its check and its token may go. */
     fun servicePlace(service: String): String? = CoreHttp.originOf(service)
 
@@ -893,6 +924,8 @@ object Core {
     @JvmStatic private external fun lidarrHost(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrMask(input: ByteArray): ByteArray?
     @JvmStatic private external fun gateHost(input: ByteArray): ByteArray?
+    @JvmStatic private external fun gateRefused(input: ByteArray): ByteArray?
+    @JvmStatic private external fun lidarrOrigin(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrRequest(input: ByteArray): ByteArray?
     @JvmStatic private external fun addArtist(input: ByteArray): ByteArray?
     @JvmStatic private external fun placeWays(input: ByteArray): ByteArray?

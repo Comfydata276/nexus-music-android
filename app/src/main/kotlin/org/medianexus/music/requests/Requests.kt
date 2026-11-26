@@ -59,13 +59,12 @@ data class RequestsSettings(
 
 /** Sentences that are the phone's own (Settings'), for what the library is never asked. */
 object RequestsWords {
-    /** An address with a name and password written into it (`http://me:secret@host`). */
-    const val ADDRESS_WITH_NAME = "Leave the name and password out of the address. Lidarr is given its key instead."
-
-    /** An address the app's client can make nothing of. */
-    const val ADDRESS_UNUSABLE = "That address isn't one the app can use."
-
-    /** What answered at Lidarr's address pointed at a sign-in service the app can't use. */
+    /**
+     * What answered at Lidarr's address pointed at a sign-in service **at the music
+     * server's own address**, where nothing of requests is ever sent (the phone's own
+     * rule; a sign-in the library's rule refuses is said in the library's words,
+     * `gate::not_trusted`).
+     */
     const val SERVICE_UNUSABLE = "The sign-in in front of Lidarr gave an address the app can't use."
 
     /** The browser's page when the sign-in is still to be finished in the app, which
@@ -350,9 +349,18 @@ class Requests internal constructor(
         return LidarrAt(settings.address, key, session, place, connection, home)
     }
 
+    /**
+     * The sign-in remembered for this connection, **if it is one to believe** (the
+     * library's rule, `gate::Found::trusted`: on https, or where Lidarr's own address is).
+     * One that is not is as none at all: nobody is signed in to it, no token is shown to
+     * it, no browser is sent to it and nothing is handed back to it. (A sign-in found now
+     * is judged by the library as it is found; this is for one that was kept.)
+     */
+    private fun believed(settings: RequestsSettings): SignInDoor? = settings.door?.takeIf { Core.gateRefused(it, settings.address) == null }
+
     /** The sign-in in front of Lidarr, opened from what is kept if it isn't open yet. */
     private suspend fun sessionFor(settings: RequestsSettings): Long? {
-        val door = settings.door
+        val door = believed(settings)
         open?.let { now ->
             if (now.door == door) return now.session
             // (Another sign-in's, or none any more: this one is let go of, and owns nothing.)
@@ -437,12 +445,9 @@ class Requests internal constructor(
             // the address is kept as it is typed, in a file that is not sealed.
             val typed = address.substringBefore('#').substringBefore('?').trim()
             val place = if (typed.isEmpty()) null else Core.lidarrPlace(typed)
-            val refused = when {
-                typed.isEmpty() -> null
-                Core.namesSomeone(typed) -> RequestsWords.ADDRESS_WITH_NAME
-                place == null -> RequestsWords.ADDRESS_UNUSABLE
-                else -> null
-            }
+            // (The library's rule for an address, in the library's words; and the app's
+            // client must read it as the same place.)
+            val refused = if (typed.isEmpty()) null else Core.lidarrRefused(typed) ?: if (place == null) Words.addressUnusable else null
             if (refused != null) {
                 checks++
                 stateNow.value = RequestsState.Unreachable(refused)
@@ -542,7 +547,7 @@ class Requests internal constructor(
                 dropSignIn(settingsNow.value)
                 write(settingsNow.value.copy(service = found.service, client = found.client, signedIn = ""))
             }
-            val door = settingsNow.value.door
+            val door = believed(settingsNow.value)
             val signedOut = door != null && tokenFor(door) == null
             // (Nobody is signed in: whoever is written down as signed in was signed in with
             // a token that is no longer kept, and is written down no longer.)
@@ -583,6 +588,11 @@ class Requests internal constructor(
             val settings = settingsNow.value
             val found = settings.door ?: return@withContext null
             if (unreadable || !settings.on) return@withContext null
+            // (Only a sign-in the library's rule believes: no browser is sent to another.)
+            Core.gateRefused(found, settings.address)?.let { why ->
+                stateNow.value = RequestsState.Unreachable(why)
+                return@withContext null
+            }
             giveUpAttempt()
             checks++
             val host = hostOf(found)
@@ -747,7 +757,9 @@ class Requests internal constructor(
             live = 0
             secrets.token().also { secrets.forgetToken() }
         }
-        val door = was?.door ?: settings.door
+        // (Handed back only to a sign-in that is believed: a token kept for one that is
+        // not is forgotten here, and shown to nobody.)
+        val door = was?.door ?: believed(settings)
         if (door == null || (was == null && onFile == null)) return
         // (Handed back to the service it was given for, and to no other: what the client is
         // told is the place that was kept with the token.)
@@ -778,7 +790,7 @@ class Requests internal constructor(
             dropSignIn(settings)
             write(settings.copy(signedIn = "", signingIn = false))
             checks++
-            stateNow.value = RequestsState.NeedsSignIn(hostOf(door), signedOut = true)
+            stateNow.value = Core.gateRefused(door, settings.address)?.let { RequestsState.Unreachable(it) } ?: RequestsState.NeedsSignIn(hostOf(door), signedOut = true)
             stateNow.value
         }
     }
