@@ -787,15 +787,25 @@ class Requests internal constructor(
         val place = was?.place ?: onFile?.origin
         val said = CompletableDeferred<Unit>()
         goodbye = said
-        afterwards {
-            // Closing waits out a renewal that is under way, so the token handed back is
-            // the one that is good now.
-            val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile?.secret
-            if (token != null) Core.gateGiveUp(door, token, place, home)
-            // Tidied away only if what is kept is still the very token that was handed
-            // back (its first deletion failed, say). Anything else there by now is a later
-            // sign-in's, and is not this one's to take.
-            synchronized(owner) { if (token != null && secrets.token()?.secret == token) secrets.forgetToken() }
+        // **Whatever goes wrong with it, the goodbye is said to be over**: whoever waits
+        // for it ([leave], and behind that everybody's requests) is never left waiting.
+        try {
+            afterwards {
+                try {
+                    // Closing waits out a renewal that is under way, so the token handed
+                    // back is the one that is good now.
+                    val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile?.secret
+                    if (token != null) Core.gateGiveUp(door, token, place, home)
+                    // Tidied away only if what is kept is still the very token that was
+                    // handed back (its first deletion failed, say). Anything else there by
+                    // now is a later sign-in's, and is not this one's to take.
+                    synchronized(owner) { if (token != null && secrets.token()?.secret == token) secrets.forgetToken() }
+                } finally {
+                    said.complete(Unit)
+                }
+            }
+        } catch (e: Exception) {
+            note("requests: a sign-in's token couldn't be handed back (${e.javaClass.simpleName})")
             said.complete(Unit)
         }
     }
@@ -839,10 +849,17 @@ class Requests internal constructor(
             key = null
             stateNow.value = RequestsState.Off
         }
-        goodbye?.await()
+        // (The goodbye has its own limits, well inside this one. Should it never be
+        // heard of again, the app's own work having dropped it, leaving still ends.)
+        goodbye?.let { said ->
+            if (withTimeoutOrNull(GOODBYE_MILLIS) { said.await() } == null) note("requests: a goodbye to the sign-in service wasn't over in time; leaving goes on without it")
+        }
     }
 
     private companion object {
+        /** The longest leaving waits for a goodbye to the sign-in service to be over. */
+        const val GOODBYE_MILLIS = 15_000L
+
         /** How long after the screen comes back a browser on its way is still let through. */
         const val LATE_MILLIS = 1_500L
 

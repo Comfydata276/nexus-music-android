@@ -79,12 +79,14 @@ class RequestsTest {
     private fun requests(
         account: Account = account(), waitMillis: Long = 60_000, comesForward: Boolean = true,
         front: MutableStateFlow<Boolean> = MutableStateFlow(true),
+        /** How the app runs what must be finished behind whoever asked (its own work). */
+        afterwards: (suspend () -> Unit) -> Unit = { work -> behind.launch { work() } },
     ): Requests {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         lateinit var made: Requests
         made = Requests(
             account, scope, RequestsSecrets(secretsDir(account), Turned, account.server, account.username),
-            afterwards = { work -> behind.launch { work() } },
+            afterwards = afterwards,
             comeBack = {
                 cameBack.incrementAndGet()
                 if (comesForward) {
@@ -636,6 +638,35 @@ class RequestsTest {
         assertNotNull(tokenKept(account))
         assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected })
         assertEquals(1, cameBack.get())
+    }
+
+    @Test
+    fun `leaving is finished whatever goes wrong with the goodbye, and the key and the token are gone`() = runBlocking {
+        for (broken in listOf("the app's own work throws", "the app's own work never runs it")) {
+            val service = Behind()
+            val account = account("leaver-${broken.length}")
+            var breaking = false
+            val requests = requests(account, afterwards = { work ->
+                when {
+                    !breaking -> behind.launch { work() }
+                    broken.endsWith("throws") -> throw IllegalStateException("the app's own work is gone")
+                    else -> Unit
+                }
+            })
+            requests.switch(true)
+            requests.connect(service.lidarr.address, KEY)
+            signInWith(requests.signIn()!!)
+            requests.until { it is RequestsState.Connected }
+            assertEquals(listOf("lidarr-key.sealed", "lidarr-token.sealed"), secretsDir(account).listFiles().orEmpty().map { it.name }.sorted())
+            // The account signs out of the music server, and saying goodbye to the sign-in
+            // service goes wrong on the app's side. Leaving still ends, and still takes the
+            // key and the token off the phone: whoever waits for it is not left waiting.
+            breaking = true
+            val left = withTimeout(30_000) { runCatching { requests.leave() } }
+            assertTrue("$broken: ${left.exceptionOrNull()}", left.isSuccess)
+            assertEquals(broken, emptyList<String>(), secretsDir(account).listFiles().orEmpty().map { it.name })
+            assertNull(broken, requests.lidarr())
+        }
     }
 
     @Test

@@ -212,8 +212,13 @@ class RequestsOwners internal constructor(
         if (owner.seat != null && owner.seat !== seat) return
         owner.seat = null
         owner.present(null)
-        owner.pages.settled()
-        owner.requests.leave()
+        // (Whatever is thrown on the way, the account leaves: and the line moves on, see
+        // the worker above.)
+        try {
+            owner.pages.settled()
+        } finally {
+            owner.requests.leave()
+        }
     }
 
     private suspend fun switchedOff(account: Account) {

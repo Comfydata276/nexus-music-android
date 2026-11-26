@@ -2101,7 +2101,13 @@ that sign-in (`AccountGraph.requestsNow`) is "off", "not yet" or "on":
   with the very address, key and sign-in that check was made with (`Requests.verified`),
   never from "connected" and the address read apart. One at a time: the next is not begun
   until the one before has ended, and that does not end until the library's worker has
-  stopped. Signing out stops it and waits for it, as part of what the sign-out leaves.
+  stopped. Signing out stops it and waits for it, as part of what the sign-out leaves;
+  and none can begin once that has started (seeing that the account is still here and
+  beginning are one step, which the sign-out passes through before it looks).
+- **A departure always ends.** Whatever is thrown while one is being finished, the line
+  moves on to the next; the goodbye to a sign-in service is said to be over whatever
+  became of it, and leaving waits fifteen seconds for it at the very longest. So nobody's
+  requests are ever left "not yet" until the app is closed.
 
 `requests/Requests.kt` is an account's connection, and the surface the screens use to set
 it up. As on Windows:

@@ -342,6 +342,10 @@ class RequestsPages internal constructor(
     /** Whether a setting is being put back on Lidarr just now ([putBack]). */
     private val recovering = MutableStateFlow(false)
 
+    /** Held for the one step in which a putting back sees the account is still here and
+     *  begins; and passed through by [settled]. */
+    private val starting = Any()
+
     init {
         // The phone's copy of the library, handed to the library's rules each time it
         // changes while the account is here; and each time, a look for what has arrived
@@ -430,6 +434,9 @@ class RequestsPages internal constructor(
      *  it seen through and written down, and a putting back (which stops when the account
      *  goes) ended. What an account's leaving waits for before its sign-in is let go of. */
     suspend fun settled() {
+        // (Asked once the account has gone. Past this, no putting back can begin: see
+        // [putBack]. One that did is under way, and is waited for.)
+        synchronized(starting) {}
         combine(owedNow, recovering) { owed, busy -> owed == 0 && !busy }.first { it }
     }
 
@@ -799,9 +806,15 @@ class RequestsPages internal constructor(
     private suspend fun putBack(at: LidarrAt) {
         val place = ready()
         if (!Core.waysLeft(at, place)) return
-        recovering.value = true
+        // **Whether the account is still here, and the start, are one step** ([starting]):
+        // once the account's departure has begun (it is no longer here, and [settled] has
+        // been asked) no putting back begins; one that began just before is waited for.
+        val begun = synchronized(starting) {
+            if (isGone()) return
+            // (Said to be under way only once it is: nothing waits for one that never began.)
+            Core.putBack(at, place).also { recovering.value = true }
+        }
         note("requests: an earlier run left a setting changed on Lidarr; putting it back")
-        val begun = Core.putBack(at, place)
         try {
             when (val done = begun.done.await()) {
                 is Outcome.Got -> note(if (done.value) "requests: what an earlier run left changed on Lidarr has been put back" else "requests: not everything an earlier run left changed on Lidarr could be put back yet; it is still written down")
