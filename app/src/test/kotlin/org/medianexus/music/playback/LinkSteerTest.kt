@@ -194,10 +194,10 @@ class LinkSteerTest {
     // ---- a row is the entry it was drawn from (review X2) ------------------------------------
 
     /** A view with `now` playing and `queue` to come, each song by its id. */
-    private fun viewOf(now: String, vararg queue: String): JsonObject = Json.parseToJsonElement(
+    private fun viewOf(now: String, vararg queue: String, context: String = ""): JsonObject = Json.parseToJsonElement(
         """{"full":{"position":1.0,"now":{"id":"$now","title":"$now","artist":"Them","album":"Theirs","duration":200},
            "queue":[${queue.joinToString(",") { """{"id":"$it","title":"$it","artist":"Them","album":"Theirs","duration":200}""" }}],
-           "more":0,"context":"","shuffle":false,"repeat":0,"volume":1.0},"playing":true,"heard_ms":9000}""",
+           "more":0,"context":"$context","shuffle":false,"repeat":0,"volume":1.0},"playing":true,"heard_ms":9000}""",
     ).jsonObject
 
     @Test
@@ -241,5 +241,19 @@ class LinkSteerTest {
         steered.hands!!.remove(b)
         // (The same song at the same place on another device is not the row the menu was opened on.)
         assertEquals(emptyList<String>(), told)
+    }
+
+    @Test
+    fun aRowNamesNothingInAQueueChosenAnewThere() {
+        // The reviewer's sequence: A playing, C then B to come, B's menu open.
+        steer.steering("Study PC")
+        steer.view(viewOf("a", "c", "b", context = "Morning mix"))
+        val b = steered.shown.value!!.queue.uids[1]
+        // On the device, a different list: D playing, a single B to come.
+        steer.view(viewOf("d", "b", context = "Evening"))
+        told.clear()
+        steered.hands!!.remove(b)
+        steered.hands!!.jump(b)
+        assertEquals("the new list's B is not the row the menu was opened on", emptyList<String>(), told)
     }
 }

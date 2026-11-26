@@ -66,6 +66,16 @@ internal class LinkSteer(
     private var places: List<Pair<String, Int>> = emptyList()
     private var next = ROW
 
+    /**
+     * **What the queue the numbers belong to was playing, and from which list** (review Z2): a
+     * row names an entry of the queue it was drawn from, and of no queue that has replaced it.
+     * The view names no generation of the device's queue, so a queue chosen anew is known by
+     * what does change with it: the song playing, or the list's name. Either changed, the
+     * numbering starts afresh and every row drawn before names nothing. (A Next there changes
+     * the song too: a menu kept open across it then does nothing, which is the safe side.)
+     */
+    private var queueOf: Pair<String?, String?>? = null
+
     /** `{"steering": name}` or `{"steering": null}`, as the library says it. */
     fun steering(name: String?) {
         if (name != this.name) forget()
@@ -77,6 +87,7 @@ internal class LinkSteer(
         numbers.clear()
         entries.clear()
         places = emptyList()
+        queueOf = null
         // (The count goes on: a number handed out before names nothing from now on.)
     }
 
@@ -104,7 +115,11 @@ internal class LinkSteer(
             note("linking: the phone's player is showing something else, so the device is let go of")
             return letGo()
         }
-        val ids = of["full"]?.jsonObject?.get("queue")?.jsonArray?.map { it.jsonObject.getValue("id").jsonPrimitive.content }.orEmpty()
+        val full = of["full"]?.jsonObject
+        val ids = full?.get("queue")?.jsonArray?.map { it.jsonObject.getValue("id").jsonPrimitive.content }.orEmpty()
+        val playingFrom = (full?.get("now") as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull to full?.get("context")?.jsonPrimitive?.contentOrNull
+        if (playingFrom != queueOf) forget()
+        queueOf = playingFrom
         steered.show(shown(of, name, number(ids), songFor), hands)
     }
 
