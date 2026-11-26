@@ -83,7 +83,10 @@ fun RequestsPage() {
     val taken = remember(here.key) { mutableStateListOf<Long>() }
     LaunchedEffect(waiting) { taken.clear() }
 
-    fun takeOff(album: Pending) = asker.takeOff(album.id, album.title, under = state.connection) { done -> if (done) taken += album.id }
+    // A take-off acts on the row as it was shown: its own entry, and the number of the
+    // connection the list was found under then, fixed as the row is drawn, so a menu opened
+    // before a reconnect or a new key can't carry the new connection's number when chosen.
+    fun takeOff(album: Pending, under: Long) = asker.takeOff(album.id, album.title, under = under) { done -> if (done) taken += album.id }
 
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)
@@ -119,16 +122,17 @@ fun RequestsPage() {
                                 ArrivedRow(asked, about, onOpen = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) })
                             }
                         }
-                        val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id, state.connection) !in going && album.id !in taken }
+                        val shownUnder = state.connection
+                        val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id, shownUnder) !in going && album.id !in taken }
                         if (waiting.heading.isNotEmpty() && pending.isNotEmpty()) {
                             item(key = "pending-title", contentType = "title") { SectionTitle(waiting.heading) }
                             items(pending, key = { (album, _) -> "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->
-                                SwipeAway("pending/${album.id}", onGone = { takeOff(album) }, Modifier.animateItem(fadeOutSpec = null)) {
+                                SwipeAway("pending/${album.id}", onGone = { takeOff(album, shownUnder) }, Modifier.animateItem(fadeOutSpec = null)) {
                                     PendingRow(album, line, onMenu = {
                                         ui.sheet = Sheet.Drawn { choose ->
-                                            MenuEntry(stringResource(R.string.take_off_the_list)) { choose { takeOff(album) } }
+                                            MenuEntry(stringResource(R.string.take_off_the_list)) { choose { takeOff(album, shownUnder) } }
                                         }
-                                    }, onTakeOff = { takeOff(album) })
+                                    }, onTakeOff = { takeOff(album, shownUnder) })
                                 }
                             }
                         }
