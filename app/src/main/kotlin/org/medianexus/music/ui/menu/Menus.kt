@@ -340,7 +340,7 @@ fun Ui.removeFromPlaylist(playlist: Playlist, rows: List<Int>) {
     said(account.playlists.remove(playlist, rows) { undo ->
         undo ?: return@remove
         val words = if (count == 1) res.getString(R.string.removed_from_playlist) else res.getString(R.string.removed_many_from_playlist, count)
-        graph.toasts.show(words, res.getString(R.string.undo)) { undoPlaylist(undo) }
+        graph.toasts.show(words, res.getString(R.string.undo)) { org.medianexus.music.ui.shell.LiveScreen.act { it.undoPlaylist(undo) } }
     })
 }
 
@@ -352,7 +352,7 @@ fun Ui.movePlaylistSong(playlist: Playlist, from: Int, to: Int): Boolean {
     val res = graph.resources
     if (from == to) return false
     return said(account.playlists.move(playlist, from, to) { undo ->
-        if (undo != null) graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { undoPlaylist(undo) }
+        if (undo != null) graph.toasts.show(res.getString(R.string.moved), res.getString(R.string.undo)) { org.medianexus.music.ui.shell.LiveScreen.act { it.undoPlaylist(undo) } }
     })
 }
 

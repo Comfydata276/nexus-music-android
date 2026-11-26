@@ -105,6 +105,11 @@ fun Shell(graph: Graph) {
     var openSaved by rememberSaveable { mutableStateOf(false) }
     val ui = remember(graph, navigator) { Ui(graph, navigator).also { it.nowPlaying = openSaved } }
     LaunchedEffect(ui) { snapshotFlow { ui.nowPlaying }.collect { openSaved = it } }
+    // The screen a note's button acts on, looked up when it is pressed (see Live).
+    androidx.compose.runtime.DisposableEffect(ui) {
+        LiveScreen.take(ui)
+        onDispose { LiveScreen.let(ui) }
+    }
     val account by graph.accounts.state.collectAsStateWithLifecycle()
     ui.account = account
     val colors = Theme.colors
@@ -280,7 +285,7 @@ private fun RequestsNews(ui: Ui) {
             // Collecting marks nothing: an arrival is said when its note is on the screen
             // (`shown`), and one that never gets there is offered again by the next collection.
             pages.arrivals.collect { arrival ->
-                ui.graph.toasts.show(arrival.words, res.getString(R.string.requests), onAction = { ui.open(Route.Requests) }, shown = { pages.shown(arrival) })
+                ui.graph.toasts.show(arrival.words, res.getString(R.string.requests), onAction = { LiveScreen.act { it.open(Route.Requests) } }, shown = { pages.shown(arrival) })
                 account?.let { org.medianexus.music.ui.requests.AskedChanges.of(it).changed() }
             }
         }

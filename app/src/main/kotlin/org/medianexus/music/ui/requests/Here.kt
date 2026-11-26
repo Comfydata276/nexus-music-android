@@ -294,7 +294,7 @@ fun rememberAsker(here: RequestsHere): Asker {
             askOps(pages),
             object : AskShow {
                 override fun say(words: String, wayIn: Boolean) {
-                    if (wayIn) ui.graph.toasts.show(words, res.getString(R.string.requests)) { ui.open(Route.Requests) } else ui.toast(words)
+                    if (wayIn) ui.graph.toasts.show(words, res.getString(R.string.requests)) { org.medianexus.music.ui.shell.LiveScreen.act { it.open(Route.Requests) } } else ui.toast(words)
                 }
 
                 override fun confirm(heading: String, text: String, button: AskShow.Button, onYes: () -> Unit) {

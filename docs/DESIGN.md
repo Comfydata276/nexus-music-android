@@ -2619,7 +2619,9 @@ How it is built (M1b):
   playlist moves offer the second's Undo, which is the one that works). At most four wait:
   past that the oldest with no button goes, then the oldest of any kind; the one showing is
   never cut short by it. Three seconds; with a button eight, or five while others wait. At
-  sign-out or another account the line is emptied, the note showing too.
+  sign-out or another account the line is emptied, the note showing too. A note's button acts
+  on the screen alive when it is pressed (`LiveScreen`), not on the activity that made the
+  note, which may have been made again since (the phone turned, the type size changed).
 - **Notifications** are asked for once, at the first download (by the shell, `Ui.askToDownload`,
   which is still there when the answer comes: a song's menu has closed by then), for the downloads' progress
   notification (Android 13 and later). The player's never needed it: Android exempts
