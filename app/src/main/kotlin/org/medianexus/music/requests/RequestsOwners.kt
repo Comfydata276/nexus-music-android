@@ -73,6 +73,9 @@ class RequestsOwners internal constructor(
     private val make: (account: Account, sources: StateFlow<RequestsSources?>, here: StateFlow<Boolean>, switched: (Boolean) -> Unit) -> Pair<Requests, RequestsPages>,
     private val note: (String) -> Unit = {},
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Whether anything of an account's Lidarr key or sign-in is kept on the phone: a look
+     *  for its files, no more. */
+    private val holds: (Account) -> Boolean = { false },
 ) {
     private class Owner(val requests: Requests, val pages: RequestsPages, private val sources: MutableStateFlow<RequestsSources?>, private val here: MutableStateFlow<Boolean>) {
         /** The sign-in that has it now; null between sign-ins, and while switched off. */
@@ -189,12 +192,24 @@ class RequestsOwners internal constructor(
         if (!seat.left) seat.state.value = RequestsNow.On(owner.requests, owner.pages)
     }
 
-    /** The sign-in is over: what it had under way is finished, in this order. Whatever was
-     *  only for someone looking stops at once; what Lidarr was asked is seen through and
-     *  written down, which needs the sign-in that leaving then lets go of. */
+    /**
+     * The sign-in is over: what it had under way is finished, in this order. Whatever was
+     * only for someone looking stops at once; what Lidarr was asked is seen through and
+     * written down, which needs the sign-in that leaving then lets go of.
+     *
+     * **Signing out of the music account takes the account's Lidarr key and its sign-in
+     * with it, whether or not requests were on**: the same leaving either way. Turned off
+     * earlier in this run, their owner is still here, and leaves. Turned off since before
+     * the app started, there is no owner; if anything of the key or the sign-in is still
+     * kept (a look for its files), one is made now, to leave. With nothing kept and the
+     * toggle off, nothing is made and nothing is done.
+     */
     private suspend fun depart(seat: Seat) {
-        val owner = owners[seat.account.key] ?: return
-        if (owner.seat !== seat) return
+        val owner = owners[seat.account.key] ?: if (holds(seat.account)) owner(seat.account) else return
+        // (Another sign-in has them now: not this one's to end. The line is taken in
+        // order and a sign-in is over before the next begins, so this is never so; with
+        // no seat at all, they were switched off, or the sign-in ended before its turn.)
+        if (owner.seat != null && owner.seat !== seat) return
         owner.seat = null
         owner.present(null)
         owner.pages.settled()

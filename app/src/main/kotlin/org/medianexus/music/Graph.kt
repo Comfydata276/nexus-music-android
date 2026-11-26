@@ -201,6 +201,10 @@ class Graph(
         // reach Lidarr. Offline mode is on.").
         org.medianexus.music.core.CoreHttp.unsent = { if (watch.state.value.manual) context.getString(R.string.requests_offline) else null }
         val afterwards: (suspend () -> Unit) -> Unit = { work -> scope.launch { work() } }
+        // (Beside the saved password, out of backups; a folder for each account.)
+        val secretsOf: (org.medianexus.music.store.Account) -> org.medianexus.music.requests.RequestsSecrets = { account ->
+            org.medianexus.music.requests.RequestsSecrets(java.io.File(context.noBackupFilesDir, "requests/${account.key}"), passwordBox, account.server, account.username)
+        }
         org.medianexus.music.requests.RequestsOwners(
             scope,
             make = { account, sources, here, switched ->
@@ -208,11 +212,7 @@ class Graph(
                 // that account's requests', and nobody else's.)
                 val work = kotlinx.coroutines.CoroutineScope(scope.coroutineContext + kotlinx.coroutines.SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job]))
                 val requests = org.medianexus.music.requests.Requests(
-                    account, work,
-                    // (Beside the saved password, out of backups; a folder for each account.)
-                    org.medianexus.music.requests.RequestsSecrets(
-                        java.io.File(context.noBackupFilesDir, "requests/${account.key}"), passwordBox, account.server, account.username,
-                    ),
+                    account, work, secretsOf(account),
                     afterwards = afterwards,
                     comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
                     note = { diagnostics.note(it) },
@@ -223,6 +223,7 @@ class Graph(
                 requests to org.medianexus.music.requests.RequestsPages.of(requests, work, account.dirs.data, sources, here, note = { diagnostics.note(it) }, afterwards = afterwards)
             },
             note = { diagnostics.note(it) },
+            holds = { account -> secretsOf(account).exist() },
         )
     }
 

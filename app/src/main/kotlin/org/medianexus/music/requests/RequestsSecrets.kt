@@ -35,6 +35,9 @@ class RequestsSecrets(dir: File, private val box: SecretBox, server: String, use
     private val keyFile = File(dir, "lidarr-key.sealed")
     private val tokenFile = File(dir, "lidarr-token.sealed")
 
+    /** Whether anything is kept here at all: looked for, not read. */
+    fun exist(): Boolean = keyFile.exists() || tokenFile.exists()
+
     /** Lidarr's key and where it is for, or null: none kept, another account's, one kept
      *  without its place, or it can't be opened. */
     fun key(): Bound? = open(keyFile)

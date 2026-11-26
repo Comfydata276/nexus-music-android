@@ -817,9 +817,10 @@ class Requests internal constructor(
     }
 
     /**
-     * The account is signing out of the music server: its secrets go with its password. The
-     * sign-in's token is handed back to the service and the key is forgotten; where Lidarr
-     * is stays in the account's folder with its other things.
+     * The account is signing out of the music server: its secrets go with its password,
+     * **whether or not its requests are switched on at that moment**. The sign-in's token
+     * is handed back to the service, its session here closed, and the key forgotten; where
+     * Lidarr is stays in the account's folder with its other things.
      *
      * **Returns when it is all done**, the goodbye to the sign-in service included: until
      * then nobody is handed this account's requests, or any other's (see
@@ -827,12 +828,15 @@ class Requests internal constructor(
      */
     suspend fun leave() = withContext(NonCancellable + io) {
         turn.withLock {
-            if (!kept.exists() && !opened) return@withLock
-            read()
-            dropSignIn(settingsNow.value)
+            if (kept.exists() || opened) {
+                read()
+                dropSignIn(settingsNow.value)
+                if (!unreadable) write(settingsNow.value.copy(signedIn = "", signingIn = false))
+            }
+            // (Whatever else was or wasn't there: the key and the token leave the phone.)
             secrets.forgetKey()
+            secrets.forgetToken()
             key = null
-            if (!unreadable) write(settingsNow.value.copy(signedIn = "", signingIn = false))
             stateNow.value = RequestsState.Off
         }
         goodbye?.await()

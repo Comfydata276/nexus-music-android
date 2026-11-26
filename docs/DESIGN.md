@@ -2089,6 +2089,13 @@ that sign-in (`AccountGraph.requestsNow`) is "off", "not yet" or "on":
   the goodbye itself is short (handing a token back has eight seconds and no more, on a
   thread of its own), an ask already with Lidarr is seen through as it always was, and
   the music is not held up meanwhile.
+- **Signing out of the music account takes the account's Lidarr key and its sign-in with
+  it, whether or not its requests are on at that moment**: the token handed back to its
+  service, the session here closed, both sealed files gone, by the same leaving. Turned
+  off earlier in this run, the owner is still there and leaves. Turned off since before
+  the app started, no owner exists; at the sign-out the phone looks for the two files,
+  and only if one is there is an owner made, to leave. **Turning the toggle off by itself
+  keeps them**, so that turning it on again does not ask for the key.
 - **Putting back what an earlier run left changed on Lidarr belongs to the owner.** It is
   started by the connection being verified: each time a check of it ends "connected",
   with the very address, key and sign-in that check was made with (`Requests.verified`),

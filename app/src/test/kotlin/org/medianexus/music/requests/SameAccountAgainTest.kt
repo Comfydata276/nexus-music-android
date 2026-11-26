@@ -104,6 +104,7 @@ class SameAccountAgainTest {
             requests to RequestsPages.of(requests, app, account.dirs.data, sources, here, note = { notes += it }, afterwards = afterwards)
         },
         note = { notes += it },
+        holds = { account -> RequestsSecrets(secretsOf(account), Plain, account.server, account.username).exist() },
     )
 
     private fun accounts(session: MutableStateFlow<SessionState>, owners: RequestsOwners = owners()): Accounts {
@@ -228,6 +229,83 @@ class SameAccountAgainTest {
         delay(800)
         assertEquals(mine, tokenKept())
         assertEquals(1, behind.revoked.size)
+    }
+
+    // ---- signing out of the music account takes its Lidarr key and sign-in with it, toggle on or off ----
+
+    private fun sealed() = secrets.listFiles().orEmpty().filter { it.name.endsWith(".sealed") }.map { it.name }.sorted()
+
+    @Test
+    fun `signed in to Lidarr, requests turned off, then signed out of the music account, its key and its sign-in go all the same`() = runBlocking {
+        val behind = SignInStandIn(closing, KEY)
+        val session = MutableStateFlow<SessionState>(signedIn())
+        val accounts = accounts(session)
+        val first = withTimeout(10_000) { accounts.state.first { it != null } }!!
+        connectedAndSignedIn(first, behind)
+        val token = tokenKept()!!
+        // The toggle is turned off. By itself that keeps the key and the sign-in: turning
+        // it on again does not ask for them.
+        first.requests!!.switch(false)
+        withTimeout(10_000) { first.requestsNow.first { it == RequestsNow.Off } }
+        delay(300)
+        assertEquals(listOf("lidarr-key.sealed", "lidarr-token.sealed"), sealed())
+        assertTrue(behind.revoked.isEmpty())
+
+        // Signed out of the music account, with requests off: the key and the sign-in go
+        // with the password all the same. The token is handed back to its service, and
+        // nothing of either is left on the phone.
+        session.value = SessionState.SignedOut
+        withTimeout(15_000) { while (sealed().isNotEmpty()) delay(20) }
+        withTimeout(15_000) { while (behind.revoked.isEmpty()) delay(20) }
+        assertEquals(listOf(token), behind.revoked.toList())
+
+        // Signed in again and requests turned on: nobody is connected, and the key is asked
+        // for; the sign-in that was open is not used again (Lidarr is asked nothing with a
+        // pass, the service nothing more).
+        val asked = behind.service.asked.size
+        session.value = signedIn()
+        val second = withTimeout(10_000) { accounts.state.first { it != null && it !== first } }!!
+        assertEquals(RequestsNow.Off, second.requestsNow.value)
+        second.turnRequestsOn()
+        val requests = second.requests!!
+        assertEquals(RequestsState.NotConnected, withTimeout(10_000) { requests.state.first { it != RequestsState.Off && it != RequestsState.Connecting } })
+        assertEquals("", requests.keyHint())
+        assertNull(requests.lidarr())
+        delay(300)
+        assertEquals("the service was asked ${behind.service.asked.drop(asked).map { it.line }}", asked, behind.service.asked.size)
+    }
+
+    @Test
+    fun `requests turned off in an earlier run and the key still kept, signing out of the music account removes it without anything else of requests being made`() = runBlocking {
+        val behind = SignInStandIn(closing, KEY)
+        val owners = owners()
+        val session = MutableStateFlow<SessionState>(signedIn())
+        val accounts = accounts(session, owners)
+        val first = withTimeout(10_000) { accounts.state.first { it != null } }!!
+        connectedAndSignedIn(first, behind)
+        val token = tokenKept()!!
+        first.requests!!.switch(false)
+        withTimeout(10_000) { first.requestsNow.first { it == RequestsNow.Off } }
+        withTimeout(10_000) { while (File(first.account.dirs.data, "requests.on").exists()) delay(20) }
+        assertEquals(listOf("lidarr-key.sealed", "lidarr-token.sealed"), sealed())
+
+        // The app is started again (another process: only the files are remembered). The
+        // toggle is off, so nothing of requests is made at the sign-in.
+        val later = owners()
+        val again = MutableStateFlow<SessionState>(signedIn())
+        val running = accounts(again, later)
+        val second = withTimeout(10_000) { running.state.first { it != null } }!!
+        delay(300)
+        assertEquals(RequestsNow.Off, second.requestsNow.value)
+        assertEquals(0, later.made)
+        assertEquals(listOf("lidarr-key.sealed", "lidarr-token.sealed"), sealed())
+
+        // Signed out of the music account: what was kept of Lidarr goes with the password,
+        // the token handed back to its service.
+        again.value = SessionState.SignedOut
+        withTimeout(15_000) { while (sealed().isNotEmpty()) delay(20) }
+        withTimeout(15_000) { while (behind.revoked.isEmpty()) delay(20) }
+        assertEquals(listOf(token), behind.revoked.toList())
     }
 
     // ---- with the person's toggle off there is nothing ----------------------------------------------
