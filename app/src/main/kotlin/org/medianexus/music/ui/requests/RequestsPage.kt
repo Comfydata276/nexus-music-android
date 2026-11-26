@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -113,7 +114,8 @@ fun RequestsPage() {
                         }
                         if (waiting.arrived.isNotEmpty()) {
                             item(key = "arrived-title", contentType = "title") { SectionTitle(stringResource(R.string.arrived)) }
-                            items(waiting.arrived, key = { (asked, _) -> "arrived/${asked.libraryAlbum}/${asked.title}" }, contentType = { "arrived" }) { (asked, about) ->
+                            val keys = arrivedKeys(waiting.arrived.map { it.first })
+                            itemsIndexed(waiting.arrived, key = { at, _ -> keys[at] }, contentType = { _, _ -> "arrived" }) { _, (asked, about) ->
                                 ArrivedRow(asked, about, onOpen = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) })
                             }
                         }
@@ -139,6 +141,23 @@ fun RequestsPage() {
                 }
             }
         }
+    }
+}
+
+/**
+ * The Arrived rows' keys, one for each, in their order: the note's own identity (Lidarr's id
+ * for the album and when it was asked for), not what it turned out to be. Two notes met by one
+ * album (the same artist and title under two ids, or one album asked for again after it came)
+ * are two rows, and two keys; a note alike in everything to one above it is numbered, so no
+ * two keys are ever the same.
+ */
+internal fun arrivedKeys(arrived: List<org.medianexus.music.core.Asked>): List<String> {
+    val seen = HashMap<String, Int>()
+    return arrived.map {
+        val own = "arrived/${it.album}/${it.at}/${it.title}/${it.artist}"
+        val before = seen.getOrDefault(own, 0)
+        seen[own] = before + 1
+        if (before == 0) own else "$own#$before"
     }
 }
 
