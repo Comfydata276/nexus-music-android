@@ -266,6 +266,9 @@
     <string name="link_linked_devices">Linked devices (new)</string>
     <string name="link_stop_steering">Stop steering</string>
     <string name="link_pause_device">Pause %1$s</string>
+    <!-- A Play or Add whose songs were looked up first, by the time they were in the music
+         was playing somewhere else (another device steered, or no longer): nothing done. -->
+    <string name="moved_while_looking_up">Nothing was done: where the music plays changed while that was loading.</string>
     <string name="car_open_to_play">When it\'s safe, open Nexus Music on your phone to start playing</string>
     <string name="car_local_network">When it\'s safe, open Nexus Music on your phone and allow it to reach your home network</string>
     <string name="local_network_maybe">Can\'t reach your server. If it\'s on your home network, that may be because Nexus Music isn\'t allowed to reach it.</string>

@@ -124,15 +124,17 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
     // main thread, only if nothing has been chosen since (see PlayerConnection.afterLookup).
     val page = target.page
     val songs: suspend () -> List<Song>? = { page?.songs ?: ui.songsOf(target) }
+    // The music went elsewhere while the songs were looked up: nothing done, and said.
+    val moved = { ui.toast(res.getString(R.string.moved_while_looking_up)) }
     Entry(R.drawable.ic_play_fill, stringResource(R.string.play)) {
         choose {
             if (page != null) page.play()
-            else ui.player.afterLookup(ui.graph.scope, songs) { ui.play(it, 0, target.title, target.key.orEmpty(), anyStart = true) }
+            else ui.player.afterLookup(ui.graph.scope, songs, moved) { ui.play(it, 0, target.title, target.key.orEmpty(), anyStart = true) }
         }
     }
     Entry(R.drawable.ic_list_start, stringResource(R.string.play_next)) {
         choose {
-            ui.player.afterLookup(ui.graph.scope, songs) {
+            ui.player.afterLookup(ui.graph.scope, songs, moved) {
                 ui.player.playNext(it)
                 ui.toast(res.getString(R.string.playing_next))
             }
@@ -140,7 +142,7 @@ private fun CollectionMenu(target: Collection, choose: (() -> Unit) -> Unit) {
     }
     Entry(R.drawable.ic_list_end, stringResource(R.string.add_to_queue)) {
         choose {
-            ui.player.afterLookup(ui.graph.scope, songs) {
+            ui.player.afterLookup(ui.graph.scope, songs, moved) {
                 ui.player.addToQueue(it)
                 ui.toast(res.getString(R.string.added_to_queue))
             }

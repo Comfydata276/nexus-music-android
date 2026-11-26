@@ -380,14 +380,10 @@ class PlayerConnection(
      * [Choices]) and the same account is signed in. Of two taps whose lookups are both out,
      * the later wins, whichever finishes first.
      */
-    fun afterLookup(scope: kotlinx.coroutines.CoroutineScope, lookup: suspend () -> List<Song>?, act: (List<Song>) -> Unit) {
+    fun afterLookup(scope: kotlinx.coroutines.CoroutineScope, lookup: suspend () -> List<Song>?, moved: () -> Unit = {}, act: (List<Song>) -> Unit) {
         val asked = Choices.take()
         val who = accounts.state.value
-        scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
-            val songs = lookup() ?: return@launch
-            if (!Choices.stands(asked) || accounts.state.value !== who) return@launch
-            act(songs)
-        }
+        afterLookup(scope, kotlinx.coroutines.Dispatchers.Main.immediate, lookup, stands = { Choices.stands(asked) && accounts.state.value === who }, aim = { aimOf(steered) }, act = act, moved = moved)
     }
 
     /** Plays these straight after the song playing, ahead of anything else queued. */
@@ -533,6 +529,37 @@ class PlayerConnection(
 
     companion object {
         private const val TICK_MILLIS = 250L
+
+        /**
+         * **Where a press is aimed**: this phone's own player (null), or the player it shows
+         * (a device steered, a friend's jam) by what carries its presses and the name it is
+         * shown by: so another device steered, even with the same hands, is somewhere else.
+         */
+        fun aimOf(steered: Steered): Any? = steered.hands?.let { it to steered.shown.value?.where }
+
+        /**
+         * A look-up, then `act` with what it found, on `on`: only if `stands` still holds then
+         * (nothing chosen since, the same account) and **the press is still aimed where it was
+         * when the finger came down** (review X1). If it is not (steering has begun, ended, or
+         * moved to another device meanwhile), nothing is done anywhere and `moved` is told.
+         */
+        fun afterLookup(
+            scope: kotlinx.coroutines.CoroutineScope,
+            on: kotlin.coroutines.CoroutineContext,
+            lookup: suspend () -> List<Song>?,
+            stands: () -> Boolean,
+            aim: () -> Any?,
+            act: (List<Song>) -> Unit,
+            moved: () -> Unit,
+        ) {
+            val aimed = aim()
+            scope.launch(on) {
+                val songs = lookup() ?: return@launch
+                if (!stands()) return@launch
+                if (aim() != aimed) return@launch moved()
+                act(songs)
+            }
+        }
 
         /**
          * **The entry another player is on, as the seek bar keys a drag by it** (review X3): one

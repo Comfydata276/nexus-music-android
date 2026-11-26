@@ -298,7 +298,7 @@ fun ArtistPage(route: Route.Artist) {
                         emptyList()
                     }
                 }
-            }) { songs ->
+            }, { ui.toast(res.getString(R.string.moved_while_looking_up)) }) { songs ->
                 when {
                     songs.isEmpty() -> ui.toast(res.getString(R.string.page_failed))
                     else -> {
