@@ -2281,14 +2281,24 @@ it up. As on Windows:
   kind, because the short kind ends at three minutes and the wait is five, and a sign-in
   with a second factor can be slow; the permission is held for downloads already, which
   use this kind only before Android 14 and so never share Android 15's six hours a day
-  with it. Started only from a tap, as Android requires; if Android refuses it, the
-  sign-in goes on as it did in 0.6.0.
+  with it. Started only from a tap, as an ordinary service that then makes itself
+  foreground (a start promised as foreground would let Android end the app if the main
+  thread were late to keep the promise); if Android refuses it, the sign-in goes on as it
+  did in 0.6.0. Its notification opens the app with a request code of its own, so that it
+  never lends the player's notification its launch flags, or borrows the player's.
 - **Written limits of the sign-in, not changed:**
   - **The service's code lasts about a minute** (Authentik's default). The code is traded
     once, with the app in front (above). If the app cannot bring itself forward and the
     person takes longer than that to go back to it, the code has expired and the sign-in
     ends "The sign-in service wouldn't finish the sign-in". The stand-in's codes never
     expire. The release notes say: after signing in, come straight back to the app.
+  - **The hold, accepted as it is:** its notification can stay up for the few seconds of
+    the check that follows a sign-in, and until the five-minute limit if the wait's work
+    is cancelled while the door is still waiting (the wait itself is not cut short). With
+    notifications denied it still runs, and is not shown in the drawer.
+  - **The diagnostics line, accepted as it is:** it is the phone's, not the account's (it
+    carries nothing of one); two attempts at once can leave two lines; and a Connect
+    refused at once for an address the app can't use leaves the line before it.
   - **Unproven against a real service and a real phone:** that the phone's browser goes
     from the service's https page to `http://127.0.0.1:<port>/callback` (browsers are
     tightening on public pages that lead to local addresses: Chrome's local-network
