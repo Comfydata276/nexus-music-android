@@ -10,11 +10,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import org.medianexus.music.core.Core
 import org.medianexus.music.core.LidarrAt
@@ -133,6 +136,9 @@ class Requests internal constructor(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** How long the browser is waited for (a test's own). */
     private val waitMillis: Long = Words.signInWaitMillis,
+    /** How long the app's own screen is waited for, to trade a code for its token a second
+     *  time, when the first try was made with the app out of sight (see [waitFor]). */
+    private val secondChanceMillis: Long = 60_000,
 ) {
     private val kept = Kept(File(account.dirs.data, "requests.json"), RequestsSettings.serializer(), RequestsSettings(), note)
     private val settingsNow = MutableStateFlow(RequestsSettings())
@@ -196,8 +202,11 @@ class Requests internal constructor(
         connection++
     }
 
-    /** A sign-in under way: the door the browser comes back through. */
-    private class Attempt(val door: BrowserReturn, val host: String)
+    /** A sign-in under way: the door the browser comes back through, and how many times
+     *  the app's own screen has come to the front since it began ([cameBack]). */
+    private class Attempt(val door: BrowserReturn, val host: String) {
+        val fronts = MutableStateFlow(0)
+    }
 
     private var attempt: Attempt? = null
 
@@ -527,10 +536,29 @@ class Requests internal constructor(
         try {
             if (came is BrowserReturn.Came.GivenUp) return
             val code = came as? BrowserReturn.Came.Code
+            // **The app comes forward first, and trades the code for its token then.** An
+            // app nobody is looking at has its network taken away after a few seconds
+            // (Android 15 and later), and it has been behind the browser for as long as
+            // signing in took: a trade begun there never reaches the service. In front, it
+            // does. (The tab is closed by coming forward; a browser that kept a window of
+            // its own is shown its page when the trade is done, below.)
+            val fronted = mine.fronts.value
+            if (code != null || came is BrowserReturn.Came.TurnedDown) comeBack()
             // Collecting the token is not to be cut off part-way, whatever becomes of the
             // account meanwhile: a token collected for nobody is handed straight back. (It
             // is not left to take for ever either: see `Core.gateFinish`.)
-            val done = if (code != null) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret) } else null
+            var done = if (code != null) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret) } else null
+            if (code != null && done is Outcome.Failed && mine.fronts.value == fronted && secondChanceMillis > 0) {
+                // It failed, and the app's screen has not come to the front since the
+                // browser came back: Android would not let it come forward by itself, so
+                // the trade was tried out of sight. When the person comes back to the app
+                // it is tried once more. (A code is good for a minute or so, and one the
+                // service never saw has not been used.)
+                val back = withTimeoutOrNull(secondChanceMillis) { mine.fronts.first { it > fronted } }
+                if (back != null && turn.withLock { attempt === mine }) {
+                    done = withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret) }
+                }
+            }
             val token = (done as? Outcome.Got)?.value
             // 0: this sign-in has been retired meanwhile; 1: it didn't go through; 2: signed in.
             val ended = withContext(NonCancellable) {
@@ -571,8 +599,6 @@ class Requests internal constructor(
             // down was shown so as it arrived.)
             code?.say(signedIn = ended == 2)
             mine.door.close()
-            // Whoever signed in is looking at the browser: the app comes back in front of it.
-            if (code != null || came is BrowserReturn.Came.TurnedDown) comeBack()
             if (ended == 0) {
                 if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service)) }
                 return
@@ -592,6 +618,7 @@ class Requests internal constructor(
      */
     fun cameBack() {
         val waiting = attempt ?: return
+        waiting.fronts.update { it + 1 }
         scope.launch(io) {
             delay(LATE_MILLIS)
             turn.withLock {

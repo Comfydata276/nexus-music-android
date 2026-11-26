@@ -66,12 +66,21 @@ class RequestsTest {
 
     private fun secretsDir(account: Account) = folder.root.resolve("no-backup/requests/${account.key}")
 
-    private fun requests(account: Account = account(), waitMillis: Long = 60_000): Requests {
+    /** `comesForward`: whether Android lets the app bring its own screen back in front of
+     *  the browser (then the screen says it has come back, as a real one does). */
+    private fun requests(account: Account = account(), waitMillis: Long = 60_000, comesForward: Boolean = true, secondChanceMillis: Long = 20_000): Requests {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
-        return Requests(
+        lateinit var made: Requests
+        made = Requests(
             account, scope, RequestsSecrets(secretsDir(account), Turned, account.server, account.username),
-            afterwards = { work -> behind.launch { work() } }, comeBack = { cameBack.incrementAndGet() }, note = { notes += it }, waitMillis = waitMillis,
+            afterwards = { work -> behind.launch { work() } },
+            comeBack = {
+                cameBack.incrementAndGet()
+                if (comesForward) made.cameBack()
+            },
+            note = { notes += it }, waitMillis = waitMillis, secondChanceMillis = secondChanceMillis,
         )
+        return made
     }
 
     /** A stand-in Lidarr that answers to [KEY], behind nothing. */
@@ -561,13 +570,14 @@ class RequestsTest {
         assertTrue(behind.service.awaitAsked(10_000) { "grant_type=authorization_code" in it.body })
         Thread.sleep(500)
         assertFalse("the browser was shown a page before the sign-in was finished", page.isDone)
-        assertEquals(0, cameBack.get())
+        // (The app has asked to come forward already: in front is where it can trade.)
+        assertEquals(1, cameBack.get())
         assertNull(tokenKept(account))
         slow.countDown()
         val (status, shown) = page.get(10, java.util.concurrent.TimeUnit.SECONDS)
         assertEquals(200, status)
         assertTrue(shown, "You're signed in" in shown)
-        // By the time the browser has its page the token is kept; then the app comes forward.
+        // By the time the browser has its page the token is kept.
         assertNotNull(tokenKept(account))
         assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected })
         assertEquals(1, cameBack.get())
@@ -594,6 +604,39 @@ class RequestsTest {
         } finally {
             org.medianexus.music.core.CoreHttp.signInMillis = 8_000
             behind.held.values.forEach { it.countDown() }
+        }
+    }
+
+    @Test
+    fun `the app comes forward before it trades the code, and a trade made out of sight is tried again when the person comes back`() = runBlocking<Unit> {
+        val behind = Behind()
+        val account = account()
+        // (Android will not let this app come forward by itself: the browser has a window
+        // of its own. And an app out of sight has no network: its trade goes nowhere.)
+        val requests = requests(account, comesForward = false)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        val home = signedInAt(link)
+        val unsent = org.medianexus.music.core.CoreHttp.unsent
+        org.medianexus.music.core.CoreHttp.unsent = { "It didn't answer in time." }
+        try {
+            val page = java.util.concurrent.CompletableFuture.supplyAsync { runCatching { browse(home) } }
+            // It asked to come forward as soon as the browser came back, before any trade.
+            withTimeout(10_000) { while (cameBack.get() == 0) kotlinx.coroutines.delay(20) }
+            kotlinx.coroutines.delay(800)
+            assertTrue(behind.service.asked.none { "grant_type=authorization_code" in it.body })
+            assertEquals(RequestsState.SigningIn(behind.host), requests.state.value)
+            assertNull(tokenKept(account))
+            // The person closes the browser and is back in the app, which has its network again.
+            org.medianexus.music.core.CoreHttp.unsent = unsent
+            requests.cameBack()
+            assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected || it is RequestsState.NeedsSignIn })
+            assertEquals(1, behind.service.asked.count { "grant_type=authorization_code" in it.body })
+            assertNotNull(tokenKept(account))
+            page.get(10, java.util.concurrent.TimeUnit.SECONDS)
+        } finally {
+            org.medianexus.music.core.CoreHttp.unsent = unsent
         }
     }
 

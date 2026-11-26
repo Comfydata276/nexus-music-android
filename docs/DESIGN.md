@@ -2088,13 +2088,24 @@ it up. As on Windows:
   at once; the wait ends when it is due whoever is connected; and shutting the door hangs
   up on everyone it had let in. The pages it shows carry `Referrer-Policy: no-referrer`
   and are kept nowhere.
-- **The page the browser is shown is the truth.** When the browser comes back with a code
-  it is kept waiting until the code has been traded for a token and the token is in the
-  app's keeping, or until that has failed, and is shown "You're signed in" or "The sign-in
-  didn't go through" accordingly; only then does the app come forward. The trade never
-  waits behind other changes (a thread of its own) and each of its requests has eight
-  seconds in all, after which the library says in its own words that the service didn't
-  answer in time: so the browser waits a few seconds at the worst.
+- **The app comes forward first, and trades the code for its token then.** From Android
+  15 an app nobody is looking at has its network taken away after a few seconds, and by
+  the time the browser comes back the app has been behind it for as long as signing in
+  took: a trade begun there never reaches the service (found on the Android 16 emulator,
+  where every sign-in failed with "didn't answer in time" until the order was changed).
+  So the app brings its own screen forward as soon as the browser comes back, which also
+  closes the tab, and trades in front. If Android will not let it come forward (a browser
+  that kept a window of its own) the first trade is made out of sight and may fail; then,
+  if the person comes back to the app within a minute, it is tried once more.
+- **The page the browser is shown is the truth, where there is still a page to show.** A
+  browser that is still there when the trade is done is shown "You're signed in" or "The
+  sign-in didn't go through" accordingly, and not before. (Where the app could not come
+  forward and its first trade failed for want of a network, the page says it didn't go
+  through, and coming back to the app finishes it: the one case in which the page is
+  wrong, and it errs towards sending the person back to the app.) The trade never waits
+  behind other changes (a thread of its own) and each of its requests has eight seconds in
+  all, after which the library says in its own words that the service didn't answer in
+  time.
 - **Accepted, and written down.** The address of the sign-in page goes to whatever the
   person has chosen as the phone's browser, with the `state` and the check of the secret in
   it: that is what a browser is. A hostile app that has been made the phone's browser sees
