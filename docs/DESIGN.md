@@ -2269,6 +2269,40 @@ it up. As on Windows:
   them and could come back through the door with a code of its choosing. It gets no token
   of the person's (the secret itself never leaves the app), and what it could do instead,
   sign the app in as somebody else, is what any hostile browser can do to any sign-in.
+- **The app is kept running while the browser is open** (`SignInService`, 0.6.1). Behind
+  the browser, with nothing of its own in the foreground, Android freezes the app (about a
+  minute on the emulator, often less on a phone): the door is still listening, the system
+  lets the browser's knock in, and nobody answers it. The browser then sits on the sign-in
+  page with its progress bar until it gives up, and the code never reaches the app. That
+  is what 0.6.0 did on the first real Lidarr: the stand-in walks came back within seconds,
+  before the freezer acts. So from the tap that begins a sign-in until its wait has ended,
+  however it ends, the app holds a foreground service of the data-sync kind, with a quiet
+  notification ("Waiting for you to sign in in your browser"). Data-sync and not the short
+  kind, because the short kind ends at three minutes and the wait is five, and a sign-in
+  with a second factor can be slow; the permission is held for downloads already, which
+  use this kind only before Android 14 and so never share Android 15's six hours a day
+  with it. Started only from a tap, as Android requires; if Android refuses it, the
+  sign-in goes on as it did in 0.6.0.
+- **Written limits of the sign-in, not changed:**
+  - **The service's code lasts about a minute** (Authentik's default). The code is traded
+    once, with the app in front (above). If the app cannot bring itself forward and the
+    person takes longer than that to go back to it, the code has expired and the sign-in
+    ends "The sign-in service wouldn't finish the sign-in". The stand-in's codes never
+    expire. The release notes say: after signing in, come straight back to the app.
+  - **Unproven against a real service and a real phone:** that the phone's browser goes
+    from the service's https page to `http://127.0.0.1:<port>/callback` (browsers are
+    tightening on public pages that lead to local addresses: Chrome's local-network
+    access, Samsung Internet's upgrade of http to https); and what follows the sign-in,
+    Lidarr's API through the proxy with the pass, behind Cloudflare, with the phone's own
+    User-Agent. Both work on Windows with the same service; neither has been seen on a
+    phone.
+- **One line in Diagnostics about the last attempt** to connect or sign in (`Trace`,
+  0.6.1), replacing the one before: the step it ended at, how it ended in a fixed word
+  ("timed out", "answered 400", "nobody came back"), how long that step took; for the
+  browser, whether and after how long it came back, whether the app was in front then and
+  whether it was being kept running; whether Lidarr's address is a name or a number, and
+  whether the connection went over IPv4 or IPv6. Never an address, a key, a token, a code
+  or a state, and never a sentence from Lidarr or the service.
 - **What can happen while the browser is open**, each tried on the emulator against a
   stand-in service (docs/TESTING.md, "Requests"):
   - the person signs in: the app comes back in front by itself, connected;
