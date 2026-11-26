@@ -2725,11 +2725,14 @@ How it is built (M1b):
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
   a like the server refused). The newest takes the place of the one showing at once, as
-  0.5.1 and Windows do (`NoteLine`): nothing waits, so after a playlist move and then a
-  removal the Undo on screen is the removal's, the one that works. (M7b queued them instead,
-  and a working Undo then waited behind a stale one; taken out.) An arrival's note may be
-  replaced like any other: the Requests page's Arrived row is its record, and it counts as
-  said once it has been up with the app in front. Three seconds; with a button eight. At
+  0.5.1 and Windows do: nothing waits, so after a playlist move and then a removal the Undo
+  on screen is the removal's, the one that works. (M7b queued them instead, and a working
+  Undo then waited behind a stale one; taken out, and the host is 0.5.1's again.) A note's
+  time starts in the effect that runs once it has been composed, as in 0.5.1, so one that
+  comes while the app is behind has its whole time when the app is back. An arrival's note
+  may be replaced like any other: the Requests page's Arrived row is its record, and it
+  counts as said in that same effect, with the app in front. Three seconds; with a button
+  eight. At
   sign-out or another account the note showing goes. A note's button acts
   on the screen alive when it is pressed (`LiveScreen`), not on the activity that made the
   note, which may have been made again since (the phone turned, the type size changed).

@@ -31,6 +31,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import org.medianexus.music.R
 import org.medianexus.music.ui.theme.Theme
@@ -149,23 +151,38 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
 /**
  * The toast: a few words at the foot of the screen for three seconds, as the Windows app's
  * (a pill in the text colour with the words in the background's). The newest replaces any
- * still showing ([NoteLine]). `account` is whoever is signed in: when it changes, the note
- * showing goes. Screen readers read it out.
+ * still showing. Screen readers read it out.
+ *
+ * 0.5.1's host, with three things added and nothing else changed: `account` is whoever is
+ * signed in, and when it changes the note showing goes; an arrival's note is told it was
+ * seen (`Toast.shown`) in the same effect that starts its time, so only once it is on screen
+ * with the app in front; and a button acts on the screen alive when it is pressed, which is
+ * the callers' part (`LiveScreen`). A note's time starts in the effect that runs after it has
+ * been composed, as in 0.5.1: one that comes while the app is behind starts its time when the
+ * app is back and it is drawn.
  */
 @Composable
 fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier, account: Any? = null) {
     var toast by remember { mutableStateOf(org.medianexus.music.Toasts.Toast("")) }
     var shown by remember { mutableStateOf(false) }
+    var said by remember { mutableIntStateOf(0) }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    val line = remember(lifecycle) { NoteLine(inFront = { lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) }) }
-    // Sign-out, or another account: nothing said under the last one is shown under this one.
-    LaunchedEffect(account) { line.clear() }
-    LaunchedEffect(toasts) { toasts.collect { line.add(it) } }
-    LaunchedEffect(line) {
-        line.run({ note, up ->
-            if (up) toast = note
-            shown = up
-        })
+    LaunchedEffect(toasts) {
+        toasts.collect {
+            toast = it
+            shown = true
+            said++
+        }
+    }
+    // Sign-out, or another account: nothing said under the last one stays up under this one.
+    LaunchedEffect(account) { shown = false }
+    LaunchedEffect(said) {
+        if (said == 0) return@LaunchedEffect
+        // On screen now: an arrival's note has been seen, if the app is in front.
+        if (shown && lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) toast.shown?.invoke()
+        // One with a button stays long enough to press it (Windows' eight seconds).
+        delay(if (toast.action != null) 8_000 else 3_200)
+        shown = false
     }
     val colors = Theme.colors
     Box(modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
@@ -197,7 +214,7 @@ fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: M
                             .heightIn(min = Theme.dimens.touch)
                             .clip(RoundedCornerShape(18.dp))
                             .clickable(role = androidx.compose.ui.semantics.Role.Button, onClickLabel = action) {
-                                line.dismiss()
+                                shown = false
                                 onAction()
                             }
                             .padding(horizontal = 14.dp),

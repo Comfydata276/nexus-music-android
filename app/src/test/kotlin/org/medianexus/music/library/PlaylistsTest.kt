@@ -9,10 +9,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import kotlinx.serialization.builtins.ListSerializer
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -535,35 +533,22 @@ class PlaylistsTest {
     }
 
     @Test
-    fun aMoveThenARemovalTheUndoOnScreenIsTheRemovalsAndWorks() = runBlocking<Unit> {
-        // The notes as the screen shows them (one thread, as on the phone's main thread).
-        val line = org.medianexus.music.ui.parts.NoteLine(now = { System.nanoTime() / 1_000_000 })
-        var showing: org.medianexus.music.Toasts.Toast? = null
-        val host = launch { line.run({ note, up -> showing = if (up) note else null }) }
-        val undone = CompletableDeferred<Boolean>()
-        fun offer(words: String, undo: PlaylistUndo) =
-            line.add(org.medianexus.music.Toasts.Toast(words, "Undo") { assertNull(playlists.undo(undo) { undone.complete(it) }) })
-        try {
-            val page = opened()
-            offer("Moved", undoable { playlists.move(page, 0, 2, it) }!!)
-            yield()
-            assertEquals("Moved", showing?.text)
-            assertEquals("b c a d e", server.now("p1"))
-            // While "Moved" shows, a song is taken out of the same playlist: the move's Undo is
-            // stale now, and the one on screen is at once the removal's.
-            val moved = pages.kept(spec("p1"))!!
-            offer("Removed from the playlist", undoable { playlists.remove(moved, listOf(3), it) }!!)
-            yield()
-            val note = showing!!
-            assertEquals("Removed from the playlist", note.text)
-            line.dismiss()
-            note.onAction!!()
-            // Pressed, it works: the song is back, the move left as it is.
-            assertTrue(withTimeout(10_000) { undone.await() })
-            assertEquals("b c a d e", server.now("p1"))
-        } finally {
-            host.cancel()
-        }
+    fun aMoveThenARemovalTheMovesUndoIsStaleAndTheRemovalsWorks() = runBlocking<Unit> {
+        // The sequence the notes must show rightly: "Moved / Undo", then, while it shows, a
+        // removal from the same playlist. The screen shows the newest note at once (the
+        // removal's); this is that its Undo is the one that works, and the move's is not.
+        val page = opened()
+        val move = undoable { playlists.move(page, 0, 2, it) }!!
+        assertEquals("b c a d e", server.now("p1"))
+        val moved = pages.kept(spec("p1"))!!
+        val removal = undoable { playlists.remove(moved, listOf(3), it) }!!
+        assertEquals("b c a e", server.now("p1"))
+        val before = writes()
+        assertEquals(Unavailable.UNDO_STALE, playlists.undo(move))
+        assertEquals("the stale Undo sends nothing", before, writes())
+        assertTrue(made { playlists.undo(removal, it) })
+        // The song is back, the move left as it is.
+        assertEquals("b c a d e", server.now("p1"))
     }
 
     @Test
