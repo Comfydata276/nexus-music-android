@@ -41,8 +41,17 @@ class CoreHttpTest {
 
     private fun standIn(answer: (StandIn.Asked, StandIn.Reply) -> Unit) = StandIn(answer).also { closing += it }
 
+    /** (The stand-ins for MusicBrainz and ListenBrainz are on this machine: the rule that
+     *  those two are reached only at public addresses is off but where it is what is tested.) */
+    @org.junit.Before
+    fun standInsAreHere() {
+        CoreHttp.publicOnly = false
+    }
+
     @After
     fun tidy() {
+        CoreHttp.publicOnly = true
+        CoreHttp.musicServer = { null }
         closing.forEach { it.close() }
         CoreHttp.unsent = { null }
         CoreHttp.dress = {}
@@ -330,17 +339,124 @@ class CoreHttpTest {
         assertTrue(music.asked.none { it.header("X-Api-Key") != null || it.header("Cookie") != null })
     }
 
+    /** Every address but this machine's own turned to `server`: so that a test can ask for
+     *  `https://musicbrainz.example/…` and be answered by a stand-in. */
+    private fun everythingGoesTo(server: StandIn) {
+        CoreHttp.dress = { client ->
+            client.addInterceptor { chain ->
+                val request = chain.request()
+                if (request.url.host == "127.0.0.1") return@addInterceptor chain.proceed(request)
+                chain.proceed(request.newBuilder().url(request.url.newBuilder().scheme("http").host("127.0.0.1").port(server.port).build()).header("X-Was", request.url.toString()).build())
+            }
+        }
+    }
+
     @Test
-    fun `MusicBrainz is followed where it points, carrying nothing but the app's name`() {
-        val elsewhere = standIn { _, reply -> reply.json("""{"moved":true}""") }
-        val first = standIn { _, reply -> reply.send(302, "", "Location" to "${elsewhere.address}/rest/ping", "Set-Cookie" to "session=abc; Path=/") }
-        val answer = probe(Core.Probe(line = "musicbrainz", url = "${first.address}/ws/2/release", headers = listOf(listOf("Accept", "application/json")))).got()
+    fun `MusicBrainz is followed from https to https, a few times, carrying nothing but the app's name`() {
+        val server = standIn { asked, reply ->
+            val was = asked.header("X-Was").orEmpty()
+            val step = was.substringAfterLast("/step/", "").toIntOrNull()
+            when {
+                was == "https://musicbrainz.example/ws/2/release" -> reply.send(302, "", "Location" to "https://mirror.example/moved", "Set-Cookie" to "session=abc; Path=/")
+                was == "https://mirror.example/moved" -> reply.json("""{"moved":true}""")
+                step != null -> reply.send(307, "", "Location" to "/step/${step + 1}")
+                else -> reply.send(404)
+            }
+        }
+        everythingGoesTo(server)
+        val answer = probe(Core.Probe(line = "musicbrainz", url = "https://musicbrainz.example/ws/2/release", headers = listOf(listOf("Accept", "application/json")))).got()
         assertEquals(200, answer.status)
         assertEquals("""{"moved":true}""", answer.body)
-        val followed = elsewhere.asked.single()
+        val followed = server.asked.last()
+        assertEquals("https://mirror.example/moved", followed.header("X-Was"))
         assertNull(followed.header("Cookie"))
         assertNull(followed.header("Authorization"))
         assertEquals(CoreHttp.NAME, followed.header("User-Agent"))
+        assertEquals("application/json", followed.header("Accept"))
+
+        // Sent round and round, it is followed five times and then the answer stands.
+        val before = server.asked.size
+        val round = probe(Core.Probe(line = "listenbrainz", url = "https://listenbrainz.example/step/0")).got()
+        assertEquals(307, round.status)
+        assertEquals((0..5).map { "https://listenbrainz.example/step/$it" }, server.asked.drop(before).map { it.header("X-Was") })
+    }
+
+    @Test
+    fun `a public service's answer cannot send a request off https, into a private network or to the music server, and a POST is never sent on`() {
+        var location = ""
+        var status = 302
+        val server = standIn { asked, reply -> if ("/start" in asked.target) reply.send(status, "", "Location" to location) else reply.json("""{"reached":true}""") }
+        everythingGoesTo(server)
+        CoreHttp.publicOnly = true
+        CoreHttp.musicServer = { "https://music.example:443" }
+        fun asked(line: String = "musicbrainz", method: String = "GET", from: String = "https://musicbrainz.example/start"): Core.Probed {
+            val before = server.asked.size
+            val answer = probe(Core.Probe(line = line, method = method, url = from, body = if (method == "GET") null else "ids=1")).got()
+            assertEquals("$method $from sent on to $location: ${server.asked.drop(before).map { it.header("X-Was") }}", 1, server.asked.size - before)
+            return answer
+        }
+        for (to in listOf(
+            "http://musicbrainz.example/plain",
+            "http://127.0.0.1:${server.port}/rest/ping",
+            "https://127.0.0.1/",
+            "https://localhost/",
+            "https://[::1]/",
+            "https://10.0.0.7/",
+            "https://192.168.1.10:4533/rest/ping",
+            "https://172.16.5.5/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://100.64.0.1/",
+            "https://[fd00::1]/",
+            "https://music.example/rest/ping?u=someone",
+            "ftp://musicbrainz.example/",
+        )) {
+            location = to
+            assertEquals(to, 302, asked().status)
+        }
+        // From plain http nothing is followed at all, wherever it points.
+        location = "https://mirror.example/fine"
+        assertEquals(302, asked(from = "http://musicbrainz.example/start").status)
+        // A POST is never sent on, whatever the answer's number (ListenBrainz is asked by POST).
+        for (number in listOf(301, 302, 303, 307, 308)) {
+            status = number
+            assertEquals(number, asked(line = "listenbrainz", method = "POST", from = "https://listenbrainz.example/start").status)
+        }
+        // (And what may be followed still is.)
+        status = 302
+        val before = server.asked.size
+        assertEquals(200, probe(Core.Probe(line = "musicbrainz", url = "https://musicbrainz.example/start")).got().status)
+        assertEquals(2, server.asked.size - before)
+    }
+
+    @Test
+    fun `the public services are reached only at public addresses, and nothing of requests is ever sent to the music server`() {
+        val music = standIn { _, reply -> reply.json("{}") }
+        val place = Core.lidarrPlace(music.address)!!
+        // A public service's own address inside a network: not asked at all.
+        CoreHttp.publicOnly = true
+        val inside = Outcome.Failed("It pointed at an address inside a private network.")
+        assertEquals(inside, probe(Core.Probe(line = "musicbrainz", url = "${music.address}/ws/2/release")))
+        assertEquals(inside, probe(Core.Probe(line = "listenbrainz", url = "http://localhost:${music.port}/1/popularity")))
+        assertEquals(inside, probe(Core.Probe(line = "musicbrainz", url = "https://192.168.0.2/x")))
+        assertTrue(music.asked.isEmpty())
+        CoreHttp.publicOnly = false
+
+        // The music server: whatever answers at Lidarr's address points there, and the look
+        // the library takes at where a redirect points is not sent.
+        CoreHttp.musicServer = { place }
+        val home = "It was for the music server's own address, which requests are never sent to."
+        val lidarr = standIn { _, reply -> reply.send(302, "", "Location" to "${music.address}/rest/ping?u=someone") }
+        assertEquals(Outcome.Failed(home), probe(Core.Probe(url = "${music.address}/rest/ping")))
+        assertEquals(Outcome.Failed(home), probe(Core.Probe(line = "musicbrainz", url = "${music.address}/ws/2/release")))
+        val found = runBlocking { Core.gateFind(lidarr.address) }
+        assertTrue("$found", found is Outcome.Failed)
+        assertTrue(music.asked.isEmpty())
+        // The one exception is the person's own doing: Lidarr's address, as they typed it,
+        // is on the music server's host and port (one proxy, two paths).
+        val typedThere = runBlocking { Core.lidarrVersion(LidarrAt("${music.address}/lidarr", "the-key")) }
+        assertEquals(1, music.asked.size)
+        assertEquals("GET /lidarr/api/v1/system/status", music.asked.single().line)
+        assertTrue("$typedThere", typedThere is Outcome.Failed)
     }
 
     // ---- limits ---------------------------------------------------------------------------------

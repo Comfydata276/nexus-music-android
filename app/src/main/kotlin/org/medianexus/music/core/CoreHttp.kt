@@ -1,6 +1,7 @@
 package org.medianexus.music.core
 
 import java.io.IOException
+import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.LinkedBlockingQueue
@@ -18,6 +19,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.ConnectionPool
+import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType
@@ -41,8 +43,10 @@ import org.medianexus.music.net.netTrouble
  * server's is anywhere near them: no sign-in, no cookies, no interceptors, none of its
  * connections. The limits are the Windows app's for the same calls (eight seconds to
  * connect, thirty for an answer to begin, and whatever shorter limit the library puts on
- * one call), and so is the rule about redirects: never followed for Lidarr and its sign-in,
- * where a redirect is how a sign-in shows itself; followed for MusicBrainz and ListenBrainz.
+ * one call). Redirects are never followed for Lidarr and its sign-in, where a redirect is
+ * how a sign-in shows itself; for MusicBrainz and ListenBrainz they are followed by hand
+ * and narrowly ([onward]): `https` to `https`, never into a private network or to the
+ * music server, never for a `POST`, five times at the most.
  * It goes by the app's own name ([NAME]).
  *
  * **Nothing here is ever logged**: not a request, not an answer, not an exception's own
@@ -124,6 +128,22 @@ internal object CoreHttp {
      */
     @Volatile var unsent: () -> String? = { null }
 
+    /**
+     * **The music server's own place** (its scheme, host and port, as [originOf] has them),
+     * or null while nobody is signed in. This client sends nothing there, by a redirect or
+     * otherwise: the music server has a client of its own, with its sign-in, and nothing
+     * that answers at Lidarr's address or a public service's may point this one at it. The
+     * one exception is the person's own doing: a Lidarr whose address they typed is on that
+     * very host and port (behind one proxy, by different paths), whose requests are bound
+     * to it. Set by whoever owns the signed-in account.
+     */
+    @Volatile var musicServer: () -> String? = { null }
+
+    /** For the tests, which stand in for MusicBrainz and ListenBrainz on this machine:
+     *  whether those two may be reached only at public addresses. Nothing in the app
+     *  changes it. */
+    @Volatile var publicOnly = true
+
     /** For the tests: something done to the client as it is built (a stand-in for a service
      *  whose address the library fixes). Nothing in the app sets it. */
     @Volatile var dress: (OkHttpClient.Builder) -> Unit = {}
@@ -139,11 +159,13 @@ internal object CoreHttp {
     private const val TOO_LARGE = "The answer was larger than 10 MB."
     private const val GONE = "The answer is no longer there to read."
     private const val STOPPED_WORDS = "Stopped."
+    private const val HOME = "It was for the music server's own address, which requests are never sent to."
+    private const val INSIDE = "It pointed at an address inside a private network."
     private const val ELSEWHERE = "The request would have carried a key to an address it wasn't given for, so it wasn't sent."
 
     /** Why a request failed on its way, to end the library's sentence with ("Couldn't reach
      *  Lidarr. …"). Never the exception's own words, which name the host and can quote more. */
-    private fun words(error: IOException): String = when (netTrouble(error)) {
+    private fun words(error: IOException): String = if (error is NotPublic) INSIDE else when (netTrouble(error)) {
         NetTrouble.REDIRECT -> "It tried to send the request on somewhere it shouldn't go."
         NetTrouble.CERTIFICATE_FOR_ANOTHER -> "Its certificate is for a different address."
         NetTrouble.CERTIFICATE_NOT_TRUSTED -> "Its certificate isn't one this phone trusts."
@@ -183,6 +205,70 @@ internal object CoreHttp {
     private fun carriesSecret(asked: Asked): Boolean =
         asked.method != "GET" || asked.headers.any { it[0].equals("X-Api-Key", ignoreCase = true) || it[0].equals("Authorization", ignoreCase = true) }
 
+    // ---- where the public services may lead ----------------------------------------------------
+
+    /** How many times a public service may send a request on. */
+    private const val ONWARD = 5
+
+    private class NotPublic : IOException("not a public address")
+
+    /** Whether an address is inside some network rather than on the public internet: this
+     *  phone itself, the link it is on, a private range, a carrier's shared one. */
+    private fun isInside(address: InetAddress): Boolean {
+        val bytes = address.address
+        return address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress || address.isSiteLocalAddress || address.isMulticastAddress ||
+            // (fc00::/7, the private range of IPv6; 100.64.0.0/10, shared by carriers.)
+            (bytes.size == 16 && (bytes[0].toInt() and 0xfe) == 0xfc) ||
+            (bytes.size == 4 && (bytes[0].toInt() and 0xff) == 100 && (bytes[1].toInt() and 0xc0) == 64)
+    }
+
+    /** The same for a host written as numbers (which is never looked up, so [Public] never
+     *  sees it), and for the names every machine has for itself. */
+    private fun isInside(host: String): Boolean {
+        val name = host.lowercase().trimEnd('.')
+        if (name == "localhost" || name.endsWith(".localhost")) return true
+        if (!name.contains(':') && !name.all { it.isDigit() || it == '.' }) return false
+        return try {
+            isInside(InetAddress.getByName(host))
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    /** Names are looked up as the phone looks them up, and one that turns out to be inside
+     *  a network is refused: for MusicBrainz and ListenBrainz, which are public services
+     *  and have no business there, wherever an answer of theirs points. */
+    private object Public : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val found = Dns.SYSTEM.lookup(hostname)
+            if (publicOnly && found.any(::isInside)) throw NotPublic()
+            return found
+        }
+    }
+
+    /**
+     * Where a public service's answer sends a request on to, **if it may be followed**; null
+     * if the answer is to go back to the library as it came. Followed by hand, one step at
+     * a time, so that each step is judged:
+     *
+     * - only for MusicBrainz and ListenBrainz (Lidarr and its sign-in are never followed: a
+     *   redirect is how a sign-in shows itself, and the request carries Lidarr's key);
+     * - only a `GET` (a `POST` sent on would carry its body with it);
+     * - only from `https` to `https`;
+     * - never to this phone, the link it is on or a private network, and never to the
+     *   music server;
+     * - [ONWARD] times at the most.
+     */
+    private fun onward(asked: Asked, from: HttpUrl, response: Response, steps: Int): HttpUrl? {
+        if (asked.line == "lidarr" || asked.method != "GET" || steps >= ONWARD) return null
+        if (response.code !in intArrayOf(301, 302, 303, 307, 308)) return null
+        val to = response.header("Location")?.let(from::resolve) ?: return null
+        if (!from.isHttps || !to.isHttps) return null
+        if (publicOnly && isInside(to.host)) return null
+        if (origin(to) == musicServer()) return null
+        return to
+    }
+
     // ---- the client ---------------------------------------------------------------------------
 
     /** Each service's connections: kept as long as the Windows app keeps them, and no longer
@@ -198,11 +284,12 @@ internal object CoreHttp {
             .also(dress)
             .build()
 
-        private fun line(idleSeconds: Long, follows: Boolean): Pair<OkHttpClient, OkHttpClient> {
+        /** `public`: a service on the public internet, reached nowhere else ([Public]).
+         *  No client here follows a redirect by itself: see [onward]. */
+        private fun line(idleSeconds: Long, public: Boolean): Pair<OkHttpClient, OkHttpClient> {
             val looks = base.newBuilder()
                 .connectionPool(ConnectionPool(4, idleSeconds, TimeUnit.SECONDS))
-                .followRedirects(follows)
-                .followSslRedirects(follows)
+                .apply { if (public) dns(Public) }
                 .build()
             // A request that changes something is sent once: never again by the client on
             // its own, which could not know whether the first had been acted on. (Not after
@@ -211,9 +298,9 @@ internal object CoreHttp {
             return looks to looks.newBuilder().retryOnConnectionFailure(false).build()
         }
 
-        private val lidarr = line(300, follows = false)
-        private val musicbrainz = line(12, follows = true)
-        private val listenbrainz = line(50, follows = true)
+        private val lidarr = line(300, public = false)
+        private val musicbrainz = line(12, public = true)
+        private val listenbrainz = line(50, public = true)
 
         fun of(line: String, changes: Boolean): OkHttpClient? {
             val pair = when (line) {
@@ -516,6 +603,11 @@ internal object CoreHttp {
         // A secret goes to the place it was given for and nowhere else, whatever address the
         // library was handed or made of it.
         if (asked.bound != null && carriesSecret(asked) && origin(url) != asked.bound) return failed(ELSEWHERE)
+        // Nothing goes to the music server from here, unless that is where the person
+        // said Lidarr is.
+        val home = musicServer()
+        if (home != null && origin(url) == home && asked.bound != home) return failed(HOME)
+        if (asked.line != "lidarr" && publicOnly && isInside(url.host)) return failed(INSIDE)
         val body = asked.body.orEmpty().encodeToByteArray()
         val request = Request.Builder().url(url).apply {
             var named = false
@@ -536,17 +628,34 @@ internal object CoreHttp {
             }
         }.build()
         val client = lines().of(asked.line, changes = asked.method != "GET") ?: return failed(NOT_MADE)
-        val call = client.newCall(request)
-        val allowed = if (doing == null) nobodysMillis else doing.enter(call)
-        if (allowed == Doing.REFUSED) return stopped
-        val limit = listOfNotNull(asked.patience, allowed).minOrNull()
-        if (limit != null) call.timeout().timeout(limit, TimeUnit.MILLISECONDS)
-        val response = try {
-            call.execute()
-        } catch (e: IOException) {
+        var going = request
+        var steps = 0
+        while (true) {
+            val call = client.newCall(going)
+            val allowed = if (doing == null) nobodysMillis else doing.enter(call)
+            if (allowed == Doing.REFUSED) return stopped
+            val limit = listOfNotNull(asked.patience, allowed).minOrNull()
+            if (limit != null) call.timeout().timeout(limit, TimeUnit.MILLISECONDS)
+            val response = try {
+                call.execute()
+            } catch (e: IOException) {
+                doing?.leave(call)
+                return if (doing?.isStopped == true) stopped else failed(words(e))
+            }
+            // (Sent on by a public service: followed here, a step at a time, or not at all.)
+            val next = onward(asked, going.url, response, steps)
+            if (next == null) return answered(response, call, doing)
+            try {
+                response.close()
+            } catch (_: Exception) {
+            }
             doing?.leave(call)
-            return if (doing?.isStopped == true) stopped else failed(words(e))
+            steps++
+            going = going.newBuilder().url(next).build()
         }
+    }
+
+    private fun answered(response: Response, call: Call, doing: Doing?): ByteArray {
         val id = nextBody.incrementAndGet()
         bodies[id] = Held(response, call, doing)
         val headers = response.headers.map { (name, value) -> listOf(name, value.takeIf(::isText)) }
