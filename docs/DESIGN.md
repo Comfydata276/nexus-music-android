@@ -2129,6 +2129,19 @@ it up. As on Windows:
 - **A sign-in that is open** is the library's `gate::Session`, kept on the Rust side under
   a number. Its own requests are nobody's (see "Stopping"): no screen left can cut a
   renewal off.
+- **One owner of what is kept for an account, at a time.** Signing out of the music server
+  lets the account's requests go behind the person's back: what Lidarr was still being
+  asked is seen through and written down, then the key is forgotten and the sign-in's
+  token handed back to its service, which can take seconds. Signing straight back in to
+  **the same account** waits for that (`Accounts.awaitLeft`): the account's objects are
+  not made again while its old self could still read or write the same files, so there is
+  never a second sign-in owner beside the first, and never two lists over one
+  `asked.json`. The wait is fifteen seconds at the longest. If the old self has not
+  finished by then (a goodbye to a service that does not answer, Lidarr taking a minute
+  over an album) it is **cut off from the files**: its secrets are forgotten at once, as
+  leaving forgets them, and whatever it still does reads, writes and deletes nothing. What
+  it had under way finishes against Lidarr and the service, and leaves no note. Another
+  account signed in meanwhile waits for nothing: its files are its own.
 - **One sign-in owns the token that is kept, at a time.** Every sign-in opened here has a
   number of the phone's own, and only the one whose token the file holds may write that
   file or delete it. Signing out and in again at once is where it matters: the old

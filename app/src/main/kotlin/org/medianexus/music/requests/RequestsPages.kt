@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.takeWhile
@@ -260,6 +261,7 @@ class RequestsPages internal constructor(
     /** Changes to Lidarr under way whose outcome is still to be written down: the place
      *  outlasts the account for as long as there are any (see [outlasting]). */
     private var owed = 0
+    private val owedNow = MutableStateFlow(0)
     private var suggested: KeptSuggestions? = null
     @Volatile private var haveLibrary = false
     private val looking = Mutex()
@@ -304,7 +306,7 @@ class RequestsPages internal constructor(
      * The place is kept open until then, though the account may have gone.
      */
     private fun <T, R> outlasting(begun: CoreHttp.Begun<Outcome<T>>, finish: suspend (Outcome<T>) -> R): Deferred<R?> {
-        synchronized(this) { owed++ }
+        synchronized(this) { owedNow.value = ++owed }
         val done = CompletableDeferred<R?>()
         afterwards {
             val ended = runCatching {
@@ -322,13 +324,27 @@ class RequestsPages internal constructor(
                 }
             }
             val last = synchronized(this) {
-                owed--
+                owedNow.value = --owed
                 if (owed == 0 && gone) place.also { place = null } else null
             }
             last?.let { runCatching { Core.placeClose(it) } }
             done.completeWith(ended)
         }
         return done
+    }
+
+    /** Returns when nothing that changes Lidarr is still to be seen through and written
+     *  down: what an account's leaving waits for before its sign-in is let go of. */
+    suspend fun settled() {
+        owedNow.first { it == 0 }
+    }
+
+    /** **Cut off from the account's files**, at once (see `Requests.cutOff`): what this
+     *  still has under way is finished against Lidarr and written nowhere. */
+    fun cutOff() {
+        askedFile.cut = true
+        suggestionsFile.cut = true
+        arrivalsFile.cut = true
     }
 
     /** Waits for something begun with [outlasting], as its caller. A caller that goes away

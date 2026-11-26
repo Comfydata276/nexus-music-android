@@ -668,13 +668,43 @@ class AccountGraph(
         if (report) scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { runCatching { submit(Pending.Played(songId, atMillis)) } }
     }
 
+    private val leftNow = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /**
+     * Returns when this account, having been closed, **has finished leaving**: nothing of
+     * it will touch what is kept for the account again (its requests' secrets forgotten,
+     * its goodbye to a sign-in service said, what it had asked of Lidarr written down).
+     * Until then the same account is not made again ([Accounts]).
+     */
+    suspend fun left() = leftNow.await()
+
+    /** Cuts this account, closed and too long in leaving, off from what is kept for it:
+     *  see `Requests.cutOff`. */
+    fun cutOff() {
+        requests?.cutOff()
+        requestsPages?.cutOff()
+    }
+
     fun close() {
         closed = true
         synchronized(going) { gone = true }
         // The account's secrets for requests go with its password: the key forgotten, the
         // sign-in's token handed back to its service. (After this account's own work has
-        // been cancelled, so on the app's.)
-        requests?.let { mine -> afterwards { mine.leave() } }
+        // been cancelled, so on the app's.) First whatever is still changing Lidarr is
+        // seen through and written down: it needs the sign-in that leaving lets go of.
+        val mine = requests
+        if (mine == null) {
+            leftNow.complete(Unit)
+        } else {
+            afterwards {
+                try {
+                    requestsPages?.settled()
+                    mine.leave()
+                } finally {
+                    leftNow.complete(Unit)
+                }
+            }
+        }
         downloads?.release()
         // Everything it holds written, then the file let go for whoever opens it next.
         playLog.close()

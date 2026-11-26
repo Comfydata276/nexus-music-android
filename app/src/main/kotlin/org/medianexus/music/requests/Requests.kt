@@ -2,8 +2,10 @@ package org.medianexus.music.requests
 
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -186,6 +188,10 @@ class Requests internal constructor(
 
     /** Only the newest check counts. */
     private var checks = 0
+
+    /** The last goodbye to a sign-in service begun here (a token handed back), which
+     *  finishes behind whoever began it: what [leave] waits for. */
+    @Volatile private var goodbye: Deferred<Unit>? = null
 
     /**
      * **Which connection this is**: a number that moves whenever the address, the key or
@@ -666,6 +672,8 @@ class Requests internal constructor(
         // (Handed back to the service it was given for, and to no other: what the client is
         // told is the place that was kept with the token.)
         val place = was?.place ?: onFile?.origin
+        val said = CompletableDeferred<Unit>()
+        goodbye = said
         afterwards {
             // Closing waits out a renewal that is under way, so the token handed back is
             // the one that is good now.
@@ -675,6 +683,7 @@ class Requests internal constructor(
             // back (its first deletion failed, say). Anything else there by now is a later
             // sign-in's, and is not this one's to take.
             synchronized(owner) { if (token != null && secrets.token()?.secret == token) secrets.forgetToken() }
+            said.complete(Unit)
         }
     }
 
@@ -698,6 +707,10 @@ class Requests internal constructor(
      * The account is signing out of the music server: its secrets go with its password. The
      * sign-in's token is handed back to the service and the key is forgotten; where Lidarr
      * is stays in the account's folder with its other things.
+     *
+     * **Returns when it is all done**, the goodbye to the sign-in service included: until
+     * then this is still the owner of what is kept for the account, and the account is not
+     * made again (see `Accounts`).
      */
     suspend fun leave() = withContext(NonCancellable + io) {
         turn.withLock {
@@ -709,6 +722,22 @@ class Requests internal constructor(
             if (!unreadable) write(settingsNow.value.copy(signedIn = "", signingIn = false))
             stateNow.value = RequestsState.Off
         }
+        goodbye?.await()
+    }
+
+    /**
+     * **Cut off from everything that is kept**, at once: the account is being made again
+     * and this, its old self, has taken too long to leave. Its secrets are forgotten (as
+     * leaving forgets them) and from here it reads, writes and deletes nothing. What it
+     * still has under way finishes against Lidarr and the sign-in service as it would, and
+     * leaves no trace on the phone.
+     */
+    fun cutOff() {
+        synchronized(owner) {
+            live = 0
+            secrets.cutOff()
+        }
+        kept.cut = true
     }
 
     private companion object {

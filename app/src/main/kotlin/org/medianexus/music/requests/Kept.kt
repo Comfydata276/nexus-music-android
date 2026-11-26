@@ -20,6 +20,10 @@ internal class Kept<T>(private val file: File, private val shape: KSerializer<T>
     private var damaged = false
     private var unreadable = false
 
+    /** Whoever holds this may write nothing more: the file is another owner's now (see
+     *  `Accounts`: an account made again while its old self was still leaving). */
+    @Volatile var cut = false
+
     /** What is kept; [nothing] if nothing is; null if it is there and couldn't be read. */
     @Synchronized
     fun read(): T? {
@@ -46,7 +50,7 @@ internal class Kept<T>(private val file: File, private val shape: KSerializer<T>
      *  there couldn't be read, or what it held couldn't be kept aside first). */
     @Synchronized
     fun write(value: T): Boolean {
-        if (unreadable) return false
+        if (unreadable || cut) return false
         return try {
             if (damaged) {
                 java.nio.file.Files.copy(file.toPath(), File(file.path + ".damaged").toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)

@@ -31,6 +31,24 @@ class RequestsSecrets(dir: File, private val box: SecretBox, server: String, use
     }
 
     private val who = accountKey(server, username)
+
+    /** Whoever holds this may read, write and delete nothing more: what is kept is another
+     *  owner's now ([cutOff]). */
+    @Volatile private var cut = false
+
+    /**
+     * Cuts whoever holds this off from what is kept, **after forgetting both secrets**: for
+     * an account that is being made again while its old self has still not finished
+     * leaving (see `Accounts`). The key and the token go with the old self, as they do
+     * when it leaves in good time, and nothing it does afterwards touches a file.
+     */
+    @Synchronized
+    fun cutOff() {
+        gone(keyFile)
+        gone(tokenFile)
+        cut = true
+    }
+
     private val keyFile = File(dir, "lidarr-key.sealed")
     private val tokenFile = File(dir, "lidarr-token.sealed")
 
@@ -49,9 +67,12 @@ class RequestsSecrets(dir: File, private val box: SecretBox, server: String, use
 
     fun forgetToken(): Boolean = gone(tokenFile)
 
-    private fun gone(file: File): Boolean = file.delete() || !file.exists()
+    @Synchronized
+    private fun gone(file: File): Boolean = !cut && (file.delete() || !file.exists())
 
+    @Synchronized
     private fun seal(file: File, origin: String, secret: String): Boolean {
+        if (cut) return false
         // (A place is one line. One that isn't can't have come from an address.)
         if (origin.isEmpty() || '\n' in origin) return false
         // (Wiped once used, as the password's are: the String it arrived as can't be.)
@@ -71,7 +92,9 @@ class RequestsSecrets(dir: File, private val box: SecretBox, server: String, use
         }
     }
 
+    @Synchronized
     private fun open(file: File): Bound? {
+        if (cut) return null
         val sealed = try {
             file.readBytes()
         } catch (_: IOException) {
