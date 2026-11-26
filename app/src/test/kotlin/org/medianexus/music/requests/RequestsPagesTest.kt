@@ -172,12 +172,60 @@ class RequestsPagesTest {
                 }
                 asked.method == "GET" && path == "album/7" -> reply.json("""{"id":7,"monitored":$wanted}""")
                 asked.method == "POST" && path == "command" -> reply.json("{}")
-                path.startsWith("wanted/missing") -> reply.json(if (wanted) """{"totalRecords":1,"records":[{"id":7,"title":"One Song","artist":{"artistName":"Quillon Vane"}}]}""" else """{"records":[]}""")
+                path.startsWith("wanted/missing") -> reply.json(if (wanted) """{"totalRecords":1,"records":[{"id":7,"title":"One Song","foreignAlbumId":"single-1","artist":{"artistName":"Quillon Vane"}}]}""" else """{"records":[]}""")
                 path.startsWith("queue") -> reply.json("""{"records":[]}""")
                 else -> reply.send(404)
             }
         }
         return { wanted }
+    }
+
+    // ---- an album is forgotten by what it is ----------------------------------------------------------
+
+    @Test
+    fun `of two albums of one title by one artist, the one taken off the list is forgotten and the other is still watched for`() = runBlocking {
+        // Two releases called "Live" by the same artist, both asked for through this phone
+        // in an earlier run, both still on Lidarr's list.
+        val dir = File(folder.root, "data").apply { mkdirs() }
+        fun note(album: String, at: Long) = """{"album":"$album","title":"Live","artist":"Quillon Vane","at":$at,"song":"","fills":[],"arrived":0,"libraryAlbum":"","cover":"","unfilled":false}"""
+        File(dir, "asked.json").writeText("[${note("live-1", start - 20)},${note("live-2", start - 10)}]")
+        route("/api/v1/") { asked, reply ->
+            val path = asked.target.substringAfter("/api/v1/")
+            when {
+                path == "system/status" -> reply.json("""{"version":"2.9.6.4552"}""")
+                path.startsWith("wanted/missing") -> reply.json(
+                    """{"totalRecords":2,"records":[{"id":7,"title":"Live","foreignAlbumId":"live-1","artist":{"artistName":"Quillon Vane"}},""" +
+                        """{"id":8,"title":"Live","foreignAlbumId":"live-2","artist":{"artistName":"Quillon Vane"}}]}""",
+                )
+                path.startsWith("queue") -> reply.json("""{"records":[]}""")
+                asked.method == "PUT" && path == "album/monitor" -> reply.json("[]")
+                else -> reply.send(404)
+            }
+        }
+        val made = made()
+        val pending = got(made.pages.onTheirWay()).pending.map { it.first }
+        assertEquals(listOf(7L to "live-1", 8L to "live-2"), pending.map { it.id to it.album })
+        // The second is taken off the list: its note goes, and the first's stays.
+        assertTrue(made.pages.cancel(8, "Live", connection = made.now()).done)
+        assertEquals(""""albumIds":[8]""", Regex(""""albumIds":\[\d+]""").find(server.asked.last { it.method == "PUT" }.body)?.value)
+        assertEquals(listOf("live-1"), made.pages.asked.value.map { it.album })
+        val kept = File(dir, "asked.json").readText()
+        assertTrue(kept, "\"live-1\"" in kept && "\"live-2\"" !in kept)
+    }
+
+    @Test
+    fun `an album taken off the list can be asked for again, its offer no longer says it was asked for`() = runBlocking {
+        lidarrWithASingle()
+        val made = made()
+        suspend fun asking() = made.pages.asking("single-1", "One Song", by = "Quillon Vane", song = "", kind = "Single", connection = made.now())
+        assertTrue(asking() is Asking.Ask)
+        assertTrue(made.pages.request("single-1", "One Song", connection = made.now()).done)
+        assertEquals(Asking.Already("That one has already been asked for."), asking())
+        val pending = got(made.pages.onTheirWay()).pending.single().first
+        assertTrue(made.pages.cancel(pending.id, pending.title, connection = made.now()).done)
+        // Off the list, forgotten, and the offer is as it was before it was asked for.
+        assertEquals(emptyList<Any>(), made.pages.asked.value)
+        assertTrue("${asking()}", asking() is Asking.Ask)
     }
 
     @Test

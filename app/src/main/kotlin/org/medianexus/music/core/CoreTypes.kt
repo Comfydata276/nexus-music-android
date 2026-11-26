@@ -288,9 +288,11 @@ data class Offer(
 
 /** An album on Lidarr's list that hasn't fully arrived (`lidarr::Pending`): `id` is
  *  Lidarr's number for it, `progress` how much has been fetched in hundredths, null if it
- *  isn't being fetched yet. */
+ *  isn't being fetched yet. `album` is its name on MusicBrainz, which is Lidarr's too
+ *  (`foreignAlbumId`): **what tells it from another album of the same title**, and what
+ *  the note of having asked for it is known by. */
 @Serializable
-data class Pending(val id: Long, val title: String, val artist: String, val progress: Int? = null)
+data class Pending(val id: Long, val title: String, val artist: String, val progress: Int? = null, val album: String = "")
 
 /** A song on an album, by name only (`musicbrainz::TrackName`). */
 @Serializable

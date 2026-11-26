@@ -2289,6 +2289,15 @@ What is the phone's own:
   watched for again; while the app runs it is not, and the next thing written down is
   written without it). Both are the library's coming sentences, word for word, and are
   the phone's own constants until its library has them.
+- **An album is forgotten by what it is** (the library's `asked::forget`, from the
+  Windows app's 0.40.11). An album taken off Lidarr's list is no longer watched for, and
+  which note that is goes by Lidarr's own name for the album (its MusicBrainz id, which
+  the list on its way now carries: `Pending.album`) where the note has one too, and
+  otherwise by its title **and** who it is by: another album of the same title, by the
+  same artist even, is still watched for. Its offer then no longer says it was asked
+  for (among what the connection it was taken off under has been offered), so it can
+  be asked for again. Which notes of arrivals are news is likewise the library's to say,
+  by the note itself (`asked::news`).
 - **A row acts on the connection it came from.** The connection has a number of the
   phone's own, which moves whenever the address, the key or the sign-in changes
   (`Requests.moved`), and starts somewhere no earlier run of the app can have been.

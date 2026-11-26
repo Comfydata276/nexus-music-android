@@ -392,6 +392,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_gateHost<'l>(env: JNI
 struct Pending {
     /// Lidarr's number for it: what `lidarrCancel` takes.
     id: i64,
+    /// Its name on MusicBrainz, which is Lidarr's too: what tells it from another album of
+    /// the same title.
+    album: String,
     title: String,
     artist: String,
     /// How much of it has been fetched, in hundredths; none if it isn't being fetched yet.
@@ -404,7 +407,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrPending<'l>(env
     call_private(env, input, |given: Of| {
         let _during = During::new(given.operation);
         let pending = given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.pending());
-        Ok(outcome(pending.map(|all| all.into_iter().map(|one| Pending { id: one.id, title: one.title, artist: one.artist, progress: one.progress }).collect::<Vec<_>>())))
+        Ok(outcome(pending.map(|all| all.into_iter().map(|one| Pending { id: one.id, album: one.album, title: one.title, artist: one.artist, progress: one.progress }).collect::<Vec<_>>())))
     })
 }
 

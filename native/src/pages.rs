@@ -549,7 +549,9 @@ struct ForgetIn {
     artist: String,
 }
 
-/// `asked::forget`: stops watching for an album that has been taken off Lidarr's list.
+/// `asked::forget`: stops watching for an album that has been taken off Lidarr's list, by
+/// what it is: Lidarr's own name for it where the note and the caller both have one, and
+/// otherwise its title and who it is by.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_askedForget<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |given: ForgetIn| {
@@ -600,7 +602,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_askedArrivals<'l>(env
         let library = place.library();
         let ((told, changed), asked) = place.change(|items| {
             let arrivals: Vec<Arrival> = asked::arrivals(items, given.now, |title, artist| library.same_album(title, artist), |_| None);
-            let told: Vec<Asked> = arrivals.iter().filter_map(|arrival| items.get(arrival.place).filter(|asked| asked.arrived == 0).cloned()).collect();
+            // (Which notes are news is the library's to say, by the note itself and not
+            // by where it stood in the list: `asked::news`.)
+            let told: Vec<Asked> = asked::news(items, &arrivals);
             if arrivals.is_empty() {
                 return (told, false);
             }

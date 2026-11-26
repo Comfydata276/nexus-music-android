@@ -723,11 +723,18 @@ class RequestsPages internal constructor(
             when (outcome) {
                 is Outcome.Got -> {
                     val kept = turn.withLock {
-                        val forgotten = Core.askedForget(place, title, entry.artist)
+                        // **By what it is**: Lidarr's own name for the album where the
+                        // list gave one, so that another album of the same title (by the
+                        // same artist, even) is still watched for.
+                        val forgotten = Core.askedForget(place, title, entry.artist, entry.album)
                         // (Nothing to forget, nothing to write: that is kept as it stands.)
-                        if (forgotten.changed || askedUnreadableNow.value) keepAsked(place, forgotten.asked) { where -> Core.askedForget(where, title, entry.artist).asked } else true
+                        if (forgotten.changed || askedUnreadableNow.value) keepAsked(place, forgotten.asked) { where -> Core.askedForget(where, title, entry.artist, entry.album).asked } else true
                     }
                     if (!kept) note("requests: an album was taken off Lidarr's list and that couldn't be kept on the phone, so its arrival may still be said")
+                    // And its offer no longer says it was asked for (among what the
+                    // connection it was taken off under has been offered): it can be asked
+                    // for again.
+                    if (entry.album.isNotEmpty()) Core.marked(place, entry.album, false, at.connection)
                     // (Lidarr took it off either way. If the phone's note of it couldn't be
                     // crossed out it is not simply "off the list": the note is still there,
                     // and after a restart the album would be watched for again.)
