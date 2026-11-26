@@ -286,7 +286,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "nexus-core"
 version = "0.0.0"
-source = "git+https://github.com/Comfydata276/nexus-music?rev=6b4711f029a46f0729f7afa0252095a43bef4b77#6b4711f029a46f0729f7afa0252095a43bef4b77"
+source = "git+https://github.com/Comfydata276/nexus-music?rev=79c8b891e11fcb26d52024b406f0b01ed5fb4d74#79c8b891e11fcb26d52024b406f0b01ed5fb4d74"
 dependencies = [
  "chacha20poly1305",
  "chrono",
