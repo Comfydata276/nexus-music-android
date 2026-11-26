@@ -50,6 +50,8 @@ internal class LinkHost(private val context: Context, private val graph: Graph, 
         return id to name.take(MOST_NAME)
     }
 
+    override fun chosenName(): String = graph.settings.value.deviceName.trim()
+
     override fun account(): String? = signedIn()?.account?.let { "${it.username}@${it.server}" }
 
     override fun wanted(): Boolean = account() != null && graph.settings.value.linkDevices && relayFile(context).exists()

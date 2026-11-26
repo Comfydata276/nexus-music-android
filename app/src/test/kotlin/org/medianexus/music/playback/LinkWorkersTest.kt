@@ -95,6 +95,7 @@ class LinkWorkersTest {
             return "AAAAAAAAAAAAAAAAAAAAAA" to "A phone"
         }
 
+        override fun chosenName() = ""
         override fun account() = "tester@$music"
         override fun wanted() = true
         override fun server() = Core.LinkServer("$music/rest", "u=tester&p=secret&v=1.16.1&c=test&f=json", "tester") to CoreHttp.originOf(music)!!

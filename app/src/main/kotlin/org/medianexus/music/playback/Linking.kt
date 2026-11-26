@@ -77,6 +77,10 @@ internal class Linking(
         /** The phone's id among the person's devices (made once), and what it is called. */
         fun device(): Pair<String, String>
 
+        /** The name the person has given this phone in Settings; empty for none. From
+         *  memory: it is asked at every tick, to see whether it has changed. */
+        fun chosenName(): String
+
         /** The sign-in's name; null with nobody signed in. */
         fun account(): String?
 
@@ -130,6 +134,10 @@ internal class Linking(
 
     /** What this phone is called among the person's devices, as the library was told. */
     private var me = ""
+
+    /** The name chosen in Settings as it was when the library was last told what the
+     *  phone is called. */
+    private var chosen = ""
 
     /**
      * The device being steered, in the phone's player. A press there is told to the
@@ -310,6 +318,22 @@ internal class Linking(
     private val tick = object : Runnable {
         override fun run() {
             if (!started) return
+            // **The phone was given another name in Settings**: the library is told now,
+            // so that the person's other devices list it by that name from its next word
+            // to them, and not only once the playback service has been made again.
+            val chosenNow = runCatching { host.chosenName() }.getOrDefault(chosen)
+            if (chosenNow != chosen) {
+                chosen = chosenNow
+                val name = runCatching { host.device().second }.getOrNull()
+                if (name != null && name != me) {
+                    me = name
+                    happened(buildJsonObject {
+                        put("event", "named")
+                        put("name", name)
+                    })
+                    if (!started) return
+                }
+            }
             // (With nobody signed in there is no sign-in to name, and nothing to keep up:
             // the end of the last one was said as it ended.)
             val account = try {
@@ -358,6 +382,7 @@ internal class Linking(
             relayEdit = host.relayEdit()
             val (id, name) = host.device()
             me = name
+            chosen = host.chosenName()
             // The library first: until it has answered, nothing else is set up.
             val made = Core.linkNew(this, id, name, host.remembered())
             link = made.link

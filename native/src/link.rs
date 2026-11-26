@@ -953,6 +953,8 @@ mod for_tests {
         playing: bool,
         title: String,
         generation: u64,
+        /// What the phone says it is called.
+        name: String,
         /// How the phone says it speaks.
         speaks: u64,
         /// How many songs the queue it carries has, if it carries one.
@@ -1037,6 +1039,7 @@ mod for_tests {
                 playing: tell.playing,
                 title: tell.title,
                 generation: tell.at.generation,
+                name: tell.name,
                 speaks: tell.speaks,
                 queue: tell.queue.map(|queue| queue.songs.len()),
             })

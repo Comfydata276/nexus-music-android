@@ -212,6 +212,39 @@ class LinkCommandsTest {
     }
 
     /**
+     * **The phone is given another name in Settings while linking is running.** The library
+     * is told at the next tick, so the person's other devices are told the new name in the
+     * phone's next word to them, and the list's own top says it: not only once the
+     * playback service has been made again.
+     */
+    @Test
+    fun aNameGivenInSettingsIsWhatThePhoneIsCalledAtOnce() {
+        join()
+        pass(600)
+        val own = hear(look()).single().getValue("name").jsonPrimitive.content
+        assertTrue(own.isNotEmpty())
+        assertEquals(own, app.graph.linked.state.value.me)
+        try {
+            app.graph.settings.update { it.copy(deviceName = "Jo's phone") }
+            pass(600)
+            assertEquals("Jo's phone", hear(look()).single().getValue("name").jsonPrimitive.content)
+            assertEquals("Jo's phone", app.graph.linked.state.value.me)
+            // The same name saved again tells nobody anything.
+            asked.clear()
+            app.graph.settings.update { it.copy(deviceName = " Jo's phone ") }
+            pass(600)
+            assertEquals("Jo's phone", hear(look()).single().getValue("name").jsonPrimitive.content)
+        } finally {
+            // The name taken away: it is called what the phone itself is called again.
+            app.graph.settings.update { it.copy(deviceName = "") }
+        }
+        pass(600)
+        assertEquals(own, hear(look()).single().getValue("name").jsonPrimitive.content)
+        assertEquals(own, app.graph.linked.state.value.me)
+        assertFalse(link().stopped)
+    }
+
+    /**
      * **A command that names an entry of the phone's queue** names it by its place and its
      * song. The library asks the phone what is at that place (one song, [LinkSide.entryAt])
      * and lists everything to come only if it is another song: here both, and a move among
