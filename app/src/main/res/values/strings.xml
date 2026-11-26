@@ -76,6 +76,9 @@
     <string name="show_diagnostics">Show diagnostics</string>
     <!-- Ends the shared library's sentence when a request was not sent: "Couldn't reach Lidarr. Offline mode is on." -->
     <string name="requests_offline">Offline mode is on.</string>
+    <!-- The notification shown while a sign-in for requests waits for the browser (requests/SignInService). -->
+    <string name="requests_sign_in_channel">Signing in for requests</string>
+    <string name="requests_sign_in_waiting">Waiting for you to sign in in your browser</string>
     <string name="control_apps">Apps that can control playback</string>
     <!-- The page's own bar holds one line: on a narrow screen with large type the whole name doesn't fit it. -->
     <string name="control_apps_bar">Playback apps</string>
