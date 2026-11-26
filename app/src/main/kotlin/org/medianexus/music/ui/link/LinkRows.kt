@@ -61,6 +61,9 @@ internal fun LinkRows(graph: Graph) {
         Toggle(settings.linkDevices, { on -> graph.settings.update { it.copy(linkDevices = on) } }, title)
     }
     if (!settings.linkDevices) return
+    // What this phone is called to the others: the row Jams' settings have, placed here too
+    // (with jams off in the build, it was nowhere).
+    org.medianexus.music.ui.jam.DeviceNameRow(graph, settings.deviceName)
     val link = rememberTextFieldState()
     var kept by remember { mutableStateOf(LinkHost.relayKept(context)) }
     var status by remember { mutableStateOf<Pair<Boolean, String>?>(null) }

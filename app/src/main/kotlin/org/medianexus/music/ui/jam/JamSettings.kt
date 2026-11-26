@@ -129,20 +129,29 @@ fun JamSettings(graph: Graph) {
             SettingRow(stringResource(R.string.jam_link_my_devices), stringResource(R.string.jam_link_my_devices_detail)) {
                 Toggle(settings.linkDevices, { on -> graph.settings.update { it.copy(linkDevices = on) } }, stringResource(R.string.jam_link_my_devices))
             }
-            if (settings.linkDevices) {
-                val name = rememberTextFieldState(settings.deviceName)
-                SettingRow(stringResource(R.string.jam_device_name), stringResource(R.string.jam_device_name_detail), nested = true, stacked = true) {
-                    Field(
-                        name, stringResource(R.string.jam_device_name),
-                        Modifier.fillMaxWidth().padding(end = 8.dp),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        onKeyboardAction = {
-                            val typed = name.text.toString().trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ").take(24)
-                            graph.settings.update { it.copy(deviceName = typed) }
-                        },
-                    )
-                }
-            }
+            if (settings.linkDevices) DeviceNameRow(graph, settings.deviceName)
         }
+    }
+}
+
+/**
+ * **What this device is called to the person's others** (Settings' "Device name"): under
+ * "Link my devices", in Jams' settings and, in a build with the new linking, under its
+ * "Link my devices" in Settings, Account (`ui/link/LinkRows`). Kept when Done is pressed:
+ * runs of spaces made one, at most 24 characters.
+ */
+@Composable
+internal fun DeviceNameRow(graph: org.medianexus.music.Graph, deviceName: String) {
+    val name = rememberTextFieldState(deviceName)
+    SettingRow(stringResource(R.string.jam_device_name), stringResource(R.string.jam_device_name_detail), nested = true, stacked = true) {
+        Field(
+            name, stringResource(R.string.jam_device_name),
+            Modifier.fillMaxWidth().padding(end = 8.dp),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            onKeyboardAction = {
+                val typed = name.text.toString().trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ").take(24)
+                graph.settings.update { it.copy(deviceName = typed) }
+            },
+        )
     }
 }
