@@ -4207,6 +4207,35 @@ order they were tapped with everything else the screens send.
 `OrderOfChoicesTest.aPlayTappedJustAfterAPauseIsNotDroppedByThatPause` is the case, with the
 Pause's delivery held, ignored until then.
 
+## The new linking's list, on the Connect sheet (behind a switch that is off)
+
+The list of the person's other devices as the new linking knows them (the Windows
+repository's `docs/linking-design.md`; the phone's side is `playback/Linked`, and what it
+hands the screens is the linking engineer's surface document). **It exists only in a build
+with `LinkBuild.on`**, which no released build has; in every other build nothing here is
+reachable and the Connect sheet is as M6 made it.
+
+- **Where:** Now Playing's "Connect to a device" (Windows' devices button), shown in a build
+  with jams as before, and in one with the new linking whether or not jams exist
+  (`ui/link/ConnectView.reachable`: one condition widened, no new button). With neither,
+  as in every released build, it isn't there. In a build without jams the sheet asks
+  nothing of jams (they can't be made there): no jam line, no old "Your devices".
+- **What, in Windows' order and words:** "Connect"; the card naming where the music plays
+  ("This phone", or the device steered and "Playing there" with "Play here" and "Stop
+  steering" on a line of their own, so a long name keeps its room); the jam line where jams
+  exist; "Linked devices (new)": every device but the one steered, each a row of the old
+  list's shape. One here is pressed to pick it (`choose`, and the sheet closes); one not
+  here is drawn at half strength and does nothing; one of another generation is at full
+  strength with the library's sentence under it, wrapped, and does nothing; a Pause beside
+  one that is playing and can be picked (the sheet stays up). The library's note follows.
+  Then the old linking's "Your devices" where jams exist.
+- **Every sentence is the library's**, as handed: what each device is doing ("Looking for
+  it…" before the phone has entered), which of two to update, the note. The sheet writes
+  none of its own for linking: its title, headings and buttons are the Windows app's words.
+  Windows' own "No other device is linked yet." under an empty list is not copied: an empty
+  list shows the library's note, or nothing.
+- **Linking stopped:** nothing is offered (no rows, no "Play here"), and the note is shown.
+
 ## Milestones
 
 Each one ends with the app building, its tests passing, a run on the emulator, and a review.
