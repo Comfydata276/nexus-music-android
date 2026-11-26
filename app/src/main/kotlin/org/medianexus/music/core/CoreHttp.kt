@@ -62,7 +62,8 @@ import org.medianexus.music.net.netTrouble
  *   then on a stop does nothing**: its waits are waited out and its requests are sent, to
  *   the end, behind the back of whoever asked. Stopped half-way it would leave an album
  *   marked and never looked for, or an artist no longer taking new releases. A stop that
- *   came first is still honoured: the change it was about to make is refused;
+ *   came first is still honoured: the change it was about to make is refused. Each of
+ *   its requests has [changeMillis] in all, so that what nobody can stop still ends;
  * - one that **changes something in one step** and never says to keep going (taking an
  *   album off Lidarr's list, finishing a sign-in, handing a token back): the request in
  *   flight is not cut off at once, because the library would not know whether the change
@@ -102,6 +103,15 @@ internal object CoreHttp {
 
     /** And for how long after the stop its requests are still let through at all. */
     @Volatile var graceMillis = 30_000L
+
+    /**
+     * How long any one request of something that changes Lidarr or the sign-in may take in
+     * all, its answer included, where the library sets no shorter limit of its own. There
+     * are two threads for changes ([CHANGING]); without this, an answer that arrives a
+     * letter at a time could hold one for as long as it liked, and once the library has
+     * said to keep going nobody can stop it.
+     */
+    @Volatile var changeMillis = 120_000L
 
     /** How long each request of a sign-in being finished may take in all, its answer
      *  included: the browser is kept waiting for its page meanwhile (see [finishing]). */
@@ -290,11 +300,16 @@ internal object CoreHttp {
             }
         }
 
-        /** Notes a request as in flight. False if it may no longer be sent. */
-        fun enter(call: Call): Boolean = lock.withLock {
-            if (stopped && !changing) return false
-            flying += call
-            true
+        /**
+         * Notes a request as in flight, **and says under what limit of this operation's it
+         * goes** (as [allowance]: null for none), or [REFUSED] if it may no longer be sent.
+         * Both at once, so that a stop cannot fall between being allowed and being in
+         * flight and leave a request neither cut off nor limited.
+         */
+        fun enter(call: Call): Long? = lock.withLock {
+            val allowed = allowance()
+            if (allowed != REFUSED) flying += call
+            allowed
         }
 
         fun leave(call: Call) {
@@ -361,7 +376,12 @@ internal object CoreHttp {
 
     /** The same for something that changes Lidarr or the sign-in in one step: stopped, the
      *  request in flight is let finish, behind the caller's back. */
-    suspend fun <T> changing(act: (operation: Long) -> T): T = run(begin(changing = true), changers, act)
+    suspend fun <T> changing(act: (operation: Long) -> T): T = run(begin(changing = true, callMillis = changeMillis), changers, act)
+
+    /** The same, begun and not waited for: for whoever must know how it ended though the
+     *  screen that asked has gone (to write down what Lidarr accepted). Stopping it is
+     *  as stopping [changing]. */
+    fun <T> changingThrough(act: (operation: Long) -> T): Begun<T> = begun(begin(changing = true, callMillis = changeMillis), act)
 
     /** A thread of its own for each thing run on it: for what must never wait its turn. */
     private val apart = Executor { work -> Thread(work, "requests-sign-in").apply { isDaemon = true }.start() }
@@ -382,7 +402,7 @@ internal object CoreHttp {
      * caller, who is let go at once all the same, **and never hears how it ended**: whoever
      * must know (to write down what was asked for) uses [seeingThrough].
      */
-    suspend fun <T> seenThrough(act: (operation: Long) -> T): T = run(begin(changing = false), changers, act)
+    suspend fun <T> seenThrough(act: (operation: Long) -> T): T = run(begin(changing = false, callMillis = changeMillis), changers, act)
 
     /** Something begun with [seeingThrough]: how it ended, whenever that is, and a way to
      *  stop it, which the library may no longer honour. */
@@ -391,8 +411,9 @@ internal object CoreHttp {
     }
 
     /** Starts something the library sees through, without waiting for it. */
-    fun <T> seeingThrough(act: (operation: Long) -> T): Begun<T> {
-        val doing = begin(changing = false)
+    fun <T> seeingThrough(act: (operation: Long) -> T): Begun<T> = begun(begin(changing = false, callMillis = changeMillis), act)
+
+    private fun <T> begun(doing: Doing, act: (operation: Long) -> T): Begun<T> {
         val done = CompletableDeferred<T>()
         changers.execute {
             val outcome = if (doing.isStopped) Result.failure(CancellationException(STOPPED_WORDS)) else runCatching { act(doing.id) }
@@ -489,9 +510,7 @@ internal object CoreHttp {
     private fun sent(asked: Asked): ByteArray {
         unsent()?.let { return failed(it) }
         val doing: Doing? = if (asked.operation == 0L) null else doings[asked.operation] ?: return stopped
-        val allowed = if (doing == null) nobodysMillis else doing.allowance()
-        if (allowed == Doing.REFUSED) return stopped
-        val limit = listOfNotNull(asked.patience, allowed).minOrNull()
+        if (doing?.allowance() == Doing.REFUSED) return stopped
 
         val url = asked.url.toHttpUrlOrNull() ?: return failed(BAD_ADDRESS)
         // A secret goes to the place it was given for and nowhere else, whatever address the
@@ -518,8 +537,10 @@ internal object CoreHttp {
         }.build()
         val client = lines().of(asked.line, changes = asked.method != "GET") ?: return failed(NOT_MADE)
         val call = client.newCall(request)
+        val allowed = if (doing == null) nobodysMillis else doing.enter(call)
+        if (allowed == Doing.REFUSED) return stopped
+        val limit = listOfNotNull(asked.patience, allowed).minOrNull()
         if (limit != null) call.timeout().timeout(limit, TimeUnit.MILLISECONDS)
-        if (doing != null && !doing.enter(call)) return stopped
         val response = try {
             call.execute()
         } catch (e: IOException) {

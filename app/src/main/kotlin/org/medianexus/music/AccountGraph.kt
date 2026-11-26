@@ -360,6 +360,8 @@ class AccountGraph(
             },
             similar = { id -> api.similarOutside(id) },
             note = wiring?.note ?: {},
+            // (What Lidarr accepted is written down though this account signs out meanwhile.)
+            afterwards = afterwards,
         )
     }
 

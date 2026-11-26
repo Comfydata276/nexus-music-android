@@ -551,6 +551,13 @@ object Core {
         over(CancelIn(operation, lidarr, id), CancelIn.serializer(), Boolean.serializer(), ::lidarrCancel)
     }
 
+    /** [lidarrCancel], **begun and not waited for** (see [request]): whoever begins it must
+     *  then forget, here, what Lidarr has taken off its list, whoever has gone away
+     *  meanwhile. */
+    internal fun cancelling(lidarr: LidarrAt, id: Long): CoreHttp.Begun<Outcome<Boolean>> = CoreHttp.changingThrough { operation ->
+        over(CancelIn(operation, lidarr, id), CancelIn.serializer(), Boolean.serializer(), ::lidarrCancel)
+    }
+
     @Serializable
     private class TracksIn(val operation: Long, val album: String)
 

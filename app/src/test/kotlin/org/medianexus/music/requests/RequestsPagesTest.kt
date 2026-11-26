@@ -110,7 +110,7 @@ class RequestsPagesTest {
             val state = requests.connect(server.address, "k")
             assertTrue("$state", state is RequestsState.Connected)
         }
-        Made(requests, RequestsPages(requests, scope, dir, library, played, similar, note = { notes += it }, clock = { now.get() }), scope, dir)
+        Made(requests, RequestsPages(requests, scope, dir, library, played, similar, note = { notes += it }, clock = { now.get() }, afterwards = { work -> behind.launch { work() } }), scope, dir)
     }
 
     private fun <T> got(found: Found<T>): T = (found as? Found.Got<T>)?.value ?: throw AssertionError("expected something found, got $found")
@@ -226,7 +226,7 @@ class RequestsPagesTest {
         listening.cancel()
 
         // A new run of the app reads what was kept: it is still there, and not said again.
-        val again = RequestsPages(made.requests, made.scope, made.dir, library, { emptyList() }, { emptyList() }, clock = { now.get() })
+        val again = RequestsPages(made.requests, made.scope, made.dir, library, { emptyList() }, { emptyList() }, clock = { now.get() }, afterwards = { work -> behind.launch { work() } })
         again.checkArrivals()
         assertEquals("al-9", again.asked.value.single().libraryAlbum)
         assertEquals("al-9", got(again.onTheirWay()).arrived.single().first.libraryAlbum)
@@ -257,6 +257,53 @@ class RequestsPagesTest {
         assertTrue(wanted())
         assertEquals("One Song", made.pages.asked.value.single().title)
         assertEquals(Asking.Already("That one has already been asked for."), made.pages.asking("single-1", "One Song"))
+    }
+
+    @Test
+    fun `asked for, and the account signed out before Lidarr had finished, what Lidarr accepted is still written down for that account`() = runBlocking {
+        val slow = AtomicBoolean(false)
+        val wanted = lidarrWithASingle(slow)
+        val made = made()
+        val asking = async(Dispatchers.Default) { runCatching { made.pages.request("single-1", "One Song", song = "Its Song") } }
+        // Lidarr has begun to be changed...
+        assertTrue(server.awaitAsked(20_000) { it.method == "PUT" && it.target.endsWith("artist/1") })
+        // ...and now the screen goes, and the account with it (signed out of the music server).
+        slow.set(true)
+        asking.cancel()
+        made.scope.cancel()
+        delay(300)
+        slow.set(false)
+        // Lidarr is seen through all the same, and the note is in the account's own folder.
+        val file = File(made.dir, "asked.json")
+        withTimeout(40_000) { while (!(file.exists() && "\"One Song\"" in file.readText())) delay(50) }
+        assertTrue(wanted())
+        assertTrue(file.readText(), "\"Its Song\"" in file.readText())
+        // A new run of the app, the same account signed in again, finds it.
+        val again = made(connected = false)
+        again.pages.checkArrivals()
+        assertEquals("One Song", again.pages.asked.value.single().title)
+    }
+
+    @Test
+    fun `taken off the list, and the screen gone while Lidarr was answering, it is forgotten here all the same`() = runBlocking {
+        val slow = AtomicBoolean(false)
+        val wanted = lidarrWithASingle(slow)
+        val made = made()
+        assertTrue(made.pages.request("single-1", "One Song").done)
+        val pending = got(made.pages.onTheirWay()).pending.single().first
+        val before = server.asked.size
+        // Lidarr is slow to answer the change, and the screen that asked is left meanwhile.
+        slow.set(true)
+        val taking = async(Dispatchers.Default) { runCatching { made.pages.cancel(pending.id, pending.title) } }
+        assertTrue(server.awaitAsked(10_000) { asked -> server.asked.drop(before).any { it === asked && it.method == "PUT" && "\"monitored\":false" in it.body } })
+        taking.cancel()
+        delay(300)
+        slow.set(false)
+        // Lidarr took it off: so it is no longer watched for here, whoever is still looking.
+        val file = File(made.dir, "asked.json")
+        withTimeout(20_000) { while (file.readText().trim() != "[]") delay(50) }
+        assertFalse(wanted())
+        assertEquals(emptyList<Any>(), made.pages.asked.value)
     }
 
     @Test
@@ -307,7 +354,7 @@ class RequestsPagesTest {
         assertEquals("Add New One?", heading)
         assertEquals(Said(true, "Added New One. Their albums are on Lidarr's list"), made.pages.addArtist("new-one", "New One"))
         assertEquals(listOf("New Two"), made.pages.suggestions.value.map { it.name })
-        val again = RequestsPages(made.requests, made.scope, made.dir, library, { emptyList() }, { emptyList() }, clock = { now.get() })
+        val again = RequestsPages(made.requests, made.scope, made.dir, library, { emptyList() }, { emptyList() }, clock = { now.get() }, afterwards = { work -> behind.launch { work() } })
         delay(300)
         assertEquals(listOf("New Two"), again.suggest().map { it.name })
     }
@@ -319,7 +366,8 @@ class RequestsPagesTest {
         // (A folder where the file should be: there, and not to be read.)
         File(dir, "asked.json").mkdirs()
         val made = made()
-        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives."), made.pages.request("single-1", "One Song"))
+        // Lidarr took it, and that is what is said; and that this phone could not write it down.
+        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song"))
         assertTrue(File(dir, "asked.json").isDirectory)
         assertTrue("$notes", notes.any { "asked.json" in it && "couldn't be read" in it })
         assertTrue("$notes", notes.any { "couldn't be kept on the phone" in it })

@@ -2144,11 +2144,24 @@ What is the phone's own:
   library has "not in your library"), the setting when it is switched. An operation under
   way reads whatever is there when it asks, as the Windows app's does.
 - **Leaving a screen stops what it asked for.** The calls suspend; cancelling the caller
-  cuts the requests off and delivers nothing. **Asking for an album and adding an artist
-  are the exception once Lidarr has begun to be changed** (see "Stopping"): they run in the
-  account's own scope, to the end, and what was asked for is written down though the
-  screen has gone. The order is the library's: the note is kept on the phone first, and
-  only then is the offer marked as asked for.
+  cuts the requests off and delivers nothing. **The three that change Lidarr are the
+  exception once they have begun to** (see "Stopping"): asking for an album, adding an
+  artist, taking an album off the list.
+- **What Lidarr accepted is written down here whatever has happened meanwhile.** Each of
+  those three is begun, and what follows its end (the note of what was asked, the artist
+  no longer suggested, the note forgotten) is done on the app's own work: not the screen's,
+  which may have been left, and not the account's, which is cancelled when the person
+  signs out of the music server. It goes into the files of the account it was asked under,
+  and that account's place in the library is kept open until it is done. The order is the
+  library's: the note is kept on the phone first, and only then is the offer marked as
+  asked for. If the note cannot be written, the ask is still said to have succeeded (it
+  did) and is marked as not kept (`Said.kept`).
+- **What nobody can stop still ends.** Every request of something that changes Lidarr or
+  the sign-in has two minutes in all, its answer included (`CoreHttp.changeMillis`), where
+  the library sets no shorter limit of its own; finishing a sign-in has eight seconds for
+  each. There are two threads for changes, and an answer that came a letter at a time
+  could otherwise hold one for as long as it liked. A request's limit is taken in the same
+  moment it is noted as in flight, so that a stop cannot fall between the two.
 - **What is kept**, in the account's folder, written whole and synced, and never over a
   file that is there and can't be read: `asked.json` (the notes of what was asked for
   through this phone, as the library makes them) and `suggestions.json` (three days; six

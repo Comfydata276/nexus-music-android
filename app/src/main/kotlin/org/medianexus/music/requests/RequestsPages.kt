@@ -2,8 +2,11 @@ package org.medianexus.music.requests
 
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.completeWith
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -29,6 +32,7 @@ import org.medianexus.music.core.Asked
 import org.medianexus.music.core.Asking
 import org.medianexus.music.core.Core
 import org.medianexus.music.core.CoreException
+import org.medianexus.music.core.CoreHttp
 import org.medianexus.music.core.KeptSuggestions
 import org.medianexus.music.core.LibraryLists
 import org.medianexus.music.core.LidarrAt
@@ -47,8 +51,15 @@ sealed interface Found<out T> {
     data class Not(val why: String) : Found<Nothing>
 }
 
-/** How something the person asked to be done ended: what to say, and whether it was done. */
-data class Said(val done: Boolean, val words: String)
+/**
+ * How something the person asked to be done ended: what to say, and whether it was done.
+ *
+ * `kept` is false when it **was done and this phone could not write it down** (an album
+ * asked for whose note couldn't be kept: its arrival won't be announced). `words` is then
+ * the library's sentence for exactly that once the phone's library has one (`asked_unnoted`,
+ * in the Windows repository's next release); until then it is the usual sentence.
+ */
+data class Said(val done: Boolean, val words: String, val kept: Boolean = true)
 
 /**
  * **Everything the screens of requests ask for**, for one account: the pages (what is not
@@ -64,10 +75,11 @@ data class Said(val done: Boolean, val words: String)
  *
  * - **Every function may be called from the main thread** and suspends; none blocks it.
  * - **Leaving a screen stops what it asked for**: cancel the coroutine that called. The
- *   requests in flight are cut off and nothing is delivered. The two exceptions are asking
- *   for an album and adding an artist once Lidarr has begun to be changed: those are seen
- *   through behind the screen's back, and what was asked for is written down all the same
- *   (it is the account's doing by then, not the screen's).
+ *   requests in flight are cut off and nothing is delivered. The exceptions are the three
+ *   that change Lidarr, once they have begun to: asking for an album, adding an artist,
+ *   taking one off the list. Those are seen through behind the screen's back, **and what
+ *   Lidarr accepted is written down here whatever has become of the screen or of the
+ *   account meanwhile** (signed out of, even): into that account's own files.
  * - **Nothing is retried in a loop.** A page that could not be had says why, once.
  * - **Kept on the phone**, per account, written whole and never over a file that couldn't be
  *   read: `asked.json` (what was asked for through this phone, so that its arrival can be
@@ -89,6 +101,12 @@ class RequestsPages internal constructor(
     private val note: (String) -> Unit = {},
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * Runs something that must finish **though the screen has gone and though the account
+     * has**: writing down what Lidarr accepted. The app's own work, never the account's
+     * (which is cancelled at sign-out) and never a screen's.
+     */
+    private val afterwards: (suspend () -> Unit) -> Unit,
 ) {
     private val askedFile = Kept(File(dir, "asked.json"), ListSerializer(Asked.serializer()), emptyList(), note)
     private val suggestionsFile = Kept(File(dir, "suggestions.json"), KeptSuggestions.serializer(), KeptSuggestions(), note)
@@ -118,6 +136,10 @@ class RequestsPages internal constructor(
     private val turn = Mutex()
     private var place: Long? = null
     private var gone = false
+
+    /** Changes to Lidarr under way whose outcome is still to be written down: the place
+     *  outlasts the account for as long as there are any (see [outlasting]). */
+    private var owed = 0
     private var suggested: KeptSuggestions? = null
     @Volatile private var haveLibrary = false
     private val looking = Mutex()
@@ -141,10 +163,47 @@ class RequestsPages internal constructor(
         scope.coroutineContext.job.invokeOnCompletion {
             val was = synchronized(this) {
                 gone = true
-                place.also { place = null }
+                // (Not while something Lidarr may have accepted is still to be written
+                // down: then it goes when that is done.)
+                if (owed == 0) place.also { place = null } else null
             }
             was?.let { runCatching { Core.placeClose(it) } }
         }
+    }
+
+    /**
+     * Something begun that changes Lidarr, **seen to its end and written down whatever
+     * happens meanwhile**: `finish` runs on the app's own work once `begun` has ended, with
+     * how it ended, and its answer is what the caller is told if the caller is still there.
+     * The place is kept open until then, though the account may have gone.
+     */
+    private fun <T, R> outlasting(begun: CoreHttp.Begun<Outcome<T>>, finish: suspend (Outcome<T>) -> R): Deferred<R?> {
+        synchronized(this) { owed++ }
+        val done = CompletableDeferred<R?>()
+        afterwards {
+            val ended = runCatching {
+                when (val outcome = runCatching { begun.done.await() }.getOrNull()) {
+                    null, Outcome.Stopped -> null
+                    else -> withContext(NonCancellable) { finish(outcome) }
+                }
+            }
+            val last = synchronized(this) {
+                owed--
+                if (owed == 0 && gone) place.also { place = null } else null
+            }
+            last?.let { runCatching { Core.placeClose(it) } }
+            done.completeWith(ended)
+        }
+        return done
+    }
+
+    /** Waits for something begun with [outlasting], as its caller. A caller that goes away
+     *  stops it, which Lidarr having begun to be changed is no longer honoured. */
+    private suspend fun <R> awaiting(through: Deferred<R?>, begun: CoreHttp.Begun<*>): R = try {
+        through.await() ?: throw CancellationException("stopped")
+    } catch (e: CancellationException) {
+        begun.stop()
+        throw e
     }
 
     /** The place the library keeps for this account's connection (see `Core.placeOpen`),
@@ -256,34 +315,26 @@ class RequestsPages internal constructor(
         if (at == null) return@withContext Said(false, why)
         val place = ready()
         val begun = Core.request(at, place, album)
-        // In the account's own scope: what follows must happen whether or not whoever
-        // asked is still there.
-        val through = scope.async(io) {
-            when (val outcome = runCatching { begun.done.await() }.getOrNull()) {
+        val through = outlasting(begun) { outcome ->
+            when (outcome) {
                 is Outcome.Got -> {
-                    withContext(NonCancellable) {
-                        turn.withLock {
-                            // The order the library asks of every app: the note is kept
-                            // first, and only then is the offer marked as asked for.
-                            val all = Core.noted(place, album, title, outcome.value, song, clock())
-                            if (!askedFile.write(all)) note("requests: what was asked for couldn't be kept on the phone, so its arrival won't be said")
-                            askedNow.value = all
-                            Core.marked(place, album, true)
-                        }
+                    val kept = turn.withLock {
+                        // The order the library asks of every app: the note is kept
+                        // first, and only then is the offer marked as asked for.
+                        val all = Core.noted(place, album, title, outcome.value, song, clock())
+                        val kept = askedFile.write(all)
+                        if (!kept) note("requests: what was asked for couldn't be kept on the phone, so its arrival won't be said")
+                        askedNow.value = all
+                        Core.marked(place, album, true)
+                        kept
                     }
-                    Said(true, Words.askedFor(title))
+                    Said(true, Words.askedFor(title), kept = kept)
                 }
                 is Outcome.Failed -> Said(false, outcome.why)
-                else -> null
+                Outcome.Stopped -> null
             }
         }
-        try {
-            through.await() ?: throw CancellationException("stopped")
-        } catch (e: CancellationException) {
-            // (Honoured only if Lidarr has not begun to be changed.)
-            begun.stop()
-            throw e
-        }
+        awaiting(through, begun)
     }
 
     /** The question before Lidarr is set to keep track of an artist: its heading and its
@@ -303,33 +354,34 @@ class RequestsPages internal constructor(
         if (at == null) return@withContext Said(false, why)
         val place = ready()
         val begun = Core.addArtist(at, id, name)
-        val through = scope.async(io) {
-            when (val outcome = runCatching { begun.done.await() }.getOrNull()) {
+        val through = outlasting(begun) { outcome ->
+            when (outcome) {
                 is Outcome.Got -> {
-                    withContext(NonCancellable) { turn.withLock { forgetSuggestion(place, id) } }
+                    turn.withLock { forgetSuggestion(place, id) }
                     Said(true, Words.added(name))
                 }
                 is Outcome.Failed -> Said(false, outcome.why)
-                else -> null
+                Outcome.Stopped -> null
             }
         }
-        try {
-            through.await() ?: throw CancellationException("stopped")
-        } catch (e: CancellationException) {
-            begun.stop()
-            throw e
-        }
+        awaiting(through, begun)
     }
 
-    /** Takes an album off Lidarr's list (`id` is its [org.medianexus.music.core.Pending]
-     *  number), and stops watching for it. Says "“…” is off the list", or why not. */
+    /**
+     * Takes an album off Lidarr's list (`id` is its [org.medianexus.music.core.Pending]
+     * number), and stops watching for it. Says "“…” is off the list", or why not.
+     *
+     * One change, in one step: left by its caller while Lidarr is answering, the answer is
+     * still waited for (a short while), and if Lidarr took it off, it is forgotten here.
+     */
     suspend fun cancel(id: Long, title: String): Said = withContext(io) {
         val (at, why) = way()
         if (at == null) return@withContext Said(false, why)
         val place = ready()
-        when (val outcome = Core.lidarrCancel(at, id)) {
-            is Outcome.Got -> {
-                withContext(NonCancellable) {
+        val begun = Core.cancelling(at, id)
+        val through = outlasting(begun) { outcome ->
+            when (outcome) {
+                is Outcome.Got -> {
                     turn.withLock {
                         val forgotten = Core.askedForget(place, title)
                         if (forgotten.changed) {
@@ -337,12 +389,13 @@ class RequestsPages internal constructor(
                             askedNow.value = forgotten.asked
                         }
                     }
+                    Said(true, Words.offTheList(title))
                 }
-                Said(true, Words.offTheList(title))
+                is Outcome.Failed -> Said(false, outcome.why)
+                Outcome.Stopped -> null
             }
-            is Outcome.Failed -> Said(false, outcome.why)
-            Outcome.Stopped -> throw CancellationException("stopped")
         }
+        awaiting(through, begun)
     }
 
     // ---- arrivals ----------------------------------------------------------------------------------

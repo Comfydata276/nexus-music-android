@@ -49,6 +49,7 @@ class CoreHttpTest {
         CoreHttp.afterStopMillis = 10_000
         CoreHttp.graceMillis = 30_000
         CoreHttp.nobodysMillis = 60_000
+        CoreHttp.changeMillis = 120_000
     }
 
     private fun probe(probe: Core.Probe, changing: Boolean = false): Outcome<Core.Probed> = runBlocking { withTimeout(60_000) { Core.wireProbe(probe, changing) } }
@@ -561,6 +562,42 @@ class CoreHttpTest {
         assertEquals("the wait was cut short", true, done.waited)
         assertEquals(200, done.status)
         assertEquals(1, server.asked.size)
+    }
+
+    @Test
+    fun `what nobody can stop still ends, each request of a change has a limit of its own`() = runBlocking {
+        // (Lidarr answers the change a letter at a time, or not at all: there are two
+        // threads for changes, and after "keep going" no stop reaches this one.)
+        val hungUp = CopyOnWriteArrayList<Boolean>()
+        val server = standIn { _, reply ->
+            reply.raw("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4000\r\n\r\n")
+            hungUp += runCatching {
+                repeat(40) {
+                    reply.raw("{")
+                    Thread.sleep(150)
+                }
+                false
+            }.getOrDefault(true)
+        }
+        CoreHttp.changeMillis = 700
+        var began = System.nanoTime()
+        val seen = Core.wireProbeSeenThrough(Core.Probe(method = "PUT", url = server.address, body = "{}", keepGoing = "first", then = "text"))
+        assertTrue(server.awaitAsked { it.method == "PUT" })
+        seen.stop()
+        val ended = withTimeout(20_000) { seen.done.await() }
+        var took = (System.nanoTime() - began) / 1_000_000
+        assertTrue("$ended after $took ms", took in 600..3_000)
+        assertEquals("It didn't answer in time.", (ended as? Outcome.Got)?.value?.unread ?: (ended as? Outcome.Failed)?.why)
+        // The same for a change in one step that nobody has stopped at all.
+        began = System.nanoTime()
+        val one = probe(Core.Probe(method = "PUT", url = server.address, body = "{}", then = "text"), changing = true)
+        took = (System.nanoTime() - began) / 1_000_000
+        assertTrue("$one after $took ms", took in 600..3_000)
+        assertEquals("It didn't answer in time.", (one as? Outcome.Got)?.value?.unread ?: (one as? Outcome.Failed)?.why)
+        // A look has no such limit: it has a screen that can be left.
+        CoreHttp.changeMillis = 120_000
+        withTimeout(10_000) { while (hungUp.size < 2) delay(50) }
+        assertEquals(listOf(true, true), hungUp.toList())
     }
 
     @Test
