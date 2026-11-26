@@ -164,11 +164,72 @@ class WebCoversTest {
         server.enqueue(pictureReply())
         val covers = covers()
         val address = "$site/front-250"
-        assertNull(covers.fetch(address, null, fetching = false))
+        assertNull(covers.fetch(address, null, fetching = { false }))
         assertEquals("nothing asked while it may not fetch", 0, server.requestCount)
-        assertNotNull(read(covers.fetch(address, null, fetching = true)))
-        assertArrayEquals("what is kept is shown", picture, read(covers.fetch(address, null, fetching = false)))
+        assertNotNull(read(covers.fetch(address, null, fetching = { true })))
+        assertArrayEquals("what is kept is shown", picture, read(covers.fetch(address, null, fetching = { false })))
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun offlineModeTurnedOnAtARedirectTheRedirectIsNotFollowed() = runBlocking {
+        var offline = false
+        server.dispatcher = object : mockwebserver3.Dispatcher() {
+            override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+                if (request.url.encodedPath == "/front-250") {
+                    // Turned on while the first answer is on its way.
+                    offline = true
+                    return redirect("$site/moved/front-250")
+                }
+                return pictureReply()
+            }
+        }
+        val covers = covers()
+        val address = "$site/front-250"
+        assertNull(covers.fetch(address, null, fetching = { !offline }))
+        assertEquals("the redirect not followed", 1, server.requestCount)
+        assertNull("nothing kept", covers.fetch(address, null, fetching = { false }))
+    }
+
+    @Test
+    fun offlineModeTurnedOnWhileTheCoverComesNothingIsKept() = runBlocking {
+        var offline = false
+        server.dispatcher = object : mockwebserver3.Dispatcher() {
+            override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+                offline = true
+                return pictureReply()
+            }
+        }
+        val covers = covers()
+        val address = "$site/front-250"
+        assertNull(covers.fetch(address, null, fetching = { !offline }))
+        assertNull("nothing kept", covers.fetch(address, null, fetching = { false }))
+    }
+
+    private fun first12(vararg parts: Any): okio.Buffer {
+        val out = okio.Buffer()
+        for (part in parts) when (part) {
+            is String -> out.writeUtf8(part)
+            is Int -> out.writeInt(part)
+        }
+        return out.write(ByteArray(32))
+    }
+
+    @Test
+    fun aVideoIsNotAPictureThoughItsBoxesAreTheSame() {
+        // An MP4 begins as AVIF and HEIF do, with a "ftyp" box: its brand says what it is.
+        assertFalse(WebCovers.looksLikeAPicture(first12(24, "ftyp", "isom")))
+        assertFalse(WebCovers.looksLikeAPicture(first12(24, "ftyp", "mp42")))
+        assertFalse(WebCovers.looksLikeAPicture(first12(24, "ftyp", "qt  ")))
+        assertFalse(WebCovers.looksLikeAPicture(first12(24, "ftyp", "M4A ")))
+    }
+
+    @Test
+    fun avifAndHeifArePictures() {
+        for (brand in listOf("avif", "avis", "heic", "heix", "mif1", "msf1")) {
+            assertTrue(brand, WebCovers.looksLikeAPicture(first12(24, "ftyp", brand)))
+        }
+        assertTrue(WebCovers.looksLikeAPicture(okio.Buffer().write(picture)))
     }
 
     @Test

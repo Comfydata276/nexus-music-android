@@ -170,18 +170,20 @@ class WebCovers(
     /**
      * The picture at `address` as a file in the cache, fetching it first if it isn't there and
      * `fetching` allows (not in offline mode, nor with requests off: then what is kept, or
-     * nothing); null if [CoverRule] turns it (or a redirect of it) away, it isn't a picture,
+     * nothing). `fetching` is asked again at every step: before each hop, as each answer comes,
+     * and as the picture is kept; once it says no, nothing more is asked for, no redirect is
+     * followed and nothing is kept. Null if [CoverRule] turns it (or a redirect of it) away, it isn't a picture,
      * or it can't be had. `music` is the music server's address. The snapshot is the caller's
      * to close.
      */
-    suspend fun fetch(address: String, music: String?, fetching: Boolean = true): DiskCache.Snapshot? = withContext(io) {
+    suspend fun fetch(address: String, music: String?, fetching: () -> Boolean = { true }): DiskCache.Snapshot? = withContext(io) {
         val key = keyOf(address)
         cache.openSnapshot(key)?.let { return@withContext it }
-        if (!fetching) return@withContext null
+        if (!fetching()) return@withContext null
         val musicAt = music?.trim()?.let(::addressOf)
         var at = addressOf(address) ?: return@withContext null
         for (hop in 0..CoverRule.MAX_HOPS) {
-            if (!where(at, musicAt)) return@withContext null
+            if (!fetching() || !where(at, musicAt)) return@withContext null
             val request = Request.Builder().url(at).header("User-Agent", NAME).header("Accept", "image/*").build()
             val response = try {
                 outward.newCall(request).await()
@@ -189,6 +191,8 @@ class WebCovers(
                 return@withContext null
             }
             response.use {
+                // Offline mode turned on while the answer was on its way.
+                if (!fetching()) return@withContext null
                 if (response.isRedirect) {
                     at = response.header("Location")?.let { at.resolve(it) } ?: return@withContext null
                     return@use
@@ -196,14 +200,14 @@ class WebCovers(
                 if (!response.isSuccessful) return@withContext null
                 val body = response.body
                 if (body.contentLength() > LIMIT) return@withContext null
-                return@withContext keep(key, body.source())
+                return@withContext keep(key, body.source(), fetching)
             }
         }
         // (More redirects than are followed.)
         null
     }
 
-    private fun keep(key: String, from: okio.BufferedSource): DiskCache.Snapshot? {
+    private fun keep(key: String, from: okio.BufferedSource, fetching: () -> Boolean): DiskCache.Snapshot? {
         // A picture, by its first bytes (what it says it is counts for nothing): anything else
         // is never written.
         if (!looksLikeAPicture(from)) return null
@@ -217,9 +221,11 @@ class WebCovers(
                     if (read < 0) break
                     total += read
                     if (total > LIMIT) throw IOException("too large")
+                    if (!fetching()) throw IOException("offline now")
                     into.write(chunk, read)
                 }
             }
+            if (!fetching()) throw IOException("offline now")
             return editor.commitAndOpenSnapshot()
         } catch (_: IOException) {
             editor.abort()
@@ -247,8 +253,10 @@ class WebCovers(
             MessageDigest.getInstance("SHA-256").digest(address.toByteArray()).joinToString("") { "%02x".format(it) }
 
         /**
-         * Whether what is coming begins as a picture does: JPEG, PNG, GIF, WebP, or the AVIF
-         * and HEIF family. Looks at the first twelve bytes without taking them.
+         * Whether what is coming begins as a picture the phone can open does: JPEG, PNG, GIF,
+         * WebP, AVIF or HEIF (all of them from Android 12, the least the app runs on). AVIF and
+         * HEIF begin as MP4 does, with a `ftyp` box: its brand says which, and a video's is
+         * not taken. Looks at the first twelve bytes without taking them.
          */
         fun looksLikeAPicture(source: okio.BufferedSource): Boolean {
             val head = try {
@@ -259,8 +267,11 @@ class WebCovers(
             }
             fun starts(vararg bytes: Int) = head.size >= bytes.size && bytes.indices.all { head[it].toInt() and 0xff == bytes[it] }
             fun at(offset: Int, text: String) = head.size >= offset + text.length && text.indices.all { head[offset + it].toInt().toChar() == text[it] }
-            return starts(0xFF, 0xD8, 0xFF) || starts(0x89, 0x50, 0x4E, 0x47) || at(0, "GIF8") || (at(0, "RIFF") && at(8, "WEBP")) || at(4, "ftyp")
+            return starts(0xFF, 0xD8, 0xFF) || starts(0x89, 0x50, 0x4E, 0x47) || at(0, "GIF8") || (at(0, "RIFF") && at(8, "WEBP")) || (at(4, "ftyp") && PICTURE_BRANDS.any { at(8, it) })
         }
+
+        /** The `ftyp` brands of pictures: AVIF (still and sequence), HEIF and HEIC. */
+        private val PICTURE_BRANDS = listOf("avif", "avis", "heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1")
     }
 }
 
@@ -287,8 +298,7 @@ private suspend fun Call.await(): Response = suspendCancellableCoroutine { going
 internal class WebCoverFetcher(private val cover: WebCover, private val covers: WebCovers, private val signedIn: () -> org.medianexus.music.AccountGraph?, private val offline: () -> Boolean) : Fetcher {
     override suspend fun fetch(): FetchResult {
         val account = signedIn()
-        val fetching = !offline() && account?.requests?.settings?.value?.on == true
-        val snapshot = covers.fetch(cover.url, account?.account?.server, fetching)
+        val snapshot = covers.fetch(cover.url, account?.account?.server, fetching = { !offline() && account?.requests?.settings?.value?.on == true })
             // Coil shows nothing for a failure, and the cover's stand-in stays.
             ?: throw IOException("No cover")
         return SourceFetchResult(ImageSource(snapshot.data, FileSystem.SYSTEM, null, snapshot, null), null, DataSource.NETWORK)
