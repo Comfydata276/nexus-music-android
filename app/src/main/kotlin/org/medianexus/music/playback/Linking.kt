@@ -558,7 +558,7 @@ internal class Linking(
         if (putRight) runCatching { side.stopped() }
         runCatching { steer.steering(null) }
         runCatching { side.beforeTake = null }
-        runCatching { if (linked.doing === doing) linked.over(stopped) }
+        runCatching { if (linked.doing === doing) linked.over(stopped, stoppedWords) }
         runCatching { side.detach() }
         if (current.get() === this) {
             org.medianexus.music.link.LinkShown.wanted = { false }

@@ -57,9 +57,13 @@ class LinkedTest {
         assertEquals(listOf("choose AAAA", "pause BBBB", "play here", "let go", "reset", "looking up", "looked up 7"), calls)
         // The linking ends: for a fault, the list is empty and says it has stopped.
         linked.shown(shown)
-        linked.over(stopped = true)
-        assertEquals(Linked.State(stopped = true), linked.state.value)
+        linked.over(stopped = true, words = "Linking has stopped on this phone until the app is next opened.")
+        assertEquals(Linked.State(stopped = true, note = "Linking has stopped on this phone until the app is next opened."), linked.state.value)
         linked.choose("AAAA")
         assertEquals(7, calls.size)
+        // As the service goes, with no fault: nothing is listed and nothing is said.
+        linked.shown(shown)
+        linked.over(stopped = false, words = "Linking has stopped on this phone until the app is next opened.")
+        assertEquals(Linked.State(), linked.state.value)
     }
 }

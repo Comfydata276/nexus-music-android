@@ -570,6 +570,8 @@ class LinkCommandsTest {
         pass(2_000)
         assertEquals("the player was asked something after a fault", after, calls)
         assertEquals(listOf("Linking has stopped on this phone until the app is next opened."), said.toList())
+        // And it stays under the list of devices, which is otherwise empty.
+        assertEquals(Linked.State(stopped = true, note = "Linking has stopped on this phone until the app is next opened."), app.graph.linked.state.value)
         assertEquals("linking spoke through an Android toast", 0, org.robolectric.shadows.ShadowToast.shownToastCount())
         // No request of linking's can be made either: neither line leads anywhere, and
         // nothing in this run of the app starts it again.

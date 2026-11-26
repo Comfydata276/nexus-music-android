@@ -53,8 +53,9 @@ class Linked {
          *  listed are the ones seen before, each "Looking for it…". */
         val entered: Boolean = false,
         val devices: List<Device> = emptyList(),
-        /** What there is to say under the list: what became of the last thing asked, or
-         *  why nothing is linked. The library's sentence. Empty for nothing. */
+        /** What there is to say under the list: what became of the last thing asked, why
+         *  nothing is linked, or (with [stopped]) that linking has stopped on this phone.
+         *  The library's sentence. Empty for nothing. */
         val note: String = "",
         /** The device being steered, by name; empty for none. */
         val steering: String = "",
@@ -130,10 +131,12 @@ class Linked {
         now.value = State()
     }
 
-    /** The linking is over: as the service goes, or for a fault. */
-    internal fun over(stopped: Boolean) {
+    /** The linking is over: as the service goes, or for a fault, and then with the
+     *  sentence the person was told ("Linking has stopped on this phone until the app is
+     *  next opened."), which stays under the list. */
+    internal fun over(stopped: Boolean, words: String = "") {
         doing = null
-        now.value = State(stopped = stopped)
+        now.value = State(stopped = stopped, note = if (stopped) words else "")
     }
 
     companion object {
