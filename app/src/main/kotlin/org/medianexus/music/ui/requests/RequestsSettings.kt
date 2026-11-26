@@ -39,10 +39,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import org.medianexus.music.R
 import org.medianexus.music.requests.BrowserTab
 import org.medianexus.music.requests.RequestsState
+import org.medianexus.music.requests.RequestsWords
 import org.medianexus.music.requests.says
 import org.medianexus.music.ui.parts.Field
 import org.medianexus.music.ui.parts.LinkText
@@ -92,6 +94,15 @@ fun RequestsSettings() {
             BasicText(said, Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.body.copy(color = colors.text))
         }
         return
+    }
+    // What was kept was damaged, and has been set aside: requests start afresh (switched
+    // off, with no address), and the person is told why, for as long as the app runs.
+    val aside by requests.keptAside.collectAsStateWithLifecycle()
+    aside?.let { name ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(10.dp).background(colors.danger, CircleShape))
+            BasicText(RequestsWords.keptAside(name), Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.body.copy(color = colors.text))
+        }
     }
     if (!settings.on) return
     val singles = stringResource(R.string.requests_singles)

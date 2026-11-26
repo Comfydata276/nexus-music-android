@@ -83,6 +83,10 @@ object RequestsWords {
      *  out. (The library's `off_the_list_unnoted`, likewise.) */
     fun offTheListUnnoted(title: String): String = "“$title” is off the list, but this phone couldn't note that, so its arrival may still be announced."
 
+    /** What this phone kept of requests was something the app could make nothing of, and
+     *  has been moved aside under `name` ([Requests.keptAside]). */
+    fun keptAside(name: String): String = "What this phone kept about requests was damaged, so requests have been started afresh. The damaged file has been kept as $name."
+
     /** The sign-in service gave a token and the phone could not put it away. */
     const val TOKEN_NOT_KEPT = "The sign-in went through, but this phone couldn't keep it. Try again."
 
@@ -188,6 +192,16 @@ class Requests internal constructor(
     private var opened = false
     private var unreadable = false
 
+    private val asideNow = MutableStateFlow<String?>(null)
+
+    /**
+     * Set when what this phone kept of requests (`requests.json`) was found to be something
+     * the app could make nothing of: **the name the file has been kept under**, beside
+     * where it was. Requests then start afresh, and the person is told so
+     * ([RequestsWords.keptAside]). For this run of the app.
+     */
+    val keptAside: StateFlow<String?> = asideNow.asStateFlow()
+
     /** Lidarr's key and the place it is for, as last read or given. */
     private var key: RequestsSecrets.Bound? = null
 
@@ -255,6 +269,8 @@ class Requests internal constructor(
         if (opened) return
         opened = true
         val read = kept.read()
+        // (Found to be something the app can make nothing of, and moved aside: said.)
+        kept.asideAs?.let { asideNow.value = it }
         if (read == null) {
             unreadable = true
             stateNow.value = RequestsState.CantRead
@@ -406,7 +422,11 @@ class Requests internal constructor(
         val forgotten = turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
-            val typed = address.trim()
+            // **Without what follows a question mark or a hash**: neither is part of where
+            // Lidarr is, either can hold what was never meant to be kept (a key written
+            // into the address, the page of Lidarr's own screens it was copied from), and
+            // the address is kept as it is typed, in a file that is not sealed.
+            val typed = address.substringBefore('#').substringBefore('?').trim()
             val place = if (typed.isEmpty()) null else Core.lidarrPlace(typed)
             val refused = when {
                 typed.isEmpty() -> null

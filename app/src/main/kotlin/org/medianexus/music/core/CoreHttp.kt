@@ -249,16 +249,35 @@ internal object CoreHttp {
         }
     }
 
-    /** Names are looked up as the phone looks them up, and one that turns out to be inside
-     *  a network is refused: for MusicBrainz and ListenBrainz, which are public services
-     *  and have no business there, wherever an answer of theirs points. */
+    /**
+     * Names are looked up as the phone looks them up, and one that turns out to be inside
+     * a network is refused: for MusicBrainz and ListenBrainz, which are public services
+     * and have no business there, wherever an answer of theirs points.
+     *
+     * **It is the name a request is for that is judged** ([asking]), not every name the
+     * client looks up: with a proxy set on the phone the client looks up the proxy's name
+     * and no other, and a proxy is usually inside the network the phone is on. The name the
+     * request is for is then never looked up here at all: the proxy does that, and where
+     * it leads is the proxy's to say (see docs/DESIGN.md, "With a proxy").
+     */
     private object Public : Dns {
         override fun lookup(hostname: String): List<InetAddress> {
             val found = Dns.SYSTEM.lookup(hostname)
-            if (publicOnly && found.any(::isInside)) throw NotPublic()
+            if (publicOnly && isAsked(hostname) && found.any(::isInside)) throw NotPublic()
             return found
         }
     }
+
+    /** The names requests to the public services are for, each for as long as its request
+     *  is being sent; and how many requests each. */
+    private val publicNames = HashMap<String, Int>()
+
+    private fun asking(name: String, by: Int) = synchronized(publicNames) {
+        val now = (publicNames[name] ?: 0) + by
+        if (now <= 0) publicNames.remove(name) else publicNames[name] = now
+    }
+
+    private fun isAsked(name: String): Boolean = synchronized(publicNames) { name.lowercase() in publicNames }
 
     /**
      * Where a public service's answer sends a request on to, **if it may be followed**; null
@@ -683,11 +702,16 @@ internal object CoreHttp {
             if (allowed == Doing.REFUSED) return stopped
             val limit = listOfNotNull(asked.patience, allowed).minOrNull()
             if (limit != null) call.timeout().timeout(limit, TimeUnit.MILLISECONDS)
+            // (The name this is for, if a public service's: judged if it is looked up. See [Public].)
+            val name = going.url.host.takeIf { asked.line != "lidarr" }
+            name?.let { asking(it, +1) }
             val response = try {
                 call.execute()
             } catch (e: IOException) {
                 doing?.leave(call)
                 return if (doing?.isStopped == true) stopped else failed(words(e))
+            } finally {
+                name?.let { asking(it, -1) }
             }
             // (Sent on by a public service: followed here, a step at a time, or not at all.)
             val next = onward(asked, going.url, response, steps)

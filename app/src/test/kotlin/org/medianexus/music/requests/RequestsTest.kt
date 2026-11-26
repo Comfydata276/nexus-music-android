@@ -945,17 +945,61 @@ class RequestsTest {
     }
 
     @Test
-    fun `what is kept that is not what this app writes is kept aside before anything is written over it`() = runBlocking {
+    fun `what is kept that this app can make nothing of is moved aside under a name of its own, never over an earlier one, and the person is told`() = runBlocking {
         val lidarr = lidarr()
         val account = account()
         account.dirs.data.mkdirs()
-        File(account.dirs.data, "requests.json").writeText("""{"on":true,"address":"http://cut-sho""")
+        val file = File(account.dirs.data, "requests.json")
+        fun aside() = account.dirs.data.listFiles().orEmpty().filter { it.name.startsWith("requests.damaged-") && it.name.endsWith(".json") }.sortedBy { it.name }
+
+        // Nothing in it yet: that is nothing kept, and nothing to tell.
+        file.writeText(" \n")
+        val empty = requests(account)
+        assertEquals(RequestsState.Off, empty.switch(false))
+        assertNull(empty.keptAside.value)
+        assertTrue(aside().isEmpty())
+
+        // Cut short: moved aside as it was, before anything is asked or written, and said.
+        file.writeText("""{"on":true,"address":"http://cut-sho""")
         val requests = requests(account)
         requests.start()
-        assertEquals(RequestsState.Off, requests.until { true })
+        withTimeout(10_000) { requests.keptAside.first { it != null } }
+        assertEquals(RequestsState.Off, requests.state.value)
+        val first = aside().single()
+        assertEquals("""{"on":true,"address":"http://cut-sho""", first.readText())
+        assertFalse(file.exists())
+        assertEquals(first.name, requests.keptAside.value)
+        assertTrue("$notes", notes.any { first.name in it })
+        // Requests start afresh from there, and are written as ever.
         requests.switch(true)
         requests.connect(lidarr.address, KEY)
-        assertEquals("""{"on":true,"address":"http://cut-sho""", File(account.dirs.data, "requests.json.damaged").readText())
-        assertTrue(lidarr.address in File(account.dirs.data, "requests.json").readText())
+        assertTrue(lidarr.address in file.readText())
+
+        // Damaged again, in the same second or a later one: the first one kept is not
+        // written over.
+        file.writeText("not what this app writes")
+        val again = requests(account)
+        again.start()
+        withTimeout(10_000) { again.keptAside.first { it != null } }
+        val both = aside()
+        assertEquals(2, both.size)
+        assertEquals(setOf("""{"on":true,"address":"http://cut-sho""", "not what this app writes"), both.map { it.readText() }.toSet())
+        assertTrue(again.keptAside.value in both.map { it.name } && again.keptAside.value != first.name)
+    }
+
+    @Test
+    fun `the address is kept without what follows a question mark or a hash in it`() = runBlocking {
+        val lidarr = lidarr()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        // (Pasted from a browser's address bar, say; or with a key written into it.)
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = null), requests.connect("${lidarr.address}/?apikey=typed-into-the-address#/settings/general", KEY))
+        assertEquals("${lidarr.address}/", requests.settings.value.address)
+        assertEquals(listOf("GET /api/v1/system/status"), lidarr.asked.map { it.line })
+        val kept = everythingKept(account)
+        assertFalse(kept, "typed-into-the-address" in kept || "settings/general" in kept)
+        requests.connect("${lidarr.address}/lidarr#top", KEY)
+        assertEquals("${lidarr.address}/lidarr", requests.settings.value.address)
     }
 }

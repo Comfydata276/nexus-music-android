@@ -228,16 +228,31 @@ class RequestsPages internal constructor(
 
     private fun arrivalsKept(): List<Arrived> = held ?: (arrivalsFile.read() ?: emptyList()).also { held = it }
 
+    /** The list is on the phone and can't be read just now: nothing is written over it. */
     private val askedUnreadableNow = MutableStateFlow(false)
 
+    /** What the Requests page is told ([askedUnreadable]). */
+    private val askedTroubleNow = MutableStateFlow(false)
+
     /**
-     * True while **what this phone asked for is on the phone and can't be read**. Asking
-     * still works, and is said to have worked; what is asked meanwhile is kept in memory,
-     * and put together with what the file holds as soon as the file can be read again. Until
-     * then the Requests page's list is short of whatever the file holds, and should say so
-     * (the library's sentence for it, `asked_unreadable`, comes with its next release).
+     * True when **the list of what this phone asked for is short of what was asked**, and
+     * the Requests page should say so (the library's sentence for it, `asked_unreadable`,
+     * comes with its next release):
+     *
+     * - while the file is on the phone and can't be read. Asking still works; what is asked
+     *   meanwhile is kept in memory, and put together with what the file holds as soon as
+     *   it can be read again, and then this is false again;
+     * - for the rest of this run of the app, once the file was found to be something the
+     *   app can make nothing of and was moved aside (`Kept`): the list starts afresh, and
+     *   what was asked for before will not be said to have arrived.
      */
-    val askedUnreadable: StateFlow<Boolean> = askedUnreadableNow.asStateFlow()
+    val askedUnreadable: StateFlow<Boolean> = askedTroubleNow.asStateFlow()
+
+    /** Says whether the list can be read just now, and tells the page accordingly. */
+    private fun askedHeld(held: Boolean) {
+        askedUnreadableNow.value = held
+        askedTroubleNow.value = held || askedFile.asideAs != null
+    }
 
     /** What has been done to the list since it couldn't be read, in order: done again on
      *  top of what the file holds once it can be. Each answers with the whole list. */
@@ -368,7 +383,7 @@ class RequestsPages internal constructor(
             }?.let { return@withLock it }
             val opened = Core.placeOpen()
             val kept = askedFile.read()
-            askedUnreadableNow.value = kept == null
+            askedHeld(kept == null)
             if (kept != null) {
                 Core.placeAsked(opened, kept)
                 // (As the account starts, as on Windows: what has been listed long enough,
@@ -415,7 +430,7 @@ class RequestsPages internal constructor(
         var merged = Core.askedTidy(place, clock()).asked
         for (done in sinceUnread) merged = done(place)
         sinceUnread.clear()
-        askedUnreadableNow.value = false
+        askedHeld(false)
         askedNow.value = merged
         note("requests: asked.json can be read again; what was asked for meanwhile was added to it")
         return askedFile.write(merged)

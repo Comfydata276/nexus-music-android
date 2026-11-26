@@ -457,6 +457,51 @@ class CoreHttpTest {
     }
 
     @Test
+    fun `with a proxy set on the phone the proxy looks the name up, and only an address written as inside a network is refused`() {
+        val proxy = standIn { _, reply -> reply.json("""{"through":"the proxy"}""") }
+        CoreHttp.publicOnly = true
+        // (As the phone's own setting gives one: a host and a port. Written as numbers it
+        // is connected to without being looked up.)
+        CoreHttp.dress = { it.proxy(java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress.createUnresolved("127.0.0.1", proxy.port))) }
+        // A name is handed to the proxy as it stands. The phone never looks it up (this
+        // one could not be), so where it leads is the proxy's to say, not the app's.
+        assertEquals("""{"through":"the proxy"}""", probe(Core.Probe(line = "musicbrainz", url = "http://musicbrainz.invalid/ws/2/release")).got().body)
+        assertEquals(listOf("GET http://musicbrainz.invalid/ws/2/release"), proxy.asked.map { it.line })
+        // An address written as one inside a network is still refused, before anything is sent.
+        assertEquals(Outcome.Failed("It pointed at an address inside a private network."), probe(Core.Probe(line = "listenbrainz", url = "http://192.168.0.2/1/popularity")))
+        assertEquals(1, proxy.asked.size)
+        // Lidarr's line goes by the proxy too, as any request of the phone's does.
+        probe(Core.Probe(url = "http://lidarr.invalid/api/v1/system/status")).got()
+        assertEquals("GET http://lidarr.invalid/api/v1/system/status", proxy.asked.last().line)
+    }
+
+    @Test
+    fun `a name a public service is asked at that turns out to be inside a network is refused as it is looked up`() {
+        // (A name this machine has for itself that is not "localhost", which is refused as
+        // written. Where it has none, there is nothing here to ask.)
+        val name = runCatching { java.net.InetAddress.getLocalHost() }.getOrNull()
+            ?.takeIf { it.isLoopbackAddress || it.isSiteLocalAddress || it.isLinkLocalAddress }?.hostName
+            ?.takeIf { it != "localhost" && it.any(Char::isLetter) }
+        org.junit.Assume.assumeTrue("this machine has no name of its own that leads inside", name != null)
+        val server = standIn { _, reply -> reply.json("{}") }
+        CoreHttp.publicOnly = true
+        assertEquals(Outcome.Failed("It pointed at an address inside a private network."), probe(Core.Probe(line = "musicbrainz", url = "http://$name:${server.port}/ws/2/release")))
+        assertTrue(server.asked.isEmpty())
+        // (Lidarr is wherever the person says it is.)
+        CoreHttp.publicOnly = true
+        probe(Core.Probe(url = "http://$name:${server.port}/api/v1/system/status"))
+    }
+
+    @Test
+    fun `a proxy known by a name is looked up as itself, wherever it is, and the services are still reached through it`() {
+        val proxy = standIn { _, reply -> reply.json("""{"through":"the proxy"}""") }
+        CoreHttp.publicOnly = true
+        // (A proxy inside the network the phone is on, by name: the usual kind.)
+        CoreHttp.dress = { it.proxy(java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress.createUnresolved("localhost", proxy.port))) }
+        assertEquals("""{"through":"the proxy"}""", probe(Core.Probe(line = "musicbrainz", url = "http://musicbrainz.invalid/ws/2/release")).got().body)
+    }
+
+    @Test
     fun `the public services are reached only at public addresses, and nothing of requests is ever sent to the music server`() {
         val music = standIn { _, reply -> reply.json("{}") }
         val place = Core.lidarrPlace(music.address)!!
@@ -985,7 +1030,7 @@ class CoreHttpTest {
             hungUp.set(reply.hungUpWithin(5_000))
         }
         val thrown = assertThrows(CoreException::class.java) { probe(Core.Probe(url = server.address, then = "panic")) }
-        assertTrue(thrown.message, thrown.message!!.contains("the probe was asked to"))
+        assertEquals("The shared library stopped.", thrown.message)
         val until = System.nanoTime() + 5_000_000_000
         while (hungUp.get() == null && System.nanoTime() < until) Thread.sleep(10)
         assertEquals(true, hungUp.get())

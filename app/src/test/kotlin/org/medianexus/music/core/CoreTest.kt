@@ -39,9 +39,11 @@ class CoreTest {
     }
 
     @Test
-    fun `a panic in the library is an exception here with its words, and the next call works`() {
-        val thrown = assertThrows(CoreException::class.java) { Core.stopForTheTest("stopped on purpose: Été 🎶") }
-        assertTrue(thrown.message, thrown.message!!.contains("stopped on purpose: Été 🎶"))
+    fun `a panic in the library is an exception here without the panic's own words, and the next call works`() {
+        // (A panic's words can quote whatever the code was holding: an answer, an address,
+        // a secret. An exception nobody catches goes wherever the phone sends those.)
+        val thrown = assertThrows(CoreException::class.java) { Core.stopForTheTest("stopped on purpose: the-key-it-held") }
+        assertEquals("The shared library stopped.", thrown.message)
         assertEquals("still here", Core.echo("still here"))
     }
 

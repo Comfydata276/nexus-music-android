@@ -11,9 +11,12 @@
 //! (requests: `requests.rs`) it asks the app to fetch, through `wire.rs`.
 //!
 //! **What going wrong looks like.** An argument that isn't what the function takes, and a
-//! panic anywhere below, both reach Kotlin as one exception (`CoreException`) carrying the
-//! reason in words. A panic's place (file and line) goes to the phone's log, and nothing
-//! of what it said.
+//! panic anywhere below, both reach Kotlin as one exception (`CoreException`). An argument
+//! refused carries the reason in words. **A panic carries none of its own**: "The shared
+//! library stopped.", and no more. A panic's words can quote whatever the code was holding
+//! (an answer, an address, a secret), and an exception nobody catches is written wherever
+//! the phone writes those. Its place (file and line) goes to the phone's log, and nothing
+//! of what it said goes anywhere.
 
 mod pages;
 mod requests;
@@ -71,11 +74,6 @@ fn log_panics() {
     });
 }
 
-/// What a panic said, as far as it said it in words.
-fn said(panic: &(dyn std::any::Any + Send)) -> String {
-    panic.downcast_ref::<&str>().map(|text| text.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default()
-}
-
 const EXCEPTION: &str = "org/medianexus/music/core/CoreException";
 
 /// One call from Kotlin: the argument read from its bytes, `act` run on it, the answer
@@ -105,7 +103,8 @@ fn call_as<In: DeserializeOwned, Out: Serialize>(mut env: JNIEnv, input: JByteAr
     let why = match outcome {
         Ok(Ok(answer)) => return answer,
         Ok(Err(why)) => why,
-        Err(panic) => format!("The shared library stopped: {}", said(panic.as_ref())),
+        // (Not what it said: see the top of this file. Where it stopped is in the log.)
+        Err(_) => "The shared library stopped.".to_string(),
     };
     // (Unless Java already has an exception of its own under way, which then stands.)
     if !env.exception_check().unwrap_or(false) {
@@ -848,7 +847,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_echo<'l>(env: JNIEnv<
 }
 
 /// Panics, with the words it was given: for the check that a panic reaches Kotlin as an
-/// exception and the app carries on.
+/// exception without those words, and the app carries on.
 ///
 /// **This and `echo` above are in the library every build carries, the release build's
 /// too, and nothing in a release build calls either**: the unit tests do (`CoreTest`), and

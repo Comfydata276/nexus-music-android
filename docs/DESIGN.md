@@ -1833,8 +1833,11 @@ values. Nothing else declares a native function or loads a library.
 - **Whatever goes wrong there is one exception**, `CoreException`, with the reason in
   words: an argument the library doesn't take, an answer this side can't read, and a panic
   in the library, which is caught at the boundary (the library is built to unwind) and
-  thrown to Kotlin. The app carries on, and whatever asked has not been done. A panic's
-  file and line go to the phone's log.
+  thrown to Kotlin. The app carries on, and whatever asked has not been done. **A panic
+  brings none of its own words with it**: the exception says "The shared library
+  stopped." and no more, because a panic's words can quote whatever the code was holding
+  (an answer, an address, a secret) and an exception nobody catches is written wherever
+  the phone writes those. A panic's file and line go to the phone's log.
 - **The library is loaded at the first call, never on the main thread**: a call from the
   main thread is refused before anything is loaded.
 - R8 keeps the native functions' names and the exception's constructor
@@ -1876,6 +1879,19 @@ carrier's shared one; never to the music server; five times at the most. Anythin
 goes back to the library as the answer it was. And those two services are **reached only
 at public addresses** in the first place: a name that turns out to be inside a network is
 refused when it is looked up, and an address written as numbers before that.
+
+**With a proxy.** The clients use the proxy the phone is set to use, as every request of
+the app's does, and that is left as it is: a phone that reaches the internet only through
+one would otherwise have no requests at all. Then the phone does not look up the name a
+request is for; it hands the name to the proxy, and **the proxy looks it up**. So with a
+proxy the rule above is the rule for an address as written and no more: an address written
+as numbers inside a network, or as `localhost`, is still refused before anything is sent,
+and a public-looking name that the proxy's own resolver leads inside is not caught,
+because the phone never learns where it led. Whoever sets a proxy on a phone decides
+where that phone's requests go; this app does not second-guess it. The proxy's own name
+is looked up as itself and is not judged (a proxy is usually inside the network the phone
+is on): the rule about where a name leads is for the names requests are for
+(`CoreHttp.Public`).
 
 **Nothing of requests is ever sent to the music server's own address** (its scheme, host
 and port), by a redirect or otherwise: not the look the library takes at where a redirect
@@ -2051,7 +2067,10 @@ it up. As on Windows:
   library's sentence; and "what is kept can't be read", which changes nothing until a start
   that can read it.
 - **What is kept, and where.** `requests.json` in the account's own folder: whether they
-  are on, the address, which sign-in service was found, who signed in. Never a secret.
+  are on, the address, which sign-in service was found, who signed in. Never a secret:
+  **the address is kept without anything after a question mark or a hash in it** (neither
+  is part of where Lidarr is, and either can hold what was never meant to be kept: a key
+  written into the address, the page of Lidarr's screens it was copied from).
   **Lidarr's key and the sign-in's token are kept as the saved password is**: sealed with a
   key held by the Android Keystore, in `no_backup/requests/<account>/`, sealed together
   with the account they belong to (another account on the phone can't open them). The token
@@ -2264,6 +2283,21 @@ What is the phone's own:
   each. There are two threads for changes, and an answer that came a letter at a time
   could otherwise hold one for as long as it liked. A request's limit is taken in the same
   moment it is noted as in flight, so that a stop cannot fall between the two.
+- **A file the app can make nothing of is never written over** (`Kept`, for each of
+  requests' files; the rule the Windows app has). One that is there and can't be read is
+  left exactly as it is. One that reads and is not what this app writes (cut short, or
+  not the app's at all) is moved aside as it is read, under a name of its own beside
+  where it was (`asked.json` to `asked.damaged-20261126-101500.json`, with `-2` and so on
+  if that name is taken), which never replaces an earlier one; only then is anything
+  written where it was. If it can't be moved it stays, and is treated as one that can't
+  be read. An empty file is nothing kept yet. **And the person is told**: for
+  `requests.json`, on the settings card, that what was kept was damaged, that requests
+  have started afresh and what the file has been kept as (`Requests.keptAside`); for
+  `asked.json`, on the Requests page, in the same place and words as a list that can't be
+  read (`askedUnreadable`, for the rest of that run). `suggestions.json` and
+  `arrivals.json` are moved aside the same way and say so only in Diagnostics: nothing
+  of the person's is lost with them (suggestions are looked for again; an arrival may be
+  said a second time).
 - **What is kept**, in the account's folder, written whole and synced, and never over a
   file that is there and can't be read: `asked.json` (the notes of what was asked for
   through this phone, as the library makes them) and `suggestions.json` (three days; six

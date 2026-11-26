@@ -2224,7 +2224,8 @@ tests by `InStepBuild.forTests` and on the emulator by a debug build's `DebugSte
 `core/CoreCasesTest`; `tools/instep/run cases`). The unit tests load the library itself,
 built for this machine by the same step that builds it for phones (`native/build`), so
 every run of the suite runs the real rules. `CoreTest`: text crosses exactly whatever is in
-it; a panic in the library is a `CoreException` with its words, and the next call works;
+it; a panic in the library is a `CoreException` without the panic's own words (they can quote
+what the code was holding), and the next call works;
 something the library doesn't take is an exception with the reason. `CoreCasesTest` is the
 proof that the phone and the Windows app decide alike: `tools/instep` compiles the Windows
 checkout's own library and writes `app/src/test/resources/instep-cases.json`, what that

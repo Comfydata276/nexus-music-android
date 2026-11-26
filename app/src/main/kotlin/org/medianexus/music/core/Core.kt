@@ -22,7 +22,8 @@ import kotlinx.serialization.json.JsonObject
  * else calls the functions below, which take and give Kotlin values (`CoreTypes.kt`). Across
  * the boundary each call is one argument and one answer, both JSON as UTF-8 bytes; whatever
  * goes wrong there (an argument the library doesn't take, an answer this side can't read, a
- * panic in the library) is a [CoreException] with the reason in words.
+ * panic in the library) is a [CoreException] with the reason in words; for a panic, that it
+ * stopped and nothing of what the panic itself said (which can quote what it was holding).
  *
  * The library is loaded at the first call, **never on the main thread** ([warm] loads it as
  * the app starts, off the main thread; a call from the main thread never loads it). It opens

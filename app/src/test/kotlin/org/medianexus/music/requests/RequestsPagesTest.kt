@@ -677,6 +677,31 @@ class RequestsPagesTest {
     }
 
     @Test
+    fun `a list this app can make nothing of is moved aside as it was, said on the Requests page, and never written over`() = runBlocking {
+        lidarrWithASingle()
+        val dir = File(folder.root, "data").apply { mkdirs() }
+        val file = File(dir, "asked.json")
+        // (Cut short part-way through an entry.)
+        val cut = """[{"album":"earlier","title":"Earlier Album","artist":"Some"""
+        file.writeText(cut)
+        val made = made()
+        // Opening the Requests page reads it: nothing can be made of it.
+        made.pages.onTheirWay()
+        val aside = dir.listFiles().orEmpty().single { it.name.startsWith("asked.damaged-") && it.name.endsWith(".json") }
+        assertEquals(cut, aside.readText())
+        assertFalse(file.exists())
+        assertTrue("the page isn't told", made.pages.askedUnreadable.value)
+        assertTrue("$notes", notes.any { aside.name in it })
+        assertEquals(emptyList<Any>(), made.pages.asked.value)
+        // The list starts afresh and is written as ever (this ask is noted, and said so);
+        // what was set aside stays as it was, and the page still says what happened.
+        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives."), made.pages.request("single-1", "One Song", connection = made.now()))
+        assertTrue("\"One Song\"" in file.readText())
+        assertEquals(cut, aside.readText())
+        assertTrue(made.pages.askedUnreadable.value)
+    }
+
+    @Test
     fun `a list that couldn't be read is put together again once it can be, with what was asked for meanwhile`() = runBlocking {
         lidarrWithASingle()
         val dir = File(folder.root, "data").apply { mkdirs() }
