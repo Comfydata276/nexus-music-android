@@ -29,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -46,7 +47,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.medianexus.music.ui.theme.Theme
 
-/** A switch for a setting that takes effect at once. */
+/** A switch for a setting that takes effect at once; dimmed when it can't be used. */
 @Composable
 fun Toggle(
     on: Boolean,
@@ -61,6 +62,9 @@ fun Toggle(
     Box(
         modifier
             .size(width = 56.dp, height = Theme.dimens.touch)
+            // One that can't be used looks it, as the app's other controls do (an icon button
+            // at the same strength): not like a switch that is merely off.
+            .alpha(if (enabled) 1f else 0.35f)
             .toggleable(value = on, enabled = enabled, role = Role.Switch, interactionSource = null, indication = null, onValueChange = onToggle)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
