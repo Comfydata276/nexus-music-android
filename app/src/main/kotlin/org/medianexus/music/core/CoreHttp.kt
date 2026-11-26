@@ -160,6 +160,7 @@ internal object CoreHttp {
     // ---- the words for what goes wrong --------------------------------------------------------
 
     private const val NOT_MADE = "The app couldn't make the request."
+    private const val IN_TIME = "It didn't answer in time."
     private const val BAD_ADDRESS = "That address isn't one the app can use."
     private const val TOO_LARGE = "The answer was larger than 10 MB."
     private const val GONE = "The answer is no longer there to read."
@@ -176,7 +177,7 @@ internal object CoreHttp {
         NetTrouble.CERTIFICATE_NOT_TRUSTED -> "Its certificate isn't one this phone trusts."
         NetTrouble.NAME_NOT_FOUND -> "Its name couldn't be found."
         NetTrouble.REFUSED -> "The connection was refused."
-        NetTrouble.TIMED_OUT -> "It didn't answer in time."
+        NetTrouble.TIMED_OUT -> IN_TIME
         NetTrouble.SECURE_CONNECTION -> "The secure connection failed."
         NetTrouble.NOT_ALLOWED -> "The phone didn't allow the connection."
         NetTrouble.NO_WAY -> "There's no way to it from this network."
@@ -383,13 +384,12 @@ internal object CoreHttp {
     ) {
         private val began = System.nanoTime()
 
-        /** The limit a request of this goes under now, not having been stopped. */
+        /** The limit a request of this goes under now, not having been stopped; [SPENT] if
+         *  the whole of its time has gone, and then no request is made at all. */
         private fun limit(): Long? {
             val whole = wholeMillis ?: return callMillis
             val left = whole - (System.nanoTime() - began) / 1_000_000
-            // (Nothing left: the request is still made, and given no time to speak of, so
-            // that it ends as any request that wasn't answered in time does.)
-            return maxOf(1L, minOf(callMillis ?: Long.MAX_VALUE, left))
+            return if (left <= 0) SPENT else minOf(callMillis ?: Long.MAX_VALUE, left)
         }
 
         private val lock = ReentrantLock()
@@ -439,15 +439,20 @@ internal object CoreHttp {
 
         /**
          * Whether a request may be sent now, and under what limit of this operation's own:
-         * null for none, a number of milliseconds once it has been stopped, and [REFUSED]
-         * when no more are to be sent.
+         * null for none, a number of milliseconds once it has been stopped, [REFUSED] when
+         * no more are to be sent because it was stopped, and [SPENT] when the whole of its
+         * time has gone.
          */
         fun allowance(): Long? = lock.withLock {
             when {
                 !stopped -> limit()
                 !changing -> REFUSED
                 System.nanoTime() - stoppedAt > TimeUnit.MILLISECONDS.toNanos(graceMillis) -> REFUSED
-                else -> minOf(afterStopMillis, limit() ?: Long.MAX_VALUE)
+                // (Stopped, and its own time spent as well: stopped is what it is.)
+                else -> when (val own = limit()) {
+                    SPENT -> REFUSED
+                    else -> minOf(afterStopMillis, own ?: Long.MAX_VALUE)
+                }
             }
         }
 
@@ -459,7 +464,7 @@ internal object CoreHttp {
          */
         fun enter(call: Call): Long? = lock.withLock {
             val allowed = allowance()
-            if (allowed != REFUSED) flying += call
+            if (allowed != REFUSED && allowed != SPENT) flying += call
             allowed
         }
 
@@ -469,6 +474,10 @@ internal object CoreHttp {
 
         companion object {
             const val REFUSED = -1L
+
+            /** The whole of the operation's time has gone: nothing more is sent, and what
+             *  would have been ends as a request that wasn't answered in time does. */
+            const val SPENT = -2L
         }
     }
 
@@ -729,7 +738,10 @@ internal object CoreHttp {
     private fun sent(asked: Asked): ByteArray {
         unsent()?.let { return failed(it) }
         val doing: Doing? = if (asked.operation == 0L) null else doings[asked.operation] ?: return stopped
-        if (doing?.allowance() == Doing.REFUSED) return stopped
+        when (doing?.allowance()) {
+            Doing.REFUSED -> return stopped
+            Doing.SPENT -> return failed(IN_TIME)
+        }
 
         val url = asked.url.toHttpUrlOrNull() ?: return failed(BAD_ADDRESS)
         // A secret goes to the place it was given for and nowhere else, whatever address the
@@ -765,6 +777,8 @@ internal object CoreHttp {
             val call = client.newCall(going)
             val allowed = if (doing == null) nobodysMillis else doing.enter(call)
             if (allowed == Doing.REFUSED) return stopped
+            // (Its time was spent between the look above and now: not sent.)
+            if (allowed == Doing.SPENT) return failed(IN_TIME)
             val limit = listOfNotNull(asked.patience, allowed).minOrNull()
             if (limit != null) call.timeout().timeout(limit, TimeUnit.MILLISECONDS)
             // (The name this is for, if a public service's: judged if it is looked up. See [Public].)

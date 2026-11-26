@@ -2222,7 +2222,7 @@ it up. As on Windows:
   makes up to three requests of the sign-in service (the code for its token, a pass for
   Lidarr, and who signed in); each has eight seconds, **and the whole exchange has twelve**
   from when it is begun (what is left of the twelve is the most its next request may
-  take), after which the library says in its own words that the service didn't answer
+  take, **and once they are spent no further request is made**), after which the library says in its own words that the service didn't answer
   in time. So a browser that has come back is shown its last page within two and a half
   seconds of the app being waited for to come forward, plus those twelve; or, with the
   app not in front, "Still signing in" after the two and a half.

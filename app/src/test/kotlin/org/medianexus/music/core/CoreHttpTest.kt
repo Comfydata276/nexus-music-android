@@ -493,6 +493,48 @@ class CoreHttpTest {
     }
 
     @Test
+    fun `an operation whose whole time is spent is allowed no further request`() {
+        // (Each of its requests may take a second; the whole of it sixty milliseconds.)
+        val doing = CoreHttp.Doing(1, changing = true, callMillis = 1_000, wholeMillis = 60)
+        val first = doing.allowance()!!
+        assertTrue("$first", first in 1..60)
+        Thread.sleep(90)
+        // Its time is spent: not one more request with a moment to live, none at all.
+        val after = doing.allowance()!!
+        assertTrue("allowed $after ms", after < 0)
+    }
+
+    @Test
+    fun `once the whole time of finishing a sign-in is spent, a further request is not sent, and ends as one not answered in time`() {
+        val asked = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val service = standIn { request, reply ->
+            asked += request.line
+            reply.json("{}")
+        }
+        CoreHttp.signInWholeMillis = 400
+        try {
+            // (As the library does it: one request after another, each under the operation.)
+            val (first, second) = runBlocking {
+                withTimeout(30_000) {
+                    CoreHttp.finishing { operation ->
+                        fun ask(what: String) = CoreHttp.send("""{"operation":$operation,"line":"lidarr","method":"GET","url":"${service.address}/$what"}""".encodeToByteArray())
+                        val first = ask("token")
+                        Thread.sleep(600)
+                        first to ask("userinfo")
+                    }
+                }
+            }
+            assertEquals("the first was not answered: ${first.drop(1).toByteArray().decodeToString()}", 0, first[0].toInt())
+            assertEquals(1, second[0].toInt())
+            assertEquals("It didn't answer in time.", second.drop(1).toByteArray().decodeToString())
+            Thread.sleep(200)
+            assertEquals(listOf("GET /token"), asked.toList())
+        } finally {
+            CoreHttp.signInWholeMillis = 12_000
+        }
+    }
+
+    @Test
     fun `a proxy known by a name is looked up as itself, wherever it is, and the services are still reached through it`() {
         val proxy = standIn { _, reply -> reply.json("""{"through":"the proxy"}""") }
         CoreHttp.publicOnly = true
