@@ -2735,8 +2735,10 @@ How it is built (M1b):
   0.5.1 and Windows do: nothing waits, so after a playlist move and then a removal the Undo
   on screen is the removal's, the one that works. (M7b queued them instead, and a working
   Undo then waited behind a stale one; taken out, and the host is 0.5.1's again.) A note's
-  time starts in the effect that runs once it has been composed, as in 0.5.1, so one that
-  comes while the app is behind has its whole time when the app is back. An arrival's note
+  time starts once it is on screen: in the effect that runs once it has been composed, as in
+  0.5.1, and only when the app is in front and the note has been drawn (Compose runs that
+  effect while the app is behind too, so in 0.5.1 a note that came then could spend its time
+  unseen); one that comes while the app is behind has its whole time when the app is back. An arrival's note
   may be replaced like any other: the Requests page's Arrived row is its record, and it
   counts as said in that same effect, with the app in front. Three seconds; with a button
   eight. At

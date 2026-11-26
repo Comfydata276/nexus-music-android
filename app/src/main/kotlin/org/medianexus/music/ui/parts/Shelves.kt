@@ -47,6 +47,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.flow.SharedFlow
 import org.medianexus.music.R
 import org.medianexus.music.ui.theme.Theme
@@ -157,9 +159,10 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
  * signed in, and when it changes the note showing goes; an arrival's note is told it was
  * seen (`Toast.shown`) in the same effect that starts its time, so only once it is on screen
  * with the app in front; and a button acts on the screen alive when it is pressed, which is
- * the callers' part (`LiveScreen`). A note's time starts in the effect that runs after it has
- * been composed, as in 0.5.1: one that comes while the app is behind starts its time when the
- * app is back and it is drawn.
+ * the callers' part (`LiveScreen`). And a fourth, which the walk found: a note's time starts
+ * in the effect that runs after it has been composed, as in 0.5.1, but only once the app is in
+ * front and the note has been drawn (Compose runs the effect while the app is behind too, so
+ * in 0.5.1 a note that came then could spend its time unseen).
  */
 @Composable
 fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier, account: Any? = null) {
@@ -178,8 +181,13 @@ fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: M
     LaunchedEffect(account) { shown = false }
     LaunchedEffect(said) {
         if (said == 0) return@LaunchedEffect
-        // On screen now: an arrival's note has been seen, if the app is in front.
-        if (shown && lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) toast.shown?.invoke()
+        // Its time starts once it is on screen: the app in front, and the note drawn. (Compose
+        // goes on composing, and running this, while the app is behind: in 0.5.1 a note that
+        // came then had spent its time before the app was back.)
+        lifecycle.currentStateFlow.first { it.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) }
+        withFrameNanos { }
+        // On screen now: an arrival's note has been seen.
+        if (shown) toast.shown?.invoke()
         // One with a button stays long enough to press it (Windows' eight seconds).
         delay(if (toast.action != null) 8_000 else 3_200)
         shown = false
