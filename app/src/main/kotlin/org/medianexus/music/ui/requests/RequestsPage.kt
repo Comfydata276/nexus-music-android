@@ -92,60 +92,86 @@ fun RequestsPage() {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)
         Refreshable(state.asking && waiting != null, model::again) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-                when {
-                    waiting == null && state.why != null -> item(key = "why", contentType = "said") { Said(state.why.orEmpty(), onRetry = model::again) }
-                    waiting == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
-                    else -> {
-                        state.why?.let { why -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(why, model::again) } }
-                        // What this phone asked for can't be read: the list is short of it, and
-                        // says so, in the library's sentence.
-                        if (unreadable) item(key = "asked-unreadable", contentType = "said") {
-                            BasicText(
-                                remember { org.medianexus.music.core.Words.askedUnreadable },
-                                Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
-                                style = Theme.type.rowDetail.copy(color = Theme.colors.warm),
-                            )
+                // What heads the page: why there is no list (or asking again failed), and the
+                // warnings, which hold whether or not a list has been read (with no key, an
+                // artist's setting may still need putting back on Lidarr).
+                for (head in heads(hasList = waiting != null, why = state.why, askedUnreadable = unreadable, wayBack = wayBack)) when (head) {
+                    is Head.Why -> item(key = "why", contentType = "said") { Said(head.words, onRetry = model::again) }
+                    is Head.Failed -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(head.words, model::again) }
+                    // What this phone asked for can't be read: the list is short of it, and says
+                    // so, in the library's sentence.
+                    Head.AskedUnreadable -> item(key = "asked-unreadable", contentType = "warning") { Warning(remember { org.medianexus.music.core.Words.askedUnreadable }) }
+                    // What was written down to put back on Lidarr couldn't be taken up: said here,
+                    // in the requests layer's own sentence, for as long as the app runs.
+                    is Head.WayBack -> item(key = "way-back-trouble", contentType = "warning") { Warning(head.words) }
+                    Head.Loading -> item(key = "loading", contentType = "loading") { SkeletonRows() }
+                }
+                if (waiting != null) {
+                    if (waiting.arrived.isNotEmpty()) {
+                        item(key = "arrived-title", contentType = "title") { SectionTitle(stringResource(R.string.arrived)) }
+                        val keys = arrivedKeys(waiting.arrived.map { it.first })
+                        itemsIndexed(waiting.arrived, key = { at, _ -> keys[at] }, contentType = { _, _ -> "arrived" }) { _, (asked, about) ->
+                            ArrivedRow(asked, about, onOpen = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) })
                         }
-                        // What was written down to put back on Lidarr couldn't be taken up: said
-                        // here, in the requests layer's own sentence, for as long as the app runs.
-                        if (wayBack.isNotEmpty()) item(key = "way-back-trouble", contentType = "said") {
-                            BasicText(
-                                wayBack,
-                                Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
-                                style = Theme.type.rowDetail.copy(color = Theme.colors.warm),
-                            )
-                        }
-                        if (waiting.arrived.isNotEmpty()) {
-                            item(key = "arrived-title", contentType = "title") { SectionTitle(stringResource(R.string.arrived)) }
-                            val keys = arrivedKeys(waiting.arrived.map { it.first })
-                            itemsIndexed(waiting.arrived, key = { at, _ -> keys[at] }, contentType = { _, _ -> "arrived" }) { _, (asked, about) ->
-                                ArrivedRow(asked, about, onOpen = { if (asked.libraryAlbum.isNotEmpty()) ui.open(Route.Album(asked.libraryAlbum, asked.title, asked.artist, asked.cover)) })
+                    }
+                    val shownUnder = state.connection
+                    val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id, shownUnder) !in going && album.id !in taken }
+                    if (waiting.heading.isNotEmpty() && pending.isNotEmpty()) {
+                        item(key = "pending-title", contentType = "title") { SectionTitle(waiting.heading) }
+                        items(pending, key = { (album, _) -> "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->
+                            SwipeAway("pending/${album.id}", onGone = { takeOff(album, shownUnder) }, Modifier.animateItem(fadeOutSpec = null)) {
+                                PendingRow(album, line, onMenu = {
+                                    ui.sheet = Sheet.Drawn { choose ->
+                                        MenuEntry(stringResource(R.string.take_off_the_list)) { choose { takeOff(album, shownUnder) } }
+                                    }
+                                }, onTakeOff = { takeOff(album, shownUnder) })
                             }
                         }
-                        val shownUnder = state.connection
-                        val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id, shownUnder) !in going && album.id !in taken }
-                        if (waiting.heading.isNotEmpty() && pending.isNotEmpty()) {
-                            item(key = "pending-title", contentType = "title") { SectionTitle(waiting.heading) }
-                            items(pending, key = { (album, _) -> "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->
-                                SwipeAway("pending/${album.id}", onGone = { takeOff(album, shownUnder) }, Modifier.animateItem(fadeOutSpec = null)) {
-                                    PendingRow(album, line, onMenu = {
-                                        ui.sheet = Sheet.Drawn { choose ->
-                                            MenuEntry(stringResource(R.string.take_off_the_list)) { choose { takeOff(album, shownUnder) } }
-                                        }
-                                    }, onTakeOff = { takeOff(album, shownUnder) })
-                                }
-                            }
-                        }
-                        // Nothing on its way, or why Lidarr couldn't say (which is said under what has
-                        // arrived, too: that much is known on the phone).
-                        if (waiting.empty.isNotEmpty() && pending.isEmpty() && (waiting.arrived.isEmpty() || waiting.failed)) {
-                            item(key = "empty", contentType = "said") { Said(waiting.empty, onRetry = if (waiting.failed) model::again else null) }
-                        }
+                    }
+                    // Nothing on its way, or why Lidarr couldn't say (which is said under what has
+                    // arrived, too: that much is known on the phone).
+                    if (waiting.empty.isNotEmpty() && pending.isEmpty() && (waiting.arrived.isEmpty() || waiting.failed)) {
+                        item(key = "empty", contentType = "said") { Said(waiting.empty, onRetry = if (waiting.failed) model::again else null) }
                     }
                 }
             }
         }
     }
+}
+
+/** What heads the Requests page, in order, before its lists. */
+internal sealed interface Head {
+    /** No list, and why: with Try again. */
+    data class Why(val words: String) : Head
+    /** A list, and asking again failed. */
+    data class Failed(val words: String) : Head
+    /** What this phone asked for can't be read. */
+    data object AskedUnreadable : Head
+    /** What was written down to put back on Lidarr couldn't be taken up. */
+    data class WayBack(val words: String) : Head
+    /** No list yet, and nothing wrong. */
+    data object Loading : Head
+}
+
+/**
+ * What heads the page. The warnings hold whatever became of the list: with no key, or Lidarr
+ * out of reach, an artist's setting may still need putting back, and that is said.
+ */
+internal fun heads(hasList: Boolean, why: String?, askedUnreadable: Boolean, wayBack: String): List<Head> = buildList {
+    if (why != null) add(if (hasList) Head.Failed(why) else Head.Why(why))
+    if (askedUnreadable) add(Head.AskedUnreadable)
+    if (wayBack.isNotEmpty()) add(Head.WayBack(wayBack))
+    if (!hasList && why == null) add(Head.Loading)
+}
+
+/** A warning at the head of the page, in the warm colour. */
+@Composable
+private fun Warning(words: String) {
+    BasicText(
+        words,
+        Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
+        style = Theme.type.rowDetail.copy(color = Theme.colors.warm),
+    )
 }
 
 /**

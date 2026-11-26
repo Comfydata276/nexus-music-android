@@ -800,6 +800,5 @@
     <string name="requests_signed_in_at">Signed in at %1$s. This phone keeps a token from that sign-in, not your password.</string>
     <!-- The phone's own, until the library has its sentences for these (at the next pin move). -->
     <string name="requests_kept_unreadable">What this phone keeps about requests couldn\'t be read. It has been left as it is, and nothing here can be changed until the app can read it.</string>
-    <string name="requests_asked_unreadable">What this phone asked for couldn\'t be read. It has been left as it is, so some of it may be missing here.</string>
     <string name="requests_sign_in_note">You sign in on its own page, in your browser. Your password isn\'t typed into this app or kept by it.</string>
 </resources>
