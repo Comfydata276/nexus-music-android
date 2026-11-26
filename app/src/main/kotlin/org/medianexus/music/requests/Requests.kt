@@ -474,9 +474,12 @@ class Requests internal constructor(
                 dropSignIn(settingsNow.value)
                 write(settingsNow.value.copy(service = found.service, client = found.client, signedIn = ""))
             }
-            val settings = settingsNow.value
-            val door = settings.door
+            val door = settingsNow.value.door
             val signedOut = door != null && tokenFor(door) == null
+            // (Nobody is signed in: whoever is written down as signed in was signed in with
+            // a token that is no longer kept, and is written down no longer.)
+            if (signedOut && settingsNow.value.signedIn.isNotEmpty()) write(settingsNow.value.copy(signedIn = ""))
+            val settings = settingsNow.value
             stateNow.value = when (checked) {
                 is Outcome.Stopped -> if (door != null && signedOut) RequestsState.NeedsSignIn(hostOf(door)) else RequestsState.NotConnected
                 is Outcome.Failed -> RequestsState.Unreachable(checked.why)

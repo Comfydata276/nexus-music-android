@@ -428,6 +428,32 @@ class RequestsTest {
         Thread.sleep(300)
         assertTrue("the other service was sent ${other.asked.map { it.line }}", other.asked.isEmpty())
         assertFalse(File(secretsDir(account), "lidarr-token.sealed").exists())
+        // And nobody is written down as signed in any more.
+        assertEquals("", again.settings.value.signedIn)
+        assertFalse("\"walker\"" in settingsFile(account).readText())
+    }
+
+    @Test
+    fun `a token kept without the service it is for is no token, and nobody is written down as signed in`() = runBlocking {
+        val behind = Behind()
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        signInWith(requests.signIn()!!)
+        requests.until { it is RequestsState.Connected }
+        scopes.last().cancel()
+        val token = tokenKept(account)!!
+        val asked = behind.service.asked.size
+        // (As a build before this rule would have kept it: the account, then the token.)
+        File(secretsDir(account), "lidarr-token.sealed").writeBytes(Turned.seal("${account.key}\n$token".toByteArray()))
+
+        val again = requests(account)
+        again.start()
+        assertEquals(RequestsState.NeedsSignIn(behind.host), again.until { it is RequestsState.NeedsSignIn })
+        assertEquals("", again.settings.value.signedIn)
+        assertFalse("\"walker\"" in settingsFile(account).readText())
+        assertEquals("the service was sent ${behind.service.asked.drop(asked).map { it.line }}", asked, behind.service.asked.size)
     }
 
     @Test
