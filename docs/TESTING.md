@@ -2903,6 +2903,123 @@ putting back cannot begin once its account's departure has begun. The two steps 
 could come apart are now inside one lock which the departure passes through; there is no
 place between them for a test to stand.
 
+## Linking the person's devices (behind a switch that is off): what was checked
+
+The scheme of the Windows repository's `docs/linking-design.md`; the phone's side is built
+to its section 8.1 and **exists in no build** (`link/LinkBuild`). A debug build can be told
+to make it, for the rig:
+
+```sh
+adb shell am broadcast -n org.medianexus.music/.playback.DebugControl --es link on      # from the next start
+... --es link "relay http://127.0.0.1:<port>/#<key>"   # a relay and its key (a build without jams has no screen for it)
+... --es link say | "choose <place>" | play_here | let_go | reset
+```
+
+**Unit tests, against the real player** (the playback service whole, under Robolectric)
+**and the real transport**; 34 in all:
+
+| Test | What it holds |
+|---|---|
+| `LinkLinesTest` (7) | Linking's two lines through the real library and client, against stand-ins: each reaches its own place and no other; both closed with no place given; an answer that sends a request on is not followed on either, GET or POST; a relay at the music server's place is asked nothing; an account that changes with a request in flight; a stop that stops an operation after "keep going", with nothing more sent; the write in flight at a stop let finish. |
+| `LinkSideTest` (12) | With the switch off nothing of it exists. What each answer says, with nothing in the player and with a queue; Play refused, allowed, so already, and after the player has stopped by itself; a command's echoes are not a change; the queue's number moves for a whole queue and for nothing else, the same queue handed to the session and back included; sound is the sound of the entry a queue went in with (a late word of the queue before, the next entry, the same entry again); entries queued by hand come in and go out as that, and a queue begins where it can; an answer is the player after the call against before it, and one that may not start changes nothing; playback that stops and an entry beginning again are found by comparing; the mark of a queue handed on. |
+| `LinkingTest` (4) | With the shared library: the service makes it and lets go of it; a call into the player that fails stops linking for the run of the app, tells the person once, leaves nothing attached and is not undone by a sign-out or a service made again; the end of a sign-in is said before the player is switched; a press claims the queue once. |
+| `LinkCommandsTest` (6) | A command from another device in flight, handed to the library as a relay would bring it (`Core.linkTest…`, which only the library built for this machine has: `native/Cargo.toml`, `test-seams`): one command is one choice however the player catches up; a press and what it did are one choice; a Play the phone refuses; the sign-in ending inside a read and inside a command; a fault inside a command. |
+| `LinkWorkersTest` (5) | With a host of the test's own and stand-in servers: a session whose key was still being read when its sign-in ended is never begun; a relay at the address of something else of the person's is not used; a start that fails leaves nothing attached, wherever it fails; reading the player failing is a fault; a look-up of songs still out when its sign-in ends brings nothing. |
+
+**Each fix is known to be what its test is for.** The three tests of the redirect, the
+relay's place and the account change failed before their fix. For the rest, fourteen fixes
+were taken out together (in two runs) and sixteen tests failed, each of them one written
+for a fix that was out; the eighteen that passed are for other things. The two libraries a
+phone carries have none of the `linkTest` functions.
+
+**Walked** (debug build on `phone`, Android 17; the Windows repository's own relay and a
+headless copy of the Windows app, through that repository's walk kit, with its stand-in on
+the relay's path and one between the phone and the music server; a test music server of
+the rig's own, never a real one). The first walk, before the review:
+
+- Switch off: the app plays, skips, seeks and pauses as it did; `link say` answers that
+  linking does not exist; no file of it and no line of it in the diagnostics.
+- Switch on: the phone and the PC each list the other; Play, Next, Pause and Play pressed
+  on the PC are carried out on the phone's player, which sounds; "Play here" on the PC
+  takes the phone's music and the phone stops, with its queue's place on disk marked as
+  handed on; the PC's music given to the phone starts there and stops on the PC; and both
+  again asked from the phone's side.
+
+That walk found three things no unit test could: the library had not been told who makes
+its requests when linking was the first to make one; the place a frame is sent to crossed
+as numbers and not as text; and a Play from another device did not make ready a player
+that had only had its last queue put back. Each has a test or a guard now.
+
+**The adverse walks, after the review** (the same rig):
+
+- **A command held on the relay's path** while the person skips on the phone with its own
+  key: let through, it is refused as made too early, and the phone's key was one choice.
+  **Delivered twice:** carried out once, refused the second time. **Dropped:** the PC says
+  it had not reached the phone. **Every answer thrown away for six seconds:** the PC
+  learns it was done by asking.
+- **Presses that change nothing:** the phone, paused, paused twice more by its own press,
+  and the PC's next command goes through; Previous pressed twice at the top of a song.
+- **A song ending during a take:** asked for in the last second and a half of the PC's
+  song, the PC had moved on by itself when it was told to stop, refused, and the phone
+  said so ("it may still be playing"); asked for earlier, the take completes.
+- **The sound taken by a call:** the PC shows the phone paused while it rings, its Next is
+  carried out meanwhile, and it shows it playing when the call ends.
+- **Asleep** (screen off, Android's idle forced), playing and then paused for forty
+  seconds: commands are carried out. (The app's screen was the last thing in front, which
+  an emulator's forced idle does not cut off from the network.)
+- **The playback service stopped by Android and made again in the same process:** the
+  phone is "not here" to the PC meanwhile, and the new service's linking joins, is listed
+  once and is steered.
+- **The same account signed out and in again while a stay at the relay was beginning**
+  (the relay frozen): after it answers again the phone is listed once and steered. **And
+  while the phone was writing the secret** (the write held): the write under way finished
+  after its sign-out and left an empty playlist of the name beside the one the next
+  sign-in wrote its secret to; both devices then joined through that one.
+- **A hand-over with entries queued by hand:** queued on the PC, they are "Next in queue"
+  on the phone, and again on the PC when it takes the music back.
+- **A restart with the switch off after a hand-over with it on:** with it on the mark is
+  kept through a restart; with it off the queue is the phone's own from the start.
+- **A sign-out ends the playback service, and its linking with it**: signing in again
+  makes a new service and a new linking. (So on a phone "the same account signs in again"
+  is always a new linking, never the old one carried on.)
+
+**How long the player's thread is held** by one call into the library, with 5,000 songs
+in the phone's queue (the emulator, a debug build; `link say` gives the longest since it
+was last asked, and anything over 16 ms is said in the diagnostics): a full look 7 ms; a
+seek 8; a queue handed on, with the wait for its mark to be on disk, 17; Next 25; Remove
+29; Move 33 and 41; Play 89; a queue of 4,997 taken from another device 119. Nothing was
+changed for it.
+
+**After the review of a tester's pair and its diff check.** The linking tests are 38,
+and one more is the queue writer's:
+
+- `LinkShownTest` (2): the playlist the linking record is kept in is left out of the
+  lists shown only where linking exists, is running and is wanted; in the build as it
+  is, every list is the very list it was, and nothing is even asked. **Nothing else of
+  the phone's playlists is touched by linking**: `library/`, `store/PageCache.kt`,
+  `sync/Names.kt` and `downloads/` are as they are without it. (Hiding that playlist in
+  every build, at the page cache, was built and withdrawn after its review.)
+- `LinkSideTest`: sound from an event with no period of its own proves nothing, and
+  sound interrupted by a seek is not believed again on a late word of the same loading;
+  a mark that is not written is no mark, and one taken back that cannot be written
+  throws; a phone that is already playing is asked a question that touches nothing, and
+  refused, plays on with its queue.
+- `LinkWorkersTest` (7): a start that fails, three ways, is a fault and leaves nothing
+  attached; the relay saved again ends the session and begins another; a look that
+  finds no room in linking's threads is told to the library as a look that failed.
+- `QueueSaverTest.whetherASaveIsOnDiskIsThatSavesOwnResult`: a save whose write fails
+  is not taken for written because an earlier one put the same words there.
+
+Most of these were written with the code, not before it (the player's interface moved:
+`pause` and `handedOn` answer now). The last two rules were checked by taking them out:
+both their tests failed.
+
+Not checked: a real phone; a car connected while another device steers; two phones; a
+look-up of songs still out when the person signs out (a unit test); the phone's own entry
+ending during the proof of a take (a unit test; the walk's timing never landed there);
+**and nothing of the changes after the review of a tester's pair has been walked on the
+emulator** (the adverse walks above are of the build before them).
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account

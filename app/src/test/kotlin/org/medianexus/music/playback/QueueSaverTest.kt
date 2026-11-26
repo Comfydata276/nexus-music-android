@@ -258,4 +258,34 @@ class QueueSaverTest {
         withTimeout(10_000) { saver.flush() }
         assertNotNull(files().load())
     }
+
+    /**
+     * **Whether the last thing asked for is on disk is that ask's own result.** A queue
+     * marked and written, and then another save whose write fails: the second is not
+     * taken for written because the first once put the same words there. (Linking asks
+     * this of the mark of a queue handed to another device.)
+     */
+    @Test
+    fun whetherASaveIsOnDiskIsThatSavesOwnResult() = runBlocking {
+        val dir = folder.newFolder()
+        val place = File(File(dir, "place"), "queue-place.json").also { it.parentFile!!.mkdirs() }
+        val kept = KeptQueue(QueueFiles(File(dir, "queue.json"), place), saver)
+        kept.settle()
+        assertFalse("nothing was asked for yet", kept.written())
+        assertTrue(kept.save(revision = 1, cursor = 0, position = 0.0, stamp = 1, taken = "handed to another device") { queue("a", "b").copy(taken = "handed to another device") })
+        saver.flush()
+        assertTrue(kept.written())
+        // The same queue, the same words, and the place can no longer be written.
+        place.parentFile!!.deleteRecursively()
+        place.parentFile!!.writeText("in the way")
+        assertTrue(kept.save(revision = 1, cursor = 1, position = 3.0, stamp = 2, taken = "handed to another device") { queue("a", "b") })
+        saver.flush()
+        assertFalse("a save that failed was taken for written because an earlier one had been", kept.written())
+        // And a later one that does get there is.
+        place.parentFile!!.delete()
+        place.parentFile!!.mkdirs()
+        assertTrue(kept.save(revision = 1, cursor = 1, position = 4.0, stamp = 3, taken = "handed to another device") { queue("a", "b") })
+        saver.flush()
+        assertTrue(kept.written())
+    }
 }

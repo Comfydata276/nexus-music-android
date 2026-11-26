@@ -91,6 +91,12 @@ pub enum Line {
     Lidarr,
     MusicBrainz,
     ListenBrainz,
+    /// The person's own music server, for linking their devices (`link.rs`): the phone's
+    /// client for that server, to that server and nowhere else.
+    Music,
+    /// The relay, for linking: to the relay's own address and nowhere else, with no
+    /// redirect followed (the host key and a place's token go with every request).
+    Relay,
 }
 
 thread_local! {

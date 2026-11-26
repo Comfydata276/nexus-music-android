@@ -112,6 +112,15 @@ class Subsonic private constructor(
         }
     }
 
+    /**
+     * The sign-in as the shared library's own requests to this server carry it, for linking
+     * the person's devices (`core/Core.linkLook`): the address of `/rest`, the sign-in as
+     * the parameters of a form, and the account's name. It holds the token: handed to the
+     * library and nowhere else, never logged.
+     */
+    fun linkAccount(): Triple<String, String, String> =
+        Triple("$server/rest", "u=${encode(username)}&t=$token&s=$salt&v=$API_VERSION&c=${encode(CLIENT_NAME)}", username)
+
     /** In offline mode nothing is sent: requests fail straight away. */
     fun setOffline(on: Boolean) {
         offline.on = on

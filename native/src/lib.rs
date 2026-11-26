@@ -21,6 +21,7 @@
 //! the phone writes those. Its place (file and line) goes to the phone's log, and nothing
 //! of what it said goes anywhere.
 
+mod link;
 mod pages;
 mod requests;
 mod wire;

@@ -153,9 +153,11 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
     // Offline: every playlist downloaded whole (from the downloads' own record: the server's
     // list of playlists may not be kept, or may not have it), and of the kept list those with
     // a song that plays. Each opens from what is on the phone.
-    val onPhone = org.medianexus.music.ui.downloads.playlistsOffline(feed.value)
-    val playlists = remember(feed.value, pinned, onPhone) {
-        (if (phone != null) onPhone else feed.value)
+    // (Where linking the person's devices is running: without the playlist its record is in.)
+    val listed = feed.value?.let(org.medianexus.music.link.LinkShown::of)
+    val onPhone = org.medianexus.music.ui.downloads.playlistsOffline(listed)
+    val playlists = remember(listed, pinned, onPhone) {
+        (if (phone != null) onPhone else listed)
             ?.sortedWith(compareBy<Playlist> { pinned.indexOf(it.id).let { at -> if (at < 0) Int.MAX_VALUE else at } }.thenBy { it.name.lowercase() })
     }
     val requestsOn = org.medianexus.music.ui.requests.requestsHere()?.settings?.on == true

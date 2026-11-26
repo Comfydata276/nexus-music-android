@@ -226,7 +226,8 @@ private fun PlaylistPicker(songs: List<Song>, choose: (() -> Unit) -> Unit) {
     val feed = org.medianexus.music.ui.shell.rememberPageFeed("playlists") { it.playlists() }
     val settings = ui.graph.settings.state.collectAsStateWithLifecycle().value
     val playlists = remember(feed.value, settings.pinnedPlaylists) {
-        val own = feed.value.orEmpty().filter { ui.account?.playlists?.canEdit(it) == true }
+        // (Where linking the person's devices is running: not the playlist its record is in.)
+        val own = org.medianexus.music.link.LinkShown.of(feed.value.orEmpty()).filter { ui.account?.playlists?.canEdit(it) == true }
         org.medianexus.music.library.SearchRank.playlistsInOrder(own, settings.pinnedPlaylists)
     }
     Title(stringResource(R.string.add_to_playlist))

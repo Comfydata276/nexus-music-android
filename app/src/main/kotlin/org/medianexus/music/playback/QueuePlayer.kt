@@ -347,6 +347,9 @@ class QueuePlayer(
     override fun handleSetMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
         val given = mediaItems.map(::uidOf)
         val at = staged.indexOfLast { it.uids == given }
+        // (For linking's number alone: this very queue, handed over to be carried on with
+        // where it is, is not another whole queue when it comes back. See [whole].)
+        val another = at < 0 || staged[at].ticket != null
         if (at >= 0) {
             // A queue this player handed to the session itself. It, and anything handed
             // over before it, is no longer on its way.
@@ -381,7 +384,7 @@ class QueuePlayer(
             val songs = mediaItems.map { songOf(it) }
             queue.replace(songs, if (startIndex == C.INDEX_UNSET) 0 else startIndex, context = "", shuffle = false)
         }
-        load(if (startIndex == C.INDEX_UNSET || startPositionMs == C.TIME_UNSET) 0L else startPositionMs)
+        load(if (startIndex == C.INDEX_UNSET || startPositionMs == C.TIME_UNSET) 0L else startPositionMs, another)
         return Futures.immediateVoidFuture()
     }
 
@@ -682,12 +685,31 @@ class QueuePlayer(
         staged.clear()
         exo.stop()
         exo.clearMediaItems()
+        whole++
         changed(this)
     }
 
+    /**
+     * **The number of the queue in the player**: a new one each time a whole queue is in the
+     * player in place of what was there, and at no other time. It moves in two places and
+     * no others: at the end of [load] (the model has the queue **and** ExoPlayer has its
+     * items; before anything is asked to play; and not where what is loaded is the queue
+     * that was there already, handed to the session and come back), and in [clear]. So it
+     * moves for a list
+     * started here, a queue from another device or the server, the last run's queue put
+     * back, and the first songs added to an empty player; and not for a change to the queue
+     * in place, or for the window of items sliding along. If putting a queue in fails
+     * part-way, it has not moved. Linking the person's devices goes by it (`playback/
+     * LinkSide`, and the shared core's `link`): a move of music waits for the sound of the
+     * queue it put in, and of no other.
+     */
+    var whole = 0L
+        private set
+
     /** Puts the queue to ExoPlayer afresh, at the current song. */
-    private fun load(positionMs: Long) {
+    private fun load(positionMs: Long, another: Boolean = true) {
         QueueSync.load(queue, playlist, positionMs)
+        if (another) whole++
         settled()
     }
 

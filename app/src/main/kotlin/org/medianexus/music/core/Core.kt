@@ -852,6 +852,215 @@ object Core {
     fun discoverKept(place: Long, kept: KeptSuggestions, now: Long, forget: String = ""): Suggested =
         across(KeptIn(place, kept, now, forget), KeptIn.serializer(), Suggested.serializer(), ::discoverKept)
 
+    // ---- Linking the person's devices (the core's `link`; `native/src/link.rs`) ----
+    //
+    // The deciding is the library's. These are its calls, and nothing else: what crosses is
+    // set out in the Windows repository's docs/linking-design.md, 8.1. [linkNew],
+    // [linkHappened] and [linkTurn] are made on the player's thread (the main one), where
+    // the library calls back into [LinkPlayer] before it returns; the rest are requests,
+    // each made on a thread of its own under an operation's number.
+
+    /**
+     * The phone's player, as the library calls up into it: **every one of the first group on
+     * the player's thread, from inside [linkHappened] or [linkTurn], answered before it
+     * returns, and none of them may fail** (one that throws stops the library's call, and
+     * linking with it, until the app next starts). JSON as UTF-8 bytes; seconds as decimals.
+     * The names and shapes are what `native/src/link.rs` calls: change them there too.
+     */
+    interface LinkPlayer {
+        fun brief(): ByteArray
+        fun full(): ByteArray
+        fun handed(): ByteArray
+        fun queue(): Long
+        fun sounding(): ByteArray?
+        fun hasSong(): Boolean
+        fun ahead(): ByteArray
+        fun toCome(): Int
+        fun carryOut(asked: ByteArray): Int
+        /** Whether the phone is then not set to play. */
+        fun pause(): Boolean
+        fun take(queue: ByteArray)
+        fun claim()
+
+        /** Whether the mark is in the queue's file. */
+        fun handedOn(): Boolean
+        fun handedBack()
+
+        // From any thread:
+        fun random(count: Int): ByteArray?
+        fun elapsed(): Long
+        fun wake()
+    }
+
+    /**
+     * What the library answers a call on the player's thread with. **Every field is the
+     * library's: none has a value of the app's own to fall back on**, so an answer that
+     * lacks one is not read as "nothing to do" but fails, which is a fault.
+     * `refused`: the call was made from inside one of the library's own calls with
+     * something that needs an answer, or with something too large, and nothing was done.
+     */
+    @Serializable
+    class LinkCame(val acts: List<JsonObject>, val asks: List<JsonElement>, val more: Boolean, val signIn: Long, val refused: Boolean)
+
+    /** What starting a linking answers with: its number, which every other call names,
+     *  and the number of its first sign-in. */
+    @Serializable
+    class LinkStarted(val link: Long, val signIn: Long)
+
+    /** What the person is told if linking stops on the phone for a fault: the library's
+     *  words. Needs nothing to have been started. */
+    fun linkStoppedWords(): String = across(0L, Long.serializer(), String.serializer(), ::linkStoppedWords)
+
+    @Serializable
+    private class LinkLookFailedIn(val link: Long, val number: Long, val since: Long, val reset: Boolean)
+
+    @Serializable
+    private class LinkOfIn(val link: Long, val number: Long)
+
+    /** A look that could not be made at all: told to the library as a look that failed. */
+    fun linkLookFailed(link: Long, number: Long, since: Long, reset: Boolean) {
+        across(LinkLookFailedIn(link, number, since, reset), LinkLookFailedIn.serializer(), JsonElement.serializer(), ::linkLookFailed)
+    }
+
+    /** A session's stay at the relay that could not be begun at all. */
+    fun linkStayFailed(link: Long, session: Long) {
+        across(LinkOfIn(link, session), LinkOfIn.serializer(), JsonElement.serializer(), ::linkStayFailed)
+    }
+
+    /** A look-up of songs that could not be made at all: it found none. */
+    fun linkFindFailed(link: Long, ticket: Long) {
+        across(LinkOfIn(link, ticket), LinkOfIn.serializer(), JsonElement.serializer(), ::linkFindFailed)
+    }
+
+    @Serializable
+    private class LinkNewIn(val device: String, val name: String, val remembered: JsonElement)
+
+    @Serializable
+    private class LinkAt(val now: Long, val today: Long)
+
+    @Serializable
+    private class LinkToldIn(val link: Long, val event: JsonObject, val at: LinkAt)
+
+    @Serializable
+    private class LinkTurnIn(val link: Long, val at: LinkAt)
+
+    /** Starts a linking, on the player's thread: one for each playback service.
+     *  `remembered` is the list the library last asked to be kept. Nothing is kept by
+     *  the library unless all of it could be. */
+    fun linkNew(player: LinkPlayer, device: String, name: String, remembered: JsonElement): LinkStarted {
+        val given = json.encodeToString(LinkNewIn.serializer(), LinkNewIn(device, name, remembered)).encodeToByteArray()
+        load()
+        val answer = linkNew(player, given) ?: throw CoreException("The shared library gave no answer.")
+        return try {
+            json.decodeFromString(LinkStarted.serializer(), answer.decodeToString())
+        } catch (_: IllegalArgumentException) {
+            throw CoreException("The shared library's answer couldn't be read.")
+        }
+    }
+
+    /** That linking is over: everything the library held for it is let go of. On the
+     *  player's thread; may be called twice. Zero: whatever linking there is. */
+    fun linkClose(link: Long) {
+        across(link, Long.serializer(), JsonElement.serializer(), ::linkClose)
+    }
+
+    /** Something happened on the phone. On the player's thread. */
+    fun linkHappened(link: Long, event: JsonObject, now: Long, today: Long): LinkCame =
+        across(LinkToldIn(link, event, LinkAt(now, today)), LinkToldIn.serializer(), LinkCame.serializer(), ::linkHappened)
+
+    /** A turn: what the library kept, and then what the requests have brought. On the
+     *  player's thread, when woken and whenever an answer says there is more. */
+    fun linkTurn(link: Long, now: Long, today: Long): LinkCame = across(LinkTurnIn(link, LinkAt(now, today)), LinkTurnIn.serializer(), LinkCame.serializer(), ::linkTurn)
+
+    @Serializable
+    private class LinkLibraryIn(val link: Long, val signIn: Long, val ids: List<String>)
+
+    /** The phone's copy of the library, read for the sign-in with this number. Any thread. */
+    fun linkLibrary(link: Long, signIn: Long, ids: List<String>) {
+        across(LinkLibraryIn(link, signIn, ids), LinkLibraryIn.serializer(), JsonElement.serializer(), ::linkLibrary)
+    }
+
+    /** The music server's sign-in, as a look and a look-up are given it. */
+    @Serializable
+    class LinkServer(val rest: String, val form: String, val username: String)
+
+    /** The relay, as a stay and a send are given it. */
+    @Serializable
+    class LinkRelay(val base: String, val key: String)
+
+    @Serializable
+    private class LinkLookIn(val link: Long, val operation: Long, val server: LinkServer, val number: Long, val used: String?, val reset: Boolean, val since: Long)
+
+    /** `look`: the whole look, on the calling thread. What it found waits in the library. */
+    fun linkLook(link: Long, operation: Long, server: LinkServer, number: Long, used: String?, reset: Boolean, since: Long) {
+        // (As every call that makes a request: the library is told first who makes them.
+        // Found on the walk: without it every look failed at once, having asked nobody.)
+        wired
+        acrossPrivately(LinkLookIn(link, operation, server, number, used, reset, since), LinkLookIn.serializer(), JsonElement.serializer(), ::linkLook)
+    }
+
+    @Serializable
+    private class LinkStayIn(val link: Long, val operation: Long, val relay: LinkRelay, val session: Long, val room: String)
+
+    /** `begin`: the stay at the relay, on the calling thread, until its operation ends. */
+    fun linkStay(link: Long, operation: Long, relay: LinkRelay, session: Long, room: String) {
+        wired
+        acrossPrivately(LinkStayIn(link, operation, relay, session, room), LinkStayIn.serializer(), JsonElement.serializer(), ::linkStay)
+    }
+
+    @Serializable
+    private class LinkSendIn(val link: Long, val operation: Long, val relay: LinkRelay, val room: String, val token: String, val to: String, val frame: String, val since: Long, val now: Long)
+
+    /** `send`: the relay's status, or null where nothing was sent or nothing answered. */
+    fun linkSend(link: Long, operation: Long, relay: LinkRelay, room: String, token: String, to: String, frame: String, since: Long, now: Long): Int? {
+        wired
+        return acrossPrivately(LinkSendIn(link, operation, relay, room, token, to, frame, since, now), LinkSendIn.serializer(), Int.serializer().nullable, ::linkSend)
+    }
+
+    @Serializable
+    private class LinkFindIn(val link: Long, val operation: Long, val server: LinkServer, val ids: List<String>, val until: Long)
+
+    /** `find`: the songs of these the music server has, as the server describes them. */
+    fun linkFind(link: Long, operation: Long, server: LinkServer, ids: List<String>, until: Long): List<JsonObject> {
+        wired
+        return acrossPrivately(LinkFindIn(link, operation, server, ids, until), LinkFindIn.serializer(), ListSerializer(JsonObject.serializer()), ::linkFind)
+    }
+
+    @Serializable
+    private class LinkFoundIn(val link: Long, val operation: Long, val ticket: Long, val ids: List<String>)
+
+    /** The songs a `find` brought are kept: these. On the thread that made the `find`. */
+    fun linkFound(link: Long, operation: Long, ticket: Long, ids: List<String>) {
+        across(LinkFoundIn(link, operation, ticket, ids), LinkFoundIn.serializer(), JsonElement.serializer(), ::linkFound)
+    }
+
+    // ---- For the tests of linking, which have no second device ----
+    //
+    // **In the library built for the machine the tests run on, and in no other**
+    // (`native/Cargo.toml`, `test-seams`): on a phone these functions are not in the
+    // library at all, and a call would be an `UnsatisfiedLinkError`. Each hands the linking
+    // what another device of the same account, and the relay between, would bring.
+
+    @Serializable
+    private class LinkTestLookedIn(val number: Long, val at: LinkAt)
+
+    @Serializable
+    private class LinkTestEnteredIn(val session: Long, val at: LinkAt)
+
+    @Serializable
+    private class LinkTestHeardIn(val session: Long, val asks: List<JsonObject>, val at: LinkAt)
+
+    internal fun linkTestLooked(number: Long, now: Long, today: Long): LinkCame = across(LinkTestLookedIn(number, LinkAt(now, today)), LinkTestLookedIn.serializer(), LinkCame.serializer(), ::linkTestLooked)
+
+    internal fun linkTestEntered(session: Long, now: Long, today: Long): LinkCame = across(LinkTestEnteredIn(session, LinkAt(now, today)), LinkTestEnteredIn.serializer(), LinkCame.serializer(), ::linkTestEntered)
+
+    /** Each ask: `{"n":…,"look":"brief"}` or `{"n":…,"command":{"do":…,"with":{…}},"generation":…}`. */
+    internal fun linkTestHeard(session: Long, asks: List<JsonObject>, now: Long, today: Long): LinkCame =
+        across(LinkTestHeardIn(session, asks, LinkAt(now, today)), LinkTestHeardIn.serializer(), LinkCame.serializer(), ::linkTestHeard)
+
+    /** A frame the phone asked to be sent, opened as the other device would open it. */
+    internal fun linkTestOpen(frame: String): JsonObject = across(frame, String.serializer(), JsonObject.serializer(), ::linkTestOpen)
+
     // ---- For the tests of the boundary itself ----
 
     /** The text handed across and back, read as text on the other side and written again. */
@@ -910,6 +1119,10 @@ object Core {
     internal suspend fun wireProbe(probe: Probe, changing: Boolean = false): Outcome<Probed> =
         orBusy { if (changing) CoreHttp.changing(probing(probe)) else CoreHttp.looking(probing(probe)) }
 
+    /** The same, run as one of linking's requests is ([CoreHttp.linking]): `done` is told
+     *  how it ended, on the thread it ran on. Null if there was no room for it. */
+    internal fun wireProbeLinking(probe: Probe, done: (Outcome<Probed>) -> Unit): CoreHttp.Doing? = CoreHttp.linking("probe") { operation -> done(probing(probe)(operation)) }
+
     /** The same, run as something that is seen through once the library says so. */
     internal fun wireProbeSeenThrough(probe: Probe): CoreHttp.Begun<Outcome<Probed>> = CoreHttp.seeingThrough(probing(probe))
 
@@ -961,6 +1174,24 @@ object Core {
     @JvmStatic private external fun discoverKept(input: ByteArray): ByteArray?
     @JvmStatic private external fun arrivedNews(input: ByteArray): ByteArray?
     @JvmStatic private external fun wireProbe(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkNew(player: Any, input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkClose(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkStoppedWords(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkLookFailed(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkStayFailed(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkFindFailed(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkHappened(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTurn(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkLibrary(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkLook(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkStay(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkSend(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkFind(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkFound(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTestLooked(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTestEntered(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTestHeard(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTestOpen(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?
     @JvmStatic private external fun settle(input: ByteArray): ByteArray?
     @JvmStatic private external fun take(input: ByteArray): ByteArray?

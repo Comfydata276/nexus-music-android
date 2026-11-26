@@ -453,7 +453,8 @@ class CarTree(
         return when (node) {
             CarNode.Root -> Listing(tabs())
             CarNode.Home -> Listing(home(again), inside = CarStyle.GRID)
-            CarNode.Playlists -> Listing(playlistsKnown(wait = true, again) { page(library.playlists(), part, again) }.map(::playlistEntry), inside = CarStyle.GRID)
+            // (Where linking the person's devices is running: without the playlist its record is in.)
+            CarNode.Playlists -> Listing(playlistsKnown(wait = true, again) { page(library.playlists(), part, again) }.let(org.medianexus.music.link.LinkShown::of).map(::playlistEntry), inside = CarStyle.GRID)
             CarNode.Library -> Listing(listOf(
                 CarEntry(CarIds.format(CarNode.Albums), words.albums, icon = R.drawable.ic_disc_album, browsable = true, inside = CarStyle.GRID),
                 CarEntry(CarIds.format(CarNode.Artists), words.artists, icon = R.drawable.ic_user_round, browsable = true, inside = CarStyle.LIST),

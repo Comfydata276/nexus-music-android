@@ -23,3 +23,12 @@
     void kept(long, byte[]);
     boolean wayBack(long, byte[], boolean);
 }
+
+# Linking the person's devices: the shared library calls up into the phone's player by
+# these names (native/src/link.rs), which nothing in Kotlin calls.
+-keep interface org.medianexus.music.core.Core$LinkPlayer { *; }
+-keepclassmembers class * implements org.medianexus.music.core.Core$LinkPlayer {
+    byte[] brief(); byte[] full(); byte[] handed(); long queue(); byte[] sounding(); boolean hasSong();
+    byte[] ahead(); int toCome(); int carryOut(byte[]); void pause(); void take(byte[]); void claim();
+    void handedOn(); void handedBack(); byte[] random(int); long elapsed(); void wake();
+}

@@ -17,6 +17,7 @@ class App : Application(), SingletonImageLoader.Factory {
         // Before anything is made, since what exists is decided as it is.)
         org.medianexus.music.sync.DebugStep.atStart(this)
         org.medianexus.music.requests.DebugRequests.atStart(this)
+        org.medianexus.music.link.DebugLink.atStart(this)
         graph = Graph(this)
     }
 
