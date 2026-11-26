@@ -2466,7 +2466,14 @@ class PlaybackService : MediaLibraryService() {
         override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
             // Authorised here, where it is carried out, and not only by what the controller
             // was granted when it connected.
-            if (!Access.mayCustom(callerOf(session, controller), customCommand.customAction)) {
+            val caller = callerOf(session, controller)
+            if (!Access.mayCustom(caller, customCommand.customAction)) {
+                return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
+            }
+            // While it shows one of the person's own devices, steered through linking: the
+            // same gate as for the player's commands. Another controller (the car's Shuffle)
+            // does nothing, to that device or to the phone's own queue.
+            if (linking?.outright() != null && caller != Caller.NOTIFICATION && caller != Caller.OWN_INTERFACE) {
                 return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
             }
             // (The app's own commands for the queue, and shuffle, are the person's doing.)

@@ -665,6 +665,29 @@ class LinkCommandsTest {
     }
 
     /**
+     * **A custom command from another controller does nothing while a device is steered**:
+     * the car's Shuffle changes neither the device nor the phone's parked queue, as its
+     * player commands do not.
+     */
+    @Test
+    fun whileADeviceIsSteeredACarsButtonIsNothing() {
+        steerTheStudyPc()
+        // The car's Shuffle, under its own name.
+        val car = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            "com.example.car", 4_321, 10_123, androidx.media3.session.MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, Bundle.EMPTY, true,
+        )
+        val shuffled = inside.player.queue.shuffle
+        val order = inside.player.queue.playingOrder().map { it.id }
+        val answer = inside.callback.onCustomCommand(inside.session, car, androidx.media3.session.SessionCommand("org.medianexus.music.SHUFFLE", Bundle.EMPTY), Bundle.EMPTY).get()
+        settle()
+        assertEquals(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED, answer.resultCode)
+        assertEquals(shuffled, inside.player.queue.shuffle)
+        assertEquals(order, inside.player.queue.playingOrder().map { it.id })
+        assertEquals(emptyList<String>(), commandsSent())
+        assertFalse(link().stopped)
+    }
+
+    /**
      * **A press on the phone and what it did are one choice.** The press is noted where
      * it is made, the player is then changed, and the library is told once, as the
      * person's: so a command another device makes against the state it is then told of
