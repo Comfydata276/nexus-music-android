@@ -2148,12 +2148,14 @@ it up. As on Windows:
   attempt out of sight and no second attempt: a code the service has seen is spent, and
   whatever comes of the one trade is how the sign-in ended.
 - **If Android does not bring the app forward** (a browser that keeps a window of its
-  own), after two and a half seconds the browser is shown a third page, "One more step.
-  Go back to Nexus Music to finish signing in.", and the trade is made when the person
-  does, within what is left of the five minutes the sign-in had from its start. If nobody
-  comes back the code was never offered to anyone, and the app says nobody signed in.
-  (The third page is the library's page with the phone's two sentences in it, until the
-  library has one of its own.)
+  own), after two and a half seconds the browser is shown a third page, the library's
+  "Still signing in. Go back to Nexus Music to see whether it went through."
+  (`gate::Page::StillSigningIn`), and the trade is made when the person does, within what
+  is left of the five minutes the sign-in had from its start. If nobody comes back the
+  code was never offered to anyone, and the app says nobody signed in. (The Windows app
+  shows that page when it has not decided within thirty seconds, `gate::ANSWER_WITHIN`.
+  The phone's two and a half seconds are its own, and for another reason: it cannot
+  begin until it is in front. Once it is, the trade is bounded well inside the thirty.)
 - **"You're signed in" means the token is in the app's keeping.** A browser still waiting
   when the trade is done is shown "You're signed in" or "The sign-in didn't go through"
   accordingly, and not before. A token the phone could not put away is no sign-in: it is
@@ -2284,6 +2286,15 @@ What is the phone's own:
     aside under a name of its own, said on the Requests page
     (`RequestsPages.wayBackTrouble`: the artist may have been left not taking new
     releases, and the app no longer knows which), and written afresh.
+- **Whose words.** Every sentence the Windows app also says is the library's, asked for by
+  name (`core/Words.kt`), the browser's pages included. What stays the phone's own, as
+  constants (`RequestsWords`, and the ends of "Couldn't reach …" in `CoreHttp`), is what
+  only the phone has occasion to say: a row or page shown under a connection that has
+  since changed; a sign-in service at the music server's own address; a token the phone
+  couldn't keep; requests' own files found damaged or unreadable (`requests.json`, and
+  the record of what is to be put back); the app being busy with other requests; and a
+  request the client would not send (a key to a place it wasn't given for, the music
+  server's address, an address inside a private network).
 - **What Lidarr accepted is written down here whatever has happened meanwhile.** Each of
   those three is begun, and what follows its end (the note of what was asked, the artist
   no longer suggested, the note forgotten) is done on the app's own work: not the screen's,
@@ -2299,8 +2310,8 @@ What is the phone's own:
   the list: "“…” is off the list, but this phone couldn't note that, so its arrival may
   still be announced." (the note of it is still in the file: after a restart it would be
   watched for again; while the app runs it is not, and the next thing written down is
-  written without it). Both are the library's coming sentences, word for word, and are
-  the phone's own constants until its library has them.
+  written without it). Both are the library's sentences (`requests::asked_unnoted`,
+  `off_the_list_unnoted`), asked for as every other.
 - **An album is forgotten by what it is** (the library's `asked::forget`, from the
   Windows app's 0.40.11). An album taken off Lidarr's list is no longer watched for, and
   which note that is goes by Lidarr's own name for the album (its MusicBrainz id, which
@@ -2364,7 +2375,8 @@ What is the phone's own:
   another device is known here: the list is each device's own, as on Windows.
 - **A list that can't be read.** If `asked.json` is on the phone and can't be read when
   it is wanted, nothing is written over it, asking still works and is said to have worked but not
-  been noted (`Said.kept` false, above), and `askedUnreadable` is true for the Requests page to say so. What
+  been noted (`Said.kept` false, above), and `askedUnreadable` is true for the Requests page to say so,
+  in the library's sentence (`requests::asked_unreadable`). What
   is asked for and taken off meanwhile is remembered in order, and the file is tried again
   at each change and each opening of the Requests page: once it can be read, what was done
   since is done again on top of what it holds, and that is what is kept. Suggestions that

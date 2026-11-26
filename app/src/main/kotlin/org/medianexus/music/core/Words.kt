@@ -24,6 +24,10 @@ object Words {
     val pageNotThrough: String get() = say("gate.page.not_through")
     val pageNothingHere: String get() = say("gate.page.nothing_here")
 
+    /** "Still signing in": the browser came back with a code and the app has not finished
+     *  the sign-in yet; the person is to go back to the app to see whether it went through. */
+    val pageStillSigningIn: String get() = say("gate.page.still_signing_in")
+
     /** The service turned the sign-in down, with its reason. */
     fun turnedDown(why: String): String = say("gate.turned_down", why)
 
@@ -70,4 +74,16 @@ object Words {
     /** Ends before where to see them, which each app adds for itself. */
     fun added(name: String): String = say("requests.added", name)
     fun offTheList(title: String): String = say("requests.off_the_list", title)
+
+    /** Lidarr has the album, and the note of it couldn't be kept on the phone: it will
+     *  arrive, and nothing will say so. */
+    fun askedUnnoted(title: String): String = say("requests.asked_unnoted", title, "phone")
+
+    /** Lidarr took the album off its list, and the phone's note of it couldn't be crossed
+     *  out: its arrival may still be announced. */
+    fun offTheListUnnoted(title: String): String = say("requests.off_the_list_unnoted", title, "phone")
+
+    /** Said on the Requests page when the list of what was asked for on the phone couldn't
+     *  be read. */
+    val askedUnreadable: String get() = say("requests.asked_unreadable", "phone")
 }

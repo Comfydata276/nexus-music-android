@@ -682,7 +682,8 @@ class RequestsTest {
         // person back; nothing is offered to the service.
         val (status, shown) = page.get(15, java.util.concurrent.TimeUnit.SECONDS)
         assertEquals(200, status)
-        assertTrue(shown, "Go back to Nexus Music to finish signing in." in shown)
+        // (The library's page for a sign-in the app has still to finish.)
+        assertTrue(shown, "Still signing in" in shown && "Go back to Nexus Music to see whether it went through." in shown)
         assertTrue(shown, "You're signed in" !in shown && "didn't go through" !in shown)
         assertEquals(1, cameBack.get())
         delay(700)

@@ -318,6 +318,19 @@ class PagesTest {
     }
 
     @Test
+    fun `what the phone says of a note it couldn't keep, a list it couldn't read and a sign-in still to finish is the library's own`() {
+        assertEquals("Asked for “One Song”, but this phone couldn't note it to say when it arrives.", Words.askedUnnoted("One Song"))
+        assertEquals("“One Song” is off the list, but this phone couldn't note that, so its arrival may still be announced.", Words.offTheListUnnoted("One Song"))
+        assertEquals(
+            "The list of what was asked for on this phone couldn't be read, so albums asked for before won't be said to have arrived, or put into the playlists waiting for them. What's on its way is still shown.",
+            Words.askedUnreadable,
+        )
+        val page = Words.pageStillSigningIn
+        assertTrue(page, "<h1 style=\"font-size:22px\">Still signing in</h1>" in page && "Go back to Nexus Music to see whether it went through." in page)
+        assertEquals("That isn't an address the app can use. Enter it as, say, https://lidarr.example.org or 192.168.1.5:8686.", Words.addressUnusable)
+    }
+
+    @Test
     fun `an album taken off Lidarr's list is no longer watched for`() {
         val wanted = lidarrWithASingle()
         assertEquals(Outcome.Got("Quillon Vane"), wait { Core.request(lidarr, place, "single-1").done.await() })

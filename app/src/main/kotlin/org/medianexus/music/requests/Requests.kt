@@ -67,21 +67,6 @@ object RequestsWords {
      */
     const val SERVICE_UNUSABLE = "The sign-in in front of Lidarr gave an address the app can't use."
 
-    /** The browser's page when the sign-in is still to be finished in the app, which
-     *  Android has not brought forward: its heading and its text. (The phone's own until
-     *  the library has this page, in its next release.) */
-    const val PAGE_GO_BACK_HEADING = "One more step"
-    const val PAGE_GO_BACK_TEXT = "Go back to Nexus Music to finish signing in."
-
-    /** Lidarr has the album, and the note of it couldn't be kept on the phone: it will
-     *  arrive, and nothing will say so. (The library's own sentence, `asked_unnoted`, word
-     *  for word, until the phone's library has it: its next release.) */
-    fun askedUnnoted(title: String): String = "Asked for “$title”, but this phone couldn't note it to say when it arrives."
-
-    /** Lidarr took the album off its list, and the phone's note of it couldn't be crossed
-     *  out. (The library's `off_the_list_unnoted`, likewise.) */
-    fun offTheListUnnoted(title: String): String = "“$title” is off the list, but this phone couldn't note that, so its arrival may still be announced."
-
     /** What this phone kept of requests was something the app could make nothing of, and
      *  has been moved aside under `name` ([Requests.keptAside]). */
     fun keptAside(name: String): String = "What this phone kept about requests was damaged, so requests have been started afresh. The damaged file has been kept as $name."

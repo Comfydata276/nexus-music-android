@@ -93,10 +93,11 @@ fun RequestsPage() {
                     waiting == null -> item(key = "loading", contentType = "loading") { SkeletonRows() }
                     else -> {
                         state.why?.let { why -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(why, model::again) } }
-                        // What this phone asked for can't be read: the list is short of it, and says so.
+                        // What this phone asked for can't be read: the list is short of it, and
+                        // says so, in the library's sentence.
                         if (unreadable) item(key = "asked-unreadable", contentType = "said") {
                             BasicText(
-                                stringResource(R.string.requests_asked_unreadable),
+                                remember { org.medianexus.music.core.Words.askedUnreadable },
                                 Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
                                 style = Theme.type.rowDetail.copy(color = Theme.colors.warm),
                             )

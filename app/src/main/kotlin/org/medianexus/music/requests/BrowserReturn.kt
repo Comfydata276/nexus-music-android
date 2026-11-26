@@ -99,17 +99,14 @@ internal class BrowserReturn private constructor(private val server: ServerSocke
         NOT_THROUGH,
 
         /** Nothing is known yet: the app finishes the sign-in when its own screen is in
-         *  front, and Android has not brought it there. The person is to go back to it. */
+         *  front, and Android has not brought it there. The person is to go back to it:
+         *  the library's "Still signing in". */
         GO_BACK;
 
         fun html(): String = when (this) {
             SIGNED_IN -> Words.pageSignedIn
             NOT_THROUGH -> Words.pageNotThrough
-            // (The library's own page, with the phone's words in it until the library has
-            // a page for this: its next release does.)
-            GO_BACK -> Words.pageSignedIn
-                .replace(Regex("(<h1[^>]*>).*?(</h1>)"), "$1${RequestsWords.PAGE_GO_BACK_HEADING}$2")
-                .replace(Regex("(<p[^>]*>).*?(</p>)"), "$1${RequestsWords.PAGE_GO_BACK_TEXT}$2")
+            GO_BACK -> Words.pageStillSigningIn
         }
     }
 

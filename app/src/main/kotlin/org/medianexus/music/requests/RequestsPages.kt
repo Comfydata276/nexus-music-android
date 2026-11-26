@@ -81,7 +81,7 @@ internal data class Arrived(val note: Asked, val said: Boolean = false) {
  * `kept` is false when it **was done and this phone could not write it down**: an album
  * asked for whose note couldn't be kept (its arrival won't be announced), or one taken off
  * the list whose note is still on the phone (its arrival may be). `words` then says exactly
- * that ([RequestsWords.askedUnnoted], [RequestsWords.offTheListUnnoted]), never the plain
+ * that, in the library's words ([Words.askedUnnoted], [Words.offTheListUnnoted]), never the plain
  * sentence for having done it.
  */
 data class Said(
@@ -246,8 +246,8 @@ class RequestsPages internal constructor(
 
     /**
      * True when **the list of what this phone asked for is short of what was asked**, and
-     * the Requests page should say so (the library's sentence for it, `asked_unreadable`,
-     * comes with its next release):
+     * the Requests page should say so, in the library's sentence for it
+     * ([Words.askedUnreadable]):
      *
      * - while the file is on the phone and can't be read. Asking still works; what is asked
      *   meanwhile is kept in memory, and put together with what the file holds as soon as
@@ -659,7 +659,7 @@ class RequestsPages internal constructor(
                         kept
                     }
                     // (Lidarr has it either way; a note that couldn't be written is said.)
-                    Said(true, if (kept) Words.askedFor(title) else RequestsWords.askedUnnoted(title), kept = kept)
+                    Said(true, if (kept) Words.askedFor(title) else Words.askedUnnoted(title), kept = kept)
                 }
                 is Outcome.Failed -> Said(false, outcome.why)
                 Outcome.Stopped -> null
@@ -738,7 +738,7 @@ class RequestsPages internal constructor(
                     // (Lidarr took it off either way. If the phone's note of it couldn't be
                     // crossed out it is not simply "off the list": the note is still there,
                     // and after a restart the album would be watched for again.)
-                    Said(true, if (kept) Words.offTheList(title) else RequestsWords.offTheListUnnoted(title), kept = kept)
+                    Said(true, if (kept) Words.offTheList(title) else Words.offTheListUnnoted(title), kept = kept)
                 }
                 is Outcome.Failed -> Said(false, outcome.why)
                 Outcome.Stopped -> null

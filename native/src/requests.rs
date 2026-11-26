@@ -322,6 +322,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_say<'l>(env: JNIEnv<'
             "gate.page.signed_in" => gate::page(gate::Page::SignedIn),
             "gate.page.not_through" => gate::page(gate::Page::NotThrough),
             "gate.page.nothing_here" => gate::page(gate::Page::NothingHere),
+            "gate.page.still_signing_in" => gate::page(gate::Page::StillSigningIn),
             "gate.turned_down" => gate::turned_down(with(0)),
             "gate.not_ready" => gate::not_ready(&with(0)),
             "gate.not_heard" => gate::not_heard(&with(0)),
@@ -344,6 +345,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_say<'l>(env: JNIEnv<'
             "requests.adding_now" => requests::adding_now(with(0)),
             "requests.added" => requests::added(with(0)),
             "requests.off_the_list" => requests::off_the_list(with(0)),
+            "requests.asked_unnoted" => requests::asked_unnoted(with(0), with(1)),
+            "requests.off_the_list_unnoted" => requests::off_the_list_unnoted(with(0), with(1)),
+            "requests.asked_unreadable" => requests::asked_unreadable(with(0)),
             other => return Err(format!("The shared library has no sentence called {other}.")),
         })
     })
