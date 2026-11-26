@@ -435,6 +435,36 @@ class RequestsPagesTest {
         assertEquals("[]", File(made.dir, "asked.json").readText().trim())
     }
 
+    @Test
+    fun `an album taken off the list whose forgetting couldn't be written down is not said to be simply off the list`() = runBlocking {
+        val wanted = lidarrWithASingle()
+        val made = made()
+        made.pages.request("single-1", "One Song", connection = made.now())
+        val pending = got(made.pages.onTheirWay()).pending.single().first
+        // The note of it can no longer be written over (a folder, with something in it,
+        // where the file was).
+        val file = File(made.dir, "asked.json")
+        val held = file.readText()
+        assertTrue(file.delete())
+        File(file, "in the way").apply { parentFile.mkdirs() }.writeText("x")
+
+        // Lidarr took it off its list, and that is said; and that this phone could not
+        // write that down, so what it kept still says the album is waited for.
+        assertEquals(
+            Said(true, "“One Song” is off the list, but this phone couldn't note that, so its arrival may still be announced.", kept = false),
+            made.pages.cancel(pending.id, pending.title, connection = made.now()),
+        )
+        assertFalse(wanted())
+        assertTrue("$notes", notes.any { "asked.json couldn't be written" in it })
+        // For as long as the app runs it is not watched for; the next thing written down
+        // is written without it.
+        assertEquals(emptyList<Any>(), made.pages.asked.value)
+        assertTrue(file.deleteRecursively())
+        file.writeText(held)
+        made.pages.request("single-1", "One Song", connection = made.now())
+        assertEquals(1, Regex("single-1").findAll(file.readText()).count())
+    }
+
     // ---- a row acts on the connection it came from ------------------------------------------------
 
     /** Another Lidarr altogether, which takes anything: so what it was sent shows what
@@ -636,8 +666,9 @@ class RequestsPagesTest {
         // (A folder where the file should be: there, and not to be read.)
         File(dir, "asked.json").mkdirs()
         val made = made()
-        // Lidarr took it, and that is what is said; and that this phone could not write it down.
-        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song", connection = made.now()))
+        // Lidarr took it, and that is what is said; and that this phone could not write it
+        // down, in so many words: nothing will say when it arrives.
+        assertEquals(Said(true, "Asked for “One Song”, but this phone couldn't note it to say when it arrives.", kept = false), made.pages.request("single-1", "One Song", connection = made.now()))
         assertTrue(File(dir, "asked.json").isDirectory)
         assertTrue("$notes", notes.any { "asked.json" in it && "couldn't be read" in it })
         assertTrue("$notes", notes.any { "couldn't be kept on the phone" in it })
@@ -653,7 +684,7 @@ class RequestsPagesTest {
         // (A folder where the file should be: there, and not to be read.)
         file.mkdirs()
         val made = made()
-        assertEquals(Said(true, "Asked for “One Song”. It'll be in your library once it arrives.", kept = false), made.pages.request("single-1", "One Song", connection = made.now()))
+        assertEquals(Said(true, "Asked for “One Song”, but this phone couldn't note it to say when it arrives.", kept = false), made.pages.request("single-1", "One Song", connection = made.now()))
         assertTrue(made.pages.askedUnreadable.value)
         assertEquals(listOf("One Song"), made.pages.asked.value.map { it.title })
 

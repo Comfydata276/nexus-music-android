@@ -78,10 +78,11 @@ internal data class Arrived(val note: Asked, val said: Boolean = false) {
 /**
  * How something the person asked to be done ended: what to say, and whether it was done.
  *
- * `kept` is false when it **was done and this phone could not write it down** (an album
- * asked for whose note couldn't be kept: its arrival won't be announced). `words` is then
- * the library's sentence for exactly that once the phone's library has one (`asked_unnoted`,
- * in the Windows repository's next release); until then it is the usual sentence.
+ * `kept` is false when it **was done and this phone could not write it down**: an album
+ * asked for whose note couldn't be kept (its arrival won't be announced), or one taken off
+ * the list whose note is still on the phone (its arrival may be). `words` then says exactly
+ * that ([RequestsWords.askedUnnoted], [RequestsWords.offTheListUnnoted]), never the plain
+ * sentence for having done it.
  */
 data class Said(
     val done: Boolean, val words: String, val kept: Boolean = true,
@@ -599,7 +600,8 @@ class RequestsPages internal constructor(
                         Core.marked(place, album, true, at.connection)
                         kept
                     }
-                    Said(true, Words.askedFor(title), kept = kept)
+                    // (Lidarr has it either way; a note that couldn't be written is said.)
+                    Said(true, if (kept) Words.askedFor(title) else RequestsWords.askedUnnoted(title), kept = kept)
                 }
                 is Outcome.Failed -> Said(false, outcome.why)
                 Outcome.Stopped -> null
@@ -662,11 +664,16 @@ class RequestsPages internal constructor(
         val through = outlasting(begun) { outcome ->
             when (outcome) {
                 is Outcome.Got -> {
-                    turn.withLock {
+                    val kept = turn.withLock {
                         val forgotten = Core.askedForget(place, title)
-                        if (forgotten.changed || askedUnreadableNow.value) keepAsked(place, forgotten.asked) { where -> Core.askedForget(where, title).asked }
+                        // (Nothing to forget, nothing to write: that is kept as it stands.)
+                        if (forgotten.changed || askedUnreadableNow.value) keepAsked(place, forgotten.asked) { where -> Core.askedForget(where, title).asked } else true
                     }
-                    Said(true, Words.offTheList(title))
+                    if (!kept) note("requests: an album was taken off Lidarr's list and that couldn't be kept on the phone, so its arrival may still be said")
+                    // (Lidarr took it off either way. If the phone's note of it couldn't be
+                    // crossed out it is not simply "off the list": the note is still there,
+                    // and after a restart the album would be watched for again.)
+                    Said(true, if (kept) Words.offTheList(title) else RequestsWords.offTheListUnnoted(title), kept = kept)
                 }
                 is Outcome.Failed -> Said(false, outcome.why)
                 Outcome.Stopped -> null

@@ -74,6 +74,15 @@ object RequestsWords {
     const val PAGE_GO_BACK_HEADING = "One more step"
     const val PAGE_GO_BACK_TEXT = "Go back to Nexus Music to finish signing in."
 
+    /** Lidarr has the album, and the note of it couldn't be kept on the phone: it will
+     *  arrive, and nothing will say so. (The library's own sentence, `asked_unnoted`, word
+     *  for word, until the phone's library has it: its next release.) */
+    fun askedUnnoted(title: String): String = "Asked for “$title”, but this phone couldn't note it to say when it arrives."
+
+    /** Lidarr took the album off its list, and the phone's note of it couldn't be crossed
+     *  out. (The library's `off_the_list_unnoted`, likewise.) */
+    fun offTheListUnnoted(title: String): String = "“$title” is off the list, but this phone couldn't note that, so its arrival may still be announced."
+
     /** The sign-in service gave a token and the phone could not put it away. */
     const val TOKEN_NOT_KEPT = "The sign-in went through, but this phone couldn't keep it. Try again."
 

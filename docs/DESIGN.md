@@ -2222,8 +2222,16 @@ What is the phone's own:
   signs out of the music server. It goes into the files of the account it was asked under,
   and that account's place in the library is kept open until it is done. The order is the
   library's: the note is kept on the phone first, and only then is the offer marked as
-  asked for. If the note cannot be written, the ask is still said to have succeeded (it
-  did) and is marked as not kept (`Said.kept`).
+  asked for.
+- **A note that couldn't be written is said.** Lidarr did what was asked, so it is not
+  said to have failed; and the phone could not write that down, so it is not said in the
+  plain sentence for having done it either (`Said.kept` false). For an ask: "Asked for
+  “…”, but this phone couldn't note it to say when it arrives." For an album taken off
+  the list: "“…” is off the list, but this phone couldn't note that, so its arrival may
+  still be announced." (the note of it is still in the file: after a restart it would be
+  watched for again; while the app runs it is not, and the next thing written down is
+  written without it). Both are the library's coming sentences, word for word, and are
+  the phone's own constants until its library has them.
 - **A row acts on the connection it came from.** The connection has a number of the
   phone's own, which moves whenever the address, the key or the sign-in changes
   (`Requests.moved`), and starts somewhere no earlier run of the app can have been.
@@ -2262,8 +2270,8 @@ What is the phone's own:
   hours when there were none to be had, both the library's numbers). Nothing asked for on
   another device is known here: the list is each device's own, as on Windows.
 - **A list that can't be read.** If `asked.json` is on the phone and can't be read when
-  it is wanted, nothing is written over it, asking still works and is said to have worked
-  (`Said.kept` false), and `askedUnreadable` is true for the Requests page to say so. What
+  it is wanted, nothing is written over it, asking still works and is said to have worked but not
+  been noted (`Said.kept` false, above), and `askedUnreadable` is true for the Requests page to say so. What
   is asked for and taken off meanwhile is remembered in order, and the file is tried again
   at each change and each opening of the Requests page: once it can be read, what was done
   since is done again on top of what it holds, and that is what is kept. Suggestions that
