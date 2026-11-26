@@ -50,10 +50,48 @@ internal class LinkSteer(
     /** The device the library says the player is steering. */
     private var name: String? = null
 
+    /**
+     * **The rows' numbers, one for each entry of the device's queue, kept from view to view**
+     * (review X2). An entry is its song and which time that song comes in what is to come
+     * (the second "Nordlys" is not the first); its row keeps its number for as long as it is
+     * in the queue shown, so a menu, a jump or a drag holds the entry that was under the
+     * finger, not a place a later view gives to another. Only the entries of the view now
+     * shown have numbers: one that has gone names nothing, and what is pressed on it is not
+     * asked at all. Another device steered starts afresh.
+     */
+    private val numbers = HashMap<Pair<String, Int>, Long>()
+    private val entries = HashMap<Long, Pair<String, Int>>()
+    /** The entries of the view now shown, in its order: where each is, to say to the library
+     *  (whose view this is, to the moment: it is handed over inside the call that changed it). */
+    private var places: List<Pair<String, Int>> = emptyList()
+    private var next = ROW
+
     /** `{"steering": name}` or `{"steering": null}`, as the library says it. */
     fun steering(name: String?) {
+        if (name != this.name) forget()
         this.name = name
         if (name == null) clear()
+    }
+
+    private fun forget() {
+        numbers.clear()
+        entries.clear()
+        places = emptyList()
+        // (The count goes on: a number handed out before names nothing from now on.)
+    }
+
+    /** Numbers for the entries of `ids` (the queue to come, in order): the ones they had in
+     *  the last view, and new ones for the rest. Those no longer there are forgotten. */
+    private fun number(ids: List<String>): List<Long> {
+        val seen = HashMap<String, Int>()
+        val keys = ids.map { id -> id to seen.merge(id, 1, Int::plus)!! }
+        val kept = keys.associateWith { numbers[it] ?: next++ }
+        numbers.clear()
+        numbers.putAll(kept)
+        entries.clear()
+        kept.forEach { (key, number) -> entries[number] = key }
+        places = keys
+        return keys.map { kept.getValue(it) }
     }
 
     /** `{"act":"view","view":…}`: the device as it is to be shown, or nothing. */
@@ -66,7 +104,8 @@ internal class LinkSteer(
             note("linking: the phone's player is showing something else, so the device is let go of")
             return letGo()
         }
-        steered.show(shown(of, name, songFor), hands)
+        val ids = of["full"]?.jsonObject?.get("queue")?.jsonArray?.map { it.jsonObject.getValue("id").jsonPrimitive.content }.orEmpty()
+        steered.show(shown(of, name, number(ids), songFor), hands)
     }
 
     /** The library is about to put the device's queue in the phone's player. */
@@ -137,13 +176,14 @@ internal class LinkSteer(
             })
         }
 
-        private fun place(uid: Long): Int? = (uid - ROW).takeIf { it in 0 until MOST_SHOWN }?.toInt()
+        /** Where the entry of row `uid` is in the view now shown; null if it is not there. */
+        private fun place(uid: Long): Int? = entries[uid]?.let { places.indexOf(it) }?.takeIf { it >= 0 }
     }
 
     companion object {
         /** Where the numbers of the device's rows begin: far from any entry of the phone's
-         *  own, and from a jam's. A row is named by its place among those shown; the
-         *  numbers are only places, made anew with every view. */
+         *  own, and from a jam's. A row's number is its entry's while it is shown (see
+         *  `numbers`). */
         const val ROW = Long.MIN_VALUE / 4
 
         /** The most rows a view has (the library's `MOST_SHOWN`). */
@@ -162,7 +202,7 @@ internal class LinkSteer(
          * player shows it. `heard_ms` is on the clock the library is told the time by,
          * which is the one [Steered.Shown.at] is on.
          */
-        fun shown(view: JsonObject, name: String, songFor: (String) -> Song?): Steered.Shown {
+        fun shown(view: JsonObject, name: String, uids: List<Long>? = null, songFor: (String) -> Song?): Steered.Shown {
             val full = view.getValue("full").jsonObject
             fun song(entry: JsonObject): Song {
                 val id = entry.getValue("id").jsonPrimitive.content
@@ -190,7 +230,7 @@ internal class LinkSteer(
                     queuedAhead = entries.takeWhile { it["queued"]?.jsonPrimitive?.booleanOrNull == true }.size,
                     context = full["context"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     total = entries.size + (full["more"]?.jsonPrimitive?.long ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong() / 2).toInt(),
-                    uids = List(entries.size) { ROW + it },
+                    uids = uids ?: List(entries.size) { ROW + it },
                 ),
                 shuffle = full.getValue("shuffle").jsonPrimitive.boolean,
                 repeat = full.getValue("repeat").jsonPrimitive.int,

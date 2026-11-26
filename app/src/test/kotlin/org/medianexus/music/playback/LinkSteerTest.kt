@@ -190,4 +190,56 @@ class LinkSteerTest {
         steered.hands!!.next()
         assertTrue(notes.single().contains("found none being steered"))
     }
+
+    // ---- a row is the entry it was drawn from (review X2) ------------------------------------
+
+    /** A view with `now` playing and `queue` to come, each song by its id. */
+    private fun viewOf(now: String, vararg queue: String): JsonObject = Json.parseToJsonElement(
+        """{"full":{"position":1.0,"now":{"id":"$now","title":"$now","artist":"Them","album":"Theirs","duration":200},
+           "queue":[${queue.joinToString(",") { """{"id":"$it","title":"$it","artist":"Them","album":"Theirs","duration":200}""" }}],
+           "more":0,"context":"","shuffle":false,"repeat":0,"volume":1.0},"playing":true,"heard_ms":9000}""",
+    ).jsonObject
+
+    @Test
+    fun aMenuOpenedOnBNeverRemovesTheSongThatTookBsRow() {
+        steer.steering("Study PC")
+        steer.view(viewOf("a", "b", "c"))
+        // The queue sheet's menu is opened on B: it keeps B's row.
+        val b = steered.shown.value!!.queue.uids[0]
+        // The device moves on to B: C is now where B was.
+        steer.view(viewOf("b", "c"))
+        told.clear()
+        val hands = steered.hands!!
+        hands.remove(b)
+        hands.jump(b)
+        hands.move(b, null, false)
+        assertEquals("B is playing, not to come: nothing is asked, and never of C", emptyList<String>(), told)
+    }
+
+    @Test
+    fun aRowKeepsItsEntryWhenOthersComeBeforeIt() {
+        steer.steering("Study PC")
+        steer.view(viewOf("a", "b", "c"))
+        val (b, c) = steered.shown.value!!.queue.uids
+        // Something is put before them on the device.
+        steer.view(viewOf("a", "x", "b", "c"))
+        assertEquals("their rows are the same entries", listOf(b, c), steered.shown.value!!.queue.uids.drop(1))
+        told.clear()
+        steered.hands!!.remove(b)
+        steered.hands!!.jump(c)
+        assertEquals(listOf("""{"event":"press","press":{"remove":1}}""", """{"event":"press","press":{"jump":2}}"""), told)
+    }
+
+    @Test
+    fun anotherDeviceSteeredHasRowsOfItsOwn() {
+        steer.steering("Study PC")
+        steer.view(viewOf("a", "b"))
+        val b = steered.shown.value!!.queue.uids[0]
+        steer.steering("Laptop")
+        steer.view(viewOf("a", "b"))
+        told.clear()
+        steered.hands!!.remove(b)
+        // (The same song at the same place on another device is not the row the menu was opened on.)
+        assertEquals(emptyList<String>(), told)
+    }
 }
