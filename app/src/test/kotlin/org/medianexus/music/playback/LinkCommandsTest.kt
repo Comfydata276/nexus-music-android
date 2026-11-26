@@ -475,15 +475,18 @@ class LinkCommandsTest {
             assertEquals("more was sent than was pressed, after $arrived", emptyList<String>(), commandsSent())
             return arrived
         }
+        // (A row is pressed by its number as the queue sheet draws it: its entry's.)
+        val (x1, x2) = steered.shown.value!!.queue.uids
         assertEquals(
             listOf("next", "pause", "previous", "seek", "volume", "shuffle", "repeat", "jump", "remove"),
-            inTurn({ hands.next() }, { hands.toggle() }, { hands.previous() }, { hands.seek(30_000) }, { hands.volume(0.4f) }, { hands.shuffle() }, { hands.repeat() }, { hands.jump(LinkSteer.ROW) }, { hands.remove(LinkSteer.ROW + 1) }),
+            inTurn({ hands.next() }, { hands.toggle() }, { hands.previous() }, { hands.seek(30_000) }, { hands.volume(0.4f) }, { hands.shuffle() }, { hands.repeat() }, { hands.jump(x1) }, { hands.remove(x2) }),
         )
         // (Its own word again, with both entries in its queue.)
         answered(full = full)
+        val (again1, again2) = steered.shown.value!!.queue.uids
         assertEquals(
             listOf("clear", "move", "add", "adopt"),
-            inTurn({ hands.clear(false) }, { hands.move(LinkSteer.ROW + 1, LinkSteer.ROW, true) }, { hands.add(listOf(Song(id = "s2")), playNext = false) }, { hands.play(mine(), 2, "A list", whole = false) }),
+            inTurn({ hands.clear(false) }, { hands.move(again2, again1, true) }, { hands.add(listOf(Song(id = "s2")), playNext = false) }, { hands.play(mine(), 2, "A list", whole = false) }),
         )
         assertFalse(link().stopped)
         // The phone's own player is where it was.
