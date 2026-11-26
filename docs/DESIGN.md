@@ -2085,10 +2085,10 @@ that sign-in (`AccountGraph.requestsNow`) is "off", "not yet" or "on":
   putting back stopped, the key forgotten, the sign-in's token handed back to its
   service. Arrivals and departures are taken strictly in the order they happened, one at
   a time; while one is being finished nobody is handed any account's requests, and the
-  screen says so in a sentence. Nothing is waited out with a limit and then abandoned:
-  the goodbye itself is short (handing a token back has eight seconds and no more, on a
-  thread of its own), an ask already with Lidarr is seen through as it always was, and
-  the music is not held up meanwhile.
+  screen says so in a sentence. Nothing that is under way is cut off to make that
+  shorter: the goodbye itself is short (handing a token back has eight seconds and no
+  more, on a thread of its own), an ask already with Lidarr is seen through as it always
+  was, and the music is not held up meanwhile.
 - **Signing out of the music account takes the account's Lidarr key and its sign-in with
   it, whether or not its requests are on at that moment**: the token handed back to its
   service, the session here closed, both sealed files gone, by the same leaving. Turned
@@ -2106,8 +2106,43 @@ that sign-in (`AccountGraph.requestsNow`) is "off", "not yet" or "on":
   beginning are one step, which the sign-out passes through before it looks).
 - **A departure always ends.** Whatever is thrown while one is being finished, the line
   moves on to the next; the goodbye to a sign-in service is said to be over whatever
-  became of it, and leaving waits fifteen seconds for it at the very longest. So nobody's
-  requests are ever left "not yet" until the app is closed.
+  became of it, and leaving waits fifteen seconds for it at the very longest (for one
+  that is never heard of again: one that runs has its eight). So nobody's requests are
+  ever left "not yet" until the app is closed.
+
+**What that leaves, known and accepted as it is.** "Nothing of requests" above means no
+store, no copy of the library and no request. It is not literally nothing, and these stay
+as they are:
+
+- **With the toggle off, a build that has requests has these, and no more.** The registry
+  and its one coroutine, waiting on an empty line. This sign-in's seat: an object, and
+  the flow that says "off". The wrappers that would hand over the phone's copy of the
+  library, which nothing collects. The screens' collector of `requestsNow`. The web
+  covers' factory, registered with the image loader and asked for nothing while no
+  screen of requests is drawn. No file is opened, no copy of the library made, nobody
+  asked anything. Measured against 0.5.1 on a library of 50,120 songs: the Java and
+  native heaps the same, the middle of five cold starts 34 ms later (less than two
+  starts of one build differ by), and about 1 MB more of mapped code, which is the
+  shared library's and is in every build whatever the switch says.
+- **After the toggle is turned off, what it had stays in memory until the app is
+  closed.** The account's owner: its `Requests` and `RequestsPages`, what they last
+  read, the shared library's record for the account (the copy of the library taken out
+  of it), and, if there was a sign-in, its open session with the token in it. None of it
+  runs, asks anything or is shown. The key is let go from memory at once. On the phone
+  the key and the token stay sealed until the toggle is turned on again, or the account
+  signs out of the music server, which takes them (above).
+- **A marker with no settings beside it makes an owner before it is cleared.** The app
+  was stopped between the two writes of turning off, or the settings file is gone. At
+  the next sign-in the marker is there, so the owner is made, to read the settings; it
+  finds them off, removes the marker and hands out nothing. It then stays as the point
+  before says.
+- **The marker is looked for at sign-in, as the account's objects are made**: one look
+  for a file, never a read, on the thread that makes them.
+- **Two apps side by side.** A sign-in is finished when the app's own screen is resumed
+  (`Graph.resumed`). On a split screen, or a phone unfolded, the app and the browser are
+  both resumed: the code is traded while the browser's page is still showing beside the
+  app, with nobody having "gone back" to it. The app has its network there, which is
+  what being in front is asked for.
 
 `requests/Requests.kt` is an account's connection, and the surface the screens use to set
 it up. As on Windows:

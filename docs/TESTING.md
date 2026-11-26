@@ -2886,6 +2886,22 @@ never shown as signed in").
   bodies included, as before the round. Taking an album off the list by a number the list
   had never shown was refused in one sentence.
 
+### The last round before requests went into the build
+
+| The rule | Where it is tested | What the test saw before the fix |
+|---|---|---|
+| Signing out of the music account takes its Lidarr key and sign-in, whether or not requests are on | `SameAccountAgainTest`, "signed in to Lidarr, requests turned off, then signed out of the music account, its key and its sign-in go all the same"; "requests turned off in an earlier run and the key still kept, signing out of the music account removes it without anything else of requests being made" | Both sealed files still on the phone fifteen seconds after the sign-out, and nothing handed back to the service (each) |
+| A departure always ends | `RequestsTest`, "leaving is finished whatever goes wrong with the goodbye, and the key and the token are gone" (the app's own work throwing, and never running what it was given) | Leaving threw what the app's work threw, with the key still kept |
+| Once an exchange's whole time is spent no further request is made | `CoreHttpTest`, "an operation whose whole time is spent is allowed no further request" | One more was allowed, with a millisecond |
+
+Not seen to fail before its fix: `CoreHttpTest`, "once the whole time of finishing a
+sign-in is spent, a further request is not sent, and ends as one not answered in time"
+(through the client itself, against a stand-in; before the fix whether the stand-in saw
+the request that had a millisecond was a matter of chance). **Not tested at all**: that a
+putting back cannot begin once its account's departure has begun. The two steps that
+could come apart are now inside one lock which the departure passes through; there is no
+place between them for a test to stand.
+
 ## What is not covered
 
 - **The real Android Auto screen**, until someone supplies the package or an account
