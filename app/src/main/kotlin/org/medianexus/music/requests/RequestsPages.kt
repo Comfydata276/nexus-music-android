@@ -17,7 +17,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
@@ -148,51 +151,80 @@ class RequestsPages internal constructor(
     private val saying = Mutex()
 
     /** What has arrived, said or not, as kept; read when first wanted. Under [turn]. */
-    private var arrivals: List<Arrived>? = null
+    private var held: List<Arrived>? = null
     private val suggestionsNow = MutableStateFlow<List<Suggestion>>(emptyList())
 
     /** What was asked for through this phone and is still followed up, newest note last. */
     val asked: StateFlow<List<Asked>> = askedNow.asStateFlow()
 
+    /** An arrival to tell the person of: its sentence, and (for [shown]) which it is. */
+    class Arrival internal constructor(val words: String, internal val of: List<Arrived>)
+
     /**
-     * Said when albums that were asked for have turned up in the library ("“Yellow” has
-     * arrived, on “Parachutes”."), once for each arrival. The screens add where to see it.
+     * **Albums that were asked for and have turned up in the library, to be told of**
+     * ("“Yellow” has arrived, on “Parachutes”."), for one listener at a time: the one place
+     * the app shows its passing notes. The screens add where to see it.
      *
-     * **Neither lost nor said twice.** Whether an arrival has been said is kept with it on
-     * the phone, and it is marked said when a listener has taken the sentence (when its
-     * `collect` block has returned for it), not when it was found: an arrival found as the
-     * app starts, before any screen is listening, waits; one found just before the app is
-     * stopped is said by its next run; and one that has been said is not said again by any
-     * run, whatever else failed to be written meanwhile.
+     * **An arrival is said when it has been shown, and not before**: collecting marks
+     * nothing; [shown] does, and is to be called when the note is actually on the screen.
+     * Whether it has been said is kept with the arrival on the phone. So:
      *
-     * **One listener at a time, and only this account's.** Collect it in one place, where
-     * the app shows its passing notes. When the account goes (signed out of the music
-     * server) the flow ends: whoever was listening is let go and hears no more of it.
+     * - each new collection is offered everything not yet shown, once (a listener that
+     *   starts again, as when the activity is made again, is offered what the last one took
+     *   and never showed);
+     * - one never shown at all (the app stopped or hidden, the account changed) is offered
+     *   again by the next run;
+     * - one that was shown is not offered again by any run, whatever else failed to be
+     *   written meanwhile.
+     *
+     * Nothing is offered while requests are switched off in Settings. When the account
+     * goes (signed out of the music server) the flow ends.
      */
-    val news: Flow<String> = flow {
-        wake.takeWhile { !isGone() }.collect {
+    val arrivals: Flow<Arrival> = flow {
+        val offered = ArrayList<Arrived>()
+        combine(wake, requests.settings.map { it.on }.distinctUntilChanged()) { _, on -> on }.takeWhile { !isGone() }.collect { on ->
+            if (!on) return@collect
             saying.withLock {
-                while (!isGone()) {
-                    val unsaid = turn.withLock { arrivalsKept().filter { !it.said } }
-                    if (unsaid.isEmpty()) break
-                    val sentence = withContext(io) { Core.arrivedNews(unsaid.map { it.note }) }
-                    if (sentence.isNotEmpty() && !isGone()) emit(sentence)
-                    // Taken (the listener's own block has returned): said, and kept as said.
-                    withContext(NonCancellable + io) {
-                        turn.withLock {
-                            val all = arrivalsKept().map { kept -> if (unsaid.any { it.isOf(kept.note) }) kept.copy(said = true) else kept }
-                            arrivals = all
-                            arrivalsFile.write(all)
-                        }
+                val unsaid = turn.withLock { arrivalsKept().filter { kept -> !kept.said && offered.none { it.isOf(kept.note) } } }
+                if (unsaid.isEmpty() || isGone()) return@withLock
+                val sentence = withContext(io) { Core.arrivedNews(unsaid.map { it.note }) }
+                offered += unsaid
+                if (sentence.isNotEmpty()) emit(Arrival(sentence, unsaid))
+            }
+        }
+    }
+
+    /**
+     * The note for `arrival` is on the screen: **it has been said**, and is kept as said.
+     * May be called from the main thread; the writing is done behind.
+     */
+    fun shown(arrival: Arrival) {
+        afterwards {
+            withContext(NonCancellable + io) {
+                turn.withLock {
+                    val all = arrivalsKept().map { kept -> if (!kept.said && arrival.of.any { it.isOf(kept.note) }) kept.copy(said = true) else kept }
+                    if (all != arrivalsKept()) {
+                        held = all
+                        arrivalsFile.write(all)
                     }
                 }
             }
         }
     }
 
+    /** [arrivals] as sentences, each said as soon as its listener has taken it: for a
+     *  listener that shows what it is handed there and then. (The app's screens use
+     *  [arrivals] and [shown]; this goes when they have moved over.) */
+    val news: Flow<String> = flow {
+        arrivals.collect {
+            emit(it.words)
+            shown(it)
+        }
+    }
+
     private fun isGone(): Boolean = synchronized(this) { gone }
 
-    private fun arrivalsKept(): List<Arrived> = arrivals ?: (arrivalsFile.read() ?: emptyList()).also { arrivals = it }
+    private fun arrivalsKept(): List<Arrived> = held ?: (arrivalsFile.read() ?: emptyList()).also { held = it }
 
     private val askedUnreadableNow = MutableStateFlow(false)
 
@@ -245,6 +277,10 @@ class RequestsPages internal constructor(
         }
         scope.launch(io) {
             requests.settings.collectLatest { settings -> Core.placeSingles(ready(), settings.singles) }
+        }
+        // (Switched on, or on again: what arrived meanwhile is looked for.)
+        scope.launch(io) {
+            requests.settings.map { it.on }.distinctUntilChanged().collect { on -> if (on) runCatching { checkArrivals() } }
         }
         // (The place goes with the account.)
         scope.coroutineContext.job.invokeOnCompletion {
@@ -623,7 +659,8 @@ class RequestsPages internal constructor(
         val place = ready()
         // (Also the moment a list that couldn't be read is tried again: see [keepAsked].)
         if (askedUnreadableNow.value) turn.withLock { if (askedUnreadableNow.value) keepAsked(place, askedNow.value) }
-        if (!haveLibrary) return@withContext
+        // (With requests switched off in Settings nothing is looked for, and nothing said.)
+        if (!haveLibrary || !requests.settings.value.on) return@withContext
         val news = turn.withLock {
             val arrived = try {
                 Core.askedArrivals(place, clock())
@@ -653,7 +690,7 @@ class RequestsPages internal constructor(
         val still = before.filter { kept -> asked.any { kept.isOf(it) } }
         val after = still + found.filter { note -> still.none { it.isOf(note) } }.map { Arrived(it) }
         if (after != before) {
-            arrivals = after
+            held = after
             arrivalsFile.write(after)
         }
         return after.any { !it.said }

@@ -12,6 +12,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -270,6 +271,65 @@ class RequestsPagesTest {
         delay(1_500)
         assertEquals(1, said.size)
         again.cancel()
+    }
+
+    /** The sentences of the arrivals a listener is offered in `millis`; each is shown (and
+     *  said so) only if `show`. */
+    private suspend fun offered(pages: RequestsPages, millis: Long, show: Boolean): List<String> = coroutineScope {
+        val heard = CopyOnWriteArrayList<String>()
+        val listening = launch(Dispatchers.Default) {
+            pages.arrivals.collect {
+                heard += it.words
+                if (show) pages.shown(it)
+            }
+        }
+        delay(millis)
+        listening.cancel()
+        heard.toList()
+    }
+
+    @Test
+    fun `an arrival is said when its note has been shown, and one only handed over is offered again`() = runBlocking<Unit> {
+        lidarrWithASingle()
+        val made = made()
+        assertTrue(made.pages.request("single-1", "One Song", song = "Its Song", connection = made.now()).done)
+        now.set(start + 4_000)
+        library.value = LibraryLists(albums = listOf(LibraryAlbum("al-9", "One Song", "Quillon Vane", "cover-9")), songs = listOf(listOf("Its Song", "Quillon Vane")), artists = listOf("Quillon Vane"))
+        withTimeout(20_000) { made.pages.asked.first { it.singleOrNull()?.arrived == start + 4_000 } }
+        val sentence = listOf("“Its Song” has arrived, on “One Song”.")
+        // Handed to the shell, which never got it onto the screen (hidden, or its activity
+        // made again): the next listener is offered it again.
+        assertEquals(sentence, offered(made.pages, 1_500, show = false))
+        assertEquals(sentence, offered(made.pages, 1_500, show = false))
+        // The app is stopped before it was ever shown: its next run offers it.
+        made.scope.cancel()
+        val (second, secondScope) = anotherRun(made)
+        assertEquals(sentence, offered(second, 1_500, show = false))
+        // Shown at last: said. Nobody is offered it again, in this run or any later.
+        assertEquals(sentence, offered(second, 1_500, show = true))
+        delay(500)
+        assertEquals(emptyList<String>(), offered(second, 1_200, show = true))
+        secondScope.cancel()
+        val (third, _) = anotherRun(made)
+        third.checkArrivals()
+        assertEquals(emptyList<String>(), offered(third, 1_500, show = true))
+    }
+
+    @Test
+    fun `with requests switched off nothing is said and nothing is looked for, and switched on again it is`() = runBlocking<Unit> {
+        lidarrWithASingle()
+        val made = made()
+        assertTrue(made.pages.request("single-1", "One Song", song = "Its Song", connection = made.now()).done)
+        made.requests.switch(false)
+        now.set(start + 4_000)
+        library.value = LibraryLists(albums = listOf(LibraryAlbum("al-9", "One Song", "Quillon Vane", "cover-9")), songs = listOf(listOf("Its Song", "Quillon Vane")), artists = listOf("Quillon Vane"))
+        assertEquals(emptyList<String>(), offered(made.pages, 2_000, show = true))
+        assertEquals(0L, made.pages.asked.value.single().arrived)
+        // Switched on again: it is found, and said.
+        val said = async(Dispatchers.Default) { offered(made.pages, 6_000, show = true) }
+        delay(300)
+        made.requests.switch(true)
+        assertEquals(listOf("“Its Song” has arrived, on “One Song”."), said.await())
     }
 
     @Test
