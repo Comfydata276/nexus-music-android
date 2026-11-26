@@ -530,25 +530,17 @@ object Core {
     fun gateHost(service: String): String = across(service, String.serializer(), String.serializer(), ::gateHost)
 
     @Serializable
-    private class RequestIn(val operation: Long, val lidarr: LidarrAt, val wanted: Offer)
+    private class RequestIn(val operation: Long, val lidarr: LidarrAt, val place: Long, val wanted: Offer)
 
     /**
-     * `Lidarr::request`: puts an album (or an EP, a single, a soundtrack) on Lidarr's list
-     * and has Lidarr start looking for it. Can take a minute and a half. Stopped, it still
-     * puts back what it changed on Lidarr to do it.
+     * `Lidarr::request`, for an offer handed over whole: puts an album (or an EP, a single,
+     * a soundtrack) on Lidarr's list and has Lidarr start looking for it. Can take a minute
+     * and a half. Stopped, it still puts back what it changed on Lidarr to do it. **For the
+     * tests of the boundary; the app asks through [request].** The way back is written
+     * down by `place`'s keeper, as for every request.
      */
-    suspend fun lidarrRequest(lidarr: LidarrAt, wanted: Offer): Outcome<Boolean> = orBusy { CoreHttp.seenThrough { operation ->
-        over(RequestIn(operation, lidarr, wanted), RequestIn.serializer(), Boolean.serializer(), ::lidarrRequest)
-    } }
-
-    @Serializable
-    private class AddArtistIn(val operation: Long, val lidarr: LidarrAt, val artist: String, val name: String)
-
-    /** `Lidarr::add_artist`: has Lidarr get everything by an artist (`artist` is Lidarr's
-     *  name for them). Answers with how many of their albums were newly asked for; none for
-     *  an artist new to Lidarr, which learns their albums in its own time. */
-    suspend fun lidarrAddArtist(lidarr: LidarrAt, artist: String, name: String): Outcome<Int> = orBusy { CoreHttp.seenThrough { operation ->
-        over(AddArtistIn(operation, lidarr, artist, name), AddArtistIn.serializer(), Int.serializer(), ::lidarrAddArtist)
+    internal suspend fun lidarrRequest(lidarr: LidarrAt, place: Long, wanted: Offer): Outcome<Boolean> = orBusy { CoreHttp.seenThrough { operation ->
+        over(RequestIn(operation, lidarr, place, wanted), RequestIn.serializer(), Boolean.serializer(), ::lidarrRequest)
     } }
 
     /** `Lidarr::pending`: what is on its way, those being fetched first. */
@@ -588,13 +580,45 @@ object Core {
     // holds what has been offered while the connection lasts and the three things the
     // library reads at the moment it needs them, set here whenever they change.
 
-    /** A connection to Lidarr begins: its place, under the number handed back. */
-    fun placeOpen(): Long = across(true, Boolean.serializer(), Long.serializer(), ::placeOpen)
+    /**
+     * A connection to Lidarr begins: its place, under the number handed back.
+     *
+     * `wayBack` is **who writes down what must be put back on Lidarr** for this place (see
+     * [CoreHttp.wayBackKeptBy]): the library writes it before it changes an artist's
+     * setting, and changes nothing if it is told it couldn't be written. With nobody to
+     * write it (the default), nothing that needs one is changed.
+     */
+    fun placeOpen(wayBack: (batch: ByteArray?, surely: Boolean) -> Boolean = { _, _ -> false }): Long =
+        across(true, Boolean.serializer(), Long.serializer(), ::placeOpen).also { CoreHttp.wayBackKeptBy(it, wayBack) }
 
     /** The connection is over: what was offered while it lasted is forgotten. */
     fun placeClose(place: Long) {
         across(place, Long.serializer(), Boolean.serializer(), ::placeClose)
+        CoreHttp.wayBackForgotten(place)
     }
+
+    @Serializable
+    private class PlaceWaysIn(val place: Long, val written: String)
+
+    /** `bulk::Job::load`: what an earlier run wrote down of changes to Lidarr still to be
+     *  put back (`asking.json`, as it reads), taken up as the connection begins. False if
+     *  the library can make nothing of it. */
+    fun placeWays(place: Long, written: String): Boolean = across(PlaceWaysIn(place, written), PlaceWaysIn.serializer(), Boolean.serializer(), ::placeWays)
+
+    /** `bulk::Job::unfinished`: whether anything written down is still to be put back **on
+     *  this Lidarr**. What is written down for another Lidarr is not, and is left as it is. */
+    fun waysLeft(lidarr: LidarrAt, place: Long): Boolean = acrossPrivately(PageIn(0, lidarr, place, ""), PageIn.serializer(), Boolean.serializer(), ::waysLeft)
+
+    /**
+     * `bulk::Job::work_through`: **puts back what an earlier run left changed on this
+     * Lidarr**, and crosses it off. It waits for Lidarr to have finished with the artist,
+     * looking every few seconds, so it can take minutes; cancelling the caller stops it,
+     * and what it had not put back is still written down. The value is whether nothing is
+     * left for this Lidarr.
+     */
+    suspend fun putBack(lidarr: LidarrAt, place: Long): Outcome<Boolean> = orBusy { CoreHttp.puttingBack { operation ->
+        over(PageIn(operation, lidarr, place, ""), PageIn.serializer(), Boolean.serializer(), ::putBack)
+    } }
 
     @Serializable
     private class PlaceLibraryIn(val place: Long, val library: LibraryLists)
@@ -701,9 +725,15 @@ object Core {
         over(PageIn(operation, lidarr, place, album), PageIn.serializer(), String.serializer(), ::request)
     }
 
-    /** `Lidarr::add_artist`, begun in the same way (see [request]). */
-    internal fun addArtist(lidarr: LidarrAt, artist: String, name: String): CoreHttp.Begun<Outcome<Int>> = CoreHttp.seeingThrough { operation ->
-        over(AddArtistIn(operation, lidarr, artist, name), AddArtistIn.serializer(), Int.serializer(), ::lidarrAddArtist)
+    /**
+     * `Lidarr::add_artist`, begun in the same way (see [request]): has Lidarr get
+     * everything by an artist (`artist` is Lidarr's name for them). The value is how many
+     * of their albums were newly asked for; none for an artist new to Lidarr, which learns
+     * their albums in its own time. It takes its turn with every other change to an
+     * artist's record on Lidarr, which is the place's to keep.
+     */
+    internal fun addArtist(lidarr: LidarrAt, place: Long, artist: String, name: String): CoreHttp.Begun<Outcome<Int>> = CoreHttp.seeingThrough { operation ->
+        over(PageIn(operation, lidarr, place, artist, name), PageIn.serializer(), Int.serializer(), ::addArtist)
     }
 
     @Serializable
@@ -735,10 +765,13 @@ object Core {
     fun adding(name: String, open: Int): Pair<String, String> = across(AddingIn(name, open), AddingIn.serializer(), TwoNames, ::adding)
 
     @Serializable
-    private class ForgetIn(val place: Long, val title: String)
+    private class ForgetIn(val place: Long, val album: String, val title: String, val artist: String)
 
-    /** `asked::forget`: stops watching for an album that has been taken off Lidarr's list. */
-    fun askedForget(place: Long, title: String): AskedChange = across(ForgetIn(place, title), ForgetIn.serializer(), AskedChange.serializer(), ::askedForget)
+    /** `asked::forget`: stops watching for an album that has been taken off Lidarr's list,
+     *  **by what it is**: Lidarr's own name for it (`album`) where both have one, and
+     *  otherwise its title and who it is by. */
+    fun askedForget(place: Long, title: String, artist: String, album: String = ""): AskedChange =
+        across(ForgetIn(place, album, title, artist), ForgetIn.serializer(), AskedChange.serializer(), ::askedForget)
 
     @Serializable
     private class NowIn(val place: Long, val now: Long)
@@ -861,7 +894,10 @@ object Core {
     @JvmStatic private external fun lidarrMask(input: ByteArray): ByteArray?
     @JvmStatic private external fun gateHost(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrRequest(input: ByteArray): ByteArray?
-    @JvmStatic private external fun lidarrAddArtist(input: ByteArray): ByteArray?
+    @JvmStatic private external fun addArtist(input: ByteArray): ByteArray?
+    @JvmStatic private external fun placeWays(input: ByteArray): ByteArray?
+    @JvmStatic private external fun waysLeft(input: ByteArray): ByteArray?
+    @JvmStatic private external fun putBack(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrPending(input: ByteArray): ByteArray?
     @JvmStatic private external fun lidarrCancel(input: ByteArray): ByteArray?
     @JvmStatic private external fun albumTracks(input: ByteArray): ByteArray?

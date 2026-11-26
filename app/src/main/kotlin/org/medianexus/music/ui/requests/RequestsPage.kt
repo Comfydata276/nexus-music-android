@@ -72,6 +72,7 @@ fun RequestsPage() {
     }
     val state by model.state.collectAsStateWithLifecycle()
     val unreadable by pages.askedUnreadable.collectAsStateWithLifecycle()
+    val wayBack by pages.wayBackTrouble.collectAsStateWithLifecycle()
     val waiting = state.value
     val asker = rememberAsker(here)
     // Being taken off the list (from this page or before it was left): not shown meanwhile.
@@ -96,6 +97,15 @@ fun RequestsPage() {
                         if (unreadable) item(key = "asked-unreadable", contentType = "said") {
                             BasicText(
                                 stringResource(R.string.requests_asked_unreadable),
+                                Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
+                                style = Theme.type.rowDetail.copy(color = Theme.colors.warm),
+                            )
+                        }
+                        // What was written down to put back on Lidarr couldn't be taken up: said
+                        // here, in the requests layer's own sentence, for as long as the app runs.
+                        if (wayBack.isNotEmpty()) item(key = "way-back-trouble", contentType = "said") {
+                            BasicText(
+                                wayBack,
                                 Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp),
                                 style = Theme.type.rowDetail.copy(color = Theme.colors.warm),
                             )

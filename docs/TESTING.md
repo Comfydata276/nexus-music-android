@@ -2822,6 +2822,20 @@ a sign-in as a real one does (PKCE, S256), and so does the kit's for the emulato
 (`shots/m7a/how/make-standin`, which also follows the kit's stand-in as the Windows side
 has since changed it).
 
+**The way back** (`RequestsPagesTest`, through the app's own objects, the library and a
+stand-in Lidarr; each seen to fail at the pin before): "what an artist's setting is to go
+back to is written down on the phone before Lidarr is changed, and crossed off once it is
+back" (the entry is in `asking.json` when the first change of all reaches Lidarr); "a
+single asked for by a run that got no further than turning the setting off, the next run
+puts the setting back" (the run is cut off by Lidarr answering nothing more, which leaves
+on the phone and on Lidarr what a kill leaves; the kill itself is walked on the
+emulator); "a way back is for the Lidarr it was written for, pointed at another nothing of
+it is sent there, and it is put back once the first is come back to"; "when the way back
+can't be written down first, Lidarr is not changed"; "a way back the app can make nothing
+of is moved aside under a name of its own and said, and the next is written afresh".
+What the job decides (when Lidarr is done with an artist, what it asks) is the library's
+own tests'.
+
 **What only the emulator found.** The rule that the browser's page says how the sign-in
 ended had the app trade the code for its token before coming forward. Every test in the
 JVM passed. On the Android 16 emulator every sign-in then ended "Couldn't reach the

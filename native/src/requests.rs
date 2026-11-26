@@ -28,7 +28,6 @@ use nexus_core::http::STOPPED;
 use nexus_core::lidarr::{Lidarr, SignIn};
 use nexus_core::listenbrainz::ListenBrainz;
 use nexus_core::musicbrainz::MusicBrainz;
-use nexus_core::offer::Offer;
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{self, During, Host, Line, Whose};
@@ -386,43 +385,6 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrMask<'l>(env: J
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_gateHost<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |service: String| Ok(Found { service, client: String::new() }.host().to_string()))
-}
-
-#[derive(Deserialize)]
-struct RequestIn {
-    operation: u64,
-    lidarr: Connection,
-    wanted: Offer,
-}
-
-/// `Lidarr::request`: puts an album (or an EP, a single, a soundtrack) on Lidarr's list
-/// and has Lidarr start looking for it.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrRequest<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
-    call_private(env, input, |given: RequestIn| {
-        let _during = During::new(given.operation);
-        Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.request(&given.wanted)).map(|()| true)))
-    })
-}
-
-#[derive(Deserialize)]
-struct AddArtistIn {
-    operation: u64,
-    lidarr: Connection,
-    /// Lidarr's name for the artist (a MusicBrainz id), and what they're called.
-    artist: String,
-    name: String,
-}
-
-/// `Lidarr::add_artist`: has Lidarr get everything by an artist. Answers with how many of
-/// their albums were newly asked for (none, for an artist new to Lidarr: it learns their
-/// albums in its own time).
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrAddArtist<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
-    call_private(env, input, |given: AddArtistIn| {
-        let _during = During::new(given.operation);
-        Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.add_artist(&given.artist, &given.name))))
-    })
 }
 
 /// An album on Lidarr's list that hasn't fully arrived (`nexus_core::lidarr::Pending`).

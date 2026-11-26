@@ -131,7 +131,15 @@ class RequestsPagesTest {
 
     /** A Lidarr with one artist and one single of theirs, which can be asked for; `slow`
      *  holds each answer while it is set. Says whether the single is wanted. */
-    private fun lidarrWithASingle(slow: AtomicBoolean = AtomicBoolean(false)): () -> Boolean {
+    private fun lidarrWithASingle(
+        slow: AtomicBoolean = AtomicBoolean(false),
+        /** Lidarr answers every request with an error while this is set. */
+        down: AtomicBoolean = AtomicBoolean(false),
+        /** Told of each request that changes something, before it is acted on. */
+        changing: (StandIn.Asked) -> Unit = {},
+        /** Told once the artist's "new releases" setting has been turned off, and said so. */
+        turnedOff: () -> Unit = {},
+    ): () -> Boolean {
         var newReleases = "all"
         var profile = 1
         var wanted = false
@@ -141,6 +149,8 @@ class RequestsPagesTest {
         route("/api/v1/") { asked, reply ->
             val path = asked.target.substringAfter("/api/v1/")
             while (slow.get()) Thread.sleep(20)
+            if (down.get()) return@route reply.send(500)
+            if (asked.method != "GET") changing(asked)
             when {
                 path == "system/status" -> reply.json("""{"version":"2.9.6.4552"}""")
                 path.startsWith("album/lookup") -> reply.json("""[{"title":"One Song","foreignAlbumId":"single-1","albumType":"Single","artist":{"artistName":"Quillon Vane","foreignArtistId":"artist-1"}}]""")
@@ -152,6 +162,7 @@ class RequestsPagesTest {
                     newReleases = Regex(""""monitorNewItems":"(\w+)"""").find(asked.body)!!.groupValues[1]
                     profile = Regex(""""metadataProfileId":(\d+)""").find(asked.body)!!.groupValues[1].toInt()
                     reply.json(artist())
+                    if (newReleases == "none") turnedOff()
                 }
                 asked.method == "GET" && path.startsWith("album?artistId=1") -> reply.json("""[{"id":7,"title":"One Song","foreignAlbumId":"single-1","albumType":"Single","monitored":$wanted}]""")
                 asked.method == "GET" && path == "command" -> reply.json("[]")
@@ -463,6 +474,129 @@ class RequestsPagesTest {
         file.writeText(held)
         made.pages.request("single-1", "One Song", connection = made.now())
         assertEquals(1, Regex("single-1").findAll(file.readText()).count())
+    }
+
+    // ---- the way back from a change to Lidarr ------------------------------------------------------
+    //
+    // To list an artist's singles Lidarr is told, for a while, not to take their new
+    // releases, and told to again afterwards. What the setting is to go back to is written
+    // down on the phone first (`asking.json`, as the library writes it), so that a run that
+    // gets no further has it put back by the next.
+
+    private fun asking(dir: File) = File(dir, "asking.json")
+    private fun written(dir: File): String = asking(dir).takeIf { it.isFile }?.readText().orEmpty()
+    private fun setsNewReleases(asked: StandIn.Asked, to: String) = asked.method == "PUT" && asked.target.endsWith("/api/v1/artist/1") && "\"monitorNewItems\":\"$to\"" in asked.body
+
+    @Test
+    fun `what an artist's setting is to go back to is written down on the phone before Lidarr is changed, and crossed off once it is back`() = runBlocking {
+        val dir = File(folder.root, "data")
+        // (As each change reaches Lidarr: what the phone had written down by then.)
+        val had = CopyOnWriteArrayList<String>()
+        lidarrWithASingle(changing = { asked -> had += "${asked.method} ${asked.target.substringAfter("/api/v1/")} " + written(dir) })
+        val made = made()
+        assertTrue(made.pages.request("single-1", "One Song", connection = made.now()).done)
+        // Lidarr's number for the artist, what the setting was, and which Lidarr: there
+        // before the first change of all (the profile that lists singles being made), and
+        // before the setting was turned off.
+        val entry = """[1,"all","${server.address}"]"""
+        assertTrue("$had", had.first().startsWith("POST metadataprofile ") && entry in had.first())
+        assertTrue("$had", had.any { it.startsWith("PUT artist/1 ") && "\"monitorNewItems\":\"none\"" !in it && entry in it })
+        // Put back, and crossed off: nothing is left written.
+        assertTrue(server.asked.any { setsNewReleases(it, "all") })
+        assertFalse(written(dir), "\"all\"" in written(dir))
+    }
+
+    /** A single asked for, by a run of the app that got no further than turning the
+     *  artist's setting off (Lidarr answers nothing from then on, as to an app that has
+     *  been stopped; lifted again before this returns). */
+    private fun cutOffAfterTheSettingWasTurnedOff(): AtomicBoolean {
+        val down = AtomicBoolean(false)
+        lidarrWithASingle(down = down, turnedOff = { down.set(true) })
+        val first = made()
+        val said = runBlocking { first.pages.request("single-1", "One Song", connection = first.now()) }
+        assertFalse("$said", said.done && said.kept && "couldn't" !in said.words)
+        assertTrue(server.asked.any { setsNewReleases(it, "none") })
+        assertFalse(server.asked.any { setsNewReleases(it, "all") })
+        first.scope.cancel()
+        down.set(false)
+        return down
+    }
+
+    @Test
+    fun `a single asked for by a run that got no further than turning the setting off, the next run puts the setting back`() = runBlocking {
+        cutOffAfterTheSettingWasTurnedOff()
+        val dir = File(folder.root, "data")
+        // What that run left written down: the artist, what the setting was, which Lidarr.
+        assertTrue(written(dir), """[1,"all","${server.address}"]""" in written(dir))
+        // The app is started again, with that Lidarr still the one it is set up for: by
+        // itself, once Lidarr is seen to have finished with the artist, it puts the setting
+        // back, and crosses the entry off.
+        made()
+        assertTrue("the setting was not put back", server.awaitAsked(45_000) { setsNewReleases(it, "all") })
+        withTimeout(10_000) { while ("\"all\"" in written(dir)) delay(50) }
+        Unit
+    }
+
+    @Test
+    fun `a way back is for the Lidarr it was written for, pointed at another nothing of it is sent there, and it is put back once the first is come back to`() = runBlocking {
+        cutOffAfterTheSettingWasTurnedOff()
+        val dir = File(folder.root, "data")
+        val entry = """[1,"all","${server.address}"]"""
+        assertTrue(written(dir), entry in written(dir))
+        val before = server.asked.size
+        // The app is started again and, before Lidarr has been seen to have finished with
+        // the artist, pointed at another Lidarr, where number 1 is somebody else.
+        val other = anotherLidarr()
+        val made = made(connected = false)
+        made.requests.switch(true)
+        assertTrue(made.requests.connect(other.address, "k") is RequestsState.Connected)
+        delay(3_000)
+        // Nothing of it is sent there (the other Lidarr is only asked whether it is
+        // there), nothing was changed on the first meanwhile, and it is still written.
+        assertEquals(listOf("GET /api/v1/system/status"), other.asked.map { it.line }.distinct())
+        assertEquals(emptyList<String>(), server.asked.drop(before).filter { it.method != "GET" }.map { it.line })
+        assertTrue(written(dir), entry in written(dir))
+        // Pointed back at the first: put back there, and crossed off.
+        assertTrue(made.requests.connect(server.address, "k") is RequestsState.Connected)
+        assertTrue("the setting was not put back", server.awaitAsked(45_000) { setsNewReleases(it, "all") })
+        withTimeout(10_000) { while (entry in written(dir)) delay(50) }
+        assertFalse(other.asked.any { it.method != "GET" })
+    }
+
+    @Test
+    fun `when the way back can't be written down first, Lidarr is not changed`() = runBlocking {
+        lidarrWithASingle()
+        val dir = File(folder.root, "data").apply { mkdirs() }
+        // (A folder, with something in it, where the file would be: not to be written.)
+        File(asking(dir), "in the way").apply { parentFile.mkdirs() }.writeText("x")
+        val made = made()
+        val said = made.pages.request("single-1", "One Song", connection = made.now())
+        assertFalse("$said", said.done)
+        assertTrue(said.words, "couldn't be written down" in said.words)
+        // Nothing was changed on Lidarr: no profile made, no setting turned off, nothing asked for.
+        assertEquals(emptyList<String>(), server.asked.filter { it.method != "GET" }.map { it.line })
+        assertTrue(asking(dir).isDirectory)
+        assertEquals(emptyList<Any>(), made.pages.asked.value)
+        // And the Requests page says why, for as long as the app runs.
+        assertTrue(made.pages.wayBackTrouble.value, "nothing that would have to be put back on Lidarr is changed" in made.pages.wayBackTrouble.value)
+    }
+
+    @Test
+    fun `a way back the app can make nothing of is moved aside under a name of its own and said, and the next is written afresh`() = runBlocking {
+        lidarrWithASingle()
+        val dir = File(folder.root, "data").apply { mkdirs() }
+        val cut = """{"wants":[],"restore":[[1,"al"""
+        asking(dir).writeText(cut)
+        val made = made()
+        made.pages.onTheirWay()
+        val aside = dir.listFiles().orEmpty().single { it.name.startsWith("asking.damaged-") && it.name.endsWith(".json") }
+        assertEquals(cut, aside.readText())
+        assertTrue("$notes", notes.any { aside.name in it })
+        assertTrue(made.pages.wayBackTrouble.value, aside.name in made.pages.wayBackTrouble.value && "look at that artist in Lidarr" in made.pages.wayBackTrouble.value)
+        // Asking still works, its own way back written and crossed off as ever.
+        assertTrue(made.pages.request("single-1", "One Song", connection = made.now()).done)
+        assertTrue(server.asked.any { setsNewReleases(it, "all") })
+        assertEquals(cut, aside.readText())
     }
 
     // ---- a row acts on the connection it came from ------------------------------------------------

@@ -10,6 +10,14 @@
 //! Kotlin side sets whenever they change, during an operation too: the phone's copy of the
 //! library, what has been asked for, and the "singles and EPs" setting.
 //!
+//! **And the way back from a change to Lidarr that has to be put back** (an artist's "new
+//! releases" setting, turned off while their singles are read in): the library's own batch
+//! job (`nexus_core::bulk::Job`), one to a place, which is where the library writes a way
+//! back down before it changes Lidarr and crosses it off after (`lidarr::WayBack`), and
+//! which puts back what an earlier run left ([`Keeper`] is the phone's part in it: the file
+//! is the Kotlin side's to write). The phone asks for no batches; the job is here for
+//! that, by the same rules and in the same file as the Windows app.
+//!
 //! Each operation asks through its own way out ([`Host`] with its number), MusicBrainz
 //! included (`MusicBrainz::over`: the one MusicBrainz's pace and store, this operation's
 //! requests), so that stopping one stops exactly its requests.
@@ -22,6 +30,7 @@ use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass};
 use jni::sys::jbyteArray;
 use nexus_core::asked::{self, Arrival, Asked};
+use nexus_core::bulk;
 use nexus_core::discover::{self, Kept};
 use nexus_core::lidarr::{Lidarr, Offers};
 use nexus_core::listenbrainz::ListenBrainz;
@@ -43,7 +52,40 @@ struct Place {
     offers: Mutex<(u64, Arc<Offers>)>,
     library: RwLock<Arc<Snapshot>>,
     asked: RwLock<Vec<Asked>>,
-    singles: AtomicBool,
+    singles: Arc<AtomicBool>,
+    /// Where the way back from a change to Lidarr is written down, and what puts back what
+    /// an earlier run left (see this file's own comment).
+    job: bulk::Job,
+}
+
+/// The phone's part in the library's batch job (`bulk::Desk`): where it is written down.
+/// The file is the Kotlin side's (`asking.json`, in the account's own folder); this hands
+/// it what to write and is told whether it was written.
+struct Keeper {
+    place: u64,
+    singles: Arc<AtomicBool>,
+}
+
+impl bulk::Desk for Keeper {
+    fn keep(&self, batch: Option<Vec<u8>>, flushed: bool) {
+        wire::way_back(self.place, batch.as_deref(), flushed);
+    }
+
+    /// What must be on the disk before Lidarr is changed: written, synced, and said
+    /// truthfully whether it is.
+    fn keep_checked(&self, batch: Vec<u8>) -> bool {
+        wire::way_back(self.place, Some(&batch), true)
+    }
+
+    /// (When a batch notes something as asked for. The phone hands the job no albums, so
+    /// nothing asks; were it to, the answer is the time it is.)
+    fn now(&self) -> i64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs() as i64)
+    }
+
+    fn singles(&self) -> bool {
+        self.singles.load(Ordering::SeqCst)
+    }
 }
 
 static PLACES: Mutex<Option<HashMap<u64, Arc<Place>>>> = Mutex::new(None);
@@ -102,9 +144,76 @@ impl Place {
 pub extern "system" fn Java_org_medianexus_music_core_Core_placeOpen<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |_: bool| {
         let id = NEXT_PLACE.fetch_add(1, Ordering::SeqCst);
-        let made = Place { offers: Mutex::new((0, Arc::new(Offers::new()))), library: RwLock::new(Arc::new(Snapshot::default())), asked: RwLock::new(Vec::new()), singles: AtomicBool::new(false) };
+        let singles = Arc::new(AtomicBool::new(false));
+        let made = Place {
+            offers: Mutex::new((0, Arc::new(Offers::new()))),
+            library: RwLock::new(Arc::new(Snapshot::default())),
+            asked: RwLock::new(Vec::new()),
+            singles: singles.clone(),
+            job: bulk::Job::new(Keeper { place: id, singles }),
+        };
         places(|open| open.insert(id, Arc::new(made)));
         Ok(id)
+    })
+}
+
+#[derive(Deserialize)]
+struct WaysIn {
+    place: u64,
+    /// What the phone has written down (`asking.json`), as it reads.
+    written: String,
+}
+
+/// `bulk::Job::load`: takes up what an earlier run wrote down of changes to Lidarr still
+/// to be put back. Says whether it could be made sense of; what can't be is the Kotlin
+/// side's to set aside.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_placeWays<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call(env, input, |given: WaysIn| Ok(place(given.place)?.job.load(given.written.as_bytes())))
+}
+
+/// `bulk::Job::unfinished`: whether anything is written down that is still to be put back
+/// **on this Lidarr** (by its address, as the library writes it: `Lidarr::way_back_address`).
+/// What is written down for another Lidarr is not this one's, and is left as it is.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_waysLeft<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call_private(env, input, |given: PageIn| {
+        let place = place(given.place)?;
+        Ok(given.lidarr.lidarr(given.operation).is_ok_and(|lidarr| place.job.unfinished(&lidarr.way_back_address())))
+    })
+}
+
+/// `bulk::Job::work_through`, with no albums to ask for: **puts back what an earlier run
+/// left changed on this Lidarr** and crosses it off, by the library's own rules (it waits
+/// until Lidarr has finished with the artist, looking every few seconds, so it can take
+/// minutes). The value is whether nothing is left for this Lidarr. Stopped, what it had
+/// not put back is still written down.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_putBack<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    use nexus_core::http::Http as _;
+    call_private(env, input, |given: PageIn| {
+        let _during = During::new(given.operation);
+        let place = place(given.place)?;
+        let lidarr = match given.lidarr.lidarr(given.operation) {
+            Ok(lidarr) => lidarr,
+            Err(why) => return Ok(outcome(Err(why))),
+        };
+        // (One at a time: an earlier one that has just been stopped is given a moment to end.)
+        let wait = Host::new(Whose::Operation(given.operation), Line::Lidarr);
+        let mut tries = 0;
+        while !place.job.begin() {
+            tries += 1;
+            if wait.pause(std::time::Duration::from_millis(250)).is_err() {
+                return Ok(Outcome::Stopped);
+            }
+            if tries > 40 {
+                return Ok(Outcome::Got { value: false });
+            }
+        }
+        // (The job says how a batch is going as it goes, and which albums it noted or
+        // forgot: there are none here, and nobody to tell.)
+        place.job.work_through(&lidarr, musicbrainz(), &|_: bulk::Event| {});
+        Ok(Outcome::Got { value: !place.job.unfinished(&lidarr.way_back_address()) })
     })
 }
 
@@ -324,10 +433,44 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_request<'l>(env: JNIE
             Ok(lidarr) => lidarr,
             Err(why) => return Ok(outcome(Err(why))),
         };
-        Ok(match requests::request(&lidarr, &place.offers(given.lidarr.connection), &given.what) {
+        Ok(match requests::request(&lidarr, &place.offers(given.lidarr.connection), &given.what, &place.job) {
             Ok(result) => outcome(result),
             Err(Stopped) => Outcome::Stopped,
         })
+    })
+}
+
+/// `Lidarr::add_artist`: has Lidarr get everything by an artist (`what` is Lidarr's name
+/// for them, a MusicBrainz id; `name` what they're called). Answers with how many of their
+/// albums were newly asked for (none, for an artist new to Lidarr: it learns their albums
+/// in its own time). One step of the way back at a time with every other change to an
+/// artist's record, which is why it takes the place.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_addArtist<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call_private(env, input, |given: PageIn| {
+        let _during = During::new(given.operation);
+        let place = place(given.place)?;
+        Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.add_artist(&given.what, &given.name, &place.job))))
+    })
+}
+
+#[derive(Deserialize)]
+struct WantedIn {
+    operation: u64,
+    lidarr: Connection,
+    place: u64,
+    wanted: nexus_core::offer::Offer,
+}
+
+/// `Lidarr::request`, for an offer handed over whole: for the tests of the boundary (how
+/// a request that changes Lidarr is stopped, and seen through), which nothing in the app
+/// calls. The way back is the place's, as for every request.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrRequest<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    call_private(env, input, |given: WantedIn| {
+        let _during = During::new(given.operation);
+        let place = place(given.place)?;
+        Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.request(&given.wanted, &place.job)).map(|()| true)))
     })
 }
 
@@ -399,14 +542,18 @@ struct Changed {
 #[derive(Deserialize)]
 struct ForgetIn {
     place: u64,
+    #[serde(default)]
+    album: String,
     title: String,
+    #[serde(default)]
+    artist: String,
 }
 
 /// `asked::forget`: stops watching for an album that has been taken off Lidarr's list.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_askedForget<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call(env, input, |given: ForgetIn| {
-        let (changed, asked) = place(given.place)?.change(|items| asked::forget(items, &given.title));
+        let (changed, asked) = place(given.place)?.change(|items| asked::forget(items, &given.album, &given.title, &given.artist));
         Ok(Changed { changed, asked })
     })
 }

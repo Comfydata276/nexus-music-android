@@ -692,6 +692,8 @@ class CoreHttpTest {
             }
         }
         val at get() = LidarrAt(server.address, "k")
+        /** (What must be put back is counted as written down: see `RequestsPagesTest`.) */
+        val place = Core.placeOpen { _, _ -> true }
         val single = Offer(album = "single-1", artistId = "artist-1", title = "One Song", artist = "Quillon Vane", kind = "Single")
         fun turnedOff() = server.asked.any { it.method == "PUT" && it.target.endsWith("artist/1") && "\"monitorNewItems\":\"none\"" in it.body }
     }
@@ -699,7 +701,7 @@ class CoreHttpTest {
     @Test
     fun `asking for a single, left alone, turns new releases off while Lidarr reads and back on after`() {
         val lidarr = LidarrWithOneArtist()
-        assertEquals(Outcome.Got(true), runBlocking { withTimeout(60_000) { Core.lidarrRequest(lidarr.at, lidarr.single) } })
+        assertEquals(Outcome.Got(true), runBlocking { withTimeout(60_000) { Core.lidarrRequest(lidarr.at, lidarr.place, lidarr.single) } })
         assertTrue(lidarr.turnedOff())
         assertEquals("all", lidarr.newReleases)
         assertEquals("POST command", lidarr.server.asked.last { it.method == "POST" }.let { "${it.method} ${it.target.substringAfter("/api/v1/")}" })
@@ -708,7 +710,7 @@ class CoreHttpTest {
     @Test
     fun `asking for a single, stopped once it has begun to change Lidarr, is seen through to the end`() = runBlocking {
         val lidarr = LidarrWithOneArtist()
-        val asking = launch(Dispatchers.Default) { Core.lidarrRequest(lidarr.at, lidarr.single) }
+        val asking = launch(Dispatchers.Default) { Core.lidarrRequest(lidarr.at, lidarr.place, lidarr.single) }
         // New releases have been turned off, and the library is waiting for Lidarr to begin.
         assertTrue(lidarr.server.awaitAsked { it.method == "PUT" && it.target.endsWith("artist/1") })
         assertEquals("none", lidarr.newReleases)
@@ -730,7 +732,7 @@ class CoreHttpTest {
         // Lidarr is slow to say which artists it has: the first thing asked, and only a look.
         val held = CountDownLatch(1)
         val lidarr = LidarrWithOneArtist(slowAfter = { held.await(5, TimeUnit.SECONDS); false })
-        val asking = launch(Dispatchers.Default) { Core.lidarrRequest(lidarr.at, lidarr.single) }
+        val asking = launch(Dispatchers.Default) { Core.lidarrRequest(lidarr.at, lidarr.place, lidarr.single) }
         assertTrue(lidarr.server.awaitAsked { it.method == "GET" && it.target.endsWith("/artist") })
         val took = elapsed { runBlocking { asking.cancelAndJoin() } }
         assertTrue("took $took ms", took < 2_000)

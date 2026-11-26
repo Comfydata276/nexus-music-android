@@ -40,7 +40,9 @@ class PagesTest {
     }.also { closing += it }
 
     private val lidarr get() = LidarrAt(server.address, "k")
-    private val place = Core.placeOpen()
+    /** (What must be put back on Lidarr is "written down" here by being counted as written:
+     *  where it is really kept, and what becomes of it, is `RequestsPagesTest`'s.) */
+    private val place = Core.placeOpen { _, _ -> true }
 
     init {
         // (The library fixes where MusicBrainz and ListenBrainz are.)
@@ -322,10 +324,10 @@ class PagesTest {
         Core.noted(place, "single-1", "One Song", "Quillon Vane", song = "Its Song", now = 1_000)
         assertEquals(Outcome.Got(true), wait { Core.lidarrCancel(lidarr, 7) })
         assertFalse(wanted())
-        val forgotten = Core.askedForget(place, "One Song")
+        val forgotten = Core.askedForget(place, "One Song", "Quillon Vane")
         assertEquals(true to emptyList<Asked>(), forgotten.changed to forgotten.asked)
         assertEquals("“One Song” is off the list", Words.offTheList("One Song"))
-        assertFalse(Core.askedForget(place, "One Song").changed)
+        assertFalse(Core.askedForget(place, "One Song", "Quillon Vane").changed)
     }
 
     @Test
@@ -349,7 +351,7 @@ class PagesTest {
                 else -> reply.send(404)
             }
         }
-        assertEquals(Outcome.Got(1), wait { Core.addArtist(lidarr, "ml", "Marrow Lake").done.await() })
+        assertEquals(Outcome.Got(1), wait { Core.addArtist(lidarr, place, "ml", "Marrow Lake").done.await() })
         assertEquals("""{"albumIds":[11],"monitored":true}""", monitored)
     }
 

@@ -1973,9 +1973,13 @@ afterwards. What a stop does to the operation behind it depends on which of thre
   longer works, and the person signed out. It has a minute for the whole call, and no
   more.
 
-Nothing survives the app being killed: a single asked for in the seconds before can leave
-"new releases" off for that artist, or the single marked and not looked for, until it is
-asked for again, as on Windows.
+**What the app being killed leaves is put back by the next run** (from the Windows app's
+0.40.11; before it nothing survived a kill, and a single asked for in the seconds before
+could leave "new releases" off for that artist for good). What the artist's setting is to
+go back to is written down **before anything on Lidarr is changed**, with the Lidarr it is
+for, and crossed off once the setting is back: see "The way back", under requests. A
+single marked and not looked for is not put right by that: it is asked for again, as on
+Windows.
 
 **Which operation a request belongs to.** `Lidarr` costs nothing to make, so each operation
 has its own, asked through a way out that carries the operation's number. `MusicBrainz` is
@@ -2234,6 +2238,40 @@ What is the phone's own:
   cuts the requests off and delivers nothing. **The three that change Lidarr are the
   exception once they have begun to** (see "Stopping"): asking for an album, adding an
   artist, taking an album off the list.
+- **The way back: nothing is sent to Lidarr that the way back was not written for.** To
+  ask for a single or an EP of an artist whose profile doesn't list them, the library
+  turns the artist's "new releases" off, has Lidarr read their releases in, and turns it
+  back on. What the setting is to go back to is written down first: the library's own
+  batch job (`nexus_core::bulk::Job`, which the Windows app uses for the same, and for
+  the batches of albums the phone doesn't ask for) is the `lidarr::WayBack` every request
+  and every "Add artist" is given, one to an account's place (`native/src/pages.rs`).
+  - **Where**: `asking.json` in the account's folder, as the library writes it and in the
+    Windows app's own format (`"restore":[[<Lidarr's number for the artist>,"all","<the
+    Lidarr's address>"]]`). The library hands it up to be written
+    (`CoreHttp.wayBack`, on the library's thread, never the main one) and
+    `KeptAsWritten` writes it whole, **synced, file and folder, before the call
+    returns**, and answers truthfully whether it is there. Told it is not, the library
+    changes nothing on Lidarr and the ask fails in its sentence.
+  - **One step at a time**: the job's turn is held by a request for its whole sequence,
+    and by "Add artist", and by each step of putting back; nothing on the main thread
+    takes it.
+  - **What a run that got no further left is put back by the next**
+    (`RequestsPages.putBack`): each time Lidarr is found to be there (as the app starts;
+    after the address, the key or the sign-in has changed), if anything is written down
+    **for the Lidarr that is set up now**, the job works through it by the library's own
+    rules: it waits until Lidarr has been done with the artist for ten seconds, looking
+    every five, sets the setting back and crosses the entry off. It runs on a thread of
+    its own, so it is in nobody's way however long Lidarr takes, and ends with the
+    account or when the connection changes; what it had not put back stays written.
+  - **An entry is for the Lidarr it was written for.** An artist's number on another
+    Lidarr is another artist: with the app pointed elsewhere the entry is left as it is,
+    nothing of it is sent anywhere, and it is acted on if the app is pointed back.
+  - **A record that can't be taken up** (the Windows app's rules for the same file):
+    there and unreadable, it is left and nothing is written in this run, so nothing that
+    would need a way back is changed; something the library can make nothing of is moved
+    aside under a name of its own, said on the Requests page
+    (`RequestsPages.wayBackTrouble`: the artist may have been left not taking new
+    releases, and the app no longer knows which), and written afresh.
 - **What Lidarr accepted is written down here whatever has happened meanwhile.** Each of
   those three is begun, and what follows its end (the note of what was asked, the artist
   no longer suggested, the note forgotten) is done on the app's own work: not the screen's,

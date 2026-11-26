@@ -21,4 +21,5 @@
     void keepGoing(long);
     void published(long, byte[]);
     void kept(long, byte[]);
+    boolean wayBack(long, byte[], boolean);
 }

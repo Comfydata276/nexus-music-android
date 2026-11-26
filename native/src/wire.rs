@@ -380,6 +380,24 @@ pub fn publish(operation: u64, found: &[u8]) {
     }
 }
 
+/// Hands the Kotlin side what a place has to write down of changes to Lidarr that must be
+/// put back (`CoreHttp.wayBack`): the library's batch, as the library writes it, or none
+/// (what is written there is removed). `surely`: it is on the disk before this returns.
+/// **Says whether it was written**, and says no if the call up couldn't be made or the
+/// Kotlin side threw: a way back that isn't known to be written is one that isn't there.
+/// Made on whichever thread the library is on, which is never the app's main one.
+pub fn way_back(place: u64, batch: Option<&[u8]>, surely: bool) -> bool {
+    let Some(door) = door() else { return false };
+    door.up(|env, wire| {
+        let bytes = match batch {
+            Some(batch) => JObject::from(env.byte_array_from_slice(batch)?),
+            None => JObject::null(),
+        };
+        env.call_method(wire, "wayBack", "(J[BZ)Z", &[JValue::Long(place as i64), JValue::Object(&bytes), JValue::Bool(surely as u8)])?.z()
+    })
+    .unwrap_or(false)
+}
+
 /// Hands the Kotlin side a sign-in's token to put away (or "" when it is dead): see
 /// `nexus_core::gate::Session::new`'s `keep`.
 pub fn keep(session: u64, token: &str) {

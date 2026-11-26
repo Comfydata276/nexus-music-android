@@ -87,6 +87,15 @@ object RequestsWords {
      *  has been moved aside under `name` ([Requests.keptAside]). */
     fun keptAside(name: String): String = "What this phone kept about requests was damaged, so requests have been started afresh. The damaged file has been kept as $name."
 
+    /** What the phone had written down of a change to Lidarr that had to be put back was
+     *  something the library could make nothing of, and has been moved aside under `name`
+     *  (`RequestsPages.wayBackTrouble`). */
+    fun wayBackLost(name: String): String =
+        "What this phone had written down to put back on Lidarr couldn't be read back. If an artist's “new releases” were turned off while their singles were read in, that hasn't been put back: look at that artist in Lidarr. The file has been kept as $name."
+
+    /** The same record is there and couldn't be read, or couldn't be moved aside. */
+    const val WAY_BACK_HELD = "What this phone had written down to put back on Lidarr couldn't be read. It has been left as it is, and nothing is saved over it; it is read again when the app next starts. Until then, nothing that would have to be put back on Lidarr is changed."
+
     /** The sign-in service gave a token and the phone could not put it away. */
     const val TOKEN_NOT_KEPT = "The sign-in went through, but this phone couldn't keep it. Try again."
 

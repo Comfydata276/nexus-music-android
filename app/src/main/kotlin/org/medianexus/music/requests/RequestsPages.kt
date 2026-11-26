@@ -144,6 +144,16 @@ class RequestsPages internal constructor(
 
     private val arrivalsFile = Kept(File(dir, "arrivals.json"), ListSerializer(Arrived.serializer()), emptyList(), note)
 
+    /**
+     * **What must be put back on Lidarr**, as the library writes it down (its batch job's
+     * own record, the same file as the Windows app's): an artist's "new releases" setting,
+     * turned off while their singles are read in, with the Lidarr it was turned off on. The
+     * library hands it over to be written before it changes the setting, and changes
+     * nothing if it is told it wasn't written; what a run that got no further left here is
+     * put back by the next ([putBack]).
+     */
+    private val askingFile = KeptAsWritten(File(dir, "asking.json"), note)
+
     private val askedNow = MutableStateFlow<List<Asked>>(emptyList())
 
     /** Moves when there may be news to say, and when the account goes. */
@@ -248,6 +258,23 @@ class RequestsPages internal constructor(
      */
     val askedUnreadable: StateFlow<Boolean> = askedTroubleNow.asStateFlow()
 
+    private val wayBackTroubleNow = MutableStateFlow("")
+
+    /**
+     * What the Requests page says, for this run of the app, when **what was written down
+     * of a change to Lidarr that had to be put back** (`asking.json`) **could not be taken
+     * up**; empty when there is nothing to say.
+     *
+     * - The library could make nothing of it, and it has been moved aside
+     *   ([RequestsWords.wayBackLost]): if a run of the app was stopped part-way through
+     *   asking for a single or an EP, that artist may have been left not taking new
+     *   releases, and the app no longer knows which.
+     * - It couldn't be read, or couldn't be moved aside ([RequestsWords.WAY_BACK_HELD]):
+     *   it is left as it is, nothing is written over it, and until the app is started
+     *   again nothing that would have to be put back on Lidarr is changed.
+     */
+    val wayBackTrouble: StateFlow<String> = wayBackTroubleNow.asStateFlow()
+
     /** Says whether the list can be read just now, and tells the page accordingly. */
     private fun askedHeld(held: Boolean) {
         askedUnreadableNow.value = held
@@ -272,7 +299,7 @@ class RequestsPages internal constructor(
      * the entry's title (see [cancel]). Under `synchronized(this)`.
      */
     private var shownUnder = 0L
-    private val shownPending = HashMap<Long, String>()
+    private val shownPending = HashMap<Long, org.medianexus.music.core.Pending>()
 
     /** Changes to Lidarr under way whose outcome is still to be written down: the place
      *  outlasts the account for as long as there are any (see [outlasting]). */
@@ -296,6 +323,14 @@ class RequestsPages internal constructor(
         }
         scope.launch(io) {
             requests.settings.collectLatest { settings -> Core.placeSingles(ready(), settings.singles) }
+        }
+        // What an earlier run left changed on Lidarr is put back: each time Lidarr is found
+        // to be there (as the app starts; after the address, the key or the sign-in has
+        // changed), for the Lidarr that is then set up and no other.
+        scope.launch(io) {
+            combine(requests.state, requests.settings) { state, settings -> (state is RequestsState.Connected && settings.on) to settings.address }
+                .distinctUntilChanged()
+                .collectLatest { (connected, _) -> if (connected) runCatching { putBack() } }
         }
         // (Switched on, or on again: what arrived meanwhile is looked for.)
         scope.launch(io) {
@@ -358,6 +393,7 @@ class RequestsPages internal constructor(
     /** **Cut off from the account's files**, at once (see `Requests.cutOff`): what this
      *  still has under way is finished against Lidarr and written nowhere. */
     fun cutOff() {
+        askingFile.cut = true
         askedFile.cut = true
         suggestionsFile.cut = true
         arrivalsFile.cut = true
@@ -381,7 +417,14 @@ class RequestsPages internal constructor(
                 if (gone) throw CancellationException("the account has gone")
                 place
             }?.let { return@withLock it }
-            val opened = Core.placeOpen()
+            // (The way back is written by this account's own file from the first moment:
+            // on the library's thread, before the call that asked returns.)
+            val opened = Core.placeOpen { batch, surely -> askingFile.write(batch, surely) }
+            askingFile.takeUp { written -> Core.placeWays(opened, written.decodeToString()) }
+            wayBackTroubleNow.value = when {
+                askingFile.held -> RequestsWords.WAY_BACK_HELD
+                else -> askingFile.asideAs?.let(RequestsWords::wayBackLost).orEmpty()
+            }
             val kept = askedFile.read()
             askedHeld(kept == null)
             if (kept != null) {
@@ -543,7 +586,7 @@ class RequestsPages internal constructor(
         var asked: LidarrAt? = null
         return page(shown = { waiting ->
             // (What can be taken off the list is what this very connection has just listed.)
-            val entries = waiting.pending.map { it.first.id to it.first.title }
+            val entries = waiting.pending.map { it.first.id to it.first }
             synchronized(this) {
                 if (asked?.connection == shownUnder) {
                     shownPending.clear()
@@ -641,7 +684,7 @@ class RequestsPages internal constructor(
         val (at, place, why) = connected()
         if (at == null) return@withContext Said(false, why)
         if (!still(connection, at)) return@withContext changed
-        val begun = Core.addArtist(at, id, name)
+        val begun = Core.addArtist(at, place, id, name)
         val through = outlasting(begun) { outcome ->
             when (outcome) {
                 is Outcome.Got -> {
@@ -673,16 +716,16 @@ class RequestsPages internal constructor(
         // `id` is Lidarr's own number, and means another album on another Lidarr: besides
         // coming from a row of this connection, it must be **the entry this very
         // connection's list has just shown** ([onTheirWay]): that number, for that album.
-        val listed = synchronized(this@RequestsPages) { shownUnder == at.connection && shownPending[id] == title }
-        if (!listed || !still(connection, at)) return@withContext changed
+        val entry = synchronized(this@RequestsPages) { shownPending[id].takeIf { shownUnder == at.connection && it?.title == title } }
+        if (entry == null || !still(connection, at)) return@withContext changed
         val begun = Core.cancelling(at, id)
         val through = outlasting(begun) { outcome ->
             when (outcome) {
                 is Outcome.Got -> {
                     val kept = turn.withLock {
-                        val forgotten = Core.askedForget(place, title)
+                        val forgotten = Core.askedForget(place, title, entry.artist)
                         // (Nothing to forget, nothing to write: that is kept as it stands.)
-                        if (forgotten.changed || askedUnreadableNow.value) keepAsked(place, forgotten.asked) { where -> Core.askedForget(where, title).asked } else true
+                        if (forgotten.changed || askedUnreadableNow.value) keepAsked(place, forgotten.asked) { where -> Core.askedForget(where, title, entry.artist).asked } else true
                     }
                     if (!kept) note("requests: an album was taken off Lidarr's list and that couldn't be kept on the phone, so its arrival may still be said")
                     // (Lidarr took it off either way. If the phone's note of it couldn't be
@@ -695,6 +738,34 @@ class RequestsPages internal constructor(
             }
         }
         awaiting(through, begun)
+    }
+
+    // ---- the way back ------------------------------------------------------------------------------
+
+    /**
+     * **Puts back what an earlier run of the app left changed on Lidarr**: an artist's "new
+     * releases" setting, turned off for a single or an EP that the run never got to the end
+     * of (the app was stopped; Lidarr went away). Only what was written down **for the
+     * Lidarr that is set up now**: an artist's number on another Lidarr is another artist,
+     * and what is written for another is left as it is, to be acted on if the app is
+     * pointed back at it.
+     *
+     * The rules are the library's (it waits until Lidarr has finished with the artist,
+     * looking every few seconds, then sets the setting and crosses the entry off, one
+     * artist at a time with whatever else is changing artists). It has a thread of its own
+     * and is in nobody's way; it ends with the account, or when the connection changes,
+     * and what it had not put back is still written down.
+     */
+    private suspend fun putBack() {
+        val place = ready()
+        val at = requests.lidarr() ?: return
+        if (!Core.waysLeft(at, place)) return
+        note("requests: an earlier run left a setting changed on Lidarr; putting it back")
+        when (val done = Core.putBack(at, place)) {
+            is Outcome.Got -> note(if (done.value) "requests: what an earlier run left changed on Lidarr has been put back" else "requests: not everything an earlier run left changed on Lidarr could be put back yet; it is still written down")
+            is Outcome.Failed -> note("requests: what an earlier run left changed on Lidarr couldn't be put back (${done.why}); it is still written down")
+            Outcome.Stopped -> Unit
+        }
     }
 
     // ---- arrivals ----------------------------------------------------------------------------------

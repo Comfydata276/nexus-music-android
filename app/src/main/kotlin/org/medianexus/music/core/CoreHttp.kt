@@ -595,6 +595,36 @@ internal object CoreHttp {
         keepers.remove(session)
     }
 
+    // ---- the way back from a change to Lidarr ---------------------------------------------------
+
+    private val desks = ConcurrentHashMap<Long, (ByteArray?, Boolean) -> Boolean>()
+
+    /**
+     * Says who writes down, for the place the library knows by this number, **what must be
+     * put back on Lidarr** (the library's own record of it, as bytes; none: remove what is
+     * written), and says whether it was written. `surely`: on the disk before it answers.
+     * Called on the library's thread, never the main one.
+     */
+    fun wayBackKeptBy(place: Long, keep: (batch: ByteArray?, surely: Boolean) -> Boolean) {
+        desks[place] = keep
+    }
+
+    fun wayBackForgotten(place: Long) {
+        desks.remove(place)
+    }
+
+    /** A thread of its own for each thing run on it, as [apart]. */
+    private val backing = Executor { work -> Thread(work, "requests-put-back").apply { isDaemon = true }.start() }
+
+    /**
+     * Putting back what an earlier run left changed on Lidarr. The library looks at Lidarr
+     * every few seconds until it has finished with the artist, which can take minutes: so
+     * it has **a thread of its own**, and is never in the way of what the person asks for.
+     * Cancelling the caller stops it at once, the wait and the request in flight: what it
+     * had not put back is still written down, for the next time.
+     */
+    suspend fun <T> puttingBack(act: (operation: Long) -> T): T = run(begin(changing = false, callMillis = changeMillis), backing, act)
+
     // ---- what the library calls ----------------------------------------------------------------
     //
     // (Each by its name, from `native/src/wire.rs`: they are kept under these names in a
@@ -829,6 +859,15 @@ internal object CoreHttp {
             doings[operation]?.keepGoing()
         } catch (_: Exception) {
         }
+    }
+
+    /** The library has something to write down before it changes Lidarr, or to cross off
+     *  after (see [wayBackKeptBy]). False if nobody keeps it for that place, or it couldn't
+     *  be written: then, to the library, it is not written, and Lidarr is not changed. */
+    fun wayBack(place: Long, batch: ByteArray?, surely: Boolean): Boolean = try {
+        desks[place]?.invoke(batch, surely) ?: false
+    } catch (_: Exception) {
+        false
     }
 
     /** A sign-in's token has changed: handed to whoever puts it away. */

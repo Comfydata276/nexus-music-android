@@ -8,7 +8,10 @@
 //!
 //! Nothing here opens a connection, keeps a file, starts a thread or reads a clock: the
 //! core does none of those, and neither does this layer. What the core wants of the network
-//! (requests: `requests.rs`) it asks the app to fetch, through `wire.rs`.
+//! (requests: `requests.rs`) it asks the app to fetch, through `wire.rs`; what it must have
+//! written down before it changes Lidarr (the way back: `pages.rs`) it hands the app to
+//! write, the same way. (One clock is read: the time the library's batch job notes an album
+//! at, which the phone gives it no albums to ask about.)
 //!
 //! **What going wrong looks like.** An argument that isn't what the function takes, and a
 //! panic anywhere below, both reach Kotlin as one exception (`CoreException`). An argument

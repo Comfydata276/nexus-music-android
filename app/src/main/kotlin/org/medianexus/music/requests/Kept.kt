@@ -88,6 +88,77 @@ internal class Kept<T>(private val file: File, private val shape: KSerializer<T>
 }
 
 /**
+ * A file of an account's requests **that the library writes and reads itself**, as bytes
+ * (`asking.json`: what must be put back on Lidarr), kept by the rules [Kept] keeps the
+ * others by, which are the Windows app's for the same file:
+ *
+ * - nothing there, or an empty file (removed): nothing kept;
+ * - there and can't be read: left exactly as it is, and **nothing is written in this run**;
+ * - reads and the library can make nothing of it: moved aside under a name of its own
+ *   ([setAside]), [asideAs] says so, and only then may it be written afresh; if it can't
+ *   be moved it is left, and nothing is written in this run.
+ *
+ * [write] says truthfully whether what it was given is in place (and, asked to be sure,
+ * on the disk): the library changes nothing on Lidarr on the strength of a "no".
+ */
+internal class KeptAsWritten(private val file: File, private val note: (String) -> Unit = {}) {
+    /** Nothing is written in this run: what is there couldn't be read, or couldn't be
+     *  moved aside. */
+    @Volatile var held = false
+        private set
+
+    /** The name what was there was moved aside under, if the library could make nothing
+     *  of it; null if that never happened in this run. */
+    @Volatile var asideAs: String? = null
+        private set
+
+    /** As [Kept.cut]. */
+    @Volatile var cut = false
+
+    /** Hands what is written there to `load`, which says whether it could make sense of
+     *  it, and does with the file what the rules above say. Once, as the account starts. */
+    @Synchronized
+    fun takeUp(load: (ByteArray) -> Boolean) {
+        val written = try {
+            java.nio.file.Files.readAllBytes(file.toPath())
+        } catch (_: java.nio.file.NoSuchFileException) {
+            return
+        } catch (_: IOException) {
+            held = true
+            note("requests: ${file.name} is on the phone and couldn't be read, so it is left exactly as it is, and nothing is written over it")
+            return
+        }
+        if (written.all { it.toInt().toChar().isWhitespace() }) {
+            if (!file.delete()) held = true
+            return
+        }
+        if (load(written)) return
+        val aside = setAside(file)
+        if (aside == null) {
+            held = true
+            note("requests: ${file.name} is not what the library writes and couldn't be moved aside, so it is left exactly as it is")
+        } else {
+            asideAs = aside.name
+            note("requests: ${file.name} was not what the library writes; it has been kept as ${aside.name}")
+        }
+    }
+
+    /** Puts `bytes` in its place (`surely`: and on the disk, before this returns), or with
+     *  none removes what is there. False if it isn't done, or may not be. */
+    @Synchronized
+    fun write(bytes: ByteArray?, surely: Boolean): Boolean {
+        if (held || cut) return false
+        return try {
+            if (bytes == null) java.nio.file.Files.deleteIfExists(file.toPath()) else writeAtomically(file, bytes, durable = surely)
+            true
+        } catch (_: IOException) {
+            note("requests: ${file.name} couldn't be written")
+            false
+        }
+    }
+}
+
+/**
  * Moves a file the app can make nothing of aside, beside where it was, under a name of its
  * own: `asked.json` to `asked.damaged-20261126-101500.json`, with `-2` and so on after the
  * time if that name is taken. **Never over another file.** Says where it went; null if it
