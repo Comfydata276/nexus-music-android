@@ -180,6 +180,7 @@ fun Shell(graph: Graph) {
                             else -> 64.dp + Theme.dimens.miniPlayer + 8.dp
                         },
                     ),
+                account = account,
             )
         }
         if (ui.queueOpen) QueueSheet(onClose = { ui.queueOpen = false })

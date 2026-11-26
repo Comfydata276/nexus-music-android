@@ -2512,10 +2512,14 @@ How it is built (M1b):
   song's radio, as Windows does (M3b).
 - **Toasts** are Windows': a pill in the text colour at the foot, three seconds, for things
   done ("Added to queue") and things that happened out of sight ("That didn't save. …" for
-  a like the server refused). They come one after another, oldest first, each for its time
-  (eight seconds with a button); a newer one never cuts the showing one short (`NoteLine`,
-  M7b: an arrival's note was replaced a second after it came). The same sentence is never
-  waiting twice, and with more than three waiting the oldest with nothing to do on them go.
+  a like the server refused). They come one after another, oldest first; a newer one never
+  cuts the showing one short (`NoteLine`, M7b: an arrival's note was replaced a second after
+  it came). The same words twice: without a button, one is enough; with a button, the newer
+  takes the older's place, showing or waiting, since the older's button is the stale one (two
+  playlist moves offer the second's Undo, which is the one that works). At most four wait:
+  past that the oldest with no button goes, then the oldest of any kind; the one showing is
+  never cut short by it. Three seconds; with a button eight, or five while others wait. At
+  sign-out or another account the line is emptied, the note showing too.
 - **Notifications** are asked for once, at the first download (by the shell, `Ui.askToDownload`,
   which is still there when the answer comes: a song's menu has closed by then), for the downloads' progress
   notification (Android 13 and later). The player's never needed it: Android exempts

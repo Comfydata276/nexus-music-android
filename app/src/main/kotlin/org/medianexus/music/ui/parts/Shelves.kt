@@ -150,13 +150,16 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
  * The toast: a few words at the foot of the screen for three seconds, as the Windows app's
  * (a pill in the text colour with the words in the background's). Notes come one after
  * another, each for its time, oldest first ([NoteLine]): a newer one waits for the one
- * showing. Screen readers read it out.
+ * showing. `account` is whoever is signed in: when it changes, the line is emptied. Screen
+ * readers read it out.
  */
 @Composable
-fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier) {
+fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier, account: Any? = null) {
     var toast by remember { mutableStateOf(org.medianexus.music.Toasts.Toast("")) }
     var shown by remember { mutableStateOf(false) }
     val line = remember { NoteLine() }
+    // Sign-out, or another account: nothing said under the last one is shown under this one.
+    LaunchedEffect(account) { line.clear() }
     LaunchedEffect(toasts) { toasts.collect { line.add(it) } }
     LaunchedEffect(line) {
         line.run({ note, up ->
