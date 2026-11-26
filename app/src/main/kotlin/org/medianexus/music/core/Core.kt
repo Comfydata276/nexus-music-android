@@ -382,15 +382,15 @@ object Core {
     }
 
     @Serializable
-    private class GateFindIn(val operation: Long, val address: String)
+    private class GateFindIn(val operation: Long, val address: String, val home: String?)
 
     /**
      * `gate::find`: what answers at Lidarr's address. Null if it is Lidarr itself; otherwise
      * the sign-in in front of it.
      */
-    suspend fun gateFind(address: String): Outcome<SignInDoor?> = orBusy { CoreHttp.looking { operation ->
+    suspend fun gateFind(address: String, home: String? = null): Outcome<SignInDoor?> = orBusy { CoreHttp.looking { operation ->
         wired
-        val out = acrossPrivately(GateFindIn(operation, address), GateFindIn.serializer(), Out.serializer(SignInDoor.serializer().nullable), ::gateFind)
+        val out = acrossPrivately(GateFindIn(operation, address, home), GateFindIn.serializer(), Out.serializer(SignInDoor.serializer().nullable), ::gateFind)
         when (out.kind) {
             "got" -> Outcome.Got(out.value)
             "failed" -> Outcome.Failed(out.why)
@@ -438,7 +438,7 @@ object Core {
     fun namesSomeone(address: String): Boolean = CoreHttp.namesSomeone(lidarrTidy(address))
 
     @Serializable
-    private class GateFinishIn(val operation: Long, val door: SignInDoor, val code: String, val back: String, val secret: String, val bound: String?)
+    private class GateFinishIn(val operation: Long, val door: SignInDoor, val code: String, val back: String, val secret: String, val bound: String?, val home: String?)
 
     /**
      * `gate::finish`: collects the token once the browser has come back with `code`.
@@ -447,12 +447,12 @@ object Core {
      * changes, and each of its requests has a few seconds and no more
      * ([CoreHttp.finishing]): the browser is waiting for its page.
      */
-    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String): Outcome<SignedIn> = orBusy { CoreHttp.finishing { operation ->
-        over(GateFinishIn(operation, door, code, back, secret, servicePlace(door.service)), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
+    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String, home: String? = null): Outcome<SignedIn> = orBusy { CoreHttp.finishing { operation ->
+        over(GateFinishIn(operation, door, code, back, secret, servicePlace(door.service), home), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
     } }
 
     @Serializable
-    private class GateOpenIn(val door: SignInDoor, val token: String, val bound: String?)
+    private class GateOpenIn(val door: SignInDoor, val token: String, val bound: String?, val home: String?)
 
     /**
      * `gate::Session::new`: a sign-in that's been done, kept open in the library under the
@@ -462,9 +462,9 @@ object Core {
      * token was given for (kept with it): the token, and the passes it buys, are sent to
      * the service there and nowhere else.
      */
-    suspend fun gateOpen(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), keep: (String) -> Unit): Long = CoreHttp.aside {
+    suspend fun gateOpen(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), home: String? = null, keep: (String) -> Unit): Long = CoreHttp.aside {
         wired
-        acrossPrivately(GateOpenIn(door, token, bound), GateOpenIn.serializer(), Long.serializer(), ::gateOpen).also { CoreHttp.keeping(it, keep) }
+        acrossPrivately(GateOpenIn(door, token, bound, home), GateOpenIn.serializer(), Long.serializer(), ::gateOpen).also { CoreHttp.keeping(it, keep) }
     }
 
     /** `gate::Session::close`: ends the sign-in here and hands back its token, for handing
@@ -476,15 +476,15 @@ object Core {
     }
 
     @Serializable
-    private class GateGiveUpIn(val operation: Long, val service: String, val token: String, val bound: String?)
+    private class GateGiveUpIn(val operation: Long, val service: String, val token: String, val bound: String?, val home: String?)
 
     /** `gate::give_up_token`: tells the service a token is no longer wanted. Best effort.
      *  `bound` is the place the token was given for: it is handed back there or not at all. */
-    suspend fun gateGiveUp(door: SignInDoor, token: String, bound: String? = servicePlace(door.service)) {
+    suspend fun gateGiveUp(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), home: String? = null) {
         try {
             CoreHttp.changing { operation ->
                 wired
-                acrossPrivately(GateGiveUpIn(operation, door.service, token, bound), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
+                acrossPrivately(GateGiveUpIn(operation, door.service, token, bound, home), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
             }
         } catch (_: CoreHttp.Busy) {
             // (Best effort, as it always was: the token is forgotten here all the same.)
@@ -817,6 +817,10 @@ object Core {
         val keepGoing: String? = null,
         /** Asked through a way out bound to this place, as one that carries a secret is. */
         val bound: String? = null,
+        /** For an account whose music server is here; and as the way to Lidarr's own API at
+         *  an address the person typed. */
+        val home: String? = null,
+        val typed: Boolean = false,
     )
 
     @Serializable
@@ -826,11 +830,11 @@ object Core {
     private class ProbeIn(
         val operation: Long, val line: String, val nobodys: Boolean, val method: String, val url: String,
         val headers: List<List<String>>, val body: String?, val patience: Long?, val pause: Long?, val then: String,
-        val sleep: Long?, @kotlinx.serialization.SerialName("keep_going") val keepGoing: String?, val bound: String?,
+        val sleep: Long?, @kotlinx.serialization.SerialName("keep_going") val keepGoing: String?, val bound: String?, val home: String?, val typed: Boolean,
     )
 
     private fun probing(probe: Probe) = { operation: Long ->
-        val given = ProbeIn(operation, probe.line, probe.nobodys, probe.method, probe.url, probe.headers, probe.body, probe.patience, probe.pause, probe.then, probe.sleep, probe.keepGoing, probe.bound)
+        val given = ProbeIn(operation, probe.line, probe.nobodys, probe.method, probe.url, probe.headers, probe.body, probe.patience, probe.pause, probe.then, probe.sleep, probe.keepGoing, probe.bound, probe.home, probe.typed)
         over(given, ProbeIn.serializer(), Probed.serializer(), ::wireProbe)
     }
 

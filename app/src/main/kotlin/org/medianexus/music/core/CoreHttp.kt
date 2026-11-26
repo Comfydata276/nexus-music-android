@@ -141,17 +141,6 @@ internal object CoreHttp {
      */
     @Volatile var unsent: () -> String? = { null }
 
-    /**
-     * **The music server's own place** (its scheme, host and port, as [originOf] has them),
-     * or null while nobody is signed in. This client sends nothing there, by a redirect or
-     * otherwise: the music server has a client of its own, with its sign-in, and nothing
-     * that answers at Lidarr's address or a public service's may point this one at it. The
-     * one exception is the person's own doing: a Lidarr whose address they typed is on that
-     * very host and port (behind one proxy, by different paths), whose requests are bound
-     * to it. Set by whoever owns the signed-in account.
-     */
-    @Volatile var musicServer: () -> String? = { null }
-
     /** For the tests, which stand in for MusicBrainz and ListenBrainz on this machine:
      *  whether those two may be reached only at public addresses. Nothing in the app
      *  changes it. */
@@ -212,6 +201,18 @@ internal object CoreHttp {
 
     /** Whether an address has a name or a password written into it (`http://me:secret@host`). */
     fun namesSomeone(address: String): Boolean = address.trim().toHttpUrlOrNull()?.let { it.username.isNotEmpty() || it.password.isNotEmpty() } ?: false
+
+    /**
+     * Whether the browser may be opened at `link`, the page of a sign-in service whose
+     * place is `service`, for an account whose music server is at `home`: **judged as any
+     * request to the sign-in service is**. It is at that service's own place as this
+     * client reads the address; it has no name or password written into it; and it is not
+     * the music server's.
+     */
+    fun mayOpen(link: String, service: String?, home: String?): Boolean {
+        val place = originOf(link) ?: return false
+        return service != null && place == service && place != home && !namesSomeone(link)
+    }
 
     /** Whether a request carries something secret: a key or a pass in its headers, or a body
      *  at all (the sign-in's code, its check and its token travel as bodies). */
@@ -278,7 +279,7 @@ internal object CoreHttp {
         val to = response.header("Location")?.let(from::resolve) ?: return null
         if (!from.isHttps || !to.isHttps) return null
         if (publicOnly && isInside(to.host)) return null
-        if (origin(to) == musicServer()) return null
+        if (asked.home != null && origin(to) == asked.home) return null
         return to
     }
 
@@ -588,6 +589,21 @@ internal object CoreHttp {
         /** Where alone this request may carry a secret to (`wire::Host::bound`): the place
          *  the secret was given for. Null for a way out that carries none. */
         val bound: String? = null,
+        /**
+         * **The music server's own place, for the account this request is made for** (its
+         * scheme, host and port, as [originOf] has them). Nothing of requests is sent
+         * there, by a redirect or otherwise: the music server has a client of its own, with
+         * its sign-in, and nothing that answers at Lidarr's address, at a sign-in service's
+         * or at a public service's may point this one at it. It comes with the request,
+         * from whatever began the operation, and not from anything the app holds as a
+         * whole: work that was begun outlives the account it was begun for.
+         */
+        val home: String? = null,
+        /** This is a request to **Lidarr's own API at the address the person typed**
+         *  (`wire::Host::typed`): the one thing that may go to [home], if that is where they
+         *  said Lidarr is (one proxy, two paths). Not the sign-in's traffic, whatever
+         *  service was found, and not a look at where a redirect points. */
+        val typed: Boolean = false,
     )
 
     @Serializable
@@ -635,10 +651,9 @@ internal object CoreHttp {
         // A secret goes to the place it was given for and nowhere else, whatever address the
         // library was handed or made of it.
         if (asked.bound != null && carriesSecret(asked) && origin(url) != asked.bound) return failed(ELSEWHERE)
-        // Nothing goes to the music server from here, unless that is where the person
-        // said Lidarr is.
-        val home = musicServer()
-        if (home != null && origin(url) == home && asked.bound != home) return failed(HOME)
+        // Nothing goes to the music server from here, but Lidarr's own API if that is where
+        // the person said Lidarr is.
+        if (asked.home != null && origin(url) == asked.home && !(asked.typed && asked.bound == asked.home)) return failed(HOME)
         if (asked.line != "lidarr" && publicOnly && isInside(url.host)) return failed(INSIDE)
         val body = asked.body.orEmpty().encodeToByteArray()
         val request = Request.Builder().url(url).apply {

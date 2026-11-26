@@ -1879,11 +1879,23 @@ refused when it is looked up, and an address written as numbers before that.
 
 **Nothing of requests is ever sent to the music server's own address** (its scheme, host
 and port), by a redirect or otherwise: not the look the library takes at where a redirect
-from Lidarr's address points, not a sign-in service that claims to live there. The one
-exception is the person's own doing: a Lidarr whose address they typed is on that very
-host and port (one proxy, two paths), and the requests that are bound to it go there. The
-rule is about where an answer may lead the app, not about what the person typed: what they
-typed is where their key goes. MusicBrainz asks every application
+from Lidarr's address points, and not the traffic of a sign-in service that turns out to
+live there (such a service is not kept or signed in to, and no browser is sent to it). The
+one exception is the person's own doing: **requests to Lidarr's own API at the address
+they typed**, if that address is on that very host and port (one proxy, two paths), and
+nothing else. The rule is about where an answer may lead the app, not about what the
+person typed: what they typed is where their key goes.
+
+**The places a request is judged by are its own.** The music server's place, the place
+its secret is bound to and whether it is Lidarr's API at the typed address all travel with
+the request, from whatever began the operation (`wire::Host::at_home`, `bound`, `typed`;
+the three fields of the same names that go up with every request). Nothing is read from
+what the app as a whole holds at the moment a request is made: work that was begun
+outlives the account it was begun for, and another account may be signed in by then.
+
+**Where the browser is sent is judged as a request to the sign-in service is**
+(`CoreHttp.mayOpen`): the page's address is at that service's own place as the client
+reads it, has no name or password in it, and is not the music server's. MusicBrainz asks every application
 to name itself and give a way to reach its author; neither app gives the second, and if
 that is added it should be added to both at once.
 

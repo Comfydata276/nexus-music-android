@@ -171,10 +171,13 @@ struct Asking {
 
 impl Asking {
     fn of(connection: &Connection, operation: u64) -> Result<Asking, String> {
-        let listenbrainz = || ListenBrainz::new(Host::new(Whose::Operation(operation), Line::ListenBrainz));
+        // (The public services too are asked as this account's doing: nothing they answer
+        // can send a request on to its music server.)
+        let home = connection.home.as_deref();
+        let listenbrainz = || ListenBrainz::new(Host::new(Whose::Operation(operation), Line::ListenBrainz).at_home(home));
         Ok(Asking {
             lidarr: connection.lidarr(operation)?,
-            musicbrainz: musicbrainz().over(Host::new(Whose::Operation(operation), Line::MusicBrainz), listenbrainz()),
+            musicbrainz: musicbrainz().over(Host::new(Whose::Operation(operation), Line::MusicBrainz).at_home(home), listenbrainz()),
             listenbrainz: listenbrainz(),
         })
     }

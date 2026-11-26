@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import org.medianexus.music.core.Core
+import org.medianexus.music.core.CoreHttp
 import org.medianexus.music.core.LidarrAt
 import org.medianexus.music.core.Outcome
 import org.medianexus.music.core.SignInDoor
@@ -143,6 +144,11 @@ class Requests internal constructor(
     private val secondChanceMillis: Long = 60_000,
 ) {
     private val kept = Kept(File(account.dirs.data, "requests.json"), RequestsSettings.serializer(), RequestsSettings(), note)
+
+    /** The place of this account's music server: nothing of requests is sent there (see
+     *  `CoreHttp.Asked.home`). It goes with everything begun here, for as long as that
+     *  runs, whoever is signed in by then. */
+    private val home: String? = CoreHttp.originOf(account.server)
     private val settingsNow = MutableStateFlow(RequestsSettings())
     private val stateNow = MutableStateFlow<RequestsState>(RequestsState.Off)
 
@@ -290,7 +296,7 @@ class Requests internal constructor(
         val place = placeOf(settings) ?: return null
         val key = keyFor(place) ?: return null
         val session = sessionFor(settings)
-        return LidarrAt(settings.address, key, session, place, connection)
+        return LidarrAt(settings.address, key, session, place, connection, home)
     }
 
     /** The sign-in in front of Lidarr, opened from what is kept if it isn't open yet. */
@@ -307,7 +313,7 @@ class Requests internal constructor(
         if (door == null) return null
         val token = tokenFor(door) ?: return null
         val number = synchronized(owner) { (++numbers).also { live = it } }
-        val session = Core.gateOpen(door, token.secret, bound = token.origin) { fresh -> tokenChanged(number, token.origin, fresh) }
+        val session = Core.gateOpen(door, token.secret, bound = token.origin, home = home) { fresh -> tokenChanged(number, token.origin, fresh) }
         open = Open(door, session, token.origin, number)
         return session
     }
@@ -473,7 +479,8 @@ class Requests internal constructor(
             val answered = (checked as? Outcome.Got)?.value?.door
             // (A sign-in service whose address the client can make nothing of, or with a
             // name and password written into it, is not one to keep or to sign in to.)
-            val unusable = answered != null && (Core.servicePlace(answered.service) == null || Core.namesSomeone(answered.service))
+            // Nor is one that turns out to be at the music server's own address.
+            val unusable = answered != null && (Core.servicePlace(answered.service).let { it == null || it == home } || Core.namesSomeone(answered.service))
             val found = answered?.takeIf { !unusable }
             if (found != null && found != settingsNow.value.door) {
                 // A sign-in nobody here has signed in to: whatever was kept for another goes.
@@ -531,6 +538,12 @@ class Requests internal constructor(
                 return@withContext null
             }
             val link = Core.gateLink(found, door.back, state, secret)
+            // The browser is sent where the sign-in's own requests may go, and nowhere else.
+            if (!CoreHttp.mayOpen(link, Core.servicePlace(found.service), home)) {
+                door.close()
+                stateNow.value = RequestsState.Unreachable(RequestsWords.SERVICE_UNUSABLE)
+                return@withContext null
+            }
             val mine = Attempt(door, host)
             attempt = mine
             write(settings.copy(signingIn = true))
@@ -556,7 +569,7 @@ class Requests internal constructor(
             // Collecting the token is not to be cut off part-way, whatever becomes of the
             // account meanwhile: a token collected for nobody is handed straight back. (It
             // is not left to take for ever either: see `Core.gateFinish`.)
-            var done = if (code != null) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret) } else null
+            var done = if (code != null) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) } else null
             if (code != null && done is Outcome.Failed && mine.fronts.value == fronted && secondChanceMillis > 0) {
                 // It failed, and the app's screen has not come to the front since the
                 // browser came back: Android would not let it come forward by itself, so
@@ -565,7 +578,7 @@ class Requests internal constructor(
                 // service never saw has not been used.)
                 val back = withTimeoutOrNull(secondChanceMillis) { mine.fronts.first { it > fronted } }
                 if (back != null && turn.withLock { attempt === mine }) {
-                    done = withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret) }
+                    done = withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) }
                 }
             }
             val token = (done as? Outcome.Got)?.value
@@ -586,7 +599,7 @@ class Requests internal constructor(
                         if (!kept) note("requests: the sign-in's token couldn't be kept on the phone, so the sign-in lasts only until the app is closed")
                         write(settings.copy(signedIn = shown(token.name), signingIn = false))
                         open?.let { old -> afterwards { Core.gateClose(old.session) } }
-                        open = Open(found, Core.gateOpen(found, token.token, bound = place) { fresh -> tokenChanged(number, place, fresh) }, place, number)
+                        open = Open(found, Core.gateOpen(found, token.token, bound = place, home = home) { fresh -> tokenChanged(number, place, fresh) }, place, number)
                         moved()
                         2
                     } else {
@@ -609,7 +622,7 @@ class Requests internal constructor(
             code?.say(signedIn = ended == 2)
             mine.door.close()
             if (ended == 0) {
-                if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service)) }
+                if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home) }
                 return
             }
             if (ended == 2) check()
@@ -678,7 +691,7 @@ class Requests internal constructor(
             // Closing waits out a renewal that is under way, so the token handed back is
             // the one that is good now.
             val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile?.secret
-            if (token != null) Core.gateGiveUp(door, token, place)
+            if (token != null) Core.gateGiveUp(door, token, place, home)
             // Tidied away only if what is kept is still the very token that was handed
             // back (its first deletion failed, say). Anything else there by now is a later
             // sign-in's, and is not this one's to take.

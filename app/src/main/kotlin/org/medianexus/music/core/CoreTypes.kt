@@ -257,6 +257,10 @@ class LidarrAt(
      *  connection has been offered **by this number**, on the Rust side, so that an
      *  operation's Lidarr and its offers are always one connection's. */
     val connection: Long = 0,
+    /** The place of the music server of the account this is for ([CoreHttp.originOf] of its
+     *  address): nothing of requests is sent there, but Lidarr's own API if this very
+     *  address is on it. Null where there is none to speak of (a test). */
+    val home: String? = null,
 ) {
     override fun toString(): String = "LidarrAt"
 }

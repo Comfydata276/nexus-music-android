@@ -51,7 +51,6 @@ class CoreHttpTest {
     @After
     fun tidy() {
         CoreHttp.publicOnly = true
-        CoreHttp.musicServer = { null }
         closing.forEach { it.close() }
         CoreHttp.unsent = { null }
         CoreHttp.dress = {}
@@ -388,10 +387,9 @@ class CoreHttpTest {
         val server = standIn { asked, reply -> if ("/start" in asked.target) reply.send(status, "", "Location" to location) else reply.json("""{"reached":true}""") }
         everythingGoesTo(server)
         CoreHttp.publicOnly = true
-        CoreHttp.musicServer = { "https://music.example:443" }
         fun asked(line: String = "musicbrainz", method: String = "GET", from: String = "https://musicbrainz.example/start"): Core.Probed {
             val before = server.asked.size
-            val answer = probe(Core.Probe(line = line, method = method, url = from, body = if (method == "GET") null else "ids=1")).got()
+            val answer = probe(Core.Probe(line = line, method = method, url = from, body = if (method == "GET") null else "ids=1", home = "https://music.example:443")).got()
             assertEquals("$method $from sent on to $location: ${server.asked.drop(before).map { it.header("X-Was") }}", 1, server.asked.size - before)
             return answer
         }
@@ -429,6 +427,36 @@ class CoreHttpTest {
     }
 
     @Test
+    fun `a sign-in service that turns out to be the music server is sent nothing, though the place is the one its traffic is bound to`() {
+        // (What answered at Lidarr's address pointed at a "sign-in service" that is the
+        // music server itself. The sign-in's own requests are bound to that place: that
+        // is no leave to send them there. Only Lidarr's API at an address the person typed
+        // may be on the music server's host and port.)
+        val music = standIn { _, reply -> reply.json("""{"access_token":"a","refresh_token":"r"}""") }
+        val place = Core.lidarrPlace(music.address)!!
+        val home = Outcome.Failed("It was for the music server's own address, which requests are never sent to.")
+        assertEquals(home, probe(Core.Probe(method = "POST", url = "${music.address}/application/o/token/", body = "grant_type=authorization_code&code=c", bound = place, home = place), changing = true))
+        assertEquals(home, probe(Core.Probe(url = "${music.address}/application/o/userinfo/", headers = listOf(listOf("Authorization", "Bearer a")), bound = place, home = place)))
+        assertTrue(music.asked.isEmpty())
+        // Through the library's own sign-in: the trade of a code, the handing back of a token.
+        val door = SignInDoor(music.address, "lidarr-proxy")
+        val traded = runBlocking { Core.gateFinish(door, "the-code", "http://127.0.0.1:41234/callback", "the-secret", home = place) }
+        assertTrue("$traded", traded is Outcome.Failed)
+        runBlocking { Core.gateGiveUp(door, "a-token", home = place) }
+        assertTrue(music.asked.isEmpty())
+        // The place is judged for the account the request is made for, and comes with it:
+        // for an account whose music server is somewhere else, this address is just an
+        // address, whatever account the app has signed in by now.
+        assertEquals(200, probe(Core.Probe(method = "POST", url = "${music.address}/application/o/token/", body = "x", bound = place, home = "https://elsewhere.example:443"), changing = true).got().status)
+        assertEquals(1, music.asked.size)
+        // And where a browser may be sent is judged the same way.
+        assertFalse(CoreHttp.mayOpen("${music.address}/application/o/authorize/?x=1", place, place))
+        assertTrue(CoreHttp.mayOpen("${music.address}/application/o/authorize/?x=1", place, "https://elsewhere.example:443"))
+        assertFalse(CoreHttp.mayOpen("http://other.example/application/o/authorize/", place, null))
+        assertFalse(CoreHttp.mayOpen(music.address.replace("http://", "http://me:secret@") + "/application/o/authorize/", place, null))
+    }
+
+    @Test
     fun `the public services are reached only at public addresses, and nothing of requests is ever sent to the music server`() {
         val music = standIn { _, reply -> reply.json("{}") }
         val place = Core.lidarrPlace(music.address)!!
@@ -443,17 +471,19 @@ class CoreHttpTest {
 
         // The music server: whatever answers at Lidarr's address points there, and the look
         // the library takes at where a redirect points is not sent.
-        CoreHttp.musicServer = { place }
         val home = "It was for the music server's own address, which requests are never sent to."
         val lidarr = standIn { _, reply -> reply.send(302, "", "Location" to "${music.address}/rest/ping?u=someone") }
-        assertEquals(Outcome.Failed(home), probe(Core.Probe(url = "${music.address}/rest/ping")))
-        assertEquals(Outcome.Failed(home), probe(Core.Probe(line = "musicbrainz", url = "${music.address}/ws/2/release")))
-        val found = runBlocking { Core.gateFind(lidarr.address) }
+        assertEquals(Outcome.Failed(home), probe(Core.Probe(url = "${music.address}/rest/ping", home = place)))
+        assertEquals(Outcome.Failed(home), probe(Core.Probe(line = "musicbrainz", url = "${music.address}/ws/2/release", home = place)))
+        val found = runBlocking { Core.gateFind(lidarr.address, home = place) }
         assertTrue("$found", found is Outcome.Failed)
+        // (So is the look taken when Lidarr itself is asked and answers with a sign-in.)
+        val checked = runBlocking { Core.lidarrCheck(LidarrAt(lidarr.address, "the-key", home = place)) }
+        assertTrue("$checked", (checked as Outcome.Got).value.doorWhy != null)
         assertTrue(music.asked.isEmpty())
         // The one exception is the person's own doing: Lidarr's address, as they typed it,
         // is on the music server's host and port (one proxy, two paths).
-        val typedThere = runBlocking { Core.lidarrVersion(LidarrAt("${music.address}/lidarr", "the-key")) }
+        val typedThere = runBlocking { Core.lidarrVersion(LidarrAt("${music.address}/lidarr", "the-key", home = place)) }
         assertEquals(1, music.asked.size)
         assertEquals("GET /lidarr/api/v1/system/status", music.asked.single().line)
         assertTrue("$typedThere", typedThere is Outcome.Failed)

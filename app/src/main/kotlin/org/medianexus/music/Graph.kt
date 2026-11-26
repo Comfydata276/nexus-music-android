@@ -205,10 +205,6 @@ class Graph(
                     // the services beside it either, and each call says so in the
                     // library's sentence ("Couldn't reach Lidarr. Offline mode is on.").
                     org.medianexus.music.core.CoreHttp.unsent = { if (watch.state.value.manual) context.getString(R.string.requests_offline) else null }
-                    // And nothing of requests is ever sent to the music server's own address
-                    // (see `CoreHttp.musicServer`).
-                    val home = org.medianexus.music.core.CoreHttp.originOf(account.account.server)
-                    org.medianexus.music.core.CoreHttp.musicServer = { home }
                     org.medianexus.music.requests.Requests(
                         account.account, account.scope,
                         // (Beside the saved password, out of backups; a folder for each account.)

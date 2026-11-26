@@ -387,6 +387,19 @@ class RequestsTest {
     }
 
     @Test
+    fun `a sign-in service found at the music server's own address is not kept, not signed in to, and no browser is sent there`() = runBlocking {
+        val behind = Behind()
+        // (This account's music server is where the "sign-in service" answers.)
+        val account = Account(behind.service.address, "tester", accountKey(behind.service.address, "tester"), AccountDirs(folder.root.resolve("data-m"), folder.root.resolve("cache-m")))
+        val requests = requests(account)
+        requests.switch(true)
+        assertEquals(RequestsState.Unreachable("The sign-in in front of Lidarr gave an address the app can't use."), requests.connect(behind.lidarr.address, KEY))
+        assertNull(requests.signIn())
+        assertEquals("", requests.settings.value.service)
+        assertTrue("the music server's address was sent ${behind.service.asked.map { it.line }}", behind.service.asked.isEmpty())
+    }
+
+    @Test
     fun `the name a sign-in service gives is kept short and printable`() = runBlocking {
         val behind = Behind()
         // (A bell, a new line, a right-to-left override, and far too much of it.)
