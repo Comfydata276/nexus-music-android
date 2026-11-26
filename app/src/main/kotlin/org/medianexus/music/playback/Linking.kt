@@ -170,11 +170,20 @@ internal class Linking(
 
     override fun carryOut(asked: ByteArray): Int {
         val given = json.parseToJsonElement(asked.decodeToString()).jsonObject
-        return side.carryOut(given.getValue("command").jsonObject, given.getValue("ready")).also { insideForTests?.invoke("carryOut") }
+        val command = given.getValue("command").jsonObject
+        did += command.getValue("do").jsonPrimitive.content
+        return side.carryOut(command, given.getValue("ready")).also { insideForTests?.invoke("carryOut") }
     }
 
     override fun pause(): Boolean = side.pause()
-    override fun take(queue: ByteArray) = side.take(json.parseToJsonElement(queue.decodeToString()).jsonObject)
+    override fun take(queue: ByteArray) {
+        did += "take"
+        side.take(json.parseToJsonElement(queue.decodeToString()).jsonObject)
+    }
+
+    /** What the library had the player do in the call under way, by name: for the
+     *  diagnostics' line about a call that held the player's thread ([into]). */
+    private val did = ArrayList<String>()
 
     override fun claim() {
         if (!pressing) side.claim()
@@ -328,6 +337,7 @@ internal class Linking(
         if (!started) return null
         if (inside > 0) return call?.let(::across)
         inside++
+        did.clear()
         val began = System.nanoTime()
         try {
             val now = knows()
@@ -365,7 +375,7 @@ internal class Linking(
             // and one that would drop a frame is said in the diagnostics.)
             val took = (System.nanoTime() - began) / 1_000
             if (took > longestMicros) longestMicros = took
-            if (took > SLOW_MICROS) runCatching { host.note("linking: the player's thread was held for ${took / 1_000} ms by one call into the shared library") }
+            if (took > SLOW_MICROS) runCatching { host.note("linking: the player's thread was held for ${took / 1_000} ms by one call into the shared library (${if (did.isEmpty()) "nothing asked of the player but what it holds" else "carried out: " + did.joinToString(", ")})") }
         }
     }
 

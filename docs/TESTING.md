@@ -3014,11 +3014,39 @@ Most of these were written with the code, not before it (the player's interface 
 `pause` and `handedOn` answer now). The last two rules were checked by taking them out:
 both their tests failed.
 
+**Walked again after all of it** (the same rig; the PC at the library commit the phone
+pins): the plain path (each lists the other; Play, Next, seek, Pause from the PC; music
+moved all four ways, the proof of sound succeeding each time it was needed); a
+hand-over with the phone's queue folder made unwritable (refused, the phone plays on,
+the PC says so); the PC's music given to a phone already playing something else (the
+phone sounding throughout); the relay's pair saved again (the session ends and another
+begins); the phone's own list of playlists with linking on (without the record's
+playlist) and off (with it). **The walk found one fault**: a call arriving on the phone
+was counted as a change, which refused the stop that ends a move of music, so that
+both devices played when the call ended. What is compared now goes by whether playing
+is under way, not by whether the sound is free; walked again, a call just after "Play
+here" leaves only the PC playing, and with a call already ringing the PC finds nothing
+to take.
+
+**A build for trying it out** is this source built with `-PlinkExists=true`: linking
+exists in it, and Settings, Account has two more rows ("Link my devices", and the
+relay's host link, kept as one sealed pair). Checked on the emulator: a link that is
+not one is said so; a right one is "Saved for" its relay and the phone then joins
+through it; pictures at 384 dp and at 360 dp with large type. Calls into the library
+that hold the player's thread for more than 16 ms are named in the diagnostics by what
+was carried out in them; on an ordinary queue those were the first Play (making the
+player ready), a queue adopted and a queue taken, 23 to 29 ms each, where the same
+change of song made on the phone itself holds the thread for about 40.
+
+On the phone's `main` with the library at 0.40.11: `scripts/check --release` (1,318
+tests, none failing; lint; the release build), the car check against the release build
+(48 passed, one warning that is the test library's own empty folders), and
+`scripts/instep-check`.
+
 Not checked: a real phone; a car connected while another device steers; two phones; a
 look-up of songs still out when the person signs out (a unit test); the phone's own entry
 ending during the proof of a take (a unit test; the walk's timing never landed there);
-**and nothing of the changes after the review of a tester's pair has been walked on the
-emulator** (the adverse walks above are of the build before them).
+a pool of linking's threads with no room (a unit test).
 
 ## What is not covered
 
