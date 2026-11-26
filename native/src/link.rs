@@ -957,6 +957,12 @@ mod for_tests {
         name: String,
         playing: bool,
         title: String,
+        /// What a device steering it shows, if the look asked for that.
+        #[serde(default)]
+        full: Option<message::Full>,
+        /// What it is playing and has to come, if the look asked for that.
+        #[serde(default)]
+        queue: Option<message::Handed>,
         at: At,
     }
 
@@ -982,8 +988,8 @@ mod for_tests {
                 title: given.title,
                 artist: String::new(),
                 steering: String::new(),
-                full: None,
-                queue: None,
+                full: given.full,
+                queue: given.queue,
             };
             // (A frame's own nonce: any that the look's is not.)
             let mut nonce = look.nonce;

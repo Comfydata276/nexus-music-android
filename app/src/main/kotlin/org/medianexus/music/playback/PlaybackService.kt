@@ -1418,7 +1418,12 @@ class PlaybackService : MediaLibraryService() {
             // foreground). The gate itself is not asked: its "no" stops the player.
             mayPlayOn = { graph.steered.shown.value == null && foreground.isIn() },
         )
-        val made = Linking(side, LinkHost(this, graph) { account })
+        val made = Linking(
+            side, LinkHost(this, graph) { account },
+            steered = graph.steered,
+            linked = graph.linked,
+            inAJam = { graph.jamsIfMade()?.ui?.value?.let { it.joined != null || it.hosting != null } == true },
+        )
         // (False where it could not be started, with nothing left attached; and where
         // linking stopped for a fault earlier in this run of the app.)
         if (!made.start()) return

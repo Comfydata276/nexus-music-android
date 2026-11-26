@@ -300,8 +300,14 @@ class LinkSideTest {
         assertEquals(first, side.queueNumber())
         assertEquals(held, ids())
         songForFails = null
-        // And one that goes in: a new number, playing from where it was asked to.
+        // And one that goes in: a new number, playing from where it was asked to. What
+        // must be so before the phone may start it (its player no longer showing the
+        // device the queue comes from) is seen to before anything is put in.
+        var seenTo: Long? = null
+        side.beforeTake = { seenTo = side.queueNumber() }
         side.take(queueOf(theirs(), begin = 1, position = 30.0))
+        assertEquals("seen to after the queue had gone in, or not at all", first, seenTo)
+        side.beforeTake = null
         assertNotEquals(first, side.queueNumber())
         assertEquals(listOf("pc0", "pc1", "pc2"), ids())
         assertEquals("Theirs 1", title())

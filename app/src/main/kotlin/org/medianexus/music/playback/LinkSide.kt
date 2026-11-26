@@ -567,9 +567,19 @@ internal class LinkSide(
         return if (queue.revision != was) CHANGED else REFUSED
     }
 
+    /** Called as a queue brought from another device is about to be put in the player
+     *  ([take]): what must be so before the phone may start playing it. */
+    var beforeTake: (() -> Unit)? = null
+
+    /** A song by its id, as the phone can play it; null for one it cannot make. */
+    fun song(id: String): Song? = songFor(id)
+
     /** `{"songs":[[id,queued],…],"begin","position","context"}`: put in the player, playing.
      *  Whether it is in is what [queueNumber] says afterwards. */
     fun take(queue: JsonObject) {
+        // (The library has let go of the device this queue comes from, and says so after
+        // this call: the phone's player stops showing it now, before a start is asked for.)
+        beforeTake?.invoke()
         install(queue.getValue("songs").jsonArray, queue.getValue("begin").jsonPrimitive.int, queue.getValue("position").jsonPrimitive.double, queue["context"]?.jsonPrimitive?.content.orEmpty())
     }
 

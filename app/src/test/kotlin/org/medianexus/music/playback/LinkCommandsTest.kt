@@ -319,6 +319,115 @@ class LinkCommandsTest {
     }
 
     /**
+     * **The phone steers another device through the screens it already has.** The list of
+     * devices is what [Linked] hands the screens; a device picked is put in [Steered], which
+     * the player bar, Now Playing and the queue sheet draw from, and what is pressed there
+     * is told to the shared library as it reads it and asked of the device. The phone's
+     * own player does not move. "Stop steering" and "Play here" take the device out of
+     * the player; and a look-up for something to play makes the phone busy to the others
+     * until it is over.
+     */
+    @Test
+    fun aDeviceSteeredIsInThePhonesPlayerAndWhatIsPressedThereIsAskedOfIt() {
+        inside.player.play(mine(), 0, "A list", playNow = false)
+        settle()
+        join()
+        hear(look())
+        val linked = app.graph.linked
+        val steered = app.graph.steered
+        fun commandsSent(): Int = asks("send").map { it.getValue("frame").jsonPrimitive.content }.count { Core.linkTestIsCommand(it) }
+        fun answered(full: JsonObject? = null, queue: JsonObject? = null) {
+            val sent = asks("send").map { it.getValue("frame").jsonPrimitive.content }
+            asked.clear()
+            link().forTests { now, today -> Core.linkTestAnswered(session, sent, null, "Study PC", true, "Harbour Lights", now, today, full, queue) }
+        }
+        val full = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"position":12.0,"now":{"id":"x0","title":"Harbour Lights","artist":"The Tide","album":"Harbour","duration":240},
+               "queue":[{"id":"x1","title":"One","duration":200,"queued":true},{"id":"x2","title":"Two","duration":180}],
+               "more":3,"context":"Harbour","shuffle":false,"repeat":0,"volume":0.8}""",
+        ).jsonObject
+        // The list, as the screens are handed it.
+        pass(31_000)
+        answered()
+        pass(600)
+        assertTrue(linked.state.value.running)
+        val row = linked.state.value.devices.single()
+        assertEquals(Linked.Device(row.place, "Study PC", "Playing Harbour Lights", playing = true, steered = false, pickable = true, update = ""), row)
+        assertTrue(linked.state.value.entered)
+        // Picked, with nothing playing on the phone: it is steered as it is. The library
+        // asks it for everything its player shows, and with the answer it is in the
+        // phone's player.
+        linked.choose(row.place)
+        assertNull("in the player before the device has been heard from", steered.shown.value)
+        answered(full = full)
+        val shown = steered.shown.value ?: error("the device is not in the phone's player: ${link().view}")
+        assertEquals(listOf("Study PC", "Harbour Lights", true, 12_000L, 240_000L), listOf(shown.where, shown.song?.title, shown.playing, shown.positionMs, shown.durationMs))
+        assertEquals(listOf(listOf("x1", "x2"), 1, 5, "Harbour"), listOf(shown.queue.songs.map { it.id }, shown.queue.queuedAhead, shown.queue.total, shown.queue.context))
+        pass(600)
+        assertEquals("Study PC", linked.state.value.steering)
+        assertTrue(linked.state.value.devices.single().steered)
+        // What is pressed in the player is asked of the device: the first as a command,
+        // and those pressed while it is unanswered wait behind it. Each is one the
+        // library reads: linking has not stopped for any of them.
+        asked.clear()
+        val hands = steered.hands ?: error("the player has no hands for the device")
+        hands.next()
+        assertEquals(1, commandsSent())
+        hands.toggle(); hands.previous(); hands.seek(30_000); hands.volume(0.4f); hands.shuffle(); hands.repeat()
+        hands.jump(LinkSteer.ROW); hands.remove(LinkSteer.ROW + 1); hands.clear(false); hands.move(LinkSteer.ROW + 1, LinkSteer.ROW, true)
+        hands.add(listOf(Song(id = "s2")), playNext = false)
+        hands.play(mine(), 2, "A list", whole = false)
+        assertFalse(link().stopped)
+        assertEquals(1, commandsSent())
+        // The phone's own player is where it was.
+        assertEquals("s0", inside.player.queue.current()?.id)
+        assertFalse(inside.exo.playWhenReady)
+        // **The library asks the phone to take a queue while the device is still in its
+        // player** (as it does for "Play here": it has let go of the device, and says so
+        // only once this call is back). The device is out of the player before anything
+        // is put in or started, since the service will start nothing of the phone's own
+        // while its player shows another's. (A queue the phone can make none of: only
+        // the order of things is looked at here.)
+        link().take("""{"songs":[["nobody-has-this",false]],"begin":0,"position":0.0,"context":"Harbour"}""".toByteArray())
+        assertNull("still in the player as the queue was taken", steered.shown.value)
+        // (The library's next word of the device puts it back: it has not let go.)
+        pass(6_000)
+        answered(full = full)
+        assertEquals("Study PC", steered.shown.value?.where)
+        // "Stop steering": the player is the phone's own again.
+        linked.letGo()
+        assertNull(steered.shown.value)
+        pass(600)
+        assertEquals("", linked.state.value.steering)
+        // Steered again, and "Play here": its queue is asked for, and as it arrives the
+        // device is out of the phone's player, whatever the phone can play of it.
+        linked.choose(row.place)
+        answered(full = full)
+        assertEquals("Study PC", steered.shown.value?.where)
+        linked.playHere()
+        answered(queue = buildJsonObject {
+            put("songs", kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("x1"), JsonPrimitive("x2"))))
+            put("queued", 0)
+            put("position", 5.0)
+            put("context", "Harbour")
+            put("more", 0)
+        })
+        assertNull("the device is still in the phone's player", steered.shown.value)
+        pass(600)
+        assertEquals("", linked.state.value.steering)
+        // Something chosen to play is being looked up: the phone is busy to the others
+        // until the look-up is over.
+        val ticket = linked.lookingUp() ?: error("no ticket for a look-up")
+        assertTrue(hear(look()).single().getValue("busy").jsonPrimitive.boolean)
+        linked.lookedUp(ticket)
+        assertFalse(hear(look()).single().getValue("busy").jsonPrimitive.boolean)
+        // The sign-in ends: nothing is listed, and nothing is in the player.
+        link().signInEnded()
+        assertEquals(Linked.State(), linked.state.value)
+        assertNull(steered.shown.value)
+    }
+
+    /**
      * **A press on the phone and what it did are one choice.** The press is noted where
      * it is made, the player is then changed, and the library is told once, as the
      * person's: so a command another device makes against the state it is then told of

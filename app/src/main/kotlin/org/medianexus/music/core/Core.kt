@@ -1065,13 +1065,14 @@ object Core {
     internal fun linkTestIsCommand(frame: String): Boolean = across(frame, String.serializer(), Boolean.serializer(), ::linkTestIsCommand)
 
     @Serializable
-    private class LinkTestAnsweredIn(val session: Long, val frames: List<String>, val speaks: Long?, val name: String, val playing: Boolean, val title: String, val at: LinkAt)
+    private class LinkTestAnsweredIn(val session: Long, val frames: List<String>, val speaks: Long?, val name: String, val playing: Boolean, val title: String, val full: JsonObject?, val queue: JsonObject?, val at: LinkAt)
 
     /** The other device answers the last look among what the phone asked to be sent: as a
      *  device of this name, playing this, that speaks as this build does (`null`) or says
-     *  this number (1: says none). */
-    internal fun linkTestAnswered(session: Long, frames: List<String>, speaks: Long?, name: String, playing: Boolean, title: String, now: Long, today: Long): LinkCame =
-        across(LinkTestAnsweredIn(session, frames, speaks, name, playing, title, LinkAt(now, today)), LinkTestAnsweredIn.serializer(), LinkCame.serializer(), ::linkTestAnswered)
+     *  this number (1: says none). `full` and `queue`: what a look that asked for one is
+     *  answered with (the library's `Full` and `Handed`). */
+    internal fun linkTestAnswered(session: Long, frames: List<String>, speaks: Long?, name: String, playing: Boolean, title: String, now: Long, today: Long, full: JsonObject? = null, queue: JsonObject? = null): LinkCame =
+        across(LinkTestAnsweredIn(session, frames, speaks, name, playing, title, full, queue, LinkAt(now, today)), LinkTestAnsweredIn.serializer(), LinkCame.serializer(), ::linkTestAnswered)
 
     // ---- For the tests of the boundary itself ----
 

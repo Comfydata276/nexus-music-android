@@ -373,6 +373,10 @@ class Graph(
      *  the person's devices (M6; see `jam/Jams`). */
     val steered = org.medianexus.music.playback.Steered()
 
+    /** The person's other devices as the new linking knows them: what a list of them is
+     *  drawn from and calls. Empty, and doing nothing, wherever there is no linking. */
+    val linked = org.medianexus.music.playback.Linked()
+
     /** The screens' one way to the player (the playback service's session). */
     val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), steered)
 

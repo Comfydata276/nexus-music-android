@@ -65,6 +65,12 @@ internal class Linking(
     /** What the player holds that the library is to know of ([LinkSide.known]). (Given,
      *  so that a test can have reading it fail.) */
     private val knows: () -> LinkSide.Known = side::known,
+    /** The phone's player while it shows another's, and the list of the person's other
+     *  devices the screens draw: the graph's. (Its own, where a test has no graph.) */
+    private val steered: Steered = Steered(),
+    private val linked: Linked = Linked(),
+    /** Whether the phone is in a jam with other people. */
+    private val inAJam: () -> Boolean = { false },
 ) : Core.LinkPlayer {
     /** What only the app knows. */
     interface Host {
@@ -117,6 +123,63 @@ internal class Linking(
 
     private val json = Json { ignoreUnknownKeys = true }
     private val randomness = java.security.SecureRandom()
+
+    // ---- What the screens are handed, and what they call ---------------------------------------
+
+    private fun event(name: String) = buildJsonObject { put("event", name) }
+
+    /**
+     * The device being steered, in the phone's player. A press there is told to the
+     * library, whose answer ends by saying whether it was asked of the device
+     * (`{"act":"handled","by_another":…}`).
+     */
+    private val steer = LinkSteer(
+        steered,
+        side::song,
+        press = { pressed -> happened(pressed)?.acts?.lastOrNull { it["act"]?.jsonPrimitive?.content == "handled" }?.get("by_another")?.jsonPrimitive?.booleanOrNull == true },
+        // (Said from inside what the library answered: told once that is done with.)
+        letGo = { main.post { guarded { if (started) happened(event("let_go")) } } },
+        note = { host.note(it) },
+    )
+
+    /** What the list of devices calls ([Linked]). */
+    private val doing = object : Linked.Doing {
+        override fun choose(place: String) {
+            happened(buildJsonObject {
+                put("event", "choose")
+                put("place", place)
+                put("in_a_jam", inAJam())
+            })
+        }
+
+        override fun pause(place: String) {
+            happened(buildJsonObject {
+                put("event", "pause")
+                put("place", place)
+            })
+        }
+
+        override fun playHere() {
+            happened(event("play_here"))
+        }
+
+        override fun letGo() {
+            happened(event("let_go"))
+        }
+
+        override fun reset() {
+            happened(event("reset"))
+        }
+
+        override fun lookingUp(): Long? = happened(event("looking_up"))?.acts?.firstOrNull { it["act"]?.jsonPrimitive?.content == "ticket" }?.get("ticket")?.jsonPrimitive?.long
+
+        override fun lookedUp(ticket: Long) {
+            happened(buildJsonObject {
+                put("event", "looked_up")
+                put("ticket", ticket)
+            })
+        }
+    }
 
     /** The number the library gave this linking: what every call into it names. */
     @Volatile private var link = 0L
@@ -297,6 +360,8 @@ internal class Linking(
             started = true
             known = knows()
             side.attach()
+            side.beforeTake = steer::taking
+            linked.doing = doing
             CoreHttp.linkMusic = { host.server()?.second }
             CoreHttp.linkRelay = { relayPlace?.takeUnless { it in host.elsewhere() } }
             CoreHttp.linkClient = { host.client() }
@@ -450,6 +515,9 @@ internal class Linking(
         if (!started) return
         pressed = false
         happened(buildJsonObject { put("event", "stop") })
+        // (Nobody is signed in, so no tick will say what the list now shows: nothing.)
+        steer.steering(null)
+        if (linked.doing === doing) linked.nobody()
         if (started) endEverything()
     }
 
@@ -488,6 +556,9 @@ internal class Linking(
         }
         runCatching { endEverything() }
         if (putRight) runCatching { side.stopped() }
+        runCatching { steer.steering(null) }
+        runCatching { side.beforeTake = null }
+        runCatching { if (linked.doing === doing) linked.over(stopped) }
         runCatching { side.detach() }
         if (current.get() === this) {
             org.medianexus.music.link.LinkShown.wanted = { false }
@@ -517,10 +588,13 @@ internal class Linking(
                 ask["say"]?.let { host.say(it.jsonPrimitive.content) }
                 ask["remember"]?.let { host.remember(it.jsonArray) }
                 ask["forget"]?.let { host.forget(it.jsonObject.getValue("playlist").jsonPrimitive.content) }
-                ask["steering"]?.let { host.note("linking: the phone's player is " + (if (it is kotlinx.serialization.json.JsonNull) "its own again" else "another device's now")) }
+                ask["steering"]?.let {
+                    host.note("linking: the phone's player is " + (if (it is kotlinx.serialization.json.JsonNull) "its own again" else "another device's now"))
+                    steer.steering(it.jsonPrimitive.contentOrNull)
+                }
             }
-            "shown" -> shown = act.getValue("shown").jsonObject
-            "view" -> view = act.getValue("view")
+            "shown" -> shown = act.getValue("shown").jsonObject.also(linked::shown)
+            "view" -> view = act.getValue("view").also(steer::view)
             "fault" -> fault("the shared library stopped, or a call into the player failed")
             else -> Unit
         }
