@@ -119,7 +119,7 @@ fun RequestsPage() {
                     if (waiting.heading.isNotEmpty() && pending.isNotEmpty()) {
                         item(key = "pending-title", contentType = "title") { SectionTitle(waiting.heading) }
                         items(pending, key = { (album, _) -> "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->
-                            SwipeAway("pending/${album.id}", onGone = { takeOff(album, shownUnder) }, Modifier.animateItem(fadeOutSpec = null)) {
+                            SwipeAway(swipeKey(album, shownUnder), onGone = { takeOff(album, shownUnder) }, Modifier.animateItem(fadeOutSpec = null)) {
                                 PendingRow(album, line, onMenu = {
                                     ui.sheet = Sheet.Drawn { choose ->
                                         MenuEntry(stringResource(R.string.take_off_the_list)) { choose { takeOff(album, shownUnder) } }
@@ -178,16 +178,36 @@ private fun Warning(words: String) {
  * The Arrived rows' keys, one for each, in their order: the note's own identity (Lidarr's id
  * for the album and when it was asked for), not what it turned out to be. Two notes met by one
  * album (the same artist and title under two ids, or one album asked for again after it came)
- * are two rows, and two keys; a note alike in everything to one above it is numbered, so no
- * two keys are ever the same.
+ * are two rows, and two keys; a note alike in everything to one above it is numbered. Built
+ * by [keyOf], the fields and the count apart, so no two keys are ever the same.
  */
 internal fun arrivedKeys(arrived: List<org.medianexus.music.core.Asked>): List<String> {
     val seen = HashMap<String, Int>()
     return arrived.map {
-        val own = "arrived/${it.album}/${it.at}/${it.title}/${it.artist}"
+        val own = keyOf("arrived", it.album, it.at, it.title, it.artist)
         val before = seen.getOrDefault(own, 0)
         seen[own] = before + 1
-        if (before == 0) own else "$own#$before"
+        // The count is a part of its own, after the note's: never words another note could have.
+        keyOf(own, before)
+    }
+}
+
+/**
+ * The key a pending row's swipe is bound to: the row itself and the connection its list was
+ * found under, as its menu is. After a refresh under a new connection, or Lidarr's number
+ * standing for another album, the swipe is a new one, and hands over the new row.
+ */
+internal fun swipeKey(album: Pending, under: Long): String = keyOf("pending", under, album.id, album.title, album.artist, album.album)
+
+/**
+ * Text that stands for these parts and nothing else: each is written with its length in front
+ * of it, so no part's words can be read as part of another, and two keys are equal only if
+ * every part is.
+ */
+internal fun keyOf(vararg parts: Any?): String = buildString {
+    for (part in parts) {
+        val text = part.toString()
+        append(text.length).append(':').append(text)
     }
 }
 
