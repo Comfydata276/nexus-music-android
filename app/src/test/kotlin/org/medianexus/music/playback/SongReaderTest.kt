@@ -61,6 +61,9 @@ class SongReaderTest {
     /** The song is already an MP3 within the limit: asked for "MP3 at the limit", the server
      *  sends the file as it is, with its length, whatever time it was asked to start from. */
     private var sendsTheFile = false
+    /** What a stream that drops every time sends before the line goes dead. */
+    private val A_LITTLE = 64 * 1024
+
     /** The waits the reader asked for before asking for a stream again. */
     private val waits = mutableListOf<Long>()
 
@@ -76,13 +79,13 @@ class SongReaderTest {
      * frames (MPEG-1 layer 3 at 48 kHz, so each is 24 ms and 3 bytes a kbps) that each carry,
      * after a real frame header, the time in the song at which they start, in milliseconds.
      */
-    private fun conversion(kbps: Int, offset: Int): ByteArray {
+    private fun conversion(kbps: Int, offset: Int, upTo: Int = Int.MAX_VALUE): ByteArray {
         val out = ByteArrayOutputStream()
         out.write(tag(tagBytes))
         val index = intArrayOf(0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320).indexOf(kbps)
         val frame = 3 * kbps
         var ms = offset * 1000
-        while (ms < seconds * 1000) {
+        while (ms < seconds * 1000 && out.size() < upTo) {
             out.write(byteArrayOf(0xff.toByte(), 0xfb.toByte(), (index shl 4 or 0x04).toByte(), 0x44))
             out.write(byteArrayOf((ms shr 24).toByte(), (ms shr 16).toByte(), (ms shr 8).toByte(), ms.toByte()))
             out.write(ByteArray(frame - 8) { 0x55 })
@@ -109,7 +112,12 @@ class SongReaderTest {
                 }
                 val rate = givenKbps.takeIf { it > 0 } ?: url.queryParameter("maxBitRate")!!.toInt()
                 val offset = url.queryParameter("timeOffset")?.toInt() ?: 0
-                var bytes = conversion(rate, if (sendsTheFile) 0 else offset)
+                // A stream that drops every time sends a little and no more, so only that much
+                // is made: made whole, an hour-long song was 58 MB (and several copies of it)
+                // for every answer, and on a busy machine whose test JVM ran out of heap the
+                // stand-in's own thread died making it, left the socket open, and the read,
+                // which has no limit of its own here, waited out the test's ten minutes.
+                var bytes = conversion(rate, if (sendsTheFile) 0 else offset, upTo = if (alwaysDrops) A_LITTLE else Int.MAX_VALUE)
                 if ((offset == 0 && warm) || sendsTheFile) {
                     val body = Buffer().write(bytes, from.toInt(), bytes.size - from.toInt())
                     return MockResponse.Builder().code(if (range != null) 206 else 200).setHeader("Accept-Ranges", "bytes").body(body).build()
