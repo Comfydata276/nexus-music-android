@@ -250,6 +250,17 @@
     <!-- The car asked for music and Android would not let the app start playing from where it was (not in front, and no standing to play in the background). -->
     <!-- Linking the person's devices (in no build yet): said once if it stops for a fault and the shared library's own words for it cannot be had. -->
     <string name="link_stopped">Linking has stopped on this phone until the app is next opened.</string>
+    <!-- Settings, Account, in a build in which linking exists (none that is released). -->
+    <string name="link_my_devices">Link my devices</string>
+    <string name="link_my_devices_detail">Your other devices signed in to this account can see what this phone is playing, steer it, and move the music to or from it. Only while Nexus Music is open or playing.</string>
+    <string name="link_relay">Relay host link</string>
+    <string name="link_relay_detail">The relay your devices find each other through, with its key: paste the host link the relay gives, the same one as on your other devices.</string>
+    <string name="link_relay_hint">https://relay.example/#key</string>
+    <string name="link_relay_on_file">A relay is saved. Paste a link to replace it.</string>
+    <string name="link_relay_keep">Save</string>
+    <string name="link_relay_kept">Saved for %1$s.</string>
+    <string name="link_relay_not_kept">This phone couldn\'t keep the key safe, so it wasn\'t saved.</string>
+    <string name="link_relay_wrong">That isn\'t a host link: it is the relay\'s address, then #, then its key.</string>
     <string name="car_open_to_play">When it\'s safe, open Nexus Music on your phone to start playing</string>
     <string name="car_local_network">When it\'s safe, open Nexus Music on your phone and allow it to reach your home network</string>
     <string name="local_network_maybe">Can\'t reach your server. If it\'s on your home network, that may be because Nexus Music isn\'t allowed to reach it.</string>

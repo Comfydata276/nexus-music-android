@@ -132,6 +132,9 @@ internal class LinkHost(private val context: Context, private val graph: Graph, 
         fun keepRelay(context: Context, server: String, username: String, base: String, key: String): Boolean =
             vault(context).save(server, username, base.trim().trimEnd('/') + "\n" + key).also { edits.incrementAndGet() }
 
+        /** Whether a relay is kept for anyone at all (without opening it). */
+        fun relayKept(context: Context): Boolean = relayFile(context).exists()
+
         /** Removes it: linking is then not wanted. */
         fun forgetRelay(context: Context): Boolean = vault(context).delete().also { edits.incrementAndGet() }
     }

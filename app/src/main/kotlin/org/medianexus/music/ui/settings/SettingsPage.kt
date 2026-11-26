@@ -245,6 +245,9 @@ private fun Account(graph: Graph) {
     SettingRow(signedIn.account.server, stringResource(R.string.signed_in_as, signedIn.account.username)) {
         TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
     }
+    // Linking the person's devices: two rows, only in a build in which it exists (none
+    // that is released: see link/LinkBuild.kt).
+    if (org.medianexus.music.link.LinkBuild.on) org.medianexus.music.ui.link.LinkRows(graph)
     // Where Windows has it, in Windows' words. Off, nothing of this is read from the server
     // or written to it. Not shown at all in a build where it doesn't exist (this one: see
     // sync/InStepBuild.kt).
