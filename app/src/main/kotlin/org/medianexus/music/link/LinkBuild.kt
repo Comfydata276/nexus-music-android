@@ -12,8 +12,9 @@ package org.medianexus.music.link
  * number the player keeps, `QueuePlayer.whole`, which nothing else reads.)
  */
 object LinkBuild {
-    /** The one switch, for the whole build. */
-    const val EXISTS = false
+    /** The one switch, as the build was made with it (`linkExists` in `app/build.gradle.kts`:
+     *  off, unless the build was asked for it by name). */
+    val EXISTS: Boolean = org.medianexus.music.BuildConfig.LINK
 
     /**
      * Set only by tests, and by a debug build told to by the test rig as it starts
