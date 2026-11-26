@@ -1899,7 +1899,9 @@ from Lidarr's address points, and not the traffic of a sign-in service that turn
 live there (such a service is not kept or signed in to, and no browser is sent to it). The
 one exception is the person's own doing: **requests to Lidarr's own API at the address
 they typed**, if that address is on that very host and port (one proxy, two paths), and
-nothing else. The rule is about where an answer may lead the app, not about what the
+nothing else. (Finding which sign-in is in front of Lidarr is one of them: it asks
+Lidarr's address again and looks at where that leads, as the typed client; so a Lidarr
+beside the music server and behind a sign-in is found behind it.) The rule is about where an answer may lead the app, not about what the
 person typed: what they typed is where their key goes.
 
 **The places a request is judged by are its own.** The music server's place, the place
@@ -2182,7 +2184,9 @@ it up. As on Windows:
   answer (found on the Android 16 emulator, where every sign-in failed with "didn't answer
   in time" until the order was changed). So the app asks to come forward as soon as the
   browser comes back, which also closes the tab, and **nothing is sent until its screen is
-  in front** (`Graph.front`, which the activity says as it starts and stops). There is no
+  in front** (`Graph.resumed`, which the activity says as it is resumed and paused: the one
+  in front, not merely on the screen, as it is under another app's dialog or beside one in
+  a split screen). There is no
   attempt out of sight and no second attempt: a code the service has seen is spent, and
   whatever comes of the one trade is how the sign-in ended.
 - **If Android does not bring the app forward** (a browser that keeps a window of its
@@ -2201,9 +2205,14 @@ it up. As on Windows:
   sign-in went through, but this phone couldn't keep it. Try again." And nobody is ever
   shown as signed in with no name: a sign-in that is remembered and not signed in to, in
   front of a Lidarr that answers anyway, is "connected" and no more. The trade never waits
-  behind other changes (a thread of its own) and each of its requests has eight seconds in
-  all, after which the library says in its own words that the service didn't answer in
-  time.
+  behind other changes (a thread of its own). **Its limits, in numbers**: the exchange
+  makes up to three requests of the sign-in service (the code for its token, a pass for
+  Lidarr, and who signed in); each has eight seconds, **and the whole exchange has twelve**
+  from when it is begun (what is left of the twelve is the most its next request may
+  take), after which the library says in its own words that the service didn't answer
+  in time. So a browser that has come back is shown its last page within two and a half
+  seconds of the app being waited for to come forward, plus those twelve; or, with the
+  app not in front, "Still signing in" after the two and a half.
 - **Accepted, and written down.** The address of the sign-in page goes to whatever the
   person has chosen as the phone's browser, with the `state` and the check of the secret in
   it: that is what a browser is. A hostile app that has been made the phone's browser sees

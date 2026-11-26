@@ -27,6 +27,9 @@ internal class SignInStandIn(private val closing: MutableList<StandIn>, private 
      *  (the same machine by another name, say: to the app, another host). */
     @Volatile var named: String? = null
 
+    /** How long the service takes over each thing asked of it but its sign-in page. */
+    @Volatile var slowMillis = 0L
+
     /** Who the service says signed in, as it is written inside its JSON answer. */
     @Volatile var username = "walker"
     private val made = AtomicInteger(0)
@@ -42,6 +45,7 @@ internal class SignInStandIn(private val closing: MutableList<StandIn>, private 
     val service = StandIn { asked, reply ->
         val form = asked.body.split('&').associate { it.substringBefore('=') to it.substringAfter('=', "") }
         held.entries.firstOrNull { it.key in asked.target || it.key in asked.body }?.value?.await(30, java.util.concurrent.TimeUnit.SECONDS)
+        if (slowMillis > 0 && !asked.target.startsWith("/application/o/authorize/")) Thread.sleep(slowMillis)
         when {
             asked.target.startsWith("/application/o/authorize/?response_type=code&") -> {
                 val query = asked.target.substringAfter('?')

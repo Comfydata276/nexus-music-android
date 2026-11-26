@@ -2822,6 +2822,15 @@ a sign-in as a real one does (PKCE, S256), and so does the kit's for the emulato
 (`shots/m7a/how/make-standin`, which also follows the kit's stand-in as the Windows side
 has since changed it).
 
+**The sign-in's limits and Lidarr beside the music server** (`RequestsTest`, both seen to
+fail first): "finishing a sign-in has a limit on the whole of it, however many requests it
+takes" (a service a second slow each time, within the limit for one request every time:
+the browser waited 3.1 s for three requests before, and the limit on the whole after);
+"Lidarr typed at the music server's own origin and behind a sign-in is found behind it,
+and signed in to" (before: refused as the music server's own address). That the exchange
+waits for the activity to be resumed, not started, is the activity's own lines and is
+walked on the emulator.
+
 **One owner of an account's requests, and the toggle** (`SameAccountAgainTest`, with the
 account's objects made as the app makes them and the session played by the test; the first
 two seen to fail before the rule, for the reasons the review gave): "signed out and

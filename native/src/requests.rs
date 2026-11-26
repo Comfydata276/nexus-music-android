@@ -397,7 +397,11 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrCheck<'l>(env: 
         };
         let mut checked = Checked { version: None, why, door: None, door_why: None };
         if checked.why == nexus_core::lidarr::NEEDED {
-            let http = Host::new(Whose::Operation(given.operation), Line::Lidarr).at_home(given.lidarr.home.as_deref());
+            // Finding which sign-in it is asks Lidarr's own address again, and looks at
+            // where that leads: **still the address the person typed for Lidarr**, and so
+            // sent as that (`typed`, bound to its place), which is what lets it be at the
+            // music server's own origin (one proxy, two paths). It carries no secret.
+            let http = Host::bound(Whose::Operation(given.operation), Line::Lidarr, given.lidarr.origin.as_deref()).at_home(given.lidarr.home.as_deref()).typed();
             match gate::find(http.as_ref(), &nexus_core::lidarr::tidy(&given.lidarr.address)) {
                 Ok(found) => checked.door = found.map(|found| Door { service: found.service, client: found.client }),
                 Err(why) if why == STOPPED => return Ok(Outcome::Stopped),

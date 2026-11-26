@@ -93,6 +93,13 @@ class MainActivity : ComponentActivity() {
         // The local-network permission may have been given or taken away in the phone's
         // settings meanwhile.
         graph.localAccess.recheck()
+        // The one in front now (see Graph.resumed): a sign-in waiting to be finished is.
+        graph.resumed.value = true
+    }
+
+    override fun onPause() {
+        graph.resumed.value = false
+        super.onPause()
     }
 }
 

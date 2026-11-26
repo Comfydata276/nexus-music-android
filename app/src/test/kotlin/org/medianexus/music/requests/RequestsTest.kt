@@ -639,6 +639,49 @@ class RequestsTest {
     }
 
     @Test
+    fun `finishing a sign-in has a limit on the whole of it, however many requests it takes`() = runBlocking {
+        val behind = Behind()
+        val requests = requests()
+        requests.switch(true)
+        requests.connect(behind.lidarr.address, KEY)
+        val link = requests.signIn()!!
+        // The service takes a second over each thing asked of it: within the limit for one
+        // request (a second and a half, here), every time. Finishing takes two of them.
+        org.medianexus.music.core.CoreHttp.signInMillis = 1_500
+        org.medianexus.music.core.CoreHttp.signInWholeMillis = 1_600
+        try {
+            val at = signedInAt(link)
+            behind.slowMillis = 1_000
+            val began = System.nanoTime()
+            val (status, _) = browse(at)
+            val took = (System.nanoTime() - began) / 1_000_000
+            assertEquals(200, status)
+            // The browser has its page within the limit on the whole (and a little), not
+            // after as many times the limit on one as there were requests.
+            assertTrue("the browser waited $took ms", took in 900..1_950)
+        } finally {
+            behind.slowMillis = 0
+            org.medianexus.music.core.CoreHttp.signInMillis = 8_000
+            org.medianexus.music.core.CoreHttp.signInWholeMillis = 12_000
+        }
+    }
+
+    @Test
+    fun `Lidarr typed at the music server's own origin and behind a sign-in is found behind it, and signed in to`() = runBlocking {
+        val behind = Behind()
+        // (This account's music server is at the very origin Lidarr is typed at: one proxy
+        // in front of both, each under a path of its own.)
+        val account = Account(behind.lidarr.address, "tester", accountKey(behind.lidarr.address, "tester"), AccountDirs(folder.root.resolve("data-o"), folder.root.resolve("cache-o")))
+        val requests = requests(account)
+        requests.switch(true)
+        // Lidarr's own address answers with the sign-in; finding which one asks that
+        // address again, which is still Lidarr's API where the person said it is.
+        assertEquals(RequestsState.NeedsSignIn(behind.host), requests.connect(behind.lidarr.address, KEY))
+        signInWith(requests.signIn()!!)
+        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), requests.until { it is RequestsState.Connected })
+    }
+
+    @Test
     fun `a sign-in service that never finishes the trade is given a few seconds, and the browser is told it didn't go through`() = runBlocking {
         val behind = Behind()
         val requests = requests()

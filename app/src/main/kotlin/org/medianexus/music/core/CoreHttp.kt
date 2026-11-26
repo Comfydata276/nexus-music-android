@@ -134,6 +134,9 @@ internal object CoreHttp {
      *  included: the browser is kept waiting for its page meanwhile (see [finishing]). */
     @Volatile var signInMillis = 8_000L
 
+    /** How long finishing a sign-in may take **in all**, however many requests it makes. */
+    @Volatile var signInWholeMillis = 12_000L
+
     /**
      * Whether requests may not be sent at all just now, and if so the words for why (the end
      * of the library's own sentence, as in "Couldn't reach Lidarr. Offline mode is on.").
@@ -374,7 +377,21 @@ internal object CoreHttp {
         val id: Long, val changing: Boolean,
         /** The longest any one request of this may take in all, if it has a limit of its own. */
         private val callMillis: Long? = null,
+        /** The longest **the whole of it** may take, from when it was begun, however many
+         *  requests it makes: what is left of that is the most its next request may take. */
+        private val wholeMillis: Long? = null,
     ) {
+        private val began = System.nanoTime()
+
+        /** The limit a request of this goes under now, not having been stopped. */
+        private fun limit(): Long? {
+            val whole = wholeMillis ?: return callMillis
+            val left = whole - (System.nanoTime() - began) / 1_000_000
+            // (Nothing left: the request is still made, and given no time to speak of, so
+            // that it ends as any request that wasn't answered in time does.)
+            return maxOf(1L, minOf(callMillis ?: Long.MAX_VALUE, left))
+        }
+
         private val lock = ReentrantLock()
         private val stoppedNow = lock.newCondition()
         private var stopped = false
@@ -427,10 +444,10 @@ internal object CoreHttp {
          */
         fun allowance(): Long? = lock.withLock {
             when {
-                !stopped -> callMillis
+                !stopped -> limit()
                 !changing -> REFUSED
                 System.nanoTime() - stoppedAt > TimeUnit.MILLISECONDS.toNanos(graceMillis) -> REFUSED
-                else -> minOf(afterStopMillis, callMillis ?: Long.MAX_VALUE)
+                else -> minOf(afterStopMillis, limit() ?: Long.MAX_VALUE)
             }
         }
 
@@ -458,7 +475,8 @@ internal object CoreHttp {
     private val doings = ConcurrentHashMap<Long, Doing>()
     private val nextDoing = AtomicLong(0)
 
-    private fun begin(changing: Boolean, callMillis: Long? = null): Doing = Doing(nextDoing.incrementAndGet(), changing, callMillis).also { doings[it.id] = it }
+    private fun begin(changing: Boolean, callMillis: Long? = null, wholeMillis: Long? = null): Doing =
+        Doing(nextDoing.incrementAndGet(), changing, callMillis, wholeMillis).also { doings[it.id] = it }
 
     private fun end(doing: Doing) {
         doings.remove(doing.id)
@@ -525,10 +543,11 @@ internal object CoreHttp {
      * Finishing a sign-in: the browser has come back with a code, and is kept waiting for
      * its page until this is done. So it **never waits its turn** behind other changes (a
      * thread of its own), and **cannot take for ever**: each of its requests has
-     * [signInMillis] in all, after which the library says in its own words that the
-     * service didn't answer in time. Otherwise as [changing].
+     * [signInMillis] in all, **and the whole of it [signInWholeMillis]** (eight seconds and
+     * twelve), after which the library says in its own words that the service didn't
+     * answer in time. Otherwise as [changing].
      */
-    suspend fun <T> finishing(act: (operation: Long) -> T): T = run(begin(changing = true, callMillis = signInMillis), apart, act)
+    suspend fun <T> finishing(act: (operation: Long) -> T): T = run(begin(changing = true, callMillis = signInMillis, wholeMillis = signInWholeMillis), apart, act)
 
     /**
      * The same for something the library sees through once it has begun to change Lidarr

@@ -182,6 +182,14 @@ class Graph(
     val front = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     /**
+     * Whether the app's own screen is **the one in front**: resumed, not merely started (an
+     * activity that is visible and paused, under a dialog of another app's or beside it in
+     * a split screen, is not). A sign-in's code is traded for its token only then (see
+     * `requests/Requests.kt`): the activity says, as it is resumed and paused.
+     */
+    val resumed = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /**
      * What owns each account's requests, **for the life of the process** (see
      * `requests/RequestsOwners`): made the first time an account with its requests switched
      * on is signed in to, or the toggle is turned on, in a build that has requests; never
@@ -208,8 +216,8 @@ class Graph(
                     afterwards = afterwards,
                     comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
                     note = { diagnostics.note(it) },
-                    // (A sign-in is finished only with the app's own screen in front.)
-                    front = front,
+                    // (A sign-in is finished only with the app's own screen in front: resumed.)
+                    front = resumed,
                     switched = switched,
                 )
                 requests to org.medianexus.music.requests.RequestsPages.of(requests, work, account.dirs.data, sources, here, note = { diagnostics.note(it) }, afterwards = afterwards)
