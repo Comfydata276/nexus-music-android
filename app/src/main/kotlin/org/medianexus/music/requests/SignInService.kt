@@ -11,7 +11,6 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
 import org.medianexus.music.MainActivity
 import org.medianexus.music.R
@@ -87,14 +86,21 @@ class SignInService : Service() {
          * Keeps the app running for a sign-in that has begun (from a tap: Android lets only
          * an app in front start this). What it returns says whether the service is running
          * now, and lets it go, once, when that sign-in has ended.
+         *
+         * **An ordinary start, not a foreground one**: the app's screen is in front, where
+         * that is allowed, and the service makes itself foreground when it runs. A start
+         * promised as foreground would let Android end the app if the main thread were late
+         * to keep the promise, which 0.6.0 could not do; this way the worst is a sign-in
+         * that goes on as it did in 0.6.0.
          */
         fun hold(context: Context): Requests.Hold {
             val app = context.applicationContext
             synchronized(lock) { held++ }
             try {
-                ContextCompat.startForegroundService(app, Intent(app, SignInService::class.java))
+                app.startService(Intent(app, SignInService::class.java))
             } catch (_: RuntimeException) {
-                // (Started from the background after all: Android's rule.)
+                // (Started from the background after all: Android's rule. The sign-in goes on
+                // without it.)
             }
             val once = AtomicBoolean(false)
             return Requests.Hold(running = { synchronized(lock) { running != null } }) {
