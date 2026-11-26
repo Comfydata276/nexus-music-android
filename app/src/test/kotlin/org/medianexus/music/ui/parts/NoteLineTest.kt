@@ -190,4 +190,49 @@ class NoteLineTest {
         runCurrent()
         assertEquals("Signed in", screen.showing?.text)
     }
+
+    // ---- a note that must know it was seen (an arrival's) ------------------------------------------
+
+    @Test
+    fun anArrivalIsSaidWhenItsNoteGoesUpNotWhenItIsQueued() = runTest {
+        val line = line()
+        running(line)
+        var said = 0
+        line.add(Toast("Moved", "Undo") {})
+        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
+        runCurrent()
+        assertEquals("queued behind another: not yet said", 0, said)
+        advanceTimeBy(5_000 + NoteLine.BETWEEN_MILLIS + 1)
+        assertEquals(1, said)
+    }
+
+    @Test
+    fun anArrivalDroppedOrClearedBeforeItGoesUpIsNeverSaid() = runTest {
+        val line = line()
+        running(line)
+        var said = 0
+        line.add(Toast("Moved", "Undo") {})
+        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
+        runCurrent()
+        line.clear()
+        advanceTimeBy(30_000)
+        assertEquals(0, said)
+    }
+
+    @Test
+    fun anArrivalPutUpWhileTheAppIsHiddenIsNotSaid() = runTest {
+        var inFront = false
+        val line = NoteLine(now = { testScheduler.currentTime }, inFront = { inFront })
+        running(line)
+        var said = 0
+        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
+        runCurrent()
+        assertEquals(0, said)
+        // Offered again when the app is back (the next collection), and seen then: the newer
+        // takes the older's place, and is said.
+        inFront = true
+        line.add(Toast(arrival.text, "Requests", shown = { said++ }) {})
+        runCurrent()
+        assertEquals(1, said)
+    }
 }

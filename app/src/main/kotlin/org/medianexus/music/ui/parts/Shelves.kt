@@ -157,7 +157,8 @@ fun FailedStrip(message: String, onRetry: () -> Unit, modifier: Modifier = Modif
 fun ToastHost(toasts: SharedFlow<org.medianexus.music.Toasts.Toast>, modifier: Modifier = Modifier, account: Any? = null) {
     var toast by remember { mutableStateOf(org.medianexus.music.Toasts.Toast("")) }
     var shown by remember { mutableStateOf(false) }
-    val line = remember { NoteLine() }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    val line = remember(lifecycle) { NoteLine(inFront = { lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) }) }
     // Sign-out, or another account: nothing said under the last one is shown under this one.
     LaunchedEffect(account) { line.clear() }
     LaunchedEffect(toasts) { toasts.collect { line.add(it) } }

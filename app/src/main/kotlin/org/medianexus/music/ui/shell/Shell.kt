@@ -262,9 +262,10 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
 
 /**
  * Requests, for as long as the app's screens are up: **the one place arrival news is said**,
- * where every passing note is (each sentence is handed over once, to one listener: the last
- * eight wait while nobody listens, the app in the background included), with "Requests" on
- * the note as the way to see it; it belongs to the account signed in, and goes with it. And
+ * where every passing note is, with "Requests" on the note as the way to see it. An arrival
+ * counts as said only when its note is put on the screen with the app in front (the note
+ * tells `RequestsPages.shown`); one that never was is offered again by the next collection,
+ * at the latest the next start. It belongs to the account signed in, and goes with it. And
  * each time the app's screen is in front again, the connection is told, so that a sign-in
  * whose browser tab was closed is given up (`Requests.cameBack`).
  */
@@ -276,8 +277,10 @@ private fun RequestsNews(ui: Ui) {
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     if (pages != null) LaunchedEffect(pages, lifecycle) {
         lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
-            pages.news.collect { said ->
-                ui.graph.toasts.show(said, res.getString(R.string.requests)) { ui.open(Route.Requests) }
+            // Collecting marks nothing: an arrival is said when its note is on the screen
+            // (`shown`), and one that never gets there is offered again by the next collection.
+            pages.arrivals.collect { arrival ->
+                ui.graph.toasts.show(arrival.words, res.getString(R.string.requests), onAction = { ui.open(Route.Requests) }, shown = { pages.shown(arrival) })
                 ui.requestsChanged()
             }
         }

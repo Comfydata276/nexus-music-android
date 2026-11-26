@@ -20,6 +20,9 @@ import org.medianexus.music.Toasts.Toast
  *   Its button pressed, it goes at once and the next comes.
  * - **At sign-out, or another account** ([clear]), the line is emptied, the note showing too:
  *   nothing said under one account, button and all, is shown under the next.
+ * - **A note that must know it was seen** (an arrival's: `Toast.shown`) is told when it goes
+ *   up with the app in front, and at no other time: not when it is queued, nor if it is
+ *   dropped, cleared or put up while the app is hidden.
  *
  * Plain Kotlin, so it can be tested on its own; [ToastHost] runs it on the main thread, which
  * is the only thread that touches it.
@@ -28,6 +31,9 @@ class NoteLine(
     private val waitingAtMost: Int = 4,
     /** Milliseconds, from any fixed point (a test's own clock). */
     private val now: () -> Long = { android.os.SystemClock.uptimeMillis() },
+    /** Whether the app is in front: a note put up while it isn't has not been seen, and its
+     *  `shown` is not told. */
+    private val inFront: () -> Boolean = { true },
 ) {
     private val waiting = ArrayDeque<Toast>()
     private var showing: Toast? = null
@@ -97,6 +103,7 @@ class NoteLine(
             goNow = false
             var since = now()
             show(note, true)
+            if (inFront()) note.shown?.invoke()
             try {
                 while (!goNow) {
                     val newer = replaceWith
@@ -106,6 +113,7 @@ class NoteLine(
                         showing = newer
                         since = now()
                         show(newer, true)
+                        if (inFront()) newer.shown?.invoke()
                     }
                     val left = since + lasts(note, othersWaiting = waiting.isNotEmpty()) - now()
                     if (left <= 0) break

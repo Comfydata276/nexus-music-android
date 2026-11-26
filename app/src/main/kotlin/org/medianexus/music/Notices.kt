@@ -47,8 +47,10 @@ class Notices {
  */
 class Toasts {
     /** One toast: its words, and what its one button says and does, if it has one (Windows'
-     *  "Undo"). */
-    data class Toast(val text: String, val action: String? = null, val onAction: (() -> Unit)? = null)
+     *  "Undo"). `shown` is told when it is actually put on the screen with the app in front
+     *  (an arrival's note: only then has it been said). The button's `onAction` stays last, so a
+     *  trailing block is always what the button does. */
+    data class Toast(val text: String, val action: String? = null, val shown: (() -> Unit)? = null, val onAction: (() -> Unit)? = null)
 
     private val said = MutableSharedFlow<Toast>(extraBufferCapacity = 8)
     val all: SharedFlow<Toast> = said.asSharedFlow()
@@ -63,7 +65,13 @@ class Toasts {
     /** A toast with a button (shown for longer, so there's time to press it: Windows'
      *  `toast_with_undo`). */
     fun show(text: String, action: String, onAction: () -> Unit) {
-        said.tryEmit(Toast(text, action, onAction))
+        said.tryEmit(Toast(text, action, onAction = onAction))
+    }
+
+    /** The same, told when it is on the screen (see [Toast.shown]). One that never gets
+     *  there (refused here, dropped from the line, the account changed) is never told. */
+    fun show(text: String, action: String, onAction: () -> Unit, shown: () -> Unit) {
+        said.tryEmit(Toast(text, action, shown = shown, onAction = onAction))
     }
 }
 

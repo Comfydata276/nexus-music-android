@@ -2329,8 +2329,14 @@ own words) are the Windows app's, in `strings.xml`.
   half minute while on screen, as Windows does.
 - **Home, "Artists you might like"**, after Recently played, only while connected; asked
   (`suggest()`) when the row is about to be drawn.
-- **Arrival news** is collected in one place, the shell, while the app is in front, and said
-  as a passing note with "Requests" on it; the note adds nothing in words.
+- **Arrival news** is collected in one place, the shell, while the app is in front
+  (`RequestsPages.arrivals`), and said as a passing note with "Requests" on it; the note adds
+  nothing in words. An arrival counts as said only when its note is actually put on the
+  screen with the app in front (`Toast.shown`, which tells `RequestsPages.shown`): not when
+  it is collected or queued, nor if the note is dropped, cleared at a change of account, or
+  put up while the app is hidden; one never shown is offered again by the next collection, at
+  the latest at the next start. **The note is the courtesy; the row is the record**: what has
+  arrived stays listed under "Arrived" on the Requests page however the note fared.
 - **Keyed to the account and the connection** (`RequestsHere.key`: the account, and the
   address, sign-in and who is signed in there): when it changes, a screen drops what it had
   and asks again.
