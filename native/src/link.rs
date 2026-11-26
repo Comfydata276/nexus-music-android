@@ -24,6 +24,9 @@
 //! sounding(): ByteArray?      {"queue":…,"at":…} while audio is advancing for the queue in the player; null otherwise
 //! hasSong(): Boolean
 //! ahead(): ByteArray          the ids of everything to come, in the order it would play, a JSON list
+//!                             (asked only when a command names an entry that is not where it says)
+//! entryAt(Int): ByteArray?    the id of the song that many places after the current one, as it is; null if
+//!                             the queue does not reach so far
 //! toCome(): Int               how many are to come
 //! carryOut(ByteArray): Int    {"command":{"do":…,"with":{…}},"ready":…}
 //!                             1: it changed the player   2: it was so already   0: it refused, or could not
@@ -300,6 +303,15 @@ impl PhonePlayer for &Door {
     }
     fn ahead(&self) -> Vec<String> {
         self.read("ahead")
+    }
+    fn entry_at(&self, at: usize) -> Option<String> {
+        // (A place no queue reaches: there is nothing there to ask after.)
+        let at = i32::try_from(at).ok()?;
+        let id = self.must("entryAt", |env, player| {
+            let answer = env.call_method(player, "entryAt", "(I)[B", &[JValue::Int(at)])?.l()?;
+            if answer.is_null() { Ok(None) } else { env.convert_byte_array(JByteArray::from(answer)).map(Some) }
+        })?;
+        Some(String::from_utf8(id).unwrap_or_else(|_| panic!("the phone's player gave an answer that could not be read: entryAt")))
     }
     fn to_come(&self) -> usize {
         let number = self.must("toCome", |env, player| env.call_method(player, "toCome", "()I", &[])?.i());

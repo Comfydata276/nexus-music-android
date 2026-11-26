@@ -92,11 +92,22 @@ internal class LinkSide(
 
     private fun currentSong(): Song? = (exo.currentMediaItem?.localConfiguration?.tag as? QueuePlayer.SongTag)?.song ?: queue.current()
 
-    /** Its place in the playing order. (The cursor, unless the cursor has yet to follow.) */
+    /** Where the current entry was last found by walking the queue ([place]). */
+    private var foundAt = -1
+
+    /**
+     * Its place in the playing order. (The cursor, unless the cursor has yet to follow:
+     * then the entry is looked for, **once**. The library asks several things in one
+     * call, each of which needs the place, and a long queue is long to walk: where the
+     * entry was found last is looked at first, and it is searched for only if it is no
+     * longer there.)
+     */
     private fun place(): Int {
         val uid = currentUid() ?: return queue.cursor
         if (queue.currentUid() == uid) return queue.cursor
-        return queue.placeOf(uid).takeIf { it >= 0 } ?: queue.cursor
+        if (uidAt(foundAt) == uid) return foundAt
+        foundAt = queue.placeOf(uid)
+        return foundAt.takeIf { it >= 0 } ?: queue.cursor
     }
 
     private fun songAt(place: Int): Song? = queue.order.getOrNull(place)?.let { queue.songs.getOrNull(it) }
@@ -186,8 +197,18 @@ internal class LinkSide(
         put("context", queue.context)
     }
 
+    /** Everything to come, by id. The whole of it: asked only when a command names an
+     *  entry that is not where it says ([entryAt] is asked first). */
     fun ahead(): JsonArray = buildJsonArray {
         if (hasSong()) for (at in place() + 1 until queue.order.size) add(JsonPrimitive(songAt(at)?.id.orEmpty()))
+    }
+
+    /** The id of the song `at` places after the current one, as [ahead] would list it;
+     *  null if the queue does not reach so far. */
+    fun entryAt(at: Int): String? {
+        if (!hasSong() || at < 0) return null
+        val place = place() + 1 + at
+        return if (place in 0 until queue.order.size) songAt(place)?.id.orEmpty() else null
     }
 
     /** The number of the queue in the player ([QueuePlayer.whole]). */
@@ -517,9 +538,10 @@ internal class LinkSide(
                 val last = (queue.order.size - base - 1).coerceAtLeast(0)
                 val to = with.getValue("to").jsonPrimitive.int.coerceIn(0, last)
                 if (to == from && queuedAt(base + from) == queued) return SO_ALREADY
-                // Where it goes is said as the entry it comes after, among the others.
-                val others = (base until queue.order.size).filter { it != base + from }
-                val after = if (to == 0) null else uidAt(others[to - 1])
+                // Where it goes is said as the entry it comes after, among the others:
+                // the one `to - 1` places on once this entry is left out of the count.
+                // (Worked out, not found by listing the others: a long queue is long.)
+                val after = if (to == 0) null else uidAt(base + (to - 1).let { if (it < from) it else it + 1 })
                 changedTheList { player.moveEntry(uid, after, queued) }
             }
             "clear" -> {

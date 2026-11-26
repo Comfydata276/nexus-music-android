@@ -25,7 +25,7 @@ test-seams = []
 # Cargo.lock records it; the build is `--locked`, so it cannot drift. To move to a later
 # release, change `rev` here, run `scripts/dx native/build --relock`, and commit both.
 # (To work on the core and the phone at once: NEXUS_CORE_LOCAL, see native/build.)
-nexus-core = { git = "https://github.com/Comfydata276/nexus-music", rev = "5a89cce291ff8cc70f1fb829765ea44d11379eb9" }
+nexus-core = { git = "https://github.com/Comfydata276/nexus-music", rev = "6b4711f029a46f0729f7afa0252095a43bef4b77" }
 # The Java side of the boundary: finding the call's arguments and handing back its answer.
 # No default features: it never starts a JVM of its own.
 jni = { version = "0.21", default-features = false }

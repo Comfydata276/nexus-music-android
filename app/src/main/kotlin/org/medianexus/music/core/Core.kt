@@ -875,6 +875,10 @@ object Core {
         fun sounding(): ByteArray?
         fun hasSong(): Boolean
         fun ahead(): ByteArray
+
+        /** The id of the song `at` places after the current one, as it is; null if the
+         *  queue does not reach so far. */
+        fun entryAt(at: Int): ByteArray?
         fun toCome(): Int
         fun carryOut(asked: ByteArray): Int
         /** Whether the phone is then not set to play. */

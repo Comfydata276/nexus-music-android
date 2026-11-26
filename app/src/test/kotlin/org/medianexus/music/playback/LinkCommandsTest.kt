@@ -212,6 +212,55 @@ class LinkCommandsTest {
     }
 
     /**
+     * **A command that names an entry of the phone's queue** names it by its place and its
+     * song. The library asks the phone what is at that place (one song, [LinkSide.entryAt])
+     * and lists everything to come only if it is another song: here both, and a move among
+     * the entries, whose place is worked out and not found by listing the others.
+     */
+    @Test
+    fun aCommandThatNamesAnEntryFindsItWhereItWasSeenOrByItsSong() {
+        inside.player.play(mine(), 0, "A list", playNow = false)
+        settle()
+        join()
+        fun ids() = inside.player.queue.playingOrder().map { it.id }
+        fun entry(at: Int, id: String, more: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit = {}) = buildJsonObject {
+            put("at", at)
+            put("id", id)
+            more()
+        }
+        // Where it was seen: the second to come is s2.
+        var at = generation()
+        assertEquals(true, hear(command("remove", at, entry(1, "s2"))).single().getValue("ok").jsonPrimitive.booleanOrNull)
+        assertEquals(listOf("s0", "s1", "s3", "s4", "s5"), ids())
+        // Not where it was seen (the sender saw s4 a place further on): by its song.
+        at = generation()
+        assertEquals(true, hear(command("remove", at, entry(3, "s4"))).single().getValue("ok").jsonPrimitive.booleanOrNull)
+        assertEquals(listOf("s0", "s1", "s3", "s5"), ids())
+        // A song that is not to come at all cannot be done, and changes nothing.
+        at = generation()
+        val nowhere = hear(command("remove", at, entry(0, "s2"))).single()
+        assertEquals(listOf(false, "cannot"), listOf(nowhere.getValue("ok").jsonPrimitive.booleanOrNull, nowhere.getValue("why").jsonPrimitive.contentOrNull))
+        assertEquals(listOf("s0", "s1", "s3", "s5"), ids())
+        // A move: the last to come put first, and then the first put last.
+        at = generation()
+        val first = buildJsonObject { put("from", 2); put("id", "s5"); put("to", 0); put("queued", false) }
+        assertEquals(true, hear(command("move", at, first)).single().getValue("ok").jsonPrimitive.booleanOrNull)
+        assertEquals(listOf("s0", "s5", "s1", "s3"), ids())
+        at = generation()
+        val last = buildJsonObject { put("from", 0); put("id", "s5"); put("to", 2); put("queued", false) }
+        assertEquals(true, hear(command("move", at, last)).single().getValue("ok").jsonPrimitive.booleanOrNull)
+        assertEquals(listOf("s0", "s1", "s3", "s5"), ids())
+        // And into the middle, from either side.
+        at = generation()
+        assertEquals(true, hear(command("move", at, buildJsonObject { put("from", 0); put("id", "s1"); put("to", 1); put("queued", false) })).single().getValue("ok").jsonPrimitive.booleanOrNull)
+        assertEquals(listOf("s0", "s3", "s1", "s5"), ids())
+        at = generation()
+        assertEquals(true, hear(command("move", at, buildJsonObject { put("from", 2); put("id", "s5"); put("to", 1); put("queued", false) })).single().getValue("ok").jsonPrimitive.booleanOrNull)
+        assertEquals(listOf("s0", "s3", "s5", "s1"), ids())
+        assertFalse(link().stopped)
+    }
+
+    /**
      * **A device that does not speak as the phone does commands it** (the Windows
      * repository's `docs/linking-design.md`, 5.10): one that says no number, which is every
      * build from before the number was said, and one that says a higher. Each command is

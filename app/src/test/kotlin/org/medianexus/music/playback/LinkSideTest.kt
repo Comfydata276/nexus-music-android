@@ -289,6 +289,13 @@ class LinkSideTest {
         settle()
         assertEquals("a change to the queue in place moved its number", first, side.queueNumber())
 
+        // What is at each place to come, asked one at a time, is what the whole list says
+        // is there; and nothing past its end, or before its start.
+        val ahead = side.ahead().map { it.jsonPrimitive.content }
+        assertEquals(ahead, ahead.indices.map { side.entryAt(it) })
+        assertNull(side.entryAt(ahead.size))
+        assertNull(side.entryAt(-1))
+        assertNull(side.entryAt(Int.MAX_VALUE))
         // A queue to take, none of whose songs the phone can make: nothing is put in.
         side.take(queueOf(listOf(Song(id = "nobody-has-this"))))
         assertEquals(first, side.queueNumber())

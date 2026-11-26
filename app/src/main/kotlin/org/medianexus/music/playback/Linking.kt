@@ -232,6 +232,7 @@ internal class Linking(
     override fun sounding(): ByteArray? = side.sounding()?.let(::bytes)
     override fun hasSong(): Boolean = side.hasSong()
     override fun ahead(): ByteArray = bytes(side.ahead())
+    override fun entryAt(at: Int): ByteArray? = side.entryAt(at)?.toByteArray()
     override fun toCome(): Int = side.toCome()
 
     override fun carryOut(asked: ByteArray): Int {
