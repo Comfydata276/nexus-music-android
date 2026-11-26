@@ -1068,6 +1068,10 @@ object Core {
     /** Whether a frame the phone asked to be sent to the other device is a command. */
     internal fun linkTestIsCommand(frame: String): Boolean = across(frame, String.serializer(), Boolean.serializer(), ::linkTestIsCommand)
 
+    /** What a frame the phone asked to be sent to the other device asks, as that device
+     *  reads it: `{"t":"do","do":…,…}` for a command. */
+    internal fun linkTestAsked(frame: String): JsonObject = across(frame, String.serializer(), JsonObject.serializer(), ::linkTestAsked)
+
     @Serializable
     private class LinkTestAnsweredIn(val session: Long, val frames: List<String>, val speaks: Long?, val name: String, val playing: Boolean, val title: String, val full: JsonObject?, val queue: JsonObject?, val at: LinkAt)
 
@@ -1211,6 +1215,7 @@ object Core {
     @JvmStatic private external fun linkTestOpen(input: ByteArray): ByteArray?
     @JvmStatic private external fun linkTestAnswered(input: ByteArray): ByteArray?
     @JvmStatic private external fun linkTestIsCommand(input: ByteArray): ByteArray?
+    @JvmStatic private external fun linkTestAsked(input: ByteArray): ByteArray?
     @JvmStatic private external fun find(input: ByteArray): ByteArray?
     @JvmStatic private external fun settle(input: ByteArray): ByteArray?
     @JvmStatic private external fun take(input: ByteArray): ByteArray?

@@ -147,11 +147,35 @@ internal class Linking(
     private val steer = LinkSteer(
         steered,
         side::song,
-        press = { pressed -> happened(pressed)?.acts?.lastOrNull { it["act"]?.jsonPrimitive?.content == "handled" }?.get("by_another")?.jsonPrimitive?.booleanOrNull == true },
+        press = ::asked,
         // (Said from inside what the library answered: told once that is done with.)
         letGo = { main.post { guarded { if (started) happened(event("let_go")) } } },
         note = { host.note(it) },
     )
+
+    /** Tells the library of something pressed for the device being steered: whether it was
+     *  asked of the device. */
+    private fun asked(pressed: JsonObject): Boolean =
+        happened(pressed)?.acts?.lastOrNull { it["act"]?.jsonPrimitive?.content == "handled" }?.get("by_another")?.jsonPrimitive?.booleanOrNull == true
+
+    /** **Whether the phone's player shows the device being steered** (and not, say, a
+     *  friend's jam). */
+    fun steering(): Boolean = started && steered.hands.let { it != null && it === steer.hands }
+
+    /**
+     * Play, or Pause, said outright to the device being steered (a media key that says
+     * which, the notification's button, the system's controls): never a toggle. Null while
+     * the phone's player does not show it ([steering]).
+     */
+    fun outright(): Steered.Outright? = if (steering()) outright else null
+
+    private val outright = Steered.Outright { on ->
+        val pressed = buildJsonObject {
+            put("event", "press")
+            put("press", buildJsonObject { put("play", on) })
+        }
+        if (!asked(pressed)) host.note("linking: a Play or Pause for the device being steered found none being steered")
+    }
 
     /** What the list of devices calls ([Linked]). */
     private val doing = object : Linked.Doing {

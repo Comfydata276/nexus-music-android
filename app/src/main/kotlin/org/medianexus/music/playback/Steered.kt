@@ -66,10 +66,16 @@ class Steered {
          * phone's player shows another: Play/Pause, Next and Previous go to that one, as
          * Windows' media keys do; the rest of the transport does nothing. True when the
          * command was taken here (and so is not to reach the phone's own player).
+         *
+         * With [outright] (one of the person's own devices, through linking), Play/Pause is
+         * **what the control showed**, said outright: the notification and the system's
+         * controls show the phone's own player, and their button is Play when that shows
+         * Play ([showsPlay]). Media3 hands play and pause over as one command, so the
+         * button shown is all there is to go by. Without it (a friend's jam), a toggle.
          */
-        fun press(hands: Hands, command: Int): Boolean {
+        fun press(hands: Hands, command: Int, outright: Outright? = null, showsPlay: Boolean = false): Boolean {
             when (command) {
-                androidx.media3.common.Player.COMMAND_PLAY_PAUSE -> hands.toggle()
+                androidx.media3.common.Player.COMMAND_PLAY_PAUSE -> if (outright != null) outright.playing(showsPlay) else hands.toggle()
                 androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT, androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> hands.next()
                 androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS, androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> hands.previous()
                 else -> if (command !in Access.TRANSPORT) return false
@@ -82,8 +88,14 @@ class Steered {
          * button go to that one as Play/Pause, Next and Previous as themselves, on the key going
          * down; the rest of the key (and any other media key) is taken and does nothing. True
          * when the key was taken here.
+         *
+         * With [outright] (one of the person's own devices, through linking): **Play is Play
+         * and Pause is Pause**, never a toggle. Only a key that is itself play/pause (a
+         * headset's one button) toggles; except the notification's own Play/Pause button,
+         * which Media3 sends as that same key ([notificationShowsPlay]: it came from the
+         * notification, and what its button showed), and which is what it showed.
          */
-        fun key(hands: Hands, event: android.view.KeyEvent): Boolean {
+        fun key(hands: Hands, event: android.view.KeyEvent, outright: Outright? = null, notificationShowsPlay: Boolean? = null): Boolean {
             val code = event.keyCode
             val media = code in setOf(
                 android.view.KeyEvent.KEYCODE_MEDIA_PLAY, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
@@ -95,7 +107,13 @@ class Steered {
             when (code) {
                 android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> hands.next()
                 android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> hands.previous()
-                android.view.KeyEvent.KEYCODE_MEDIA_PLAY, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, android.view.KeyEvent.KEYCODE_HEADSETHOOK -> hands.toggle()
+                android.view.KeyEvent.KEYCODE_MEDIA_PLAY, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE, android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, android.view.KeyEvent.KEYCODE_HEADSETHOOK -> when {
+                    outright == null -> hands.toggle()
+                    code == android.view.KeyEvent.KEYCODE_MEDIA_PLAY -> outright.playing(true)
+                    code == android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> outright.playing(false)
+                    code == android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE && notificationShowsPlay != null -> outright.playing(notificationShowsPlay)
+                    else -> hands.toggle()
+                }
             }
             return true
         }
@@ -158,6 +176,11 @@ class Steered {
         /** Where the song has got to by `now`. */
         fun positionAt(now: Long): Long =
             if (!playing) positionMs else (positionMs + (now - at)).coerceIn(0, durationMs.coerceAtLeast(0))
+    }
+
+    /** Play, or Pause, said outright to the other player: never a toggle (see [key]). */
+    fun interface Outright {
+        fun playing(on: Boolean)
     }
 
     /**

@@ -2095,7 +2095,12 @@ class PlaybackService : MediaLibraryService() {
             val hands = graph.steered.hands ?: return super.onMediaButtonEvent(session, controllerInfo, intent)
             @Suppress("DEPRECATION")
             val key = intent.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return super.onMediaButtonEvent(session, controllerInfo, intent)
-            return Steered.key(hands, key) || super.onMediaButtonEvent(session, controllerInfo, intent)
+            // (One of the person's own devices, through linking: Play and Pause said outright.
+            // The notification's own Play/Pause button arrives as the headset's one key, under
+            // the notification's name; it means what it showed, which is the phone's player.)
+            val outright = linking?.outright()
+            val notificationShowsPlay = if (outright != null && session.isMediaNotificationController(controllerInfo)) androidx.media3.common.util.Util.shouldShowPlayButton(player) else null
+            return Steered.key(hands, key, outright, notificationShowsPlay) || super.onMediaButtonEvent(session, controllerInfo, intent)
         }
 
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
@@ -2166,8 +2171,15 @@ class PlaybackService : MediaLibraryService() {
             // M6, rule 2: while the phone's player shows another, a headset's buttons (and the
             // notification's, which arrive under the same name) steer that one, as Windows'
             // media keys do, and nothing of this phone's own moves (see Steered.press).
+            // While it shows one of the person's own devices, steered through linking: a
+            // controller that is not the notification (which stands for the system's own
+            // controls and a headset) or the app's own screens (a car, a watch, another app)
+            // does nothing, to that device or to the phone's own queue. Play and Pause from
+            // the notification are what its button showed, said outright.
+            val outright = linking?.outright()
+            if (outright != null && caller != Caller.NOTIFICATION && caller != Caller.OWN_INTERFACE) return SessionError.ERROR_PERMISSION_DENIED
             if (caller == Caller.NOTIFICATION) graph.steered.hands?.let { hands ->
-                if (Steered.press(hands, playerCommand)) return SessionError.ERROR_PERMISSION_DENIED
+                if (Steered.press(hands, playerCommand, outright, outright != null && androidx.media3.common.util.Util.shouldShowPlayButton(player))) return SessionError.ERROR_PERMISSION_DENIED
             }
             // ("Play that entry of the queue", by its place, from someone whose screen may
             // still show the places as they were a moment ago, is the player's to act on or

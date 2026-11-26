@@ -1,6 +1,9 @@
 package org.medianexus.music.playback
 
 import android.app.Notification
+import android.content.Intent
+import android.os.Bundle
+import android.view.KeyEvent
 import android.os.Looper
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -520,6 +523,68 @@ class LinkCommandsTest {
         assertNull(steered.shown.value)
     }
 
+    /** The Study PC, playing, steered from the phone, whose own queue is parked (paused). */
+    private fun steerTheStudyPc() {
+        inside.player.play(mine(), 0, "A list", playNow = false)
+        settle()
+        join()
+        hear(look())
+        pass(31_000)
+        answered()
+        pass(600)
+        app.graph.linked.choose(app.graph.linked.state.value.devices.single().place)
+        answered(full = STUDY_PC)
+        assertEquals("Study PC", app.graph.steered.shown.value?.where)
+        assertTrue(app.graph.steered.shown.value!!.playing)
+        asked.clear()
+    }
+
+    /** The other device answers the last look the phone sent it. */
+    private fun answered(full: JsonObject? = null, queue: JsonObject? = null) {
+        val sent = asks("send").map { it.getValue("frame").jsonPrimitive.content }
+        asked.clear()
+        link().forTests { now, today -> Core.linkTestAnswered(session, sent, null, "Study PC", true, "Harbour Lights", now, today, full, queue) }
+    }
+
+    /** The commands the phone asked to be sent to the other device, by name, in order. */
+    private fun commandsSent(): List<String> = asks("send").map { it.getValue("frame").jsonPrimitive.content }
+        .filter { Core.linkTestIsCommand(it) }
+        .map { Core.linkTestAsked(it).getValue("do").jsonPrimitive.content }
+
+    private fun key(code: Int) = Intent(Intent.ACTION_MEDIA_BUTTON).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, code))
+
+    /**
+     * **While the phone steers a device, a control does what it says or nothing.** A car (or
+     * a watch, or another app) that sends the phone's media session a command under its own
+     * name moves nothing: not the device steered, and not the phone's parked queue. A key
+     * that says Play is Play to the device, and one that says Pause is Pause: never a toggle.
+     */
+    @Test
+    fun whileADeviceIsSteeredAControlDoesWhatItSaysOrNothing() {
+        steerTheStudyPc()
+        val car = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            "com.example.car", 4_321, 10_123, androidx.media3.session.MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, Bundle.EMPTY, true,
+        )
+        for (command in listOf(androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT, androidx.media3.common.Player.COMMAND_PLAY_PAUSE, androidx.media3.common.Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) {
+            @Suppress("DEPRECATION")
+            assertEquals("the car's command $command", androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED, inside.callback.onPlayerCommandRequest(inside.session, car, command))
+        }
+        settle()
+        assertEquals(emptyList<String>(), commandsSent())
+        assertEquals("s0", inside.player.queue.current()?.id)
+        assertFalse(inside.exo.playWhenReady)
+        // Play, to a device that is playing: nothing to ask of it. (A toggle would pause it.)
+        assertTrue(inside.callback.onMediaButtonEvent(inside.session, car, key(KeyEvent.KEYCODE_MEDIA_PLAY)))
+        assertEquals(emptyList<String>(), commandsSent())
+        // Pause is Pause.
+        assertTrue(inside.callback.onMediaButtonEvent(inside.session, car, key(KeyEvent.KEYCODE_MEDIA_PAUSE)))
+        assertEquals(listOf("pause"), commandsSent())
+        // The phone's own player is where it was, and linking has not stopped.
+        assertEquals("s0", inside.player.queue.current()?.id)
+        assertFalse(inside.exo.playWhenReady)
+        assertFalse(link().stopped)
+    }
+
     /**
      * **A press on the phone and what it did are one choice.** The press is noted where
      * it is made, the player is then changed, and the library is told once, as the
@@ -665,5 +730,14 @@ class LinkCommandsTest {
         assertTrue(link.stopped)
         assertNull(CoreHttp.linkClient())
         assertNull(CoreHttp.linkRelay())
+    }
+
+    private companion object {
+        /** What the Study PC's player shows, as a look that asked for everything is answered. */
+        val STUDY_PC: JsonObject = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"position":12.0,"now":{"id":"x0","title":"Harbour Lights","artist":"The Tide","album":"Harbour","duration":240},
+               "queue":[{"id":"x1","title":"One","duration":200,"queued":true},{"id":"x2","title":"Two","duration":180}],
+               "more":3,"context":"Harbour","shuffle":false,"repeat":0,"volume":0.8}""",
+        ).jsonObject
     }
 }

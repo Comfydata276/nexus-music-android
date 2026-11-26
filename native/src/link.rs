@@ -1023,6 +1023,19 @@ mod for_tests {
         })
     }
 
+    /// What a frame the phone asked to be sent to the other device asks, as that device
+    /// reads it: `{"t":"do","do":…,…}` for a command.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_org_medianexus_music_core_Core_linkTestAsked<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+        call(env, input, |sealed: String| {
+            let opened = frame::open(&keys(), &sealed, &MINE, &OTHER).ok_or("That frame does not open.")?;
+            if opened.kind != ASK {
+                return Err("That is not an ask.".to_string());
+            }
+            serde_json::from_slice::<serde_json::Value>(&opened.message).map_err(|_| "That ask is not JSON.".to_string())
+        })
+    }
+
     /// A frame the phone asked to be sent to the other device, opened as that device would.
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_org_medianexus_music_core_Core_linkTestOpen<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
