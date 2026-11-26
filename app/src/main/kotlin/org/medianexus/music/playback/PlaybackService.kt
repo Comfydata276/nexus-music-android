@@ -2178,12 +2178,12 @@ class PlaybackService : MediaLibraryService() {
             // While it shows one of the person's own devices, steered through linking: a
             // controller that is not the notification (which stands for the system's own
             // controls and a headset) or the app's own screens (a car, a watch, another app)
-            // does nothing, to that device or to the phone's own queue. Play and Pause from
-            // the notification are what its button showed, said outright.
+            // does nothing, to that device or to the phone's own queue. A Play or Pause from
+            // the system's controls arrives as one command that says neither: nothing.
             val outright = linking?.outright()
             if (outright != null && caller != Caller.NOTIFICATION && caller != Caller.OWN_INTERFACE) return SessionError.ERROR_PERMISSION_DENIED
             if (caller == Caller.NOTIFICATION) graph.steered.hands?.let { hands ->
-                if (Steered.press(hands, playerCommand, outright, outright != null && androidx.media3.common.util.Util.shouldShowPlayButton(player))) return SessionError.ERROR_PERMISSION_DENIED
+                if (Steered.press(hands, playerCommand, outright)) return SessionError.ERROR_PERMISSION_DENIED
             }
             // ("Play that entry of the queue", by its place, from someone whose screen may
             // still show the places as they were a moment ago, is the player's to act on or

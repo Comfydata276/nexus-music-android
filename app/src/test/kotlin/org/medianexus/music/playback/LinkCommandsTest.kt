@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import android.os.Looper
+import android.os.Process
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -550,8 +551,9 @@ class LinkCommandsTest {
         assertNull(steered.shown.value)
     }
 
-    /** The Study PC, playing, steered from the phone, whose own queue is parked (paused). */
-    private fun steerTheStudyPc() {
+    /** The Study PC, playing (or paused), steered from the phone, whose own queue is parked
+     *  (paused). */
+    private fun steerTheStudyPc(playing: Boolean = true) {
         inside.player.play(mine(), 0, "A list", playNow = false)
         settle()
         join()
@@ -560,9 +562,9 @@ class LinkCommandsTest {
         answered()
         pass(600)
         app.graph.linked.choose(app.graph.linked.state.value.devices.single().place)
-        answered(full = STUDY_PC)
+        answered(full = STUDY_PC, playing = playing)
         assertEquals("Study PC", app.graph.steered.shown.value?.where)
-        assertTrue(app.graph.steered.shown.value!!.playing)
+        assertEquals(playing, app.graph.steered.shown.value!!.playing)
         asked.clear()
     }
 
@@ -591,10 +593,10 @@ class LinkCommandsTest {
 
     /** The other device answers the last look the phone sent it (or, `carried`, the last
      *  command, as carried out). */
-    private fun answered(full: JsonObject? = null, queue: JsonObject? = null, carried: Boolean = false) {
+    private fun answered(full: JsonObject? = null, queue: JsonObject? = null, carried: Boolean = false, playing: Boolean = true) {
         val sent = asks("send").map { it.getValue("frame").jsonPrimitive.content }
         asked.clear()
-        link().forTests { now, today -> Core.linkTestAnswered(session, sent, null, "Study PC", true, "Harbour Lights", now, today, full, queue, carried) }
+        link().forTests { now, today -> Core.linkTestAnswered(session, sent, null, "Study PC", playing, "Harbour Lights", now, today, full, queue, carried) }
     }
 
     /** The commands the phone asked to be sent to the other device, by name, in order. */
@@ -632,6 +634,32 @@ class LinkCommandsTest {
         assertEquals(listOf("pause"), commandsSent())
         // The phone's own player is where it was, and linking has not stopped.
         assertEquals("s0", inside.player.queue.current()?.id)
+        assertFalse(inside.exo.playWhenReady)
+        assertFalse(link().stopped)
+    }
+
+    /**
+     * **An explicit command is literal on every path.** The system's controls (the lock
+     * screen, quick settings) reach the session under the notification's name, and Media3
+     * hands their Play and their Pause over as one command, which says neither: so while a
+     * device is steered it is nothing, and is never read by the button the phone's own
+     * player shows. (A Pause, with the device paused and the phone parked, once went as
+     * Play.)
+     */
+    @Test
+    fun whileADeviceIsSteeredAPlayOrPauseThatSaysNeitherIsNothing() {
+        steerTheStudyPc(playing = false)
+        // (Media3's notification controller as Media3 knows it: this app, a controller of its
+        // own kind, with the notification manager's mark. None is connected in this test.)
+        val notification = androidx.media3.session.MediaSession.ControllerInfo.createTestOnlyControllerInfo(
+            app.packageName, Process.myPid(), Process.myUid(), 1_000_000, 0, true,
+            Bundle().apply { putBoolean("androidx.media3.session.MediaNotificationManager", true) }, true,
+        )
+        assertTrue(inside.session.isMediaNotificationController(notification))
+        @Suppress("DEPRECATION")
+        assertEquals(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED, inside.callback.onPlayerCommandRequest(inside.session, notification, androidx.media3.common.Player.COMMAND_PLAY_PAUSE))
+        settle()
+        assertEquals(emptyList<String>(), commandsSent())
         assertFalse(inside.exo.playWhenReady)
         assertFalse(link().stopped)
     }

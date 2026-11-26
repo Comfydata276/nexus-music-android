@@ -68,14 +68,14 @@ class Steered {
          * command was taken here (and so is not to reach the phone's own player).
          *
          * With [outright] (one of the person's own devices, through linking), Play/Pause is
-         * **what the control showed**, said outright: the notification and the system's
-         * controls show the phone's own player, and their button is Play when that shows
-         * Play ([showsPlay]). Media3 hands play and pause over as one command, so the
-         * button shown is all there is to go by. Without it (a friend's jam), a toggle.
+         * **taken and does nothing**: Media3 hands a Play and a Pause over as this one
+         * command, which says neither, and a command is never read as what the phone's own
+         * player shows. (The notification's own button is a key: see [key].) Without it (a
+         * friend's jam), a toggle.
          */
-        fun press(hands: Hands, command: Int, outright: Outright? = null, showsPlay: Boolean = false): Boolean {
+        fun press(hands: Hands, command: Int, outright: Outright? = null): Boolean {
             when (command) {
-                androidx.media3.common.Player.COMMAND_PLAY_PAUSE -> if (outright != null) outright.playing(showsPlay) else hands.toggle()
+                androidx.media3.common.Player.COMMAND_PLAY_PAUSE -> if (outright == null) hands.toggle()
                 androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT, androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> hands.next()
                 androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS, androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> hands.previous()
                 else -> if (command !in Access.TRANSPORT) return false

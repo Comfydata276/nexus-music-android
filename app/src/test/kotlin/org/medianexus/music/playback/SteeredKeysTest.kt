@@ -13,8 +13,8 @@ import org.robolectric.RobolectricTestRunner
  * **While the phone steers one of the person's own devices, a control does what it says.**
  * Play is Play and Pause is Pause, to that device, never a toggle; only a key that is itself
  * play/pause (a headset's one button) toggles. The notification's own Play/Pause button,
- * which Media3 sends as that same key, and the system's controls, which Media3 hands over as
- * one command for both, are what they showed: the phone's own player, parked. A friend's jam,
+ * which Media3 sends as that same key, is what it showed: the phone's own player, parked.
+ * The system's controls, which Media3 hands over as one command for both, do nothing. A friend's jam,
  * which has no outright Play, is toggled as it always was.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -57,12 +57,13 @@ class SteeredKeysTest {
         assertEquals(listOf("play", "pause", "toggle", "toggle", "play", "pause", "next"), did)
     }
 
+    /** The system's Play and Pause arrive as one command that says neither: taken, and
+     *  nothing is asked. */
     @Test
-    fun theSystemsPlayOrPauseIsWhatItShowed() {
-        assertTrue(Steered.press(hands, Player.COMMAND_PLAY_PAUSE, outright, showsPlay = true))
-        assertTrue(Steered.press(hands, Player.COMMAND_PLAY_PAUSE, outright, showsPlay = false))
-        assertTrue(Steered.press(hands, Player.COMMAND_SEEK_TO_NEXT, outright, showsPlay = true))
-        assertEquals(listOf("play", "pause", "next"), did)
+    fun theSystemsPlayOrPauseIsNothing() {
+        assertTrue(Steered.press(hands, Player.COMMAND_PLAY_PAUSE, outright))
+        assertTrue(Steered.press(hands, Player.COMMAND_SEEK_TO_NEXT, outright))
+        assertEquals(listOf("next"), did)
     }
 
     @Test
