@@ -67,6 +67,10 @@ object RequestsWords {
      */
     const val SERVICE_UNUSABLE = "The sign-in in front of Lidarr gave an address the app can't use."
 
+    /** The person's toggle is on and the account's requests are not to be used yet: what
+     *  owns them is finishing what the last sign-in left (`RequestsNow.NotYet`). */
+    const val NOT_YET = "Requests aren't ready yet: the app is finishing what the last sign-in left. They'll be here in a moment."
+
     /** What this phone kept of requests was something the app could make nothing of, and
      *  has been moved aside under `name` ([Requests.keptAside]). */
     fun keptAside(name: String): String = "What this phone kept about requests was damaged, so requests have been started afresh. The damaged file has been kept as $name."
@@ -144,10 +148,12 @@ sealed interface RequestsState {
  */
 class Requests internal constructor(
     private val account: Account,
-    /** The account's own work: cancelled when it signs out of the music server. */
+    /** The work of what owns this account's requests: **as long as the process**, in the
+     *  app (see [RequestsOwners]); signing out of the music server does not end it, it is
+     *  told ([leave]). */
     private val scope: CoroutineScope,
     private val secrets: RequestsSecrets,
-    /** Runs something that must finish though the account has gone: handing a token back. */
+    /** Runs something that must finish whatever becomes of whoever asked: handing a token back. */
     private val afterwards: (suspend () -> Unit) -> Unit,
     /** Brings the app's own screen back in front of the browser. */
     private val comeBack: () -> Unit = {},
@@ -165,6 +171,8 @@ class Requests internal constructor(
      *  the person to go back to it. */
     private val frontMillis: Long = 2_500,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Told each time the person's toggle has been switched, and written down. */
+    private val switched: (Boolean) -> Unit = {},
 ) {
     private val kept = Kept(File(account.dirs.data, "requests.json"), RequestsSettings.serializer(), RequestsSettings(), note)
 
@@ -174,6 +182,20 @@ class Requests internal constructor(
     private val home: String? = CoreHttp.originOf(account.server)
     private val settingsNow = MutableStateFlow(RequestsSettings())
     private val stateNow = MutableStateFlow<RequestsState>(RequestsState.Off)
+
+    /** A connection Lidarr has just answered on as itself: what it was asked with. */
+    class Verified internal constructor(val at: LidarrAt)
+
+    private val verifiedNow = MutableStateFlow<Verified?>(null)
+
+    /**
+     * **The connection as Lidarr last answered on it**, each time a check of it ends
+     * "connected": the very address, key and sign-in the check was made with. Null from the
+     * moment anything of it changes, or another check begins, until a check ends so again.
+     * What is to be done once Lidarr is known to be there, for the Lidarr that it is, goes
+     * by this (putting back what an earlier run left changed: `RequestsPages`).
+     */
+    val verified: StateFlow<Verified?> = verifiedNow.asStateFlow()
 
     /** What is set up, without its secrets. */
     val settings: StateFlow<RequestsSettings> = settingsNow.asStateFlow()
@@ -244,6 +266,7 @@ class Requests internal constructor(
 
     /** The connection has changed. Under [turn]. */
     private fun moved() {
+        verifiedNow.value = null
         connection++
     }
 
@@ -403,8 +426,18 @@ class Requests internal constructor(
             forgotten = false
             moved()
             checks++
+            switched(on)
         }
         check()
+    }
+
+    /** Whether what is kept says the person's toggle is off. (Not, if what is kept can't
+     *  be read: then nothing is known, and nothing is changed.) */
+    suspend fun isOff(): Boolean = withContext(io) {
+        turn.withLock {
+            read()
+            !unreadable && !settingsNow.value.on
+        }
     }
 
     /**
@@ -516,6 +549,7 @@ class Requests internal constructor(
                 return@withContext stateNow.value
             }
             stateNow.value = RequestsState.Connecting
+            verifiedNow.value = null
             ++checks to at
         }
         val checked = Core.lidarrCheck(at)
@@ -555,6 +589,8 @@ class Requests internal constructor(
                     }
                 }
             }
+            // (Lidarr answered as itself, on this very connection.)
+            if (stateNow.value is RequestsState.Connected) verifiedNow.value = Verified(at)
             stateNow.value
         }
     }
@@ -786,8 +822,8 @@ class Requests internal constructor(
      * is stays in the account's folder with its other things.
      *
      * **Returns when it is all done**, the goodbye to the sign-in service included: until
-     * then this is still the owner of what is kept for the account, and the account is not
-     * made again (see `Accounts`).
+     * then nobody is handed this account's requests, or any other's (see
+     * [RequestsOwners]).
      */
     suspend fun leave() = withContext(NonCancellable + io) {
         turn.withLock {
@@ -800,21 +836,6 @@ class Requests internal constructor(
             stateNow.value = RequestsState.Off
         }
         goodbye?.await()
-    }
-
-    /**
-     * **Cut off from everything that is kept**, at once: the account is being made again
-     * and this, its old self, has taken too long to leave. Its secrets are forgotten (as
-     * leaving forgets them) and from here it reads, writes and deletes nothing. What it
-     * still has under way finishes against Lidarr and the sign-in service as it would, and
-     * leaves no trace on the phone.
-     */
-    fun cutOff() {
-        synchronized(owner) {
-            live = 0
-            secrets.cutOff()
-        }
-        kept.cut = true
     }
 
     private companion object {

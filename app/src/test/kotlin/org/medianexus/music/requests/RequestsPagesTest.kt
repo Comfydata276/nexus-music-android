@@ -96,7 +96,10 @@ class RequestsPagesTest {
         CoreHttp.dress = {}
     }
 
-    private class Made(val requests: Requests, val pages: RequestsPages, val scope: CoroutineScope, val dir: File)
+    /** `here`: whether the account is signed in (with its requests on). What owns an
+     *  account's requests lasts as long as the process, which `scope` stands for: signing
+     *  out does not end it, it is told. */
+    private class Made(val requests: Requests, val pages: RequestsPages, val scope: CoroutineScope, val dir: File, val here: MutableStateFlow<Boolean>)
 
     /** An account's requests, as the app makes them; `similar` is the music server's word
      *  on who an artist is like. */
@@ -111,7 +114,8 @@ class RequestsPagesTest {
             val state = requests.connect(server.address, "k")
             assertTrue("$state", state is RequestsState.Connected)
         }
-        Made(requests, RequestsPages(requests, scope, dir, library, played, similar, note = { notes += it }, clock = { now.get() }, afterwards = { work -> behind.launch { work() } }), scope, dir)
+        val here = MutableStateFlow(true)
+        Made(requests, RequestsPages(requests, scope, dir, library, played, similar, note = { notes += it }, clock = { now.get() }, here = here, afterwards = { work -> behind.launch { work() } }), scope, dir, here)
     }
 
     /** The connection as it is now: what a page shown this moment would be found under. */
@@ -400,7 +404,7 @@ class RequestsPagesTest {
         delay(300)
         // The account goes (signed out of the music server): whoever was listening to it is
         // let go, and hears nothing that happens afterwards.
-        made.scope.cancel()
+        made.here.value = false
         withTimeout(5_000) { listening.join() }
         assertTrue(said.isEmpty())
         // One who starts listening to it now hears nothing either, and is let go at once.
@@ -446,7 +450,7 @@ class RequestsPagesTest {
         // ...and now the screen goes, and the account with it (signed out of the music server).
         slow.set(true)
         asking.cancel()
-        made.scope.cancel()
+        made.here.value = false
         delay(300)
         slow.set(false)
         // Lidarr is seen through all the same, and the note is in the account's own folder.
@@ -609,6 +613,35 @@ class RequestsPagesTest {
         assertTrue("the setting was not put back", server.awaitAsked(45_000) { setsNewReleases(it, "all") })
         withTimeout(10_000) { while (entry in written(dir)) delay(50) }
         assertFalse(other.asked.any { it.method != "GET" })
+    }
+
+    @Test
+    fun `signing out while a setting is being put back stops that and is not over until it has stopped, and signing in again puts it back`() = runBlocking {
+        cutOffAfterTheSettingWasTurnedOff()
+        val dir = File(folder.root, "data")
+        val entry = """[1,"all","${server.address}"]"""
+        val before = server.asked.size
+        // The app is started again, and the putting back has begun: Lidarr is being
+        // looked at, to see whether it is done with the artist.
+        val made = made()
+        withTimeout(10_000) { while (server.asked.drop(before).none { it.method == "GET" && it.target.endsWith("/api/v1/command") }) delay(20) }
+        // Signed out of the music server. What that leaves is finished: the putting back
+        // is stopped, and it is not finished until the library's worker has ended.
+        made.here.value = false
+        withTimeout(10_000) { made.pages.settled() }
+        val asked = server.asked.size
+        // Nothing more is asked of Lidarr from then on (the next look would have been in
+        // five seconds, the setting put back in ten), and the entry is still written.
+        delay(12_000)
+        assertEquals(emptyList<String>(), server.asked.drop(asked).map { it.line })
+        assertTrue(written(dir), entry in written(dir))
+        assertFalse(server.asked.any { setsNewReleases(it, "all") })
+        // Signed in again: the same owner, and Lidarr answering on the connection again,
+        // puts it back.
+        made.here.value = true
+        made.requests.check()
+        assertTrue("the setting was not put back", server.awaitAsked(45_000) { setsNewReleases(it, "all") })
+        withTimeout(10_000) { while (entry in written(dir)) delay(50) }
     }
 
     @Test
@@ -917,7 +950,7 @@ class RequestsPagesTest {
         quietBand()
         val made = made()
         got(made.pages.search("quiet band"))
-        made.scope.cancel()
+        made.here.value = false
         delay(300)
         val before = server.asked.size
         val after = runCatching { made.pages.search("quiet band") }

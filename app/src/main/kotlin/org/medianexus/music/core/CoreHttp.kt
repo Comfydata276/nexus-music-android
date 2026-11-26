@@ -548,10 +548,10 @@ internal object CoreHttp {
     /** Starts something the library sees through, without waiting for it. */
     fun <T> seeingThrough(act: (operation: Long) -> T): Begun<T> = begun(begin(changing = false, callMillis = changeMillis), act)
 
-    private fun <T> begun(doing: Doing, act: (operation: Long) -> T): Begun<T> {
+    private fun <T> begun(doing: Doing, act: (operation: Long) -> T, pool: Executor = changers): Begun<T> {
         val done = CompletableDeferred<T>()
         try {
-            changers.execute {
+            pool.execute {
                 val outcome = if (doing.isStopped) Result.failure(CancellationException(STOPPED_WORDS)) else runCatching { act(doing.id) }
                 end(doing)
                 outcome.fold(done::complete, done::completeExceptionally)
@@ -634,10 +634,12 @@ internal object CoreHttp {
      * Putting back what an earlier run left changed on Lidarr. The library looks at Lidarr
      * every few seconds until it has finished with the artist, which can take minutes: so
      * it has **a thread of its own**, and is never in the way of what the person asks for.
-     * Cancelling the caller stops it at once, the wait and the request in flight: what it
-     * had not put back is still written down, for the next time.
+     * Begun, and not waited for: stopping it ends the wait and the request in flight at
+     * once, and **how it ended is known only when the library's worker has ended**
+     * ([Begun.done]), which is what whoever must not start another beside it waits for.
+     * What it had not put back is still written down, for the next time.
      */
-    suspend fun <T> puttingBack(act: (operation: Long) -> T): T = run(begin(changing = false, callMillis = changeMillis), backing, act)
+    fun <T> puttingBack(act: (operation: Long) -> T): Begun<T> = begun(begin(changing = false, callMillis = changeMillis), act, backing)
 
     // ---- what the library calls ----------------------------------------------------------------
     //

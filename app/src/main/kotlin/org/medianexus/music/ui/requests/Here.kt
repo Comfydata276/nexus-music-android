@@ -58,15 +58,21 @@ class RequestsHere(
     private data class Connection(val account: AccountGraph, val on: Boolean, val address: String, val service: String, val signedIn: String)
 }
 
-/** Requests for the account signed in, as they stand now; null in a build without them, or
- *  for a moment while nobody is signed in. */
+/**
+ * Requests for the account signed in, as they stand now. Null in a build without them; for
+ * a moment while nobody is signed in; **while the person's toggle is off** (nothing of
+ * requests exists then); and while what owns the account's requests is still finishing
+ * what the last sign-in left (`AccountGraph.requestsNow` tells the three apart).
+ */
 @Composable
 fun requestsHere(): RequestsHere? {
     if (!RequestsBuild.on) return null
     val ui = LocalUi.current
     val account = ui.account ?: return null
-    val requests = account.requests ?: return null
-    val pages = account.requestsPages ?: return null
+    val now by account.requestsNow.collectAsStateWithLifecycle()
+    val on = now as? org.medianexus.music.requests.RequestsNow.On ?: return null
+    val requests = on.requests
+    val pages = on.pages
     val state by requests.state.collectAsStateWithLifecycle()
     val settings by requests.settings.collectAsStateWithLifecycle()
     val reach by ui.graph.watch.state.collectAsStateWithLifecycle()

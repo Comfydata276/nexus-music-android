@@ -30,10 +30,6 @@ internal class Kept<T>(private val file: File, private val shape: KSerializer<T>
     @Volatile var asideAs: String? = null
         private set
 
-    /** Whoever holds this may write nothing more: the file is another owner's now (see
-     *  `Accounts`: an account made again while its old self was still leaving). */
-    @Volatile var cut = false
-
     /** What is kept; [nothing] if nothing is; null if it is there and couldn't be read. */
     @Synchronized
     fun read(): T? {
@@ -69,7 +65,7 @@ internal class Kept<T>(private val file: File, private val shape: KSerializer<T>
      *  there couldn't be read, or couldn't be moved aside). */
     @Synchronized
     fun write(value: T): Boolean {
-        if (unreadable || cut) return false
+        if (unreadable) return false
         return try {
             writeAtomically(file, json.encodeToString(shape, value).toByteArray(), durable = true)
             true
@@ -112,9 +108,6 @@ internal class KeptAsWritten(private val file: File, private val note: (String) 
     @Volatile var asideAs: String? = null
         private set
 
-    /** As [Kept.cut]. */
-    @Volatile var cut = false
-
     /** Hands what is written there to `load`, which says whether it could make sense of
      *  it, and does with the file what the rules above say. Once, as the account starts. */
     @Synchronized
@@ -147,7 +140,7 @@ internal class KeptAsWritten(private val file: File, private val note: (String) 
      *  none removes what is there. False if it isn't done, or may not be. */
     @Synchronized
     fun write(bytes: ByteArray?, surely: Boolean): Boolean {
-        if (held || cut) return false
+        if (held) return false
         return try {
             if (bytes == null) java.nio.file.Files.deleteIfExists(file.toPath()) else writeAtomically(file, bytes, durable = surely)
             true

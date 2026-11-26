@@ -19,6 +19,7 @@ import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -40,9 +41,11 @@ import org.medianexus.music.store.SecretBox
 import org.medianexus.music.store.accountKey
 
 /**
- * Signing out of the music server and straight back in to **the same account**: there is
- * one owner of that account's requests at a time ([Accounts]). The account's objects are
- * made as the app makes them, with the session played by the test.
+ * Signing out of the music server and back in, to **the same account** and by way of
+ * another: **what owns an account's requests is made once and kept for the life of the
+ * process** (`RequestsOwners`), and the account's own objects, for its music, never wait
+ * for it. The account's objects are made as the app makes them, with the session played
+ * by the test.
  */
 class SameAccountAgainTest {
     @get:Rule val limit: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(120)
@@ -76,27 +79,40 @@ class SameAccountAgainTest {
     }
 
     private val secrets by lazy { File(folder.root, "sealed") }
-    private val dirs by lazy { AccountDirs(folder.newFolder("data"), folder.newFolder("cache")) }
 
-    /** Somebody signed in to the music server: the same account each time, a session of its
-     *  own each time (as signing in again makes one). */
-    private fun signedIn(): SessionState.SignedIn {
-        val api = Subsonic(music.url("/").toString(), "tester", "pass", OkHttpClient(), OfflineSwitch())
-        return SessionState.SignedIn(Account(api.server, api.username, accountKey(api.server, api.username), dirs), api)
+    /** Somebody signed in to the music server: the same account each time for one name, a
+     *  session of its own each time (as signing in again makes one). */
+    private fun signedIn(name: String = "tester"): SessionState.SignedIn {
+        val api = Subsonic(music.url("/").toString(), name, "pass", OkHttpClient(), OfflineSwitch())
+        val folders = dirsOf.getOrPut(name) { AccountDirs(folder.newFolder("data-$name"), folder.newFolder("cache-$name")) }
+        return SessionState.SignedIn(Account(api.server, api.username, accountKey(api.server, api.username), folders), api)
     }
 
-    private fun accounts(session: MutableStateFlow<SessionState>, leaveMillis: Long? = null): Accounts {
+    private val dirsOf = HashMap<String, AccountDirs>()
+
+    private val notes = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val afterwards: (suspend () -> Unit) -> Unit = { work -> app.launch { work() } }
+
+    /** Where an account's secrets are kept (the first account's in the folder itself). */
+    private fun secretsOf(account: Account) = if (account.username == "tester") secrets else File(secrets, account.username)
+
+    /** What owns each account's requests, as the app makes it: one for the process. */
+    private fun owners(): RequestsOwners = RequestsOwners(
+        app,
+        make = { account, sources, here, switched ->
+            val requests = Requests(account, app, RequestsSecrets(secretsOf(account), Plain, account.server, account.username), afterwards = afterwards, note = { notes += it }, switched = switched)
+            requests to RequestsPages.of(requests, app, account.dirs.data, sources, here, note = { notes += it }, afterwards = afterwards)
+        },
+        note = { notes += it },
+    )
+
+    private fun accounts(session: MutableStateFlow<SessionState>, owners: RequestsOwners = owners()): Accounts {
         RequestsBuild.forTests = true
-        val afterwards: (suspend () -> Unit) -> Unit = { work -> app.launch { work() } }
         val make: (SessionState.SignedIn) -> AccountGraph = { now ->
-            val wiring = AccountWiring(
-                settings = MutableStateFlow(org.medianexus.music.store.Settings()), reach = MutableStateFlow(Reach()), suspect = {},
-                requests = { account -> Requests(account.account, account.scope, RequestsSecrets(secrets, Plain, account.account.server, account.account.username), afterwards = afterwards) },
-                afterwards = afterwards,
-            )
+            val wiring = AccountWiring(settings = MutableStateFlow(org.medianexus.music.store.Settings()), reach = MutableStateFlow(Reach()), suspect = {}, requests = { owners })
             AccountGraph(now.account, now.api, Dispatchers.IO, wiring)
         }
-        return if (leaveMillis == null) Accounts(session, { session.value }, app, make) else Accounts(session, { session.value }, app, make, leaveMillis)
+        return Accounts(session, { session.value }, app, make)
     }
 
     private fun param(link: String, name: String): String = Core.gateParam(link.substringAfter('?'), name)!!
@@ -114,8 +130,9 @@ class SameAccountAgainTest {
     }
 
     private suspend fun connectedAndSignedIn(graph: AccountGraph, behind: SignInStandIn) {
+        // (The person's toggle, turned on: what brings the account's requests into being.)
+        if (graph.requests == null) graph.turnRequestsOn()
         val requests = graph.requests!!
-        requests.switch(true)
         requests.connect(behind.lidarr.address, KEY)
         signInWith(requests.signIn()!!)
         withTimeout(20_000) { requests.state.first { it is RequestsState.Connected } }
@@ -123,13 +140,21 @@ class SameAccountAgainTest {
 
     private fun tokenKept(): String? = File(secrets, "lidarr-token.sealed").takeIf { it.exists() }?.readText()?.split('\n', limit = 3)?.get(2)
 
+    /** The account's requests, once they are there (they are not while their owner is still
+     *  finishing what the last sign-in left). */
+    private suspend fun requestsOf(graph: AccountGraph): Requests = withTimeout(20_000) {
+        while (graph.requests == null) delay(20)
+        graph.requests!!
+    }
+
     @Test
-    fun `signed out and straight back in to the same account, its requests are not made again until the old ones have finished leaving`() = runBlocking {
+    fun `signed out and straight back in to the same account, the account is there at once and its requests are the same owner's, once that has finished`() = runBlocking {
         val behind = SignInStandIn(closing, KEY)
         val session = MutableStateFlow<SessionState>(signedIn())
         val accounts = accounts(session)
         val first = withTimeout(10_000) { accounts.state.first { it != null } }!!
         connectedAndSignedIn(first, behind)
+        val owner = first.requests!!
         val token = tokenKept()!!
 
         // Signed out of the music server; the sign-in service is slow to take the token
@@ -138,20 +163,23 @@ class SameAccountAgainTest {
         behind.held["/application/o/revoke/"] = goodbye
         session.value = SessionState.SignedOut
         session.value = signedIn()
+        // **The account is there at once**: its music waits for nothing of requests. (The
+        // player asks for it as it starts cold, and gives up after five seconds.)
+        val second = withTimeout(2_000) { accounts.state.first { it != null && it !== first } }!!
+        assertNotNull(withTimeout(2_000) { accounts.restored() })
+        // Its requests are not yet: their owner is finishing what the last sign-in left.
         assertTrue(behind.service.awaitAsked(10_000) { it.target == "/application/o/revoke/" })
-        delay(700)
-        // The account's objects are not made again yet: the old ones are still leaving, and
-        // there is one owner of what is kept for this account at a time.
-        assertNull("the account was made again while its old self was still leaving", accounts.state.value)
+        delay(500)
+        assertNull("requests were handed out while their owner was still leaving", second.requests)
 
-        // The old one's goodbye is done: now they are.
+        // That done, they are there: the same owner as before, never a second.
         goodbye.countDown()
-        val second = withTimeout(10_000) { accounts.state.first { it != null && it !== first } }!!
+        val requests = requestsOf(second)
+        assertTrue("another owner was made for the account", requests === owner)
         assertEquals(listOf(token), behind.revoked.toList())
-        // It starts with nothing of the old one's: the key went with the password, and the
-        // token was handed back.
+        // It starts with nothing of the last sign-in's: the key went with the password, and
+        // the token was handed back.
         assertTrue(secrets.listFiles().orEmpty().none { it.name.endsWith(".sealed") })
-        val requests = second.requests!!
         assertEquals(RequestsState.NotConnected, withTimeout(10_000) { requests.state.first { it != RequestsState.Off && it != RequestsState.Connecting } })
         // And what it then keeps is its own, with nobody left to take it away.
         connectedAndSignedIn(second, behind)
@@ -163,33 +191,91 @@ class SameAccountAgainTest {
     }
 
     @Test
-    fun `an old self that takes too long to leave is cut off from what is kept, and the account is made again`() = runBlocking {
+    fun `out of one account, in and out of another, and back in to the first while it is still leaving, the first has one owner still`() = runBlocking {
         val behind = SignInStandIn(closing, KEY)
         val session = MutableStateFlow<SessionState>(signedIn())
-        val accounts = accounts(session, leaveMillis = 1_000)
+        val accounts = accounts(session)
         val first = withTimeout(10_000) { accounts.state.first { it != null } }!!
         connectedAndSignedIn(first, behind)
+        val owner = first.requests!!
         val token = tokenKept()!!
         val goodbye = CountDownLatch(1)
         behind.held["/application/o/revoke/"] = goodbye
-        val began = System.nanoTime()
+
+        // Out of the first account; in to another, and out of it; back in to the first.
+        session.value = SessionState.SignedOut
+        session.value = signedIn("someone-else")
+        val other = withTimeout(2_000) { accounts.state.first { it != null && it !== first } }!!
+        assertEquals("someone-else", other.account.username)
         session.value = SessionState.SignedOut
         session.value = signedIn()
-        // Made again when the wait is up, the old one still not done...
-        val second = withTimeout(10_000) { accounts.state.first { it != null && it !== first } }!!
-        val waited = (System.nanoTime() - began) / 1_000_000
-        assertTrue("made again after $waited ms", waited in 900..4_000)
-        // ...with nothing of the old one's kept, and the old one cut off from the files.
-        assertTrue(secrets.listFiles().orEmpty().none { it.name.endsWith(".sealed") })
-        connectedAndSignedIn(second, behind)
-        val mine = tokenKept()!!
-        // The old goodbye finishes at last: the service is told of the old token, and what
-        // the account keeps now is untouched.
+        val third = withTimeout(2_000) { accounts.state.first { it != null && it !== first && it !== other } }!!
+        assertTrue(behind.service.awaitAsked(10_000) { it.target == "/application/o/revoke/" })
+        delay(500)
+        // While the first sign-in's goodbye is unfinished nobody else has the account's
+        // requests: not a second owner beside the first.
+        assertNull("requests were handed out while their owner was still leaving", third.requests)
+
         goodbye.countDown()
-        withTimeout(10_000) { while (behind.revoked.isEmpty()) delay(20) }
-        delay(800)
+        val requests = requestsOf(third)
+        assertTrue("another owner was made for the account", requests === owner)
         assertEquals(listOf(token), behind.revoked.toList())
+        connectedAndSignedIn(third, behind)
+        val mine = tokenKept()!!
+        delay(800)
         assertEquals(mine, tokenKept())
-        assertEquals(RequestsState.Connected("2.9.6.4552", signedInAs = "walker"), second.requests!!.check())
+        assertEquals(1, behind.revoked.size)
+    }
+
+    // ---- with the person's toggle off there is nothing ----------------------------------------------
+
+    private fun requestsFiles(of: AccountGraph) = of.account.dirs.data.listFiles().orEmpty().map { it.name }.filter { it.startsWith("requests") || it.startsWith("ask") || it.startsWith("arrivals") || it.startsWith("suggestions") }.sorted()
+
+    @Test
+    fun `with the toggle never touched nothing of requests is made, turned on they come into being, and turned off they stop`() = runBlocking {
+        val owners = owners()
+        val session = MutableStateFlow<SessionState>(signedIn())
+        val accounts = accounts(session, owners)
+        val first = withTimeout(10_000) { accounts.state.first { it != null } }!!
+        delay(500)
+        // Signed in, the build has requests, and the person has not turned them on: no
+        // owner, no object, nothing written, nothing read.
+        assertEquals(RequestsNow.Off, first.requestsNow.value)
+        assertNull(first.requests)
+        assertNull(first.requestsPages)
+        assertEquals(0, owners.made)
+        assertEquals(emptyList<String>(), requestsFiles(first))
+        assertFalse(secrets.exists())
+        assertEquals(emptyList<String>(), notes.toList())
+
+        // Turned on: there they are, and that they are on is a file that is there.
+        first.turnRequestsOn()
+        val on = first.requestsNow.value as RequestsNow.On
+        assertEquals(1, owners.made)
+        assertTrue(File(first.account.dirs.data, "requests.on").let { it.isFile && it.length() == 0L })
+        assertTrue(on.requests.settings.value.on)
+
+        // Turned off again: nothing is handed out, and the file is gone.
+        on.requests.switch(false)
+        withTimeout(10_000) { first.requestsNow.first { it == RequestsNow.Off } }
+        assertNull(first.requests)
+        withTimeout(10_000) { while (File(first.account.dirs.data, "requests.on").exists()) delay(20) }
+
+        // The app started again (another process: nothing is remembered but the files),
+        // with what was set up still in the account's folder and the toggle off: nothing
+        // of it is made, and none of it read (it is not even looked at: a file that could
+        // not be read is not noticed).
+        val settings = File(first.account.dirs.data, "requests.json")
+        assertTrue(settings.isFile)
+        assertTrue(settings.delete())
+        File(settings, "in the way").apply { parentFile.mkdirs() }.writeText("x")
+        notes.clear()
+        val later = owners()
+        val again = MutableStateFlow<SessionState>(signedIn())
+        val second = withTimeout(10_000) { accounts(again, later).state.first { it != null } }!!
+        delay(500)
+        assertEquals(RequestsNow.Off, second.requestsNow.value)
+        assertEquals(0, later.made)
+        assertEquals(emptyList<String>(), notes.toList())
     }
 }

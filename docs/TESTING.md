@@ -2822,6 +2822,21 @@ a sign-in as a real one does (PKCE, S256), and so does the kit's for the emulato
 (`shots/m7a/how/make-standin`, which also follows the kit's stand-in as the Windows side
 has since changed it).
 
+**One owner of an account's requests, and the toggle** (`SameAccountAgainTest`, with the
+account's objects made as the app makes them and the session played by the test; the first
+two seen to fail before the rule, for the reasons the review gave): "signed out and
+straight back in to the same account, the account is there at once and its requests are
+the same owner's, once that has finished" (the sign-in service holds the token's hand-back;
+the account's own objects are there within two seconds, its requests "not yet" until the
+hand-back is answered, then the very object as before); "out of one account, in and out
+of another, and back in to the first while it is still leaving, the first has one owner
+still"; "with the toggle never touched nothing of requests is made, turned on they come
+into being, and turned off they stop" (no owner made, no file written, and a file that
+could not be read not even noticed; then the same in a later run with the toggle off).
+`RequestsPagesTest`: "signing out while a setting is being put back stops that and is not
+over until it has stopped, and signing in again puts it back" (written with the rule, not
+seen to fail before it).
+
 **The way back** (`RequestsPagesTest`, through the app's own objects, the library and a
 stand-in Lidarr; each seen to fail at the pin before): "what an artist's setting is to go
 back to is written down on the phone before Lidarr is changed, and crossed off once it is

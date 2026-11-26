@@ -90,7 +90,9 @@ class RequestsDebugActivity : Activity() {
         setContentView(ScrollView(this).apply { addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)) })
         hearing = scope.launch {
             graph.accounts.state.collectLatest { account ->
-                account?.requestsPages?.news?.collect { java.io.File(filesDir, "requests-news.txt").appendText(it + "\n") }
+                account?.requestsNow?.collectLatest { now ->
+                    (now as? RequestsNow.On)?.pages?.news?.collect { java.io.File(filesDir, "requests-news.txt").appendText(it + "\n") }
+                }
             }
         }
         handle(intent)
@@ -214,12 +216,17 @@ class RequestsDebugActivity : Activity() {
         showing = scope.launch {
             // (The account may still be coming up.)
             graph.accounts.state.collectLatest { account ->
-                val requests = account?.requests
-                if (requests == null) {
-                    show("no requests here: ${if (account == null) "nobody is signed in" else "they are not forced on (DebugRequests)"}")
+                if (account == null) {
+                    show("no requests here: nobody is signed in")
                     return@collectLatest
                 }
-                requests.state.collectLatest { state -> show(describe(requests, state)) }
+                account.requestsNow.collectLatest { now ->
+                    when (now) {
+                        RequestsNow.Off -> show("no requests here: the toggle is off, or they are not forced on (DebugRequests)\nlast: $last")
+                        RequestsNow.NotYet -> show("requests: not yet (${RequestsWords.NOT_YET})")
+                        is RequestsNow.On -> now.requests.state.collectLatest { state -> show(describe(now.requests, state)) }
+                    }
+                }
             }
         }
     }
@@ -260,6 +267,15 @@ class RequestsDebugActivity : Activity() {
     }
 
     private fun act(what: String, address: String?, key: String?) {
+        // (The toggle turned on from nothing: the account's requests come into being.)
+        if (what == "on" && requests == null) {
+            val account = graph.accounts.state.value ?: return show("no requests here: nobody is signed in")
+            scope.launch {
+                account.turnRequestsOn()
+                last = "switched on: ${account.requests?.state?.value}"
+            }
+            return
+        }
         val requests = requests ?: return show("no requests here")
         scope.launch {
             last = when (what) {

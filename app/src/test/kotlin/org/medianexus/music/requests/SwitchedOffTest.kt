@@ -3,8 +3,10 @@ package org.medianexus.music.requests
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -12,7 +14,6 @@ import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
@@ -47,8 +48,20 @@ class SwitchedOffTest {
     @After
     fun stop() {
         RequestsBuild.forTests = null
+        app.cancel()
         server.close()
     }
+
+    private val app = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+    private var registry: RequestsOwners? = null
+
+    private fun owners(secrets: File): RequestsOwners = registry ?: RequestsOwners(
+        app,
+        make = { account, sources, here, switched ->
+            val requests = Requests(account, app, RequestsSecrets(secrets, Plain, account.server, account.username), afterwards = {}, switched = switched)
+            requests to RequestsPages.of(requests, app, account.dirs.data, sources, here, note = {}, afterwards = {})
+        },
+    ).also { registry = it }
 
     private fun account(secrets: File): AccountGraph {
         server.dispatcher = object : mockwebserver3.Dispatcher() {
@@ -60,9 +73,11 @@ class SwitchedOffTest {
         val dirs = AccountDirs(folder.newFolder("data"), folder.newFolder("cache"))
         val wiring = AccountWiring(
             settings = MutableStateFlow(org.medianexus.music.store.Settings()), reach = MutableStateFlow(Reach()), suspect = {},
-            requests = { account ->
+            // (What owns each account's requests, as the app has it: asked for only in a
+            // build that has requests.)
+            requests = {
                 made.incrementAndGet()
-                Requests(account.account, account.scope, RequestsSecrets(secrets, Plain, account.account.server, account.account.username), afterwards = {})
+                owners(secrets)
             },
         )
         return AccountGraph(Account(api.server, api.username, "key", dirs), api, Dispatchers.IO, wiring)
@@ -76,7 +91,8 @@ class SwitchedOffTest {
         try {
             delay(300)
             assertNull(account.requests)
-            assertEquals("the connection was made though the build has no requests", 0, made.get())
+            assertEquals(RequestsNow.Off, account.requestsNow.value)
+            assertEquals("what owns requests was asked for though the build has none", 0, made.get())
             assertFalse(File(account.account.dirs.data, "requests.json").exists())
             assertFalse(secrets.exists())
         } finally {
@@ -85,17 +101,24 @@ class SwitchedOffTest {
     }
 
     @Test
-    fun `forced on for a test, the connection is there and is off until the person switches it on`() = runBlocking {
+    fun `forced on for a test, there is still nothing of requests until the person turns them on`() = runBlocking {
         RequestsBuild.forTests = true
         val secrets = File(folder.root, "sealed")
         val account = account(secrets)
         try {
-            val requests = assertNotNull(account.requests).let { account.requests!! }
             delay(300)
+            // The build has requests; the person's toggle is off: no owner, no object, no file.
             assertEquals(1, made.get())
-            assertEquals(RequestsState.Off, requests.state.value)
-            // Nothing is kept until something is set up.
+            assertNull(account.requests)
+            assertEquals(RequestsNow.Off, account.requestsNow.value)
+            assertEquals(0, registry!!.made)
             assertFalse(File(account.account.dirs.data, "requests.json").exists())
+            assertFalse(secrets.exists())
+            // Turned on: the connection is there, on, with nothing set up and nothing kept.
+            account.turnRequestsOn()
+            val requests = account.requests!!
+            assertEquals(1, registry!!.made)
+            assertEquals(RequestsState.NotConnected, kotlinx.coroutines.withTimeout(10_000) { requests.state.first { it != RequestsState.Off && it != RequestsState.Connecting } })
             assertFalse(File(secrets, "lidarr-key.sealed").exists())
         } finally {
             account.close()

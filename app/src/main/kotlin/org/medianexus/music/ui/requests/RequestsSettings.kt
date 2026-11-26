@@ -67,10 +67,38 @@ private enum class Standing { NONE, WAITING, GOOD, SIGN_IN, BAD }
  * come back in front of it when the sign-in comes home; the shell tells the connection each
  * time the app's screen is in front again (`Requests.cameBack`).
  */
+/**
+ * The card while there is nothing of requests to show for the account: the toggle, off
+ * (turning it on is what brings the account's requests into being); or, on and not yet
+ * ready, the toggle held and one sentence saying why.
+ */
+@Composable
+private fun RequestsNotOn() {
+    val account = org.medianexus.music.ui.shell.LocalUi.current.account ?: return
+    val now by account.requestsNow.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val title = stringResource(R.string.requests_on)
+    val notYet = now == org.medianexus.music.requests.RequestsNow.NotYet
+    SettingRow(title, stringResource(R.string.requests_on_detail)) {
+        Toggle(notYet, { on -> if (on) scope.launch { account.turnRequestsOn() } }, title, enabled = !notYet)
+    }
+    if (notYet) {
+        BasicText(
+            RequestsWords.NOT_YET,
+            Modifier.fillMaxWidth().padding(vertical = 14.dp).semantics { liveRegion = LiveRegionMode.Polite },
+            style = Theme.type.body.copy(color = Theme.colors.text),
+        )
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RequestsSettings() {
-    val here = requestsHere() ?: return
+    val here = requestsHere()
+    if (here == null) {
+        RequestsNotOn()
+        return
+    }
     val requests = here.requests
     val settings = here.settings
     val state = here.state

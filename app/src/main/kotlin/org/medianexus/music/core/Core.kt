@@ -510,11 +510,14 @@ object Core {
     @Serializable
     private class GateGiveUpIn(val operation: Long, val service: String, val token: String, val bound: String?, val home: String?)
 
-    /** `gate::give_up_token`: tells the service a token is no longer wanted. Best effort.
-     *  `bound` is the place the token was given for: it is handed back there or not at all. */
+    /** `gate::give_up_token`: tells the service a token is no longer wanted. Best effort,
+     *  **and never long**: it never waits its turn behind other changes and has a few
+     *  seconds and no more ([CoreHttp.finishing]), because until a sign-out's goodbye is
+     *  done nobody is handed any account's requests (`RequestsOwners`). `bound` is the
+     *  place the token was given for: it is handed back there or not at all. */
     suspend fun gateGiveUp(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), home: String? = null) {
         try {
-            CoreHttp.changing { operation ->
+            CoreHttp.finishing { operation ->
                 wired
                 acrossPrivately(GateGiveUpIn(operation, door.service, token, bound, home), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
             }
@@ -643,13 +646,14 @@ object Core {
     /**
      * `bulk::Job::work_through`: **puts back what an earlier run left changed on this
      * Lidarr**, and crosses it off. It waits for Lidarr to have finished with the artist,
-     * looking every few seconds, so it can take minutes; cancelling the caller stops it,
-     * and what it had not put back is still written down. The value is whether nothing is
-     * left for this Lidarr.
+     * looking every few seconds, so it can take minutes. **Begun, not waited for**:
+     * stopped, what it had not put back is still written down, and `done` is how it ended
+     * once the library's worker has ended. The value is whether nothing is left for this
+     * Lidarr.
      */
-    suspend fun putBack(lidarr: LidarrAt, place: Long): Outcome<Boolean> = orBusy { CoreHttp.puttingBack { operation ->
+    internal fun putBack(lidarr: LidarrAt, place: Long): CoreHttp.Begun<Outcome<Boolean>> = CoreHttp.puttingBack { operation ->
         over(PageIn(operation, lidarr, place, ""), PageIn.serializer(), Boolean.serializer(), ::putBack)
-    } }
+    }
 
     @Serializable
     private class PlaceLibraryIn(val place: Long, val library: LibraryLists)

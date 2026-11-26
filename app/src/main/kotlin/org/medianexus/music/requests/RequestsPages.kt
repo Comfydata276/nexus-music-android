@@ -9,6 +9,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.takeWhile
@@ -118,7 +121,8 @@ data class Said(
  */
 class RequestsPages internal constructor(
     private val requests: Requests,
-    /** The account's own work: cancelled when it signs out. */
+    /** The work of what owns this account's requests: **as long as the process**, in the
+     *  app (see [RequestsOwners]). Signing out does not end it: [here] says so. */
     private val scope: CoroutineScope,
     dir: File,
     /** The phone's copy of the library, each time it changes, as the library's rules ask it. */
@@ -133,12 +137,37 @@ class RequestsPages internal constructor(
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /**
+     * Whether **the account is signed in with its requests on**. While it is not, nothing
+     * here looks at the library, puts anything back on Lidarr or has news for anyone, and a
+     * page asked for is refused; what Lidarr was already asked is still seen through and
+     * written down.
+     */
+    private val here: StateFlow<Boolean> = MutableStateFlow(true),
+    /**
      * Runs something that must finish **though the screen has gone and though the account
      * has**: writing down what Lidarr accepted. The app's own work, never the account's
      * (which is cancelled at sign-out) and never a screen's.
      */
     private val afterwards: (suspend () -> Unit) -> Unit,
 ) {
+    companion object {
+        /**
+         * As the app makes it for an account: what the account's music gives its requests
+         * (`sources`) is whoever's is signed in, and nothing while nobody is.
+         */
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        internal fun of(
+            requests: Requests, scope: CoroutineScope, dir: File, sources: StateFlow<RequestsSources?>, here: StateFlow<Boolean>,
+            note: (String) -> Unit, afterwards: (suspend () -> Unit) -> Unit,
+        ): RequestsPages = RequestsPages(
+            requests, scope, dir,
+            library = sources.flatMapLatest { it?.library ?: kotlinx.coroutines.flow.emptyFlow() },
+            played = { sources.value?.played?.invoke() ?: emptyList() },
+            similar = { id -> sources.value?.similar?.invoke(id) ?: emptyList() },
+            note = note, here = here, afterwards = afterwards,
+        )
+    }
+
     private val askedFile = Kept(File(dir, "asked.json"), ListSerializer(Asked.serializer()), emptyList(), note)
     private val suggestionsFile = Kept(File(dir, "suggestions.json"), KeptSuggestions.serializer(), KeptSuggestions(), note)
 
@@ -194,7 +223,7 @@ class RequestsPages internal constructor(
      */
     val arrivals: Flow<Arrival> = flow {
         val offered = ArrayList<Arrived>()
-        combine(wake, requests.settings.map { it.on }.distinctUntilChanged()) { _, on -> on }.takeWhile { !isGone() }.collect { on ->
+        combine(wake, requests.settings.map { it.on }.distinctUntilChanged(), here) { _, on, here -> on to here }.takeWhile { (_, here) -> here }.collect { (on, _) ->
             if (!on) return@collect
             saying.withLock {
                 val unsaid = turn.withLock { arrivalsKept().filter { kept -> !kept.said && offered.none { it.isOf(kept.note) } } }
@@ -234,7 +263,9 @@ class RequestsPages internal constructor(
         }
     }
 
-    private fun isGone(): Boolean = synchronized(this) { gone }
+    /** Whether the account has gone (signed out of the music server, or its requests
+     *  switched off). */
+    private fun isGone(): Boolean = !here.value
 
     private fun arrivalsKept(): List<Arrived> = held ?: (arrivalsFile.read() ?: emptyList()).also { held = it }
 
@@ -291,7 +322,6 @@ class RequestsPages internal constructor(
     /** One change to what is kept at a time. Never held across a request. */
     private val turn = Mutex()
     private var place: Long? = null
-    private var gone = false
 
     /**
      * The newest connection anything has been asked under here, and **what is on its way
@@ -309,44 +339,61 @@ class RequestsPages internal constructor(
     @Volatile private var haveLibrary = false
     private val looking = Mutex()
 
+    /** Whether a setting is being put back on Lidarr just now ([putBack]). */
+    private val recovering = MutableStateFlow(false)
+
     init {
+        // The phone's copy of the library, handed to the library's rules each time it
+        // changes while the account is here; and each time, a look for what has arrived
+        // (see [checkArrivals]). When the account goes, the copy is let go of.
         scope.launch(io) {
-            ready()
-            // The phone's copy of the library, handed to the library's rules each time it
-            // changes; and each time, a look for what has arrived (see [checkArrivals]).
-            library.collectLatest { lists ->
-                val place = ready()
-                Core.placeLibrary(place, lists)
-                haveLibrary = lists.albums.isNotEmpty() || lists.songs.isNotEmpty()
-                checkArrivals()
+            here.collectLatest { present ->
+                unlessGone {
+                    if (!present) {
+                        haveLibrary = false
+                        synchronized(this@RequestsPages) { place }?.let { Core.placeLibrary(it, LibraryLists()) }
+                        return@unlessGone
+                    }
+                    library.collectLatest { lists ->
+                        val place = ready()
+                        Core.placeLibrary(place, lists)
+                        haveLibrary = lists.albums.isNotEmpty() || lists.songs.isNotEmpty()
+                        checkArrivals()
+                    }
+                }
             }
         }
         scope.launch(io) {
-            requests.settings.collectLatest { settings -> Core.placeSingles(ready(), settings.singles) }
+            combine(requests.settings.map { it.singles }.distinctUntilChanged(), here) { singles, present -> singles to present }
+                .collectLatest { (singles, present) -> if (present) unlessGone { Core.placeSingles(ready(), singles) } }
         }
-        // What an earlier run left changed on Lidarr is put back: each time Lidarr is found
-        // to be there (as the app starts; after the address, the key or the sign-in has
-        // changed), for the Lidarr that is then set up and no other.
+        // **What an earlier run left changed on Lidarr is put back**, by this, the one owner
+        // of the account's requests, one at a time: each time Lidarr answers as itself on
+        // the connection (`Requests.verified`: the very connection it answered on), for as
+        // long as the account is here and that connection stands. `collectLatest` does not
+        // begin the next until the one before has ended, and that one does not end until
+        // the library's worker has (see [putBack]).
         scope.launch(io) {
-            combine(requests.state, requests.settings) { state, settings -> (state is RequestsState.Connected && settings.on) to settings.address }
-                .distinctUntilChanged()
-                .collectLatest { (connected, _) -> if (connected) runCatching { putBack() } }
+            combine(requests.verified, here) { verified, present -> verified?.takeIf { present } }
+                .collectLatest { verified -> if (verified != null) unlessGone { putBack(verified.at) } }
         }
         // (Switched on, or on again: what arrived meanwhile is looked for.)
         scope.launch(io) {
-            requests.settings.map { it.on }.distinctUntilChanged().collect { on -> if (on) runCatching { checkArrivals() } }
+            combine(requests.settings.map { it.on }.distinctUntilChanged(), here) { on, present -> on && present }
+                .distinctUntilChanged()
+                .collect { on -> if (on) unlessGone { runCatching { checkArrivals() } } }
         }
-        // (The place goes with the account.)
-        scope.coroutineContext.job.invokeOnCompletion {
-            val was = synchronized(this) {
-                gone = true
-                // (Not while something Lidarr may have accepted is still to be written
-                // down: then it goes when that is done.)
-                if (owed == 0) place.also { place = null } else null
-            }
-            // (Whoever is listening for this account's news is let go.)
-            wake.update { it + 1 }
-            was?.let { runCatching { Core.placeClose(it) } }
+        // (Whoever is listening for this account's news is let go when it goes.)
+        scope.launch { here.collect { wake.update { it + 1 } } }
+    }
+
+    /** Runs `act`; if it ends because the account went meanwhile ([ready] says so by
+     *  cancelling), that is the end of `act` and not of whoever called. */
+    private suspend fun unlessGone(act: suspend () -> Unit) {
+        try {
+            act()
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
         }
     }
 
@@ -354,7 +401,6 @@ class RequestsPages internal constructor(
      * Something begun that changes Lidarr, **seen to its end and written down whatever
      * happens meanwhile**: `finish` runs on the app's own work once `begun` has ended, with
      * how it ended, and its answer is what the caller is told if the caller is still there.
-     * The place is kept open until then, though the account may have gone.
      */
     private fun <T, R> outlasting(begun: CoreHttp.Begun<Outcome<T>>, finish: suspend (Outcome<T>) -> R): Deferred<R?> {
         synchronized(this) { owedNow.value = ++owed }
@@ -374,29 +420,17 @@ class RequestsPages internal constructor(
                     else -> withContext(NonCancellable) { finish(outcome) }
                 }
             }
-            val last = synchronized(this) {
-                owedNow.value = --owed
-                if (owed == 0 && gone) place.also { place = null } else null
-            }
-            last?.let { runCatching { Core.placeClose(it) } }
+            synchronized(this) { owedNow.value = --owed }
             done.completeWith(ended)
         }
         return done
     }
 
-    /** Returns when nothing that changes Lidarr is still to be seen through and written
-     *  down: what an account's leaving waits for before its sign-in is let go of. */
+    /** Returns when nothing that changes Lidarr is still under way here: what was asked of
+     *  it seen through and written down, and a putting back (which stops when the account
+     *  goes) ended. What an account's leaving waits for before its sign-in is let go of. */
     suspend fun settled() {
-        owedNow.first { it == 0 }
-    }
-
-    /** **Cut off from the account's files**, at once (see `Requests.cutOff`): what this
-     *  still has under way is finished against Lidarr and written nowhere. */
-    fun cutOff() {
-        askingFile.cut = true
-        askedFile.cut = true
-        suggestionsFile.cut = true
-        arrivalsFile.cut = true
+        combine(owedNow, recovering) { owed, busy -> owed == 0 && !busy }.first { it }
     }
 
     /** Waits for something begun with [outlasting], as its caller. A caller that goes away
@@ -412,11 +446,9 @@ class RequestsPages internal constructor(
      *  opened the first time anything is asked, with what was asked for read from the phone. */
     private suspend fun ready(): Long = withContext(io) {
         turn.withLock {
-            synchronized(this@RequestsPages) {
-                // (The account has gone: nothing more is asked for it.)
-                if (gone) throw CancellationException("the account has gone")
-                place
-            }?.let { return@withLock it }
+            // (The account has gone: nothing more is asked for it.)
+            if (isGone()) throw CancellationException("the account has gone")
+            synchronized(this@RequestsPages) { place }?.let { return@withLock it }
             // (The way back is written by this account's own file from the first moment:
             // on the library's thread, before the call that asked returns.)
             val opened = Core.placeOpen { batch, surely -> askingFile.write(batch, surely) }
@@ -438,14 +470,7 @@ class RequestsPages internal constructor(
             }
             // (An arrival the last run of the app found and never got to say.)
             if (arrivalsKept().any { !it.said }) wake.update { it + 1 }
-            val late = synchronized(this@RequestsPages) {
-                if (!gone) place = opened
-                gone
-            }
-            if (late) {
-                Core.placeClose(opened)
-                throw CancellationException("the account has gone")
-            }
+            synchronized(this@RequestsPages) { place = opened }
             opened
         }
     }
@@ -752,26 +777,37 @@ class RequestsPages internal constructor(
     /**
      * **Puts back what an earlier run of the app left changed on Lidarr**: an artist's "new
      * releases" setting, turned off for a single or an EP that the run never got to the end
-     * of (the app was stopped; Lidarr went away). Only what was written down **for the
-     * Lidarr that is set up now**: an artist's number on another Lidarr is another artist,
-     * and what is written for another is left as it is, to be acted on if the app is
-     * pointed back at it.
+     * of (the app was stopped; Lidarr went away). Only what was written down **for this
+     * Lidarr**, `at`, the connection it has just answered on: an artist's number on another
+     * Lidarr is another artist, and what is written for another is left as it is, to be
+     * acted on if the app is pointed back at it.
      *
      * The rules are the library's (it waits until Lidarr has finished with the artist,
      * looking every few seconds, then sets the setting and crosses the entry off, one
      * artist at a time with whatever else is changing artists). It has a thread of its own
-     * and is in nobody's way; it ends with the account, or when the connection changes,
-     * and what it had not put back is still written down.
+     * and is in nobody's way. Cancelled (the account gone, the connection changed), **it
+     * does not return until the library's worker has stopped**: so there is never a second
+     * at work beside it, and whoever waits for this account to have settled waits for it.
+     * What it had not put back is still written down.
      */
-    private suspend fun putBack() {
+    private suspend fun putBack(at: LidarrAt) {
         val place = ready()
-        val at = requests.lidarr() ?: return
         if (!Core.waysLeft(at, place)) return
+        recovering.value = true
         note("requests: an earlier run left a setting changed on Lidarr; putting it back")
-        when (val done = Core.putBack(at, place)) {
-            is Outcome.Got -> note(if (done.value) "requests: what an earlier run left changed on Lidarr has been put back" else "requests: not everything an earlier run left changed on Lidarr could be put back yet; it is still written down")
-            is Outcome.Failed -> note("requests: what an earlier run left changed on Lidarr couldn't be put back (${done.why}); it is still written down")
-            Outcome.Stopped -> Unit
+        val begun = Core.putBack(at, place)
+        try {
+            when (val done = begun.done.await()) {
+                is Outcome.Got -> note(if (done.value) "requests: what an earlier run left changed on Lidarr has been put back" else "requests: not everything an earlier run left changed on Lidarr could be put back yet; it is still written down")
+                is Outcome.Failed -> note("requests: what an earlier run left changed on Lidarr couldn't be put back (${done.why}); it is still written down")
+                Outcome.Stopped -> Unit
+            }
+        } finally {
+            withContext(NonCancellable) {
+                begun.stop()
+                runCatching { begun.done.await() }
+                recovering.value = false
+            }
         }
     }
 

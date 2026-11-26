@@ -2051,10 +2051,48 @@ import, which the phone does not have.
 ### Requests: the connection to Lidarr
 
 Requests are asking Lidarr for music that isn't in the library. **They do not exist in a
-build until `RequestsBuild.EXISTS` says so** (it does not, yet: the screens are still to
-come), and then they are off until the person switches them on. With the build's switch off
-an account has no connection at all: nothing is read, nothing kept, no address asked
-anything, and the client for the library's requests is never made.
+build until `RequestsBuild.EXISTS` says so**, and then they are off until the person
+switches them on. With the build's switch off an account has no connection at all: nothing
+is read, nothing kept, no address asked anything, and the client for the library's
+requests is never made.
+
+**With the build's switch on and the person's toggle off, the same is true: nothing of
+requests is made.** No object, no collector, no file read, no copy of the library handed
+to the shared library, no native record. Whether a person's toggle is on is a file that is
+there or not, in the account's folder (`requests.on`, empty: looked for at sign-in, never
+read). Turning the toggle on writes it and brings the account's requests into being
+(`AccountGraph.turnRequestsOn`); turning it off stops what is running, lets the copy of the
+library go, and removes it, leaving what was set up in the folder for the next time. So a
+build with requests in it costs someone who has not turned them on one look for a file at
+each sign-in. (Should the app be stopped between the two writes of turning off, the file
+is found beside settings that say "off": it is removed, and nothing is made.)
+
+**What owns an account's requests is made once for the account and kept for the life of
+the process** (`requests/RequestsOwners`). An account's requests are its files, its key and
+its sign-in's token, the shared library's record for it (with the job that keeps the way
+back) and whatever of that is under way. One `Requests` and one `RequestsPages` hold all
+of it; signing out of the music server tells them so, and signing in again finds the same
+two. **So there are never two owners of one account's files, whatever order accounts come
+and go in**, and nothing ever has to be cut off from a file. And **the account's music
+never waits for any of it**: the account's own objects are made at once at a sign-in, as
+they always were, and are handed a seat at its requests. Where the requests stand for
+that sign-in (`AccountGraph.requestsNow`) is "off", "not yet" or "on":
+
+- **Not yet** for as long as an earlier sign-out is still being finished, of this account
+  or of any other: what Lidarr was still being asked seen through and written down, a
+  putting back stopped, the key forgotten, the sign-in's token handed back to its
+  service. Arrivals and departures are taken strictly in the order they happened, one at
+  a time; while one is being finished nobody is handed any account's requests, and the
+  screen says so in a sentence. Nothing is waited out with a limit and then abandoned:
+  the goodbye itself is short (handing a token back has eight seconds and no more, on a
+  thread of its own), an ask already with Lidarr is seen through as it always was, and
+  the music is not held up meanwhile.
+- **Putting back what an earlier run left changed on Lidarr belongs to the owner.** It is
+  started by the connection being verified: each time a check of it ends "connected",
+  with the very address, key and sign-in that check was made with (`Requests.verified`),
+  never from "connected" and the address read apart. One at a time: the next is not begun
+  until the one before has ended, and that does not end until the library's worker has
+  stopped. Signing out stops it and waits for it, as part of what the sign-out leaves.
 
 `requests/Requests.kt` is an account's connection, and the surface the screens use to set
 it up. As on Windows:
@@ -2187,19 +2225,6 @@ it up. As on Windows:
 - **A sign-in that is open** is the library's `gate::Session`, kept on the Rust side under
   a number. Its own requests are nobody's (see "Stopping"): no screen left can cut a
   renewal off.
-- **One owner of what is kept for an account, at a time.** Signing out of the music server
-  lets the account's requests go behind the person's back: what Lidarr was still being
-  asked is seen through and written down, then the key is forgotten and the sign-in's
-  token handed back to its service, which can take seconds. Signing straight back in to
-  **the same account** waits for that (`Accounts.awaitLeft`): the account's objects are
-  not made again while its old self could still read or write the same files, so there is
-  never a second sign-in owner beside the first, and never two lists over one
-  `asked.json`. The wait is fifteen seconds at the longest. If the old self has not
-  finished by then (a goodbye to a service that does not answer, Lidarr taking a minute
-  over an album) it is **cut off from the files**: its secrets are forgotten at once, as
-  leaving forgets them, and whatever it still does reads, writes and deletes nothing. What
-  it had under way finishes against Lidarr and the service, and leaves no note. Another
-  account signed in meanwhile waits for nothing: its files are its own.
 - **One sign-in owns the token that is kept, at a time.** Every sign-in opened here has a
   number of the phone's own, and only the one whose token the file holds may write that
   file or delete it. Signing out and in again at once is where it matters: the old
@@ -2275,8 +2300,10 @@ What is the phone's own:
     **for the Lidarr that is set up now**, the job works through it by the library's own
     rules: it waits until Lidarr has been done with the artist for ten seconds, looking
     every five, sets the setting back and crosses the entry off. It runs on a thread of
-    its own, so it is in nobody's way however long Lidarr takes, and ends with the
-    account or when the connection changes; what it had not put back stays written.
+    its own, so it is in nobody's way however long Lidarr takes. It belongs to what owns
+    the account's requests, is started by the connection Lidarr has just answered on,
+    and is stopped (and waited for) when the account goes or the connection changes;
+    what it had not put back stays written.
   - **An entry is for the Lidarr it was written for.** An artist's number on another
     Lidarr is another artist: with the app pointed elsewhere the entry is left as it is,
     nothing of it is sent anywhere, and it is acted on if the app is pointed back.

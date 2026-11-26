@@ -277,7 +277,9 @@ private fun Page(graph: Graph, navigator: Navigator, route: Route) {
 @Composable
 private fun RequestsNews(ui: Ui) {
     val account = ui.account
-    val pages = account?.requestsPages
+    // (None while the person's toggle is off, or the account's requests are not yet ready.)
+    val now = account?.requestsNow?.collectAsStateWithLifecycle()?.value
+    val pages = (now as? org.medianexus.music.requests.RequestsNow.On)?.pages
     val res = androidx.compose.ui.platform.LocalResources.current
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     if (pages != null) LaunchedEffect(pages, lifecycle) {

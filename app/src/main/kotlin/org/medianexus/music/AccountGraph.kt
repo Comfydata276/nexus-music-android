@@ -59,12 +59,9 @@ class AccountWiring(
     /** Whether the app's screens are in front: only then is the server looked at each
      *  minute for what other devices have changed. */
     val front: StateFlow<Boolean> = MutableStateFlow(false),
-    /** Makes the account's connection to Lidarr (it needs the phone: the Keystore, the
-     *  folder that is out of backups). Asked only in a build that has requests. */
-    val requests: ((AccountGraph) -> org.medianexus.music.requests.Requests)? = null,
-    /** Runs something that must finish though the account has gone (handing a token back
-     *  to a sign-in service at sign-out): on the app's own scope. */
-    val afterwards: (suspend () -> Unit) -> Unit = {},
+    /** What owns each account's requests for the life of the process (the app's own, not
+     *  an account's). Asked only in a build that has requests. */
+    val requests: (() -> org.medianexus.music.requests.RequestsOwners)? = null,
 )
 
 /**
@@ -331,38 +328,57 @@ class AccountGraph(
         )
     }
 
-    private val afterwards: (suspend () -> Unit) -> Unit = wiring?.afterwards ?: {}
+    /**
+     * This sign-in's seat at the account's requests (asking Lidarr for music that isn't in
+     * the library). **None unless this build has them**
+     * ([org.medianexus.music.requests.RequestsBuild]). What owns an account's requests is
+     * not this object, which lasts one sign-in: it is made once for the account and kept
+     * ([org.medianexus.music.requests.RequestsOwners]), and nothing here waits for it.
+     * **With the person's toggle off, nothing of requests is made at all.**
+     */
+    private val seat: org.medianexus.music.requests.RequestsOwners.Seat? =
+        if (org.medianexus.music.requests.RequestsBuild.on) {
+            wiring?.requests?.invoke()?.signedIn(
+                account,
+                org.medianexus.music.requests.RequestsSources(
+                    // (Only a copy that is whole: one still arriving for the first time would
+                    // say that music the library has is not in it.)
+                    library = copy.state.filterNotNull().filter { it.complete }.map { snapshot ->
+                        org.medianexus.music.core.LibraryLists(
+                            albums = snapshot.albums.map { org.medianexus.music.core.LibraryAlbum(it.id, it.name, it.artistLabel, it.coverArt) },
+                            songs = List(snapshot.songs.size) { listOf(snapshot.songs.title(it), snapshot.songs.artistLabel(it)) },
+                            artists = snapshot.artists.map { it.name },
+                        )
+                    },
+                    played = {
+                        val songs = copy.state.value?.songs
+                        if (songs == null) emptyList() else List(songs.size) { org.medianexus.music.core.Core.Played(songs.artistId(it), songs.artistLabel(it), songs.playCount(it)) }
+                    },
+                    similar = { id -> api.similarOutside(id) },
+                ),
+            )
+        } else {
+            null
+        }
 
     /**
-     * Requests: asking Lidarr for music that isn't in the library. **Null unless this build
-     * has them** ([org.medianexus.music.requests.RequestsBuild]): then nothing of them is
-     * read, kept or asked. With them, still off until the person switches them on.
+     * Where this account's requests stand: off (the toggle is off, and nothing of them
+     * exists), not yet (what owns them is finishing what the last sign-in left), or on,
+     * with the two objects the screens use.
      */
-    val requests: org.medianexus.music.requests.Requests? =
-        if (org.medianexus.music.requests.RequestsBuild.on) wiring?.requests?.invoke(this)?.also { it.start() } else null
+    val requestsNow: StateFlow<org.medianexus.music.requests.RequestsNow> = seat?.now ?: MutableStateFlow(org.medianexus.music.requests.RequestsNow.Off)
+
+    /** The account's connection to Lidarr, while its requests are on and ready; null
+     *  otherwise. (As it is now: [requestsNow] says when that changes.) */
+    val requests: org.medianexus.music.requests.Requests? get() = (requestsNow.value as? org.medianexus.music.requests.RequestsNow.On)?.requests
 
     /** Everything the screens of requests ask for (see there). Null as [requests] is. */
-    val requestsPages: org.medianexus.music.requests.RequestsPages? = requests?.let { connection ->
-        org.medianexus.music.requests.RequestsPages(
-            connection, scope, account.dirs.data,
-            // (Only a copy that is whole: one still arriving for the first time would
-            // say that music the library has is not in it.)
-            library = copy.state.filterNotNull().filter { it.complete }.map { snapshot ->
-                org.medianexus.music.core.LibraryLists(
-                    albums = snapshot.albums.map { org.medianexus.music.core.LibraryAlbum(it.id, it.name, it.artistLabel, it.coverArt) },
-                    songs = List(snapshot.songs.size) { listOf(snapshot.songs.title(it), snapshot.songs.artistLabel(it)) },
-                    artists = snapshot.artists.map { it.name },
-                )
-            },
-            played = {
-                val songs = copy.state.value?.songs
-                if (songs == null) emptyList() else List(songs.size) { org.medianexus.music.core.Core.Played(songs.artistId(it), songs.artistLabel(it), songs.playCount(it)) }
-            },
-            similar = { id -> api.similarOutside(id) },
-            note = wiring?.note ?: {},
-            // (What Lidarr accepted is written down though this account signs out meanwhile.)
-            afterwards = afterwards,
-        )
+    val requestsPages: org.medianexus.music.requests.RequestsPages? get() = (requestsNow.value as? org.medianexus.music.requests.RequestsNow.On)?.pages
+
+    /** The person has turned requests on: they come into being for this account (or are
+     *  found again). Returns when they are there. */
+    suspend fun turnRequestsOn() {
+        seat?.turnOn()
     }
 
     private var lookedAt = 0L
@@ -668,43 +684,14 @@ class AccountGraph(
         if (report) scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { runCatching { submit(Pending.Played(songId, atMillis)) } }
     }
 
-    private val leftNow = kotlinx.coroutines.CompletableDeferred<Unit>()
-
-    /**
-     * Returns when this account, having been closed, **has finished leaving**: nothing of
-     * it will touch what is kept for the account again (its requests' secrets forgotten,
-     * its goodbye to a sign-in service said, what it had asked of Lidarr written down).
-     * Until then the same account is not made again ([Accounts]).
-     */
-    suspend fun left() = leftNow.await()
-
-    /** Cuts this account, closed and too long in leaving, off from what is kept for it:
-     *  see `Requests.cutOff`. */
-    fun cutOff() {
-        requests?.cutOff()
-        requestsPages?.cutOff()
-    }
-
     fun close() {
         closed = true
         synchronized(going) { gone = true }
         // The account's secrets for requests go with its password: the key forgotten, the
-        // sign-in's token handed back to its service. (After this account's own work has
-        // been cancelled, so on the app's.) First whatever is still changing Lidarr is
-        // seen through and written down: it needs the sign-in that leaving lets go of.
-        val mine = requests
-        if (mine == null) {
-            leftNow.complete(Unit)
-        } else {
-            afterwards {
-                try {
-                    requestsPages?.settled()
-                    mine.leave()
-                } finally {
-                    leftNow.complete(Unit)
-                }
-            }
-        }
+        // sign-in's token handed back to its service. That is done by what owns the
+        // account's requests, in its own time, on the app's own work: this only says the
+        // sign-in is over.
+        seat?.leave()
         downloads?.release()
         // Everything it holds written, then the file let go for whoever opens it next.
         playLog.close()

@@ -181,6 +181,43 @@ class Graph(
      *  the person's other devices have changed) runs while this is true and not otherwise. */
     val front = kotlinx.coroutines.flow.MutableStateFlow(false)
 
+    /**
+     * What owns each account's requests, **for the life of the process** (see
+     * `requests/RequestsOwners`): made the first time an account with its requests switched
+     * on is signed in to, or the toggle is turned on, in a build that has requests; never
+     * otherwise. Its work is the app's own, not an account's.
+     */
+    private val requestsOwners: org.medianexus.music.requests.RequestsOwners by lazy {
+        // With offline mode switched on by hand nothing is asked of Lidarr or the services
+        // beside it either, and each call says so in the library's sentence ("Couldn't
+        // reach Lidarr. Offline mode is on.").
+        org.medianexus.music.core.CoreHttp.unsent = { if (watch.state.value.manual) context.getString(R.string.requests_offline) else null }
+        val afterwards: (suspend () -> Unit) -> Unit = { work -> scope.launch { work() } }
+        org.medianexus.music.requests.RequestsOwners(
+            scope,
+            make = { account, sources, here, switched ->
+                // (An account's own work, for as long as the process: a failure in it is
+                // that account's requests', and nobody else's.)
+                val work = kotlinx.coroutines.CoroutineScope(scope.coroutineContext + kotlinx.coroutines.SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job]))
+                val requests = org.medianexus.music.requests.Requests(
+                    account, work,
+                    // (Beside the saved password, out of backups; a folder for each account.)
+                    org.medianexus.music.requests.RequestsSecrets(
+                        java.io.File(context.noBackupFilesDir, "requests/${account.key}"), passwordBox, account.server, account.username,
+                    ),
+                    afterwards = afterwards,
+                    comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
+                    note = { diagnostics.note(it) },
+                    // (A sign-in is finished only with the app's own screen in front.)
+                    front = front,
+                    switched = switched,
+                )
+                requests to org.medianexus.music.requests.RequestsPages.of(requests, work, account.dirs.data, sources, here, note = { diagnostics.note(it) }, afterwards = afterwards)
+            },
+            note = { diagnostics.note(it) },
+        )
+    }
+
     /** What belongs to whoever is signed in: their library, covers, likes, downloads and
      *  queue. */
     val accounts = Accounts(session, scope) { signedIn ->
@@ -200,25 +237,7 @@ class Graph(
                 inUse = { org.medianexus.music.downloads.DownloadKeeper.visible || playing },
                 settingsStore = settings,
                 front = front,
-                requests = { account ->
-                    // With offline mode switched on by hand nothing is asked of Lidarr or
-                    // the services beside it either, and each call says so in the
-                    // library's sentence ("Couldn't reach Lidarr. Offline mode is on.").
-                    org.medianexus.music.core.CoreHttp.unsent = { if (watch.state.value.manual) context.getString(R.string.requests_offline) else null }
-                    org.medianexus.music.requests.Requests(
-                        account.account, account.scope,
-                        // (Beside the saved password, out of backups; a folder for each account.)
-                        org.medianexus.music.requests.RequestsSecrets(
-                            java.io.File(context.noBackupFilesDir, "requests/${account.account.key}"), passwordBox, account.account.server, account.account.username,
-                        ),
-                        afterwards = { work -> scope.launch { work() } },
-                        comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
-                        note = { diagnostics.note(it) },
-                        // (A sign-in is finished only with the app's own screen in front.)
-                        front = front,
-                    )
-                },
-                afterwards = { work -> scope.launch { work() } },
+                requests = { requestsOwners },
             ),
         )
     }

@@ -190,7 +190,6 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_waysLeft<'l>(env: JNI
 /// not put back is still written down.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_medianexus_music_core_Core_putBack<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
-    use nexus_core::http::Http as _;
     call_private(env, input, |given: PageIn| {
         let _during = During::new(given.operation);
         let place = place(given.place)?;
@@ -198,17 +197,10 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_putBack<'l>(env: JNIE
             Ok(lidarr) => lidarr,
             Err(why) => return Ok(outcome(Err(why))),
         };
-        // (One at a time: an earlier one that has just been stopped is given a moment to end.)
-        let wait = Host::new(Whose::Operation(given.operation), Line::Lidarr);
-        let mut tries = 0;
-        while !place.job.begin() {
-            tries += 1;
-            if wait.pause(std::time::Duration::from_millis(250)).is_err() {
-                return Ok(Outcome::Stopped);
-            }
-            if tries > 40 {
-                return Ok(Outcome::Got { value: false });
-            }
+        // (One at a time. The Kotlin side does not begin this until the one before has
+        // ended: were one still at work all the same, this is not begun beside it.)
+        if !place.job.begin() {
+            return Ok(Outcome::Got { value: false });
         }
         // (The job says how a batch is going as it goes, and which albums it noted or
         // forgot: there are none here, and nobody to tell.)
