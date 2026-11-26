@@ -74,16 +74,18 @@ private fun ConnectSheet(choose: (() -> Unit) -> Unit) {
     val steering = if (linkHere) org.medianexus.music.ui.link.ConnectView.steering(link) else ""
     val oldLinked = state?.linked
     val there = steering.ifEmpty { oldLinked.orEmpty() }
+    // This phone's own name, over "This phone": the jam's where jams exist, else linking's.
+    val own = org.medianexus.music.ui.link.ConnectView.ownName(jamName = state?.device, me = if (linkHere) link.me else "")
     Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         BasicText(stringResource(R.string.jam_connect), Modifier.semantics { heading() }, style = Theme.type.heading.copy(color = colors.text))
         Column(Modifier.fillMaxWidth().background(colors.raised, RoundedCornerShape(Theme.dimens.radius)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(R.drawable.ic_monitor_speaker, size = 22.dp, tint = colors.accentBright)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    BasicText(there.ifEmpty { state?.device.orEmpty().ifEmpty { stringResource(R.string.jam_this_phone) } }, style = Theme.type.rowTitle.copy(color = colors.accentBright, fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    // (Without jams there is no name for this phone to put above it yet: "This
-                    // phone" once, not twice. With jams, as M6 made it.)
-                    if (there.isNotEmpty() || state != null) BasicText(stringResource(if (there.isNotEmpty()) R.string.jam_playing_there else R.string.jam_this_phone), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
+                    BasicText(there.ifEmpty { own.ifEmpty { stringResource(R.string.jam_this_phone) } }, style = Theme.type.rowTitle.copy(color = colors.accentBright, fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // (With no name for this phone, "This phone" once, not twice. With jams, as M6
+                    // made it.)
+                    if (there.isNotEmpty() || own.isNotEmpty() || state != null) BasicText(stringResource(if (there.isNotEmpty()) R.string.jam_playing_there else R.string.jam_this_phone), style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1)
                 }
                 if (steering.isEmpty() && oldLinked != null) TextButton(stringResource(R.string.jam_play_here), { choose { jams.playHere() } })
             }

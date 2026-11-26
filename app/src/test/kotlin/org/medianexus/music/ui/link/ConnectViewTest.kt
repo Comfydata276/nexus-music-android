@@ -76,4 +76,14 @@ class ConnectViewTest {
         assertEquals(emptyList<Linked.Device>(), ConnectView.rows(state))
         assertEquals("no Play here, no Stop steering", "", ConnectView.steering(state))
     }
+
+    // ---- this phone, at the top -----------------------------------------------------------
+
+    @Test
+    fun thePhoneIsNamedAsItsOtherDevicesListItWithJamsTheirNameAsBefore() {
+        assertEquals("without jams: the name linking gives it", "Pixel of Sam", ConnectView.ownName(jamName = null, me = "Pixel of Sam"))
+        assertEquals("with jams: the jam's name for it, as M6 has it", "Kitchen phone", ConnectView.ownName(jamName = "Kitchen phone", me = "Pixel of Sam"))
+        assertEquals("with jams and no name there: linking's", "Pixel of Sam", ConnectView.ownName(jamName = "", me = "Pixel of Sam"))
+        assertEquals("no linking, no jams: none (the sheet says \"This phone\")", "", ConnectView.ownName(jamName = null, me = ""))
+    }
 }

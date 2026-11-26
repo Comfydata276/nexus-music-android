@@ -47,4 +47,12 @@ internal object ConnectView {
     /** The device the phone steers the new way, to name at the top with "Play here" and
      *  "Stop steering"; empty for none, and once linking has stopped. */
     fun steering(state: Linked.State): String = if (state.stopped) "" else state.steering
+
+    /**
+     * This phone's name at the top of the sheet, over "This phone" (Windows: the PC's name over
+     * "This PC"). In a build with jams the jam's name for it, as M6 has it; otherwise, or with
+     * none there, the name the person's other devices list it by ([Linked.State.me]). Empty
+     * for none: the sheet then says "This phone" once.
+     */
+    fun ownName(jamName: String?, me: String): String = jamName.orEmpty().ifEmpty { me }
 }

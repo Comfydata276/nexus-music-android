@@ -4221,8 +4221,10 @@ reachable and the Connect sheet is as M6 made it.
   as in every released build, it isn't there. In a build without jams the sheet asks
   nothing of jams (they can't be made there): no jam line, no old "Your devices".
 - **What, in Windows' order and words:** "Connect"; the card naming where the music plays
-  ("This phone", or the device steered and "Playing there" with "Play here" and "Stop
-  steering" on a line of their own, so a long name keeps its room); the jam line where jams
+  (this phone's name over "This phone", as Windows names the PC: the jam's name for it
+  where jams exist, else the name the other devices list it by, `Linked.State.me`, and
+  "This phone" once with neither; or the device steered and "Playing there" with "Play
+  here" and "Stop steering" on a line of their own, so a long name keeps its room); the jam line where jams
   exist; "Linked devices (new)": every device but the one steered, each a row of the old
   list's shape. One here is pressed to pick it (`choose`, and the sheet closes); one not
   here is drawn at half strength and does nothing; one of another generation is at full
@@ -4234,7 +4236,8 @@ reachable and the Connect sheet is as M6 made it.
   none of its own for linking: its title, headings and buttons are the Windows app's words.
   Windows' own "No other device is linked yet." under an empty list is not copied: an empty
   list shows the library's note, or nothing.
-- **Linking stopped:** nothing is offered (no rows, no "Play here"), and the note is shown.
+- **Linking stopped:** nothing is offered (no rows, no "Play here"), and the note is shown:
+  then it is the library's sentence for it, the one the person was told by a note.
 
 ## Milestones
 
