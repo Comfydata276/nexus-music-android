@@ -2664,8 +2664,9 @@ for them yet. What is below the screens is driven three ways.
 against a server that answers in bytes of the test's choosing; none may take more than two
 minutes, so that a change which makes one wait for ever fails it instead of holding the machine's builds), `RequestsTest` (the
 connection: an address and a key, the browser sign-in played by the test, what is kept and
-what is handed back), `requests/SwitchedOffTest` (with the build's switch off an account
-has nothing of requests at all).
+what is handed back), `requests/SwitchedOffTest` (requests in the build and the person's
+toggle off: an account has a seat that says "off" and nothing else of requests, signing out
+included; and a build made without them has not even that).
 
 `PagesTest` (each call of the library's pages and actions, against a stand-in that is
 Lidarr, MusicBrainz and ListenBrainz in one and answers with what the library's own tests

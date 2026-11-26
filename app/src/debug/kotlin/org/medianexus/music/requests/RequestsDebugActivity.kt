@@ -20,10 +20,10 @@ import org.medianexus.music.core.Words
 import org.medianexus.music.graph
 
 /**
- * Debug builds only: **a stand-in for the screens of requests, which are still to come.**
- * It shows where the connection to Lidarr stands, in the words the real screens will show,
- * and does what they will do, each as one call of the surface they will use
- * ([Requests]): nothing here reaches past that surface.
+ * Debug builds only: **what is below the screens of requests, driven one call at a time.**
+ * It shows where the connection to Lidarr stands, in the words the real screens show, and
+ * does what they do, each as one call of the surface they use ([Requests]): nothing here
+ * reaches past that surface.
  *
  *     adb shell am start -n org.medianexus.music/.requests.RequestsDebugActivity
  *     ... --es do on|off|check|signin|cancel|signout
@@ -31,7 +31,7 @@ import org.medianexus.music.graph
  *
  * or the buttons. "Sign in" opens the browser over this screen, as the real one will
  * ([BrowserTab]); coming back to this screen with the browser's part unfinished gives the
- * sign-in up ([Requests.cameBack]). Needs requests forced on first ([DebugRequests]).
+ * sign-in up ([Requests.cameBack]). (In a build made without requests: forced on first, [DebugRequests].)
  *
  * The pages and actions, each one call of [RequestsPages], with `--es what <text or id>`
  * (and `--es name`, `--es song` where they are taken):
@@ -227,7 +227,7 @@ class RequestsDebugActivity : Activity() {
                 }
                 account.requestsNow.collectLatest { now ->
                     when (now) {
-                        RequestsNow.Off -> show("no requests here: the toggle is off, or they are not forced on (DebugRequests)\nlast: $last")
+                        RequestsNow.Off -> show("no requests here: the toggle is off (or the build was made without them)\nlast: $last")
                         RequestsNow.NotYet -> show("requests: not yet (${RequestsWords.NOT_YET})")
                         is RequestsNow.On -> now.requests.state.collectLatest { state -> show(describe(now.requests, state)) }
                     }

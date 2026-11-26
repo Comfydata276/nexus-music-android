@@ -2052,14 +2052,16 @@ import, which the phone does not have.
 
 ### Requests: the connection to Lidarr
 
-Requests are asking Lidarr for music that isn't in the library. **They do not exist in a
-build until `RequestsBuild.EXISTS` says so**, and then they are off until the person
-switches them on. With the build's switch off an account has no connection at all: nothing
-is read, nothing kept, no address asked anything, and the client for the library's
-requests is never made.
+Requests are asking Lidarr for music that isn't in the library. **They are in the build
+from 0.6.0** (`requests/RequestsBuild.kt`, one constant, `EXISTS = true`), after the
+phone's side was reviewed as a whole twice and through the rounds that followed, **and
+they are off until the person switches them on** in Settings. The constant stays so that a
+build can be made without them: with it off an account has no connection at all and not
+even a seat at one, nothing is read, nothing kept, no address asked anything, no screen of
+requests can be reached, and the client for the library's requests is never made.
 
-**With the build's switch on and the person's toggle off, the same is true: nothing of
-requests is made.** No object, no collector, no file read, no copy of the library handed
+**In the build, with the person's toggle off, the same is true: nothing of requests is
+made.** No object, no collector, no file read, no copy of the library handed
 to the shared library, no native record. Whether a person's toggle is on is a file that is
 there or not, in the account's folder (`requests.on`, empty: looked for at sign-in, never
 read). Turning the toggle on writes it and brings the account's requests into being
@@ -4185,8 +4187,9 @@ Each one ends with the app building, its tests passing, a run on the emulator, a
   the sync playlist, the saved queue and "Continue here", and the rules that keep the PCs
   safe from the phone.
 - **M6 Jams and linked devices** (built): joining a jam, the person's own devices, hosting a jam from the phone; and the order of choices completed.
-- **M7 Requests.** Lidarr, MusicBrainz, ListenBrainz, browser sign-in through Authentik,
-  "Artists you might like", bringing playlists over from Spotify.
+- **M7 Requests** (built, in the build from 0.6.0 and off until the person switches them
+  on): Lidarr, MusicBrainz, ListenBrainz, browser sign-in through Authentik, "Artists you
+  might like". Not built: bringing playlists over from Spotify.
 - **M8 Shipping.** The signing key, updates from GitHub releases, checks on every push,
   start-up profiles, diagnostics, the README.
 
