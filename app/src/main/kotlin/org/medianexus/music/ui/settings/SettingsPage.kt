@@ -247,13 +247,13 @@ private fun Account(graph: Graph) {
     }
     // The Nexus server beside the music server, if there is one (nexus/Nexus.kt): what was
     // found, and nothing to do yet.
-    val nexus by graph.nexus.found.collectAsStateWithLifecycle()
+    // Shown only for the account it was found for: never one account's under another's.
+    val found by graph.nexusFound.collectAsStateWithLifecycle()
+    val account by graph.accounts.state.collectAsStateWithLifecycle()
+    val address = found.let { graph.nexusShown(account) }
     SettingRow(
         stringResource(R.string.nexus_server),
-        when (val found = nexus) {
-            is org.medianexus.music.nexus.NexusFound.At -> stringResource(R.string.nexus_found_at, found.address)
-            org.medianexus.music.nexus.NexusFound.None -> stringResource(R.string.nexus_none_found)
-        },
+        if (address != null) stringResource(R.string.nexus_found_at, address) else stringResource(R.string.nexus_none_found),
     ) {}
     // Linking the person's devices: two rows, only in a build in which it exists (none
     // that is released: see link/LinkBuild.kt).

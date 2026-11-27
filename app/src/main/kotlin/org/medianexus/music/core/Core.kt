@@ -355,6 +355,23 @@ object Core {
     fun nexusHello(status: Int, body: ByteArray, whole: Boolean): HelloFound =
         across(HelloIn(status, body.map { it.toInt() and 0xFF }, whole), HelloIn.serializer(), HelloFound.serializer(), ::nexusHello)
 
+    /** Whether the library is loaded. Takes no lock and loads nothing. */
+    val isReady: Boolean get() = ready
+
+    /**
+     * [nexusHello], **only if the library is already loaded**: null otherwise, having neither
+     * loaded it nor waited for a load (the Nexus server's client never takes the load's lock,
+     * which the next sign-in may need). Null too if the library refused.
+     */
+    fun nexusHelloIfReady(status: Int, body: ByteArray, whole: Boolean): HelloFound? {
+        if (!ready) return null
+        return try {
+            nexusHello(status, body, whole)
+        } catch (e: CoreException) {
+            null
+        }
+    }
+
     /** The most of a `hello`'s body the core reads (`nexus::proto::HELLO_MAX_BYTES`). */
     const val HELLO_MAX_BYTES = 4096
 
