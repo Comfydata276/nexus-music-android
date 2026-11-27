@@ -3061,54 +3061,78 @@ stream or a download), and `/nexus/` broken in one of these ways:
 
 | Case | `/nexus/` |
 |---|---|
+| `WARM_UP` | As `ABSENT`, run first and held to no time: the first pass in a fresh process is the slow one |
 | `ABSENT` | Navidrome's own answers there, as measured (E1): 302 to `/app/` for a GET, 405 otherwise |
 | `BLACK_HOLE` | The request is taken and nothing ever comes back on that connection, nor is anything more read from it |
 | `STALLED` | The request is read and never answered |
-| `SATURATED` | 503 "busy", its head after 15 seconds and its body a byte a second |
+| `SATURATED` | Held 8 seconds (under the client's 10-second read limit), then 503 with "Retry-After: 0", its body a byte a second |
 | `SESSION_ENDED` | 401 "not signed in" |
 | `HALF_CONNECTED` | 200 with half of a valid `hello`, the rest never sent |
-| `WORKERS_HELD` | Stalled, and every thread of the backend's client (its launcher, worker and dispatcher) held in work that never ends |
+| `WORKERS_HELD` | Stalled, and every thread of the client (its launcher, its worker before it asks, its dispatcher's thread) held, and its own OkHttp scheduler's lock |
 | `DISK_BLOCKED` | Stalled, and `files/nexus` is a pipe nobody reads (the client keeps no file at this stage) |
 | `DISK_FULL` | Stalled, and `files/nexus` is a file, so nothing can be made there |
 
-The last three need the client, and were added with it (P1).
+**The proof is by construction, not by a stopwatch** (`nexus/ComponentHolds`). Before an entry
+point is driven, the client is put in the case's state and every hold on it acknowledged: its
+`hello` kept by the stand-in right now (the stand-in counts the requests it is holding, not the
+ones that arrived), or answered where the stand-in answers; in `WORKERS_HELD`, each of its
+threads in the test's hold. The entry point is driven to its outcome, which is checked, and
+then every hold is checked to be in place still. An entry point that waited on the client
+could not have completed.
+
+The cold entry points are driven **before the account is published** as well: a new process's
+objects made over a saved sign-in whose reading is held (a password box that opens when the
+test says), the entry point driven (the car's choice and its resumption card, a Play button
+through the receiver, the downloads' job), the reading let go, the entry point carried to its
+outcome; in `WORKERS_HELD` with the client's launcher held from its first instruction, so that
+no client is ever made.
 
 | Test | Entered at | Steps timed |
 |---|---|---|
-| `coldStartPublishesTheSavedAccount` | A new graph over a saved sign-in, until `Accounts.restored` returns | `restored` |
+| `coldStartPublishesTheSavedAccount` | A new graph over a saved sign-in, the launcher held from its start (`WORKERS_HELD`), until `Accounts.restored` returns | `restored` |
 | `coldStartPutsTheQueueBackAndPlays` | The service made cold over a saved queue (`restore`), then Play | `restore`, `play` |
-| `aDirectPlayStartsItCold` | `PlayButtonReceiver.onReceive` with Play; the start command it makes, to the service, which must be in the foreground when it returns | `receiver`, `media_button` |
-| `theCarStartsTheServiceCold` | The car's choice (in the foreground before the main thread moves, timed against Android's five seconds), `onGetLibraryRoot` and `onGetChildren` for six folders, `onSearch` and its result, a spoken request, `onAddMediaItems`, the card that resumes | `foreground`, `chosen`, `children`, `search`, `voice`, `add`, `resumption_card` |
-| `theNotificationsButtonsWork` | The like button of the notification Media3 posted; shuffle and repeat through the player-command callback | `like`, `shuffle_and_repeat` |
+| `aDirectPlayStartsItCold` | `PlayButtonReceiver.onReceive` with Play; the start command it makes, to the service, in the foreground when it returns, playing the saved song | `receiver`, `media_button` |
+| `aDirectPlayByTheReceiversOldNameStartsItCold` | The same through Media3's own receiver, the name the first builds gave it | `old_receiver`, `old_media_button` |
+| `aPlayButtonBeforeTheAccountIsPublishedStartsItCold` | The same, before the account is published | `before_publication` |
+| `theCarStartsTheServiceCold` | The car's choice (in the foreground before the main thread moves, against Android's five seconds), the root and six folders, search and its results, a spoken request, an added song, the card that resumes, each answer checked | `foreground` (recorded), `chosen`, `children`, `search`, `voice`, `add`, `resumption_card` |
+| `theCarBeforeTheAccountIsPublishedStartsItCold` | The car's choice and the card, before the account is published | `before_publication` |
+| `theNotificationsButtonsWork` | The like of the notification Media3 posted, to the music server; shuffle and repeat through the player-command callback | `like`, `shuffle_and_repeat` |
 | `theQueueIsChangedAndKept` | Added next, added last, moved, removed, until on the disk; the service made again; cleared | `changed`, `kept`, `cleared` |
 | `downloadsStartAndResume` | One by hand; `DownloadsJob.onStartJob` alone, no screen, to `jobFinished`; the foreground `DownloadsService`, to its stopping itself | `by_hand`, `job`, `service` |
-| `offlineByHandAndByLoss` | Offline mode switched on, the car's Downloads and Home; off again; the network lost (`ServerWatch.noNetwork`), Home, Play | `by_hand`, `back`, `by_loss` |
-| `aLikeAndAPlayReachTheMusicServer` | A like, and a counted play reported, each until the stand-in has it | `like`, `play` |
+| `aDownloadCutOffIsResumed` | A stream cut after a third of its bytes, then the failed downloads tried again, until whole | `resumed` |
+| `theJobBeforeTheAccountIsPublishedCarriesDownloadsOn` | The downloads' job, before the account is published | `job_before_publication` |
+| `offlineByHandAndByLoss` | Offline mode on, the car's Downloads and Home; off; the network lost, Home, Play | `by_hand`, `back`, `by_loss` |
+| `aLikeAndAPlayReachTheMusicServer` | A like, and a counted play reported | `like`, `play` |
+| `aPlayNotToldIsToldAgain` | A report the server would not take, held; the server back (the watch's ask and a pass over what is held) | `play_again` |
 | `aPlayIsCountedAsReleased` | `AccountGraph.played` twice, the log flushed; its bytes compared with the released app's | `counted` |
-| `anAccountChangeIsNotHeldUp` | Signed out and another account signed in, until it is published | `next_account` |
+| `anAccountChangeIsNotHeldUp` | Signed out and another account signed in, with the launcher held too; then let go, the old client let go of and its threads ended | `next_account` |
+| `aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught` | The car's folders with 400 ms more: must be over its limit | (none) |
 
-With the client (P1), each test first waits until the account's client is in the case's state
-(its `hello` held at the stand-in, or answered; its threads held), and afterwards checks that
-it still was: the stand-in still holds every `hello` it took, and the row says "None found".
-After every test, no connection carried both a request of the music server's and one under
-`/nexus/`, and the app's own HTTP client has nothing waiting.
+After every test: no connection carried both a request of the music server's and one under
+`/nexus/`; nothing reached the client's own handlers of last resort; and the row shows nothing
+for the account published. Beside it: `nexus/NexusClientTest` (the client alone, on the real
+core) and `nexus/NexusOwnerTest` (in the app's own graph: when it is made, whose it is,
+offline, in use, a failure in it).
 
-**The times.** Each step's wall-clock time is written to `app/build/nexus-times/run.tsv`. The
-app as released (E13a, at `042e983`: the suite before the client existed) was run three times
-over the six cases it can have, and the slowest of those eighteen for each step is kept in
-`app/src/test/resources/nexus/released-times.tsv`. Every later run is held to three times
-that and half a second more: room for a shared machine (the first test in a fresh process is
-two or three times slower than the rest), and far below anything that waited on the
-backend, whose client's shortest limit is eight seconds and whose stand-in holds a request for
-longer than any test runs. The car's foreground is held to Android's five seconds instead.
+**The times**, a second and looser alarm. Each step's wall-clock time is written to
+`app/build/nexus-times/run.tsv`. The suite was run on the app as released (E13a) three times,
+with `nexus/ComponentHolds.kt` replaced by a stub that does nothing (the released app has no
+client): the samples are kept in `app/src/test/resources/nexus/released-times.tsv`. Every later
+run holds each step to **the released app's median for it, plus 300 ms**, the warm-up left out
+(`nexus/Times.kt`): every released sample is within it, and a step slowed by 400 ms is not
+(`nexus/TimesTest`, and the suite's own `aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught`).
+A step with no released number fails. The car's foreground is held to Android's five seconds.
+To measure again: a checkout of the released commit, this folder's tests copied in with the
+stub in place of `ComponentHolds.kt`, the suite run three times; keep the three `run.tsv`.
 
-**What it does not cover.** Two songs joining without a gap (the design's
-`two_songs_join_without_a_gap`): Robolectric gives the service's own audio output nothing to
-play to, so a song never ends there; that stays the emulator's (above, "Gapless playback").
-A download resumed after a cut; a headset's button through the platform's own session
-(Robolectric has none: above). A real proxy between the phone and the backend. And the black
-hole at the level of the network: at one origin the phone's connection is to the proxy, which
-answers the music server's paths as ever, so only what is behind it can swallow a request.
+**What it does not cover.** Two songs joining without a gap: Robolectric gives the service's
+own audio output nothing to play to; that is the emulator's (above, "Gapless playback").
+"Continue here"; a downloaded list refreshed; the network lost with a downloaded song playing;
+a play decided by `PlayReporter` inside the playing service; a headset's button through the
+platform's own media session (Robolectric has none). A real proxy between the phone and the
+backend; Android 17's denial of the home network. And the black hole at the level of the
+network: at one origin the phone's connection is to the proxy, which answers the music server's
+paths as ever, so only what is behind it can swallow a request.
 
 ## What is not covered
 

@@ -37,6 +37,10 @@ import org.medianexus.music.graph
 class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
     /** How the backend's side is broken. The names are the design's (5.3). */
     enum class Broken {
+        /** Run first, as ABSENT, and not held to any time: the first pass through a test in a
+         *  fresh process is the slow one, whatever the app. */
+        WARM_UP,
+
         /** No backend: the music server is left to answer `/nexus/`, and answers as Navidrome
          *  0.64.2 was measured to (E1): a redirect to its web app for a GET, "method not
          *  allowed" for anything else. */
@@ -52,8 +56,9 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
         /** The connection is taken and the request read, and the answer never comes. */
         STALLED,
 
-        /** Every answer is "busy" (503, Retry-After), and it comes slowly: the head after 15
-         *  seconds, the body a byte a second. */
+        /** Every answer is "busy", slowly: the request held 8 seconds (under the client's
+         *  10-second read limit), then 503 with "Retry-After: 0" (which OkHttp would follow up
+         *  by itself), its body a byte a second. */
         SATURATED,
 
         /** Every answer is "not signed in" (401). */
@@ -88,10 +93,16 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
     val nexusConnections: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     val musicConnections: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
-    /** The requests under `/nexus/` that have arrived and are being held (not yet answered,
-     *  and never to be while the test runs). */
-    @Volatile var nexusHeld = 0
-        private set
+    /** The requests under `/nexus/` being held **now**: arrived, and not answered, for as long
+     *  as the stand-in is holding each (until the test ends, or SATURATED's eight seconds). */
+    val nexusActive = java.util.concurrent.atomic.AtomicInteger()
+
+    /** Endpoints of the music server's answered by closing the connection, for as long as
+     *  they are in here (a report that can't be made until the test lets it). */
+    val failing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** Streams cut after their first bytes, once each, by song id (a download cut off). */
+    val cutOnce: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     private val release = CountDownLatch(1)
 
@@ -140,32 +151,40 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
     /** The address shown in the Settings row: the origin's host and port. */
     val shown: String get() = "localhost:${server.port}"
 
+    /** Holds the request here until the test ends (or `millis` pass), counted in [nexusActive]
+     *  while it is. */
+    private fun hold(millis: Long = Long.MAX_VALUE) {
+        nexusActive.incrementAndGet()
+        try {
+            release.await(millis, TimeUnit.MILLISECONDS)
+        } finally {
+            nexusActive.decrementAndGet()
+        }
+    }
+
     private fun nexus(request: RecordedRequest): MockResponse = answer?.invoke(request) ?: when (broken) {
-        Broken.ABSENT ->
+        Broken.ABSENT, Broken.WARM_UP ->
             if (request.method == "GET") {
                 MockResponse.Builder().code(302).setHeader("Location", "/app/").setHeader("Content-Type", "text/html; charset=utf-8").body("<a href=\"/app/\">Found</a>.\n\n").build()
             } else {
                 MockResponse.Builder().code(405).setHeader("Content-Type", "text/plain; charset=utf-8").body("Method Not Allowed\n").build()
             }
         Broken.BLACK_HOLE -> {
-            nexusHeld++
+            hold()
             MockResponse.Builder().onResponseStart(SocketEffect.Stall).build()
         }
         Broken.STALLED, Broken.WORKERS_HELD, Broken.DISK_BLOCKED, Broken.DISK_FULL -> {
-            nexusHeld++
-            release.await()
+            hold()
             MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build()
         }
         Broken.SATURATED -> {
-            nexusHeld++
-            MockResponse.Builder().code(503).setHeader("Retry-After", "120").setHeader("Content-Type", "application/json")
-                .headersDelay(15, TimeUnit.SECONDS).throttleBody(1, 1, TimeUnit.SECONDS)
-                .body("""{"error":"busy"}""").build()
+            hold(8_000)
+            MockResponse.Builder().code(503).setHeader("Retry-After", "0").setHeader("Content-Type", "application/json")
+                .throttleBody(1, 1, TimeUnit.SECONDS).body("""{"error":"busy"}""").build()
         }
         Broken.SESSION_ENDED ->
             MockResponse.Builder().code(401).setHeader("Content-Type", "application/json").body("""{"error":"not signed in"}""").build()
         Broken.HALF_CONNECTED -> {
-            nexusHeld++
             val whole = HELLO.toByteArray()
             MockResponse.Builder().code(200).setHeader("Content-Type", "application/json")
                 // The first half at once; the rest an hour later, which no test waits for.
@@ -177,6 +196,13 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
     private fun music(request: RecordedRequest): MockResponse {
         val endpoint = request.url.encodedPath.substringAfterLast('/').removeSuffix(".view")
         if (!request.url.encodedPath.startsWith("/rest/")) return MockResponse.Builder().code(404).build()
+        if (endpoint in failing) return MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build()
+        if ((endpoint == "stream" || endpoint == "download") && cutOnce.remove(request.url.queryParameter("id"))) {
+            // (Its length the whole file's, a third of it sent, and the connection closed.)
+            return MockResponse.Builder().code(200).setHeader("Content-Type", "audio/flac")
+                .body(Buffer().write(audio, 0, audio.size / 3)).setHeader("Content-Length", audio.size)
+                .onResponseEnd(SocketEffect.CloseSocket()).build()
+        }
         if (endpoint == "stream" || endpoint == "download") {
             return MockResponse.Builder().code(200).setHeader("Content-Type", "audio/flac").setHeader("Accept-Ranges", "none").body(Buffer().write(audio)).build()
         }

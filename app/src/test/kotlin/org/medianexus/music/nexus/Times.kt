@@ -24,30 +24,34 @@ object Times {
     }
 
     /**
-     * What the app as released took for each test and step, across every way the backend
-     * was broken: the slowest. Null before E13a's numbers were kept (when the suite is first
-     * run, to measure them).
+     * What the app as released took for each test and step: the median of its samples across
+     * every way the backend was broken and every run, the first case (WARM_UP, the first pass in
+     * a fresh process) left out. Null before E13a's numbers were kept.
      */
     val released: Map<Pair<String, String>, Double>? by lazy {
         val stream = Times::class.java.getResourceAsStream("/nexus/released-times.tsv") ?: return@lazy null
         stream.bufferedReader().readLines()
             .filter { it.isNotBlank() && !it.startsWith("#") }
             .map { it.split('\t') }
+            .filter { it[1] != "WARM_UP" }
             .groupBy({ it[0] to it[2] }, { it[3].toDouble() })
-            .mapValues { (_, all) -> all.max() }
+            .mapValues { (_, all) -> all.sorted().let { if (it.size % 2 == 1) it[it.size / 2] else (it[it.size / 2 - 1] + it[it.size / 2]) / 2 } }
     }
 
     /**
-     * How much slower than the released app's slowest a step may be: three times it, and half
-     * a second more. Room for what a shared build machine does to a test's wall-clock time
-     * (the released app's own numbers for one step vary by half or more between runs, and the
-     * first test in a fresh process is slower), and far below anything that waited on the
-     * backend: its client's shortest limit is eight seconds, and every way of breaking it here
-     * holds a request for longer than any test runs.
+     * How much slower than the released app's median a step may be: 300 ms. Every one of the
+     * released app's own samples (but the warm-up's) is within it, the slowest by 243 ms; and a
+     * step held up by 400 ms or more is over it (`aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught`,
+     * and `TimesTest`). This is the second alarm: the proof that nothing waits on the backend is
+     * the holds (see `ComponentHolds`).
      */
-    const val TIMES = 3.0
-    const val MORE_MILLIS = 500.0
+    const val MORE_MILLIS = 300.0
 
-    /** The limit for a step, or null if there is no released number to hold it to. */
-    fun held(test: String, step: String): Double? = released?.get(test to step)?.let { it * TIMES + MORE_MILLIS }
+    /** The limit for a step; null before E13a's numbers were kept. A step with no released
+     *  number, once they are kept, fails: every step the suite times must have one. */
+    fun held(test: String, step: String): Double? {
+        val kept = released ?: return null
+        val median = kept[test to step] ?: throw AssertionError("$test, $step: no number from the released app to hold it to")
+        return median + MORE_MILLIS
+    }
 }

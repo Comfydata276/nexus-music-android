@@ -13,6 +13,8 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -21,9 +23,10 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Test
@@ -51,19 +54,26 @@ import org.robolectric.annotation.Config
 
 /**
  * **What never waits for the backend** (docs/backend-design.md, 5.3): the phone driven through
- * its real entry points (the saved sign-in, the playback service, its buttons and the car's
- * calls, the downloads' job and service, offline mode, a counted play, a change of account)
- * while everything under `/nexus/` at the music server's origin is broken in each of the
- * design's ways ([Broken]). The music server itself, at the same origin, answers as ever.
+ * its real entry points while everything under `/nexus/` at the music server's origin is broken
+ * in each of the design's ways ([Broken]), the music server itself answering as ever.
  *
- * Each test times what it does (see [Times]): run first on the app as released, to fix the
- * numbers (experiment E13a), and then on every build after, held to them.
+ * **The proof is by construction** ([ComponentHolds]): before an entry point is driven, the
+ * Nexus server's client is put in the case's state and every hold on it acknowledged (its
+ * `hello` kept by the stand-in, or its own threads held); the entry point is driven to its
+ * outcome, which is checked; and the holds are checked to be in place still. An entry point
+ * that waited on the client could not have completed.
  *
- * Nothing here waits for an event by the clock: the main thread moves only when a test lets
- * it ([settle]), and a test waits for another thread's work by letting the main thread run
- * until that work is done, with the main thread's clock standing still. So a time limit of
- * the app's (the service's seven seconds for a start that comes to nothing, the server
- * watch's ask) never runs out inside one of these, and what is timed is work.
+ * The cold ones are also driven **before the account is published**: the app's objects made
+ * over a saved sign-in whose reading is held (a password box that opens only when the test
+ * says), the entry point driven, the reading let go, and the entry point carried to its outcome,
+ * with the client's launcher held from its first instruction in [Broken.WORKERS_HELD].
+ *
+ * Each step is timed as well, a second and looser alarm (see [Times]): first on the app as
+ * released, to fix the numbers (experiment E13a), and then held to them.
+ *
+ * Nothing here waits for an event by the clock: the main thread moves only when a test lets it
+ * ([settle]), and a test waits for another thread's work by letting the main thread run until
+ * that work is done, with the main thread's clock standing still.
  */
 @RunWith(ParameterizedRobolectricTestRunner::class)
 @Config(application = App::class)
@@ -73,8 +83,6 @@ class NeverWaitsTest(private val broken: Broken) {
         @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
         fun cases(): List<Array<Any>> = Broken.entries.map { arrayOf(it) }
 
-        /** Before the app's objects are made for the first test: their HTTP client must trust
-         *  the stand-in's certificate. */
         @JvmStatic
         @BeforeClass
         fun trust() = BackendStandIn.trust()
@@ -83,23 +91,35 @@ class NeverWaitsTest(private val broken: Broken) {
         @AfterClass
         fun untrust() = BackendStandIn.untrust()
 
-        /** Android's limit for a service started in the foreground to say so (`startForeground`
-         *  within five seconds of `startForegroundService`, or the app is killed). */
+        /** Android's limit for a service started in the foreground to say so. */
         const val ANDROID_FOREGROUND_LIMIT_MILLIS = 5_000.0
     }
 
-    /** The audio decoders every phone has, as Robolectric stands in for the system's list: a
-     *  download is checked against them before it counts as there. */
+    /** The audio decoders every phone has, as Robolectric stands in for the system's list. */
     @get:org.junit.Rule val decoders = org.medianexus.music.downloads.phoneDecoders()
 
     private val app = RuntimeEnvironment.getApplication()
     private val standIn = BackendStandIn(broken)
     private val graphs = ArrayList<Graph>()
     private val services = ArrayList<android.app.Service>()
+    private val holds = ComponentHolds(broken, standIn, app.filesDir) { what, done -> until(what, done) }
 
     private object PlainBox : SecretBox {
         override fun seal(plain: ByteArray) = plain
         override fun open(sealed: ByteArray) = sealed
+    }
+
+    /** A saved password that is read only when the test lets it: the account is not published
+     *  until then. */
+    private class GatedBox : SecretBox {
+        val opening = CountDownLatch(1)
+        val open = CountDownLatch(1)
+        override fun seal(plain: ByteArray) = plain
+        override fun open(sealed: ByteArray): ByteArray {
+            opening.countDown()
+            open.await(30, TimeUnit.SECONDS)
+            return sealed
+        }
     }
 
     /** Android's foreground, for a service whose entering it is what is being timed. */
@@ -121,96 +141,41 @@ class NeverWaitsTest(private val broken: Broken) {
         "com.example.car", 4_321, 10_123, MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, Bundle.EMPTY, true,
     )
 
-    /** What [Broken.WORKERS_HELD] holds the backend's client's threads with: work that does
-     *  not end while the test runs (and ends, interrupted, when the client is let go of). */
-    private val holding = java.util.concurrent.CountDownLatch(1)
-
-    /** How many of the backend's clients have been put in this case's state so far: each holds
-     *  one request at the stand-in, in the cases where it is held. */
-    private var broke = 0
-    private val seen = HashSet<NexusClient>()
-
-    /** Where the backend's client would keep its files; the DISK cases leave it unusable. */
-    private val nexusFiles get() = File(app.filesDir, "nexus")
-
     @Before
     fun start() {
         DownloadKeeper.visible = false
-        when (broken) {
-            Broken.DISK_BLOCKED -> check(ProcessBuilder("mkfifo", nexusFiles.path).start().waitFor() == 0) { "no pipe made" }
-            Broken.DISK_FULL -> nexusFiles.writeBytes(ByteArray(0))
-            else -> {}
-        }
+        holds.beforeAppStarts()
         standIn.start()
+        holds.inUse(app.graph)
         runBlocking { app.graph.session.restored() }
-    }
-
-    /** Holds each of `workers` in work that does not end while the test runs; the latch
-     *  given back is down once every one of them is in it. */
-    private fun hold(workers: List<java.util.concurrent.ExecutorService>): java.util.concurrent.CountDownLatch {
-        val inIt = java.util.concurrent.CountDownLatch(workers.size)
-        for (worker in workers) {
-            runCatching { worker.execute { inIt.countDown(); try { holding.await() } catch (_: InterruptedException) {} } }
-        }
-        return inIt
-    }
-
-    /** The modes in which the stand-in takes the backend's `hello` and never answers it. */
-    private val holdsHello get() = broken != Broken.ABSENT && broken != Broken.SESSION_ENDED
-
-    /**
-     * The backend's client of the account `graph` has signed in now, once it is in the state
-     * this case puts it in: its `hello` held at the stand-in (or, where the stand-in answers,
-     * answered); and with [Broken.WORKERS_HELD] every thread of its own held too. What a test
-     * does after this, it does with the backend's client stuck.
-     */
-    private fun componentBroken(graph: Graph = app.graph): NexusClient {
-        var made: NexusClient? = null
-        until("the backend's client is made for the account") { graph.nexus.current?.takeIf { it !in seen }?.also { made = it } != null }
-        val client = made!!
-        seen += client
-        broke++
-        if (holdsHello) {
-            until("the backend's client is held at the stand-in") { standIn.nexusHeld >= broke }
-        } else {
-            until("the backend's client has had its answer") { client.asked.get() > 0 }
-        }
-        if (broken == Broken.WORKERS_HELD) hold(client.workers + graph.nexus.workers)
-        return client
     }
 
     @After
     fun stop() {
-        // What each test did, it did with the backend's client stuck: its requests are held
-        // still, nothing was found, and where it would keep its files is as the case left it.
-        if (holdsHello) assertTrue("the stand-in let a hello go", standIn.nexusHeld >= broke)
-        assertEquals(NexusFound.None, app.graph.nexus.found.value)
-        when (broken) {
-            Broken.DISK_BLOCKED -> assertTrue(java.nio.file.Files.getAttribute(nexusFiles.toPath(), "unix:mode").let { (it as Int) and 0xF000 == 0x1000 })
-            Broken.DISK_FULL -> assertTrue(nexusFiles.isFile && nexusFiles.length() == 0L)
-            else -> {}
+        try {
+            holds.after()
+            // **The music server's own connections were never the backend's.**
+            assertTrue(
+                "a connection carried both the music server's requests and the backend's",
+                standIn.musicConnections.intersect(standIn.nexusConnections).isEmpty(),
+            )
+            // Never a backend shown under the account published now.
+            assertNull(holds.shown(app.graph))
+        } finally {
+            for (service in services.asReversed()) runCatching { service.onDestroy() }
+            runCatching { settle() }
+            graphs.forEach { it.scope.cancel() }
+            (graphs + app.graph).forEach { runCatching { it.http.connectionPool.evictAll() } }
+            standIn.stop()
         }
-        holding.countDown()
-        for (service in services.asReversed()) runCatching { service.onDestroy() }
-        settle()
-        graphs.forEach { it.scope.cancel() }
-        (graphs + app.graph).forEach { it.http.connectionPool.evictAll() }
-        // **The music server's own connections were never the backend's**: no connection
-        // carried both a request of the music server's and one under /nexus/.
-        assertTrue(
-            "a connection carried both the music server's requests and the backend's",
-            standIn.musicConnections.intersect(standIn.nexusConnections).isEmpty(),
-        )
-        assertTrue("the app's own client has calls waiting", app.graph.http.dispatcher.queuedCallsCount() == 0)
-        standIn.stop()
     }
 
     // ---- How the tests are run ---------------------------------------------------------------
 
     private fun settle() = shadowOf(Looper.getMainLooper()).idle()
 
-    /** Lets the main thread run until `done`, with its clock standing still (see the class's
-     *  comment). Fails after thirty seconds of the wall clock. */
+    /** Lets the main thread run until `done`, with its clock standing still. Fails after thirty
+     *  seconds of the wall clock. */
     private fun until(what: String, done: () -> Boolean) {
         val end = System.nanoTime() + 30_000_000_000L
         while (true) {
@@ -226,15 +191,19 @@ class NeverWaitsTest(private val broken: Broken) {
         return future.get()
     }
 
-    /** Times `block` as `step` of `test`, records it, and holds it to the released app's. */
+    /** Times `block` as `step` of `test`, records it, and holds it to the released app's
+     *  (see [Times]); then checks that every hold on the client is still in place. */
     private fun <T> timed(test: String, step: String, block: () -> T): T {
         val began = System.nanoTime()
         val result = block()
         val millis = (System.nanoTime() - began) / 1e6
         Times.record(test, broken.name, step, millis)
-        Times.held(test, step)?.let { limit ->
-            assertTrue("$test, $step: ${"%.0f".format(millis)} ms, held to three times the released app's slowest and half a second more: ${"%.0f".format(limit)}", millis <= limit)
+        if (broken != Broken.WARM_UP) {
+            Times.held(test, step)?.let { limit ->
+                assertTrue("$test, $step: ${"%.0f".format(millis)} ms; held to the released app's median and 300 ms more: ${"%.0f".format(limit)}", millis <= limit)
+            }
         }
+        holds.stillStuck("$test, $step")
         return result
     }
 
@@ -254,11 +223,16 @@ class NeverWaitsTest(private val broken: Broken) {
 
     private fun queueFile(): File = QueueFiles.queueFile(accountDirs(app.filesDir, app.cacheDir, account().account.key).data)
 
-    /** Signs in, and has the playback service keep a queue of the album's songs, playing
-     *  from the second; then lets the service go, as Android does when it wants the memory. */
+    private fun signedIn() {
+        standIn.signIn(app)
+        holds.stuck(app.graph)
+    }
+
+    /** Signs in, and has the playback service keep a queue of the album's songs, playing from
+     *  the second; then lets the service go, as Android does when it wants the memory. The
+     *  account's client is then stuck. */
     private fun savedQueue() {
         standIn.signIn(app)
-        componentBroken()
         val first = service(Foreground())
         until("the first service has read what was saved") { settled(first) }
         first.inside().player.play(songs(), 1, "First Light", source = "album:al-1", playNow = false)
@@ -266,11 +240,54 @@ class NeverWaitsTest(private val broken: Broken) {
         first.onDestroy()
         services -= first
         settle()
+        holds.stuck(app.graph)
     }
 
     private fun playButton() = Intent(Intent.ACTION_MEDIA_BUTTON)
         .setComponent(ComponentName(app, PlaybackService::class.java))
         .putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+
+    /** Makes `graph` the app's own, as a new process would have it. */
+    private fun becomeTheApp(graph: Graph) {
+        App::class.java.getDeclaredField("graph").apply { isAccessible = true }.set(app, graph)
+    }
+
+    /**
+     * A process ended and started again by Android: someone was signed in, with a queue saved;
+     * the app's objects are made again over that, and the saved sign-in's reading is held, so
+     * the account is **not published** until the test lets [GatedBox.open] go. The client's
+     * launcher is held from its first instruction in [Broken.WORKERS_HELD].
+     */
+    private fun processStartedAgain(): Pair<Graph, GatedBox> {
+        val before = Graph(app, PlainBox).also { graphs += it }
+        becomeTheApp(before)
+        standIn.signIn(app)
+        val first = service(Foreground())
+        until("the first service has read what was saved") { settled(first) }
+        first.inside().player.play(songs(), 1, "First Light", source = "album:al-1", playNow = false)
+        until("the queue is on the disk") { queueFile().isFile && "\"s3\"" in queueFile().readText() }
+        first.onDestroy()
+        services -= first
+        settle()
+        runBlocking { before.settings.flush() }
+        before.scope.cancel()
+        before.http.connectionPool.evictAll()
+        // (The Play button's receiver looks for a saved password's file; PlainBox wrote one.)
+        holds.holdTheLauncherFromItsStart()
+        val box = GatedBox()
+        val graph = Graph(app, box).also { graphs += it }
+        becomeTheApp(graph)
+        holds.inUse(graph)
+        assertTrue("the saved sign-in is not being read", box.opening.await(30, TimeUnit.SECONDS))
+        assertNull("published before the test let it be", graph.accounts.state.value)
+        return graph to box
+    }
+
+    /** After the account is published, cold: the client, made for it, is stuck (or, held from
+     *  its launcher's start, was never made). */
+    private fun afterPublication(graph: Graph) {
+        if (broken != Broken.WORKERS_HELD) holds.stuck(graph)
+    }
 
     // ---- The tests ------------------------------------------------------------------------------
 
@@ -278,30 +295,22 @@ class NeverWaitsTest(private val broken: Broken) {
     fun coldStartPublishesTheSavedAccount() {
         // Someone signed in, with the password saved; the app is ended.
         val before = Graph(app, PlainBox).also { graphs += it }
+        holds.inUse(before)
         before.session.signIn(standIn.address, "tester", "a password")
         runBlocking { withTimeout(30_000) { before.accounts.state.first { it != null } } }
-        componentBroken(before)
         runBlocking { before.settings.flush() }
         before.scope.cancel()
-        // The app starts: its objects are made, and the saved sign-in is read and published.
-        var graph: Graph? = null
+        // The app starts again, the client's launcher held from its first instruction where the
+        // case holds it: the saved sign-in is read and the account published.
+        holds.holdTheLauncherFromItsStart()
+        val graph = Graph(app, PlainBox).also { graphs += it }
+        holds.inUse(graph)
         val restored = timed("cold_start_publishes_the_saved_account", "restored") {
-            val made = Graph(app, PlainBox).also { graphs += it; graph = it }
-            // With every thread of the backend's client held from the moment the app's objects
-            // exist, before anything is read: the account is published all the same.
-            if (broken == Broken.WORKERS_HELD) check(hold(made.nexus.workers).await(5, java.util.concurrent.TimeUnit.SECONDS)) { "the launcher was not held" }
-            runBlocking { withTimeout(30_000) { made.accounts.restored() } }
+            runBlocking { withTimeout(30_000) { graph.accounts.restored() } }
         }
         assertNotNull("the saved account was not published", restored)
         assertEquals("tester", restored!!.account.username)
-        if (broken == Broken.WORKERS_HELD) {
-            // (Published while the launcher was held: whether the launcher had made the
-            // account's client before it was held is a race of no matter, and not asked.)
-            assertTrue(holding.count == 1L)
-        } else {
-            // Made afterwards, for the account published, and stuck.
-            componentBroken(graph!!)
-        }
+        afterPublication(graph)
     }
 
     @Test
@@ -312,7 +321,7 @@ class NeverWaitsTest(private val broken: Broken) {
             val service = service(android)
             until("the saved queue is the player's") { settled(service) }
         }
-        val inside = services.last().let { (it as PlaybackService).inside() }
+        val inside = (services.last() as PlaybackService).inside()
         assertEquals("s2", inside.player.queue.current()?.id)
         timed("cold_start_puts_the_queue_back_and_plays", "play") {
             inside.player.play()
@@ -323,11 +332,7 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun aDirectPlayStartsItCold() {
         savedQueue()
-        // (The receiver only looks for a saved password's file: this stand-in phone has no
-        // Keystore to seal one with, so one is put there.)
         Graph.passwordFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
-        // The button reaches the app's receiver (Media3's, with the app's own say on whether
-        // there is anything to resume), which starts the service.
         val started = timed("a_direct_play_starts_it_cold", "receiver") {
             PlayButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(app.packageName).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
             shadowOf(app).nextStartedService
@@ -343,6 +348,47 @@ class NeverWaitsTest(private val broken: Broken) {
         }
     }
 
+    /** The name the first builds gave the button's receiver (Media3's own), which Android goes
+     *  on sending a Play button to until the app is next opened. */
+    @Test
+    fun aDirectPlayByTheReceiversOldNameStartsItCold() {
+        savedQueue()
+        Graph.passwordFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
+        val started = timed("a_direct_play_starts_it_cold", "old_receiver") {
+            androidx.media3.session.MediaButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(ComponentName(app, "androidx.media3.session.MediaButtonReceiver")).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
+            shadowOf(app).nextStartedService
+        }
+        assertEquals(PlaybackService::class.java.name, started?.component?.className)
+        timed("a_direct_play_starts_it_cold", "old_media_button") {
+            val service = service()
+            val inside = service.inside()
+            service.addSession(inside.session)
+            service.onStartCommand(started, 0, 1)
+            assertTrue(shadowOf(service).lastForegroundNotificationId != 0)
+            until("playing what was saved") { inside.exo.playWhenReady && inside.player.queue.current()?.id == "s2" }
+        }
+    }
+
+    @Test
+    fun aPlayButtonBeforeTheAccountIsPublishedStartsItCold() {
+        val (graph, box) = processStartedAgain()
+        val test = "a_direct_play_starts_it_cold"
+        timed(test, "before_publication") {
+            PlayButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(app.packageName).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
+            val started = shadowOf(app).nextStartedService
+            assertEquals(PlaybackService::class.java.name, started?.component?.className)
+            val service = service()
+            val inside = service.inside()
+            service.addSession(inside.session)
+            service.onStartCommand(started, 0, 1)
+            assertTrue("not in the foreground when the start command returned", shadowOf(service).lastForegroundNotificationId != 0)
+            assertNull(graph.accounts.state.value)
+            box.open.countDown()
+            until("playing what was saved") { inside.exo.playWhenReady && inside.player.queue.current()?.id == "s2" }
+        }
+        afterPublication(graph)
+    }
+
     @Test
     fun theCarStartsTheServiceCold() {
         savedQueue()
@@ -350,40 +396,71 @@ class NeverWaitsTest(private val broken: Broken) {
         val service = service(android)
         val inside = service.inside()
         val test = "the_car_starts_the_service_cold"
-        // A song chosen in the car: in the foreground before anything is looked up.
         val asked = System.nanoTime()
         val chosen = inside.callback.onSetMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/0/s1/album/al-1").build()), C.INDEX_UNSET, C.TIME_UNSET)
         assertTrue("not in the foreground when the car's choice arrived", android.inIt)
         val foreground = (android.enteredAt - asked) / 1e6
         Times.record(test, broken.name, "foreground", foreground)
         assertTrue("in the foreground after ${"%.0f".format(foreground)} ms", foreground < ANDROID_FOREGROUND_LIMIT_MILLIS)
-        timed(test, "chosen") { answer(chosen) }
+        holds.stillStuck("$test, foreground")
+        timed(test, "chosen") { assertChosen(answer(chosen)) }
         timed(test, "children") {
-            answer(inside.callback.onGetLibraryRoot(inside.session, car, null))
-            for (id in listOf("root", "home", "playlists", "library", "downloads", "album/al-1")) {
+            assertEquals(SessionResult.RESULT_SUCCESS, answer(inside.callback.onGetLibraryRoot(inside.session, car, null)).resultCode)
+            for (id in listOf("root", "home", "playlists", "library", "downloads")) {
                 assertEquals(id, SessionResult.RESULT_SUCCESS, answer(inside.callback.onGetChildren(inside.session, car, id, 0, Int.MAX_VALUE, null)).resultCode)
             }
+            val album = answer(inside.callback.onGetChildren(inside.session, car, "album/al-1", 0, Int.MAX_VALUE, null))
+            assertTrue("the album's songs: ${album.value?.map { it.mediaMetadata.title }}", album.value!!.any { it.mediaMetadata.title.toString() == "Song 2" })
         }
         timed(test, "search") {
             answer(inside.callback.onSearch(inside.session, car, "lantern", null))
-            answer(inside.callback.onGetSearchResult(inside.session, car, "lantern", 0, 50, null))
+            val found = answer(inside.callback.onGetSearchResult(inside.session, car, "lantern", 0, 50, null))
+            assertTrue("nothing found", found.value.orEmpty().isNotEmpty())
         }
         timed(test, "voice") {
             val words = MediaItem.Builder().setRequestMetadata(MediaItem.RequestMetadata.Builder().setSearchQuery("first light").build()).build()
-            answer(inside.callback.onSetMediaItems(inside.session, car, listOf(words), C.INDEX_UNSET, C.TIME_UNSET))
+            val spoken = answer(inside.callback.onSetMediaItems(inside.session, car, listOf(words), C.INDEX_UNSET, C.TIME_UNSET))
+            assertTrue("nothing to play for the words", spoken.mediaItems.isNotEmpty())
         }
         timed(test, "add") {
-            answer(inside.callback.onAddMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/2/s3/album/al-1").build())))
+            val added = answer(inside.callback.onAddMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/2/s3/album/al-1").build())))
+            assertEquals(1, added.size)
         }
         timed(test, "resumption_card") {
-            answer(inside.callback.onPlaybackResumption(inside.session, car, false))
+            val card = answer(inside.callback.onPlaybackResumption(inside.session, car, false))
+            assertTrue("the card has nothing", card.mediaItems.isNotEmpty())
         }
+    }
+
+    /** What the service answers a car's choice of the album's first song with: the album, from
+     *  that song. (Media3 hands it to the player; called here as Media3 calls it.) */
+    private fun assertChosen(chosen: androidx.media3.session.MediaSession.MediaItemsWithStartPosition) {
+        val titles = chosen.mediaItems.map { it.mediaMetadata.title.toString() }
+        assertTrue("the car's choice: $titles from ${chosen.startIndex}", titles.getOrNull(maxOf(chosen.startIndex, 0)) == "Song 1")
+    }
+
+    @Test
+    fun theCarBeforeTheAccountIsPublishedStartsItCold() {
+        val (graph, box) = processStartedAgain()
+        val android = Foreground()
+        val service = service(android)
+        val inside = service.inside()
+        val test = "the_car_starts_the_service_cold"
+        timed(test, "before_publication") {
+            val chosen = inside.callback.onSetMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/0/s1/album/al-1").build()), C.INDEX_UNSET, C.TIME_UNSET)
+            assertTrue("not in the foreground when the car's choice arrived", android.inIt)
+            val resume = inside.callback.onPlaybackResumption(inside.session, car, false)
+            assertNull(graph.accounts.state.value)
+            box.open.countDown()
+            assertChosen(answer(chosen))
+            assertTrue(answer(resume).mediaItems.isNotEmpty())
+        }
+        afterPublication(graph)
     }
 
     @Test
     fun theNotificationsButtonsWork() {
-        standIn.signIn(app)
-        componentBroken()
+        signedIn()
         val service = service()
         val inside = service.inside()
         until("settled") { settled(service) }
@@ -398,15 +475,16 @@ class NeverWaitsTest(private val broken: Broken) {
             assertNotNull("no media notification was posted", posted)
             val like = posted!!.actions.orEmpty().first { it.title == app.getString(R.string.add_to_liked) }
             service.onStartCommand(shadowOf(like.actionIntent).savedIntent, 0, 1)
-            until("liked") { account().likes.isLiked("s1") }
+            until("liked, and the like at the music server") { account().likes.isLiked("s1") && standIn.asked.any { "/rest/star" in it } }
         }
         timed(test, "shuffle_and_repeat") {
             val systemUi = inside.session.mediaNotificationControllerInfo!!
+            val repeatBefore = inside.player.queue.repeat
             assertEquals(SessionResult.RESULT_SUCCESS, answer(inside.callback.onCustomCommand(inside.session, systemUi, PlaybackService.SHUFFLE, Bundle.EMPTY)).resultCode)
             assertTrue(inside.player.queue.shuffle)
             assertEquals(SessionResult.RESULT_SUCCESS, answer(inside.callback.onCustomCommand(inside.session, systemUi, PlaybackService.REPEAT, Bundle.EMPTY)).resultCode)
+            assertTrue("repeat did not change", inside.player.queue.repeat != repeatBefore)
         }
-        until("the like reached the music server") { standIn.asked.any { "/rest/star" in it } }
     }
 
     @Test
@@ -419,50 +497,42 @@ class NeverWaitsTest(private val broken: Broken) {
         val saved = { QueueFiles.of(accountDirs(app.filesDir, app.cacheDir, account().account.key).data).load()?.let { q -> q.order.map { q.songs[it].id } } }
         timed(test, "changed") {
             val player = inside.player
-            // Added next, and at the end; the one at the end moved to straight after the song
-            // playing; the last of the album's taken out.
             player.enqueue(listOf(songs()[0]), playNext = true)
             player.enqueue(listOf(songs()[2]), playNext = false)
             settle()
-            val uids = player.queue.playingUids()
-            player.moveEntry(uids.last(), after = null, queued = true)
+            player.moveEntry(player.queue.playingUids().last(), after = null, queued = true)
             settle()
             player.removeEntry(player.queue.playingUids()[player.queue.playingUids().size - 2])
             settle()
-            val now = player.queue.playingOrder().map { it.id }
-            until("the change is on the disk: $now") { saved() == now }
+            // s1 added next, s3 added last and moved up straight after the song playing, then
+            // the first added taken out again.
+            assertEquals(listOf("s1", "s2", "s3", "s3"), player.queue.playingOrder().map { it.id })
+            until("the change is on the disk") { saved() == listOf("s1", "s2", "s3", "s3") }
         }
-        val kept = inside.player.queue.playingOrder().map { it.id }
         service.onDestroy()
         services -= service
         settle()
         timed(test, "kept") {
             val again = service(Foreground())
             until("the changed queue is back") { settled(again) }
-            assertEquals(kept, again.inside().player.queue.playingOrder().map { it.id })
+            assertEquals(listOf("s1", "s2", "s3", "s3"), again.inside().player.queue.playingOrder().map { it.id })
         }
         timed(test, "cleared") {
-            val again = services.last() as PlaybackService
-            again.inside().player.clear()
+            (services.last() as PlaybackService).inside().player.clear()
             until("nothing is kept") { saved().isNullOrEmpty() }
         }
     }
 
     @Test
     fun downloadsStartAndResume() {
-        standIn.signIn(app)
-        componentBroken()
+        signedIn()
         val test = "downloads_start_and_resume"
         val downloads = account().downloads!!
-        // (Robolectric's phone is on mobile data; whether downloads wait for Wi-Fi is not what
-        // this is about.)
         app.graph.settings.update { it.copy(downloadWifiOnly = false) }
-        // Asked for by hand.
         timed(test, "by_hand") {
             app.graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) { downloads.download(listOf(songs()[0])) }
             until("downloaded") { account().catalogue.has("s1") }
         }
-        // The scheduled job, alone, with no screen: something is waiting for it.
         timed(test, "job") {
             app.graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) { downloads.download(listOf(songs()[1])) }
             val job = Robolectric.buildService(DownloadsJob::class.java).create().get()
@@ -470,8 +540,6 @@ class NeverWaitsTest(private val broken: Broken) {
             assertTrue(job.onStartJob(jobParameters()))
             until("the job carried the download to its end") { account().catalogue.has("s2") && shadowOf(job).isJobFinished }
         }
-        // The foreground service (Android 12 and 13's way): in the foreground at once, and
-        // stopped when nothing is left.
         timed(test, "service") {
             app.graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) { downloads.download(listOf(songs()[2])) }
             val held = Robolectric.buildService(DownloadsService::class.java).create().get()
@@ -480,6 +548,39 @@ class NeverWaitsTest(private val broken: Broken) {
             assertEquals(DownloadKeeper.NOTIFICATION_ID, shadowOf(held).lastForegroundNotificationId)
             until("downloaded, and the service stopped") { account().catalogue.has("s3") && shadowOf(held).isStoppedBySelf }
         }
+    }
+
+    /** A download cut off part-way, and resumed: the whole song arrives. */
+    @Test
+    fun aDownloadCutOffIsResumed() {
+        signedIn()
+        val test = "downloads_start_and_resume"
+        val downloads = account().downloads!!
+        app.graph.settings.update { it.copy(downloadWifiOnly = false) }
+        standIn.cutOnce += "s1"
+        app.graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) { downloads.download(listOf(songs()[0])) }
+        until("the first answer cut off") { standIn.asked.count { "/rest/stream" in it } >= 1 && !standIn.cutOnce.contains("s1") }
+        timed(test, "resumed") {
+            app.graph.scope.launch(kotlinx.coroutines.Dispatchers.Main) { downloads.retryFailed() }
+            until("downloaded whole after the cut: ${downloads.state.value.failed}") { account().catalogue.has("s1") }
+        }
+        assertTrue(standIn.asked.count { "/rest/stream" in it } >= 2)
+    }
+
+    @Test
+    fun theJobBeforeTheAccountIsPublishedCarriesDownloadsOn() {
+        val (graph, box) = processStartedAgain()
+        val test = "downloads_start_and_resume"
+        timed(test, "job_before_publication") {
+            val job = Robolectric.buildService(DownloadsJob::class.java).create().get()
+            services += job
+            assertTrue(job.onStartJob(jobParameters()))
+            assertNull(graph.accounts.state.value)
+            box.open.countDown()
+            // Nothing is waiting: the job looks, and ends.
+            until("the job ended") { shadowOf(job).isJobFinished }
+        }
+        afterPublication(graph)
     }
 
     /** What Android hands a job: built by its own constructor, as the scheduler does. */
@@ -525,8 +626,7 @@ class NeverWaitsTest(private val broken: Broken) {
 
     @Test
     fun aLikeAndAPlayReachTheMusicServer() {
-        standIn.signIn(app)
-        componentBroken()
+        signedIn()
         val test = "a_like_and_a_play_reach_the_music_server"
         timed(test, "like") {
             account().likes.set(songs()[2], true)
@@ -538,10 +638,34 @@ class NeverWaitsTest(private val broken: Broken) {
         }
     }
 
+    /** A play the music server could not be told of is told again once it answers. */
+    @Test
+    fun aPlayNotToldIsToldAgain() {
+        signedIn()
+        val test = "a_like_and_a_play_reach_the_music_server"
+        standIn.failing += "scrobble"
+        account().played("s3", System.currentTimeMillis(), "", report = true)
+        until("the play held, the music server not told") { standIn.asked.any { "/rest/scrobble" in it } && account().held.waiting.value > 0 }
+        val asked = standIn.asked.count { "/rest/scrobble" in it }
+        standIn.failing -= "scrobble"
+        timed(test, "play_again") {
+            var next = 0L
+            until("told again") {
+                // (Each half second: the watch asks whether the server is back, and a pass over
+                // what is held is made, as when it is.)
+                if (System.nanoTime() > next) {
+                    next = System.nanoTime() + 500_000_000
+                    app.graph.checkIfDown()
+                    app.graph.scope.launch { account().flush() }
+                }
+                standIn.asked.count { "/rest/scrobble" in it } > asked && account().held.waiting.value == 0
+            }
+        }
+    }
+
     @Test
     fun aPlayIsCountedAsReleased() {
-        standIn.signIn(app)
-        componentBroken()
+        signedIn()
         val test = "a_play_is_counted_as_released"
         val log = File(account().account.dirs.data, "plays.log")
         timed(test, "counted") {
@@ -550,28 +674,43 @@ class NeverWaitsTest(private val broken: Broken) {
             account().played("s2", 1_000_240_000L, "", report = false)
             runBlocking { account().playLog.flushed() }
         }
-        // The log's bytes are the released app's for the same plays.
         assertEquals("[\"s1\",1000000,\"playlist:p\"]\n[\"s2\",1000240]\n", log.readText())
     }
 
     @Test
     fun anAccountChangeIsNotHeldUp() {
-        standIn.signIn(app)
-        val old = componentBroken()
+        signedIn()
+        // The launcher held too, so the old client is not let go of while the step runs: the new
+        // account is published with all of the old one's client stuck.
+        holds.holdTheLauncher(app.graph)
         val test = "an_account_change_is_not_held_up"
         timed(test, "next_account") {
             app.graph.session.signOut()
             standIn.signIn(app, username = "another")
+            assertEquals("another", account().account.username)
+            assertTrue(app.graph.session.state.value is SessionState.SignedIn)
         }
-        assertEquals("another", account().account.username)
-        assertTrue(app.graph.session.state.value is SessionState.SignedIn)
-        // The old account's client is let go of (once its launcher can run: with every thread
-        // of its own held, the account was published without it), and stops by itself: every
-        // thread of its own ends. What it still brings back is not shown.
-        if (broken == Broken.WORKERS_HELD) holding.countDown()
-        until("the old account's client is let go of") { old.isStopped }
-        for (worker in old.workers) assertTrue("a thread of the old client's is still running", worker.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS))
-        // The new account's is made, and is stuck as the old one was.
-        if (broken != Broken.WORKERS_HELD) assertTrue(componentBroken() !== old)
+        // Then let go: the old client is let go of, and its threads end.
+        holds.oldClientLetGo()
+    }
+
+    /** The timings are an alarm a dependency of 400 ms trips: a step slowed by that much is
+     *  over its limit. */
+    @Test
+    fun aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught() {
+        assumeTrue(Times.released != null && broken == Broken.STALLED)
+        savedQueue()
+        val service = service(Foreground())
+        val inside = service.inside()
+        until("settled") { settled(service) }
+        val caught = runCatching {
+            val began = System.nanoTime()
+            answer(inside.callback.onGetLibraryRoot(inside.session, car, null))
+            for (id in listOf("root", "home", "playlists", "library", "downloads", "album/al-1")) answer(inside.callback.onGetChildren(inside.session, car, id, 0, Int.MAX_VALUE, null))
+            Thread.sleep(400)
+            val millis = (System.nanoTime() - began) / 1e6
+            assertTrue(millis <= Times.held("the_car_starts_the_service_cold", "children")!!)
+        }
+        assertTrue("a step 400 ms slower was not caught", caught.isFailure)
     }
 }

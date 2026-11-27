@@ -4301,36 +4301,58 @@ reachable and the Connect sheet is as M6 made it.
 The backend of our own beside the music server is designed in the Windows repository's
 `docs/backend-design.md`. This is the phone's side at its very smallest: slice P1 of that
 design's section 15. **It asks the backend's `hello`, and shows one row under Settings.** It
-reads, sends and keeps nothing else: no sign-in, no plays, no file.
+reads, sends and keeps nothing else: no sign-in, no plays, no file. All of it is
+`nexus/Nexus.kt`; the review of P1 set most of what follows.
 
-- **Where:** `nexus/Nexus.kt`. `NexusLauncher` is made with the app's objects (`Graph.nexus`)
-  and runs on a thread of its own ("nexus-launcher"). It watches `accounts.state` and, **after
-  an account has been published there**, makes that account's `NexusClient`. Nothing of the
-  account's (`AccountGraph`), and nothing `Accounts.restored` waits for, makes it or waits on
-  it (the design's 5.1).
-- **Its own everything:** a worker thread ("nexus-worker"), an OkHttp client of its own with
-  its own dispatcher (on a thread of its own, "nexus-calls", at most one request) and its own
-  connection pool (of one), and its own limits: 8 seconds to connect, 10 between pieces of an
-  answer, 20 for the whole. HTTPS only (`ConnectionSpec.MODERN_TLS`: plain HTTP is refused by
-  the client itself, whatever the network security configuration allows the rest of the app),
-  and no redirect followed (`followRedirects(false)`, `followSslRedirects(false)`). An account
-  whose server is plain HTTP has no backend asked after at all.
+- **Not on the way the app starts.** Nothing of it is made, loaded or started while the app's
+  objects are made (`App.onCreate`, `Graph`): `Graph` launches, on its own scope and off the
+  main thread, a wait for the first account to be published, and only then makes the
+  `NexusLauncher`, catching anything that fails in the making. Nothing of the account's
+  (`AccountGraph`), and nothing `Accounts.restored` waits for, makes it or waits on it.
+- **Its own workers, all of them.** The launcher's thread ("nexus-launcher"); for each account
+  a client with its own worker ("nexus-worker", which also does the connect: OkHttp's fast
+  fallback, which hands connects to a scheduler, is off), its own dispatcher's thread
+  ("nexus-calls"), its own connection pool (of one) and **its own OkHttp task runner**
+  ("nexus-okhttp", for the pool's upkeep) where the app's own client uses OkHttp's
+  process-wide one. OkHttp keeps the setter and the constructor that take a task runner to
+  itself: they are reached by name, and `proguard-rules.pro` keeps those names. HTTP/1.1 only,
+  so nothing of HTTP/2 runs. **Shared with the rest of the app, and only these:** the system's
+  DNS and sockets, OkHttp's platform (TLS) and Okio's timeout watchdog.
+- **Never the shared library's load.** It asks the core only once the core is loaded
+  (`Core.isReady`, which takes no lock); otherwise it says "none found" and asks nothing. So it
+  never takes the load's lock, which the next sign-in can need.
+- **Nothing it does can take the app down.** Every failure inside it is caught inside it (an
+  interrupt while connecting, when it is let go of, among them); its coroutines and threads
+  have handlers of their own besides, which the tests hold to never being reached.
+- **Bound to its account.** What it finds is kept with the account it was found for
+  (`NexusShown`, in `Graph.nexusFound`), and the row shows it only while that account is the
+  one published (`Graph.nexusShown`). A client whose account is no longer published drops what
+  it brings back and stops by itself, whether or not the launcher has got to it; the launcher
+  lets it go when it sees the change (cancelling its request, closing its idle connection,
+  interrupting its threads), without waiting for anything.
+- **One probe is one request on the wire.** No retry on a failed connection, no redirect
+  followed, and no follow-up of OkHttp's own (a 503 with "Retry-After: 0", a 408, a 421, a
+  401's authenticator): a network interceptor refuses any second attempt of one call before it
+  is sent, and the call is "none found".
+- **Only while it may:** not with offline mode switched on by hand (a car-only start with it
+  on included), not while the phone may not reach the home network (Android 17's permission,
+  as the server watch has it), and only while the app is in use: its screens in front, or
+  music playing or meant to be. At most once an hour; it looks whether it may every minute.
+  The design's 9.4 says this of sending and fetching plays; the client takes it now.
 - **What it asks:** `GET https://<the music server's host and port>/nexus/api/hello`, built
   from the constant `nexus::proto::HELLO` (written again in Kotlin, `NexusClient.HELLO`),
-  whatever path the music server itself is under, with no query. Once when the account is
-  taken on, and every hour after.
+  whatever path the music server itself is under, with no query. HTTPS only (plain HTTP is
+  refused by the client itself, whatever the network security configuration allows the rest of
+  the app); an account whose server is plain HTTP has no backend asked after at all.
 - **What counts as found:** decided by the shared core, `nexus::proto::classify`, through
-  `Core.nexusHello`: the status, and the body as the transport read it, **to its end or to one
-  byte past 4,096 bytes, and whether reading failed first**. The library is handed that as the
-  reader it asks for, so it reads the body as the transport did and never a copy cut to fit.
-  No header is looked at. Anything else, a failure to connect included, is "none found".
+  `Core.nexusHello`: the status, and for a 200 the body as the transport read it, **to its end
+  or to one byte past 4,096 bytes, and whether reading failed first**. The library is handed
+  that as the reader it asks for. The body of anything but a 200 is not waited for (the core
+  does not read it). No header is looked at. Anything else, a failure to connect included, is
+  "none found".
 - **The row:** Settings, Account, under the signed-in row: "Nexus server", with "Found at
-  music.example.org" (the port too, if it is not 443) or "None found". Nothing to press.
-- **When the account changes,** the launcher lets the old client go at once: `stop()` returns
-  without waiting for anything (its request is cancelled, which closes its socket; its
-  threads are interrupted) and the threads end by themselves. Whatever it still brings back is
-  dropped: only the current client's word reaches the row, which goes back to "None found"
-  for the new account until its own client has asked.
+  music.example.org" (the port too if it is not 443; an IPv6 address in brackets then) or
+  "None found". Nothing to press.
 - **The proof that nothing waits for it** is the suite of the design's 5.3, `nexus/
   NeverWaitsTest`, run with the backend's side broken in each way and the client's own threads
   held (docs/TESTING.md, "What never waits for the Nexus server").
