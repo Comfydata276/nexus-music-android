@@ -132,7 +132,8 @@ class NexusClient internal constructor(
     /** Every thread of its own, for a test to hold and to see end. */
     internal val workers: List<ExecutorService> get() = listOf(worker, calls)
 
-    /** How many times `hello` has been asked and answered, or failed. (For the tests.) */
+    /** How many times `hello` has been asked and answered, or failed, and what was found said.
+     *  (For the tests.) */
     internal val asked = AtomicInteger()
 
     /** Whether it has been let go of. */
@@ -142,8 +143,8 @@ class NexusClient internal constructor(
         scope.launch {
             while (isActive) {
                 val found = ask()
-                asked.incrementAndGet()
                 if (!stopped) told(found)
+                asked.incrementAndGet()
                 delay(every)
             }
         }

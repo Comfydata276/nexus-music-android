@@ -145,10 +145,14 @@ class NeverWaitsTest(private val broken: Broken) {
         runBlocking { app.graph.session.restored() }
     }
 
-    private fun hold(workers: List<java.util.concurrent.ExecutorService>) {
+    /** Holds each of `workers` in work that does not end while the test runs; the latch
+     *  given back is down once every one of them is in it. */
+    private fun hold(workers: List<java.util.concurrent.ExecutorService>): java.util.concurrent.CountDownLatch {
+        val inIt = java.util.concurrent.CountDownLatch(workers.size)
         for (worker in workers) {
-            runCatching { worker.execute { try { holding.await() } catch (_: InterruptedException) {} } }
+            runCatching { worker.execute { inIt.countDown(); try { holding.await() } catch (_: InterruptedException) {} } }
         }
+        return inIt
     }
 
     /** The modes in which the stand-in takes the backend's `hello` and never answers it. */
@@ -285,14 +289,15 @@ class NeverWaitsTest(private val broken: Broken) {
             val made = Graph(app, PlainBox).also { graphs += it; graph = it }
             // With every thread of the backend's client held from the moment the app's objects
             // exist, before anything is read: the account is published all the same.
-            if (broken == Broken.WORKERS_HELD) hold(made.nexus.workers)
+            if (broken == Broken.WORKERS_HELD) check(hold(made.nexus.workers).await(5, java.util.concurrent.TimeUnit.SECONDS)) { "the launcher was not held" }
             runBlocking { withTimeout(30_000) { made.accounts.restored() } }
         }
         assertNotNull("the saved account was not published", restored)
         assertEquals("tester", restored!!.account.username)
         if (broken == Broken.WORKERS_HELD) {
-            // (Its launcher held, the backend's client was never made: nothing waited for it.)
-            assertEquals(null, graph!!.nexus.current)
+            // (Published while the launcher was held: whether the launcher had made the
+            // account's client before it was held is a race of no matter, and not asked.)
+            assertTrue(holding.count == 1L)
         } else {
             // Made afterwards, for the account published, and stuck.
             componentBroken(graph!!)
