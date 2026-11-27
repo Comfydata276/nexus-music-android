@@ -1183,6 +1183,27 @@ class RequestsTest {
         }
     }
 
+    /** A connection that OPENED and then timed out (TCP up, the secure handshake never
+     *  answered) is not put down to the permission: the ordinary sentence, no hint. */
+    @Test
+    fun `a connection that opened and then timed out is not put down to the permission`() = runBlocking {
+        val silent = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+        val held = CopyOnWriteArrayList<java.net.Socket>()
+        Thread { while (!silent.isClosed) runCatching { held += silent.accept() } }.apply { isDaemon = true }.start()
+        org.medianexus.music.core.CoreHttp.dress = { it.readTimeout(2, java.util.concurrent.TimeUnit.SECONDS) }
+        try {
+            val requests = requests(local = Gate({ Nearness.MAYBE }))
+            requests.switch(true)
+            val state = requests.connect("https://127.0.0.1:${silent.localPort}", KEY)
+            assertTrue(traces.last(), traces.last().contains(", timed out, "))
+            assertTrue("$state", state is RequestsState.Unreachable)
+        } finally {
+            org.medianexus.music.core.CoreHttp.dress = {}
+            silent.close()
+            held.forEach { runCatching { it.close() } }
+        }
+    }
+
     @Test
     fun `a name is judged by where it leads from here`() = runBlocking {
         fun at(vararg addresses: String): (String) -> List<java.net.InetAddress> = { addresses.map { java.net.InetAddress.getByName(it) } }
@@ -1193,10 +1214,11 @@ class RequestsTest {
         assertEquals(Nearness.NOT, LocalGate.nearnessOf("localhost"))
         // Not judged: a look-up that fails.
         assertNull(LocalGate.nearnessOf("nowhere.example", lookup = { throw java.net.UnknownHostException() }))
-        // Mixed: one address at home and one not is only maybe; and so is all at home through a VPN.
+        // Mixed: one address at home and one not is only maybe; and so is all at home on mobile data or a VPN, `.local` too.
+        assertEquals(Nearness.MAYBE, LocalGate.nearnessOf("nas.local", homeNetwork = false))
         assertEquals(Nearness.MAYBE, LocalGate.nearnessOf("lidarr.example.org", lookup = at("192.168.1.20", "2606:4700::1")))
-        assertEquals(Nearness.MAYBE, LocalGate.nearnessOf("lidarr.example.org", vpn = true, lookup = at("192.168.1.20")))
-        assertEquals(Nearness.MAYBE, LocalGate.nearnessOf("192.168.1.20", vpn = true))
+        assertEquals(Nearness.MAYBE, LocalGate.nearnessOf("lidarr.example.org", homeNetwork = false, lookup = at("192.168.1.20")))
+        assertEquals(Nearness.MAYBE, LocalGate.nearnessOf("192.168.1.20", homeNetwork = false))
     }
 
     @Test

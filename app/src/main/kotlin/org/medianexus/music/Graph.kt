@@ -226,7 +226,7 @@ class Graph(
                         diagnostics.replacing(org.medianexus.music.requests.Trace.PREFIX, on)
                         if (failed) diagnostics.replacing(org.medianexus.music.requests.Trace.FAILED_PREFIX, on.replaceFirst(org.medianexus.music.requests.Trace.PREFIX, org.medianexus.music.requests.Trace.FAILED_PREFIX))
                     },
-                    local = org.medianexus.music.requests.AppLocalGate(localAccess) { transportNow(context).startsWith("VPN") },
+                    local = org.medianexus.music.requests.AppLocalGate(localAccess) { transportNow(context).let { it == "Wi-Fi" || it == "Ethernet" } },
                     note = { diagnostics.note(it) },
                     // (A sign-in is finished only with the app's own screen in front: resumed.)
                     front = resumed,

@@ -2859,7 +2859,9 @@ How it is built (M1b):
   while the permission is held, before Android 17, or in offline mode** (no look-up at all:
   0.6.2's way, and offline mode's own sentence). Otherwise **a name is judged by where it
   leads from here, address by address: certainly local only when every address is** (a
-  mixed answer is "maybe") and the phone's network is not a VPN (through one, "maybe"); a
+  mixed answer is "maybe") and the phone is on Wi-Fi or Ethernet, not through a VPN (on
+  mobile data, a private APN included, or through a VPN, "maybe", sent as before; `.local`
+  names the same; Android restricts only such a network); a
   look-up that fails or times out is "not judged" and changes nothing. The music side's own
   judging, which counts such a name as only "maybe", is unchanged. Certainly local without
   the permission: nothing is sent; the status says `local_network_why` with Continue, which
@@ -2869,9 +2871,12 @@ How it is built (M1b):
   again by itself, and also at once if it was given while the check was looking. Maybe:
   the request is sent as before, and **only if its connection never opened** (a time-out or
   a failure while connecting; not a TLS failure, a certificate, or any answer, which keep
-  their own sentence) is the address judged again, then, and the status says
+  their own sentence) is the address judged again, then (both hosts together, under one
+  bound; only this fresh verdict counts, and one that can't be made is no hint), and the
+  status says
   `local_network_refused` with Allow and Try again. The sign-in's host is judged before the
-  browser opens (a Sign in that ends there retires one under way, as a new one does), and
+  browser opens (the verdict counts only if the sign-in is still the one judged; a Sign in
+  that ends there retires one under way, as a new one does), and
   again, afresh, if the trade after the return goes unanswered, so a move from mobile data
   to Wi-Fi in between is still explained. A check nobody pressed for (the app starting) only
   sets the status: nothing asks until the person taps. The other pages of requests show one
@@ -2879,7 +2884,19 @@ How it is built (M1b):
   **Accepted:** an address Android counts as local only by its route (a global IPv6 address
   on the home network's own link) is not recognised, and the ordinary sentence stands, as in
   0.6.2; a Try again pressed just as the permission's own check begins can send two reads
-  (the newer result is kept, as with two taps in 0.6.2). **Walks of requests must include
+  (the newer result is kept, as with two taps in 0.6.2); a public Lidarr whose sign-in proxy
+  is on the home network, at the very first connect when the sign-in is not yet known: the
+  discovery request times out once with the old sentence, exactly as 0.6.2, and from then on
+  the sign-in's host is judged before the browser opens; without the permission, a stalled
+  name look-up can delay a check by up to three seconds even where an open connection could
+  have been reused; the record of the last request on Lidarr's line is one slot (as in
+  0.6.2), so a page's request failing at the same instant as a check can lend its ending to
+  the check's judgment; the re-check after "certain" has no bound of its own (a permission
+  can't be taken away without Android ending the process, so it can't loop), and a grant in
+  the instant between a failed trade's judgment and its publication leaves "maybe" showing
+  with the permission held, where both buttons simply check; two failures written at the
+  same instant can leave two "last failed" lines, and 200 later diagnostics entries can push
+  the failure line out. **Walks of requests must include
   the shape "music server not local, Lidarr local, permission not held"**, and devbox's
   resolver does not see what a home's Wi-Fi does.
 - **What the server said** when it refused something the car asked for (`Graph.refusals`) is

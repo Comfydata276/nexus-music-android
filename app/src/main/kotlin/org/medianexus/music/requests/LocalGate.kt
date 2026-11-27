@@ -24,8 +24,10 @@ import org.medianexus.music.net.LocalNetwork.Nearness
  *
  * **A name is judged by what it leads to on this network now**, address by address, with
  * the same rules as an address written out ([LocalNetwork.judgeHost]): **certainly local
- * only when every address it leads to is**, and the phone's network is not a VPN (through
- * one, a home's range may be the VPN's). A mixed answer, or a VPN, is "maybe": the request
+ * only when every address it leads to is**, and the phone is on Wi-Fi or Ethernet and not
+ * through a VPN (Android restricts only such a network; on mobile data, a private APN, or
+ * through a VPN, a home-looking range is someone else's). A mixed answer, or any other
+ * network, is "maybe": the request
  * is sent as before, and only if it then goes unanswered is the permission named as maybe
  * why. (The music side judges a name that leads to a private address as only "maybe", on
  * purpose, and is not changed.)
@@ -62,7 +64,7 @@ interface LocalGate {
         /** How near `host` is, its name looked up by `lookup` if it is one (a few seconds
          *  at the most: a name that can't be looked up can't be reached either, and isn't
          *  blamed on the permission). */
-        suspend fun nearnessOf(host: String, vpn: Boolean = false, lookup: (String) -> List<InetAddress> = { InetAddress.getAllByName(it).toList() }): Nearness? {
+        suspend fun nearnessOf(host: String, homeNetwork: Boolean = true, lookup: (String) -> List<InetAddress> = { InetAddress.getAllByName(it).toList() }): Nearness? {
             val judged = LocalNetwork.judgeHost(host) ?: run {
                 val found = CoroutineScope(Dispatchers.IO).async { runCatching { lookup(host) }.getOrNull() }
                 val addresses = withTimeoutOrNull(LOOKUP_MILLIS) { found.await() }
@@ -74,15 +76,15 @@ interface LocalGate {
                     else -> Nearness.NOT
                 }
             }
-            // (Through a VPN, a home's range may be the VPN's own.)
-            return if (judged == Nearness.LOCAL && vpn) Nearness.MAYBE else judged
+            // (Certain only on a network Android restricts: Wi-Fi or Ethernet, not a VPN.)
+            return if (judged == Nearness.LOCAL && !homeNetwork) Nearness.MAYBE else judged
         }
     }
 }
 
 /** The app's: [LocalAccess] for whether it is held and when it is given. */
-class AppLocalGate(private val access: LocalAccess, private val vpn: () -> Boolean) : LocalGate {
-    override suspend fun near(address: String): Nearness? = LocalGate.nearnessOf(LocalNetwork.hostOf(address), vpn())
+class AppLocalGate(private val access: LocalAccess, private val homeNetwork: () -> Boolean) : LocalGate {
+    override suspend fun near(address: String): Nearness? = LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork())
 
     override val held: Boolean get() = access.held
 

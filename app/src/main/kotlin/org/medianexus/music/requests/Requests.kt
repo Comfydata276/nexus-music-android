@@ -8,6 +8,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -330,9 +332,12 @@ class Requests internal constructor(
      * then, or with the permission held, or before Android 17): the nearest of them, or null
      * if none could be judged.
      */
-    private suspend fun judged(addresses: List<String>): Nearness? {
-        if (local.held || CoreHttp.unsent() != null) return null
-        return addresses.mapNotNull { local.near(it) }.minByOrNull { it.ordinal }
+    private suspend fun judged(addresses: List<String>): Nearness? = kotlinx.coroutines.coroutineScope {
+        // (Together, under the one bound each look-up has, not one after the other; and the
+        // guard read again as each begins: given, or offline, meanwhile, nothing is looked up.)
+        addresses.map { address ->
+            async { if (local.held || CoreHttp.unsent() != null) null else local.near(address) }
+        }.awaitAll().filterNotNull().minByOrNull { it.ordinal }
     }
 
     /** Writes the line about the last attempt (`near`: where what it reached for was, from
@@ -657,7 +662,8 @@ class Requests internal constructor(
         // (The connection never opened, and it may be on the home network without the
         // permission, judged now: said so. Opened and then failed, it is what it was.)
         val failedUnanswered = unanswered(since) && checked !is Outcome.Stopped && (checked as? Outcome.Got)?.value?.version == null
-        if (failedUnanswered) judged(hosts)?.let { near = it }
+        // (Only the verdict made now counts: one that can't be made now is no hint.)
+        if (failedUnanswered) near = judged(hosts)
         val mayBeLocal = failedUnanswered && !local.held && near != null && near != Nearness.NOT
         turn.withLock {
             if (checks != mine) return@withContext stateNow.value
@@ -737,12 +743,15 @@ class Requests internal constructor(
             val settings = settingsNow.value
             settings.door?.takeIf { !unreadable && settings.on && Core.gateRefused(it, settings.address) == null }?.service
         }
-        val near = service?.let { judged(listOf(it)) }
+        val judgedNear = service?.let { judged(listOf(it)) }
         var certain = false
         turn.withLock {
             read()
             val settings = settingsNow.value
             val found = settings.door ?: return@withContext null
+            // (The verdict counts only for the sign-in it was made of: changed meanwhile, this
+            // one goes on unjudged, as 0.6.2's would.)
+            val near = judgedNear.takeIf { found.service == service }
             if (near == Nearness.LOCAL && !local.held && !unreadable && settings.on) {
                 // (As a new sign-in retires one under way, so does this: no browser is left
                 // waiting behind a screen that no longer offers to cancel it.)
