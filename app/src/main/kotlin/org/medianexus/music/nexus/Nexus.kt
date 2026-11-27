@@ -148,6 +148,9 @@ class NexusLauncher internal constructor(
         /** Each client's generation: one more for every account taken on, in the process. */
         private val generations = java.util.concurrent.atomic.AtomicLong()
 
+        /** The last generation given out. (For the tests.) */
+        fun lastGeneration(): Long = generations.get()
+
         /** How often a client asks `hello` again: an hour, but in tests. */
         @Volatile var period: Long = HOURLY_MILLIS
 
@@ -319,6 +322,9 @@ class NexusClient internal constructor(
             quiet { worker.shutdownNow() }
             quiet { calls.shutdownNow() }
             quiet { backend.shutdown() }
+            // (And its thread interrupted where it waits for the pool's next upkeep, which
+            // shutting down alone leaves to wait out.)
+            quiet { backend.executor.shutdownNow() }
         }
     }
 

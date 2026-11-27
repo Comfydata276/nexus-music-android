@@ -48,6 +48,8 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     /** Before the app's objects are made (each test's start, and a test's own cold start). */
     fun beforeAppStarts() {
         escapedBefore = NexusClient.escaped.get()
+        // (The client exists only in a build made with it: these tests switch it on.)
+        NexusBuild.forTests = true
         NexusLauncher.period = 200
         // (Before any client exists: none may ask before its worker is held.)
         if (broken == Broken.WORKERS_HELD) NexusClient.beforeAsk = { client ->
@@ -98,9 +100,9 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
                 holdLock("its OkHttp scheduler", client.runner)
                 holdTheLauncher(graph)
             }
-            // (Its one request, and the stand-in's one: no other client's request is counted.)
+            // (Its own requests, and the stand-in's: no other client's request is counted.)
             keeps -> until("the backend's client is kept at the stand-in") { ownRequestHeld(client) }
-            broken == Broken.HALF_CONNECTED -> until("the backend's client is reading half a hello") { client.reading && client.sent.get() == 1 && standIn.nexusArrived.get() == 1 }
+            broken == Broken.HALF_CONNECTED -> until("the backend's client is reading half a hello") { ownAnswerHalfRead(client) }
             else -> until("the backend's client has had its answer") { client.asked.get() > 0 && !client.calling }
         }
     }
@@ -114,8 +116,8 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
         if (broken == Broken.WORKERS_HELD) assertEquals("$what: the client's worker had let go", 1, workerHeld[client]?.get())
         when {
             broken == Broken.WORKERS_HELD -> assertEquals("$what: the held client sent something", 0, client.sent.get())
-            keeps -> assertTrue("$what: the stand-in no longer keeps the client's one hello", ownRequestHeld(client))
-            broken == Broken.HALF_CONNECTED -> assertTrue("$what: the client is no longer reading its one answer", client.reading && client.sent.get() == 1 && standIn.nexusArrived.get() == 1)
+            keeps -> assertTrue("$what: the stand-in no longer keeps the client's hello", ownRequestHeld(client))
+            broken == Broken.HALF_CONNECTED -> assertTrue("$what: the client is no longer reading its answer", ownAnswerHalfRead(client))
             else -> {}
         }
     }
@@ -123,7 +125,26 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     /** This test's client's own request, and no other, held at the stand-in now: it has sent one
      *  request, the stand-in has had one under `/nexus/`, and is holding it. */
     private fun ownRequestHeld(client: NexusClient) =
-        client.calling && client.sent.get() == 1 && standIn.nexusArrived.get() == 1 && standIn.nexusActive.get() == 1
+        client.calling && client.sent.get() >= 1 && standIn.nexusArrived.get() == client.sent.get() && standIn.nexusActive.get() >= 1
+
+    private fun ownAnswerHalfRead(client: NexusClient) =
+        client.reading && client.sent.get() >= 1 && standIn.nexusArrived.get() == client.sent.get()
+
+    /**
+     * Before a timed step: the client's hold acknowledged again. (Its request can outlast a
+     * test's setup only by the client's own read limit, ten seconds: when it has given up it
+     * asks again, a fifth of a second later in the tests, and that request is held as the first
+     * was. Every request at the stand-in is still this client's.)
+     */
+    fun beforeStep(what: String) {
+        val client = client ?: return
+        when {
+            broken == Broken.WORKERS_HELD -> {}
+            keeps -> until("$what: the backend's client is kept at the stand-in") { ownRequestHeld(client) }
+            broken == Broken.HALF_CONNECTED -> until("$what: the backend's client is reading half a hello") { ownAnswerHalfRead(client) }
+            else -> {}
+        }
+    }
 
     /** A graph made by a test, as `App.onCreate` does once `App.graph` is it. */
     fun appStarted(graph: Graph) = graph.started()
@@ -155,6 +176,7 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
         } finally {
             NexusLauncher.gate = null
             NexusClient.beforeAsk = null
+            NexusBuild.forTests = null
             NexusLauncher.period = NexusLauncher.HOURLY_MILLIS
             holding.countDown()
         }

@@ -30,6 +30,16 @@ val jamsExist = false
 val linkExists = providers.gradleProperty("linkExists").orNull == "true"
 
 /**
+ * Whether the Nexus server's client (`nexus/`: the backend design's slice P1) exists in this
+ * build. **It does not**, in any build that is published, until what only a real phone, a car
+ * and a real proxy can show has been done (docs/DESIGN.md, "The Nexus server's client"). It
+ * gives the app `BuildConfig.NEXUS` (read through `nexus/NexusBuild.kt`); with it off nothing of
+ * the client is made, no thread, no row under Settings, no request. A build for trying it out
+ * is this same source built with `-PnexusExists=true`.
+ */
+val nexusExists = providers.gradleProperty("nexusExists").orNull == "true"
+
+/**
  * The shared core: the Windows app's own code for what every app on an account must do
  * identically, compiled into a library the app carries (`native/`, docs/DESIGN.md "The
  * shared core"). **Every build of the app builds it first, and none can leave it out**:
@@ -74,6 +84,7 @@ android {
         versionName = providers.gradleProperty("versionName").orNull ?: "0.6.3"
         buildConfigField("boolean", "JAMS", jamsExist.toString())
         buildConfigField("boolean", "LINK", linkExists.toString())
+        buildConfigField("boolean", "NEXUS", nexusExists.toString())
         // The app carries a library of its own, compiled for these two kinds of processor
         // and no other (see "The shared core", below): an arm64 phone, and the x86_64
         // emulators. Naming them here leaves every other kind out of the APK altogether,

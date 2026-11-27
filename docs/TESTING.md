@@ -3113,6 +3113,11 @@ has sent one, the stand-in (one per test) has had one under `/nexus/` and holds 
 | `anAccountChangeIsNotHeldUp` | Signed out and another account signed in, with the launcher held too; then let go, the old client let go of and its threads ended | `next_account` |
 | `aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught` | The car's folders with 400 ms more: must be over its limit | (none) |
 
+The client exists only in a build made with `-PnexusExists=true` (docs/DESIGN.md): these tests
+switch it on for themselves (`NexusBuild.forTests`), and `nexus/NexusSwitchedOffTest` switches it
+off and shows nothing of it is made (no launcher, no thread, no request), so the suite passes
+whichever way the build was made.
+
 After every test: no connection carried both a request of the music server's and one under
 `/nexus/`; nothing reached the client's own handlers of last resort; and the row shows nothing
 for the account published. Beside it: `nexus/NexusClientTest` (the client alone, on the real

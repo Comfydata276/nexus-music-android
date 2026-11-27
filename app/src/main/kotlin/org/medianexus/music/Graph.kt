@@ -288,6 +288,8 @@ class Graph(
     /** Makes the launcher, once, if the app has started and an account is published. On the
      *  account watcher's thread or [started]'s dispatch; never the main thread. */
     private fun makeNexus() {
+        // (Not in a build without it: nothing of it is made. See nexus/NexusBuild.kt.)
+        if (!org.medianexus.music.nexus.NexusBuild.on) return
         if (!appStarted || accounts.state.value == null) return
         synchronized(nexusLock) { if (nexus == null) nexus = startNexus() }
     }

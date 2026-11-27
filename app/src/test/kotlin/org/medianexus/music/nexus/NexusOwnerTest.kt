@@ -53,6 +53,7 @@ class NexusOwnerTest {
     @Before
     fun start() {
         escapedBefore = NexusClient.escaped.get()
+        NexusBuild.forTests = true
         NexusLauncher.period = 100
         app.graph.front.value = true
         runBlocking { app.graph.session.restored() }
@@ -65,6 +66,7 @@ class NexusOwnerTest {
         } finally {
             release.countDown()
             NexusLauncher.gate = null
+            NexusBuild.forTests = null
             NexusLauncher.period = NexusLauncher.HOURLY_MILLIS
             graphs.forEach { it.scope.cancel() }
             standIns.forEach { it.stop() }

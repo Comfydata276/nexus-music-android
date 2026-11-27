@@ -4304,6 +4304,24 @@ design's section 15. **It asks the backend's `hello`, and shows one row under Se
 reads, sends and keeps nothing else: no sign-in, no plays, no file. All of it is
 `nexus/Nexus.kt`; the review of P1 set most of what follows.
 
+- **Behind a switch that is off.** It exists only in a build made with `-PnexusExists=true`
+  (`BuildConfig.NEXUS`, read through `nexus/NexusBuild.kt`; the pattern of linking's
+  `-PlinkExists`). Without it nothing of it is made: no launcher, no thread, no row under
+  Settings, no request; the app as released (`nexus/NexusSwitchedOffTest`). Its tests switch it
+  on for themselves, so `scripts/check --release` passes either way. **It stays off in every
+  published build until these have been done**, which nothing on this machine can do:
+  - a real phone, on Android 17 and on the phone's own Android, signed in over HTTPS through
+    the owner's real proxy, with the backend absent, stalled and there (and Android 17's
+    permission to reach the home network denied, then granted);
+  - a real car (the design's E13): starting it cold, the queue, voice, with the backend stalled;
+  - a real proxy (E2b): the rule of the design's 6.2 in Nginx Proxy Manager, with and without a
+    content network, and both apps' real clients against it;
+  - gapless joins of cached and downloaded songs with the backend held, and on Android 17
+    (streamed joins were recorded on the Android 16 emulator: docs/TESTING.md).
+- **Where `hello` is, for a music server's address**, is worked out here in Kotlin
+  (`NexusClient.origin` and `HELLO`): the origin's scheme (HTTPS only), host and port, and the
+  path `/nexus/api/hello`. The Windows repository is moving that into `core/src/nexus/`; when it
+  lands, the phone takes it from there.
 - **Not on the way the app starts.** Nothing of it is allocated or dispatched while `Graph` is
   being made, or before `App.graph` is assigned: `App.onCreate` then calls `Graph.started`,
   which sets a flag. The launcher (`NexusLauncher`), with the state the row reads, is made by

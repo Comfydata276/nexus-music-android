@@ -194,6 +194,7 @@ class NeverWaitsTest(private val broken: Broken) {
     /** Times `block` as `step` of `test`, records it, and holds it to the released app's
      *  (see [Times]); then checks that every hold on the client is still in place. */
     private fun <T> timed(test: String, step: String, block: () -> T): T {
+        holds.beforeStep("$test, $step")
         val began = System.nanoTime()
         val result = block()
         val millis = (System.nanoTime() - began) / 1e6
