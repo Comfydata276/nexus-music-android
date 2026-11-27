@@ -4296,6 +4296,54 @@ reachable and the Connect sheet is as M6 made it.
 - **Linking stopped:** nothing is offered (no rows, no "Play here"), and the note is shown:
   then it is the library's sentence for it, the one the person was told by a note.
 
+## The Nexus server's client (P1: an empty component)
+
+The backend of our own beside the music server is designed in the Windows repository's
+`docs/backend-design.md`. This is the phone's side at its very smallest: slice P1 of that
+design's section 15. **It asks the backend's `hello`, and shows one row under Settings.** It
+reads, sends and keeps nothing else: no sign-in, no plays, no file.
+
+- **Where:** `nexus/Nexus.kt`. `NexusLauncher` is made with the app's objects (`Graph.nexus`)
+  and runs on a thread of its own ("nexus-launcher"). It watches `accounts.state` and, **after
+  an account has been published there**, makes that account's `NexusClient`. Nothing of the
+  account's (`AccountGraph`), and nothing `Accounts.restored` waits for, makes it or waits on
+  it (the design's 5.1).
+- **Its own everything:** a worker thread ("nexus-worker"), an OkHttp client of its own with
+  its own dispatcher (on a thread of its own, "nexus-calls", at most one request) and its own
+  connection pool (of one), and its own limits: 8 seconds to connect, 10 between pieces of an
+  answer, 20 for the whole. HTTPS only (`ConnectionSpec.MODERN_TLS`: plain HTTP is refused by
+  the client itself, whatever the network security configuration allows the rest of the app),
+  and no redirect followed (`followRedirects(false)`, `followSslRedirects(false)`). An account
+  whose server is plain HTTP has no backend asked after at all.
+- **What it asks:** `GET https://<the music server's host and port>/nexus/api/hello`, built
+  from the constant `nexus::proto::HELLO` (written again in Kotlin, `NexusClient.HELLO`),
+  whatever path the music server itself is under, with no query. Once when the account is
+  taken on, and every hour after.
+- **What counts as found:** decided by the shared core, `nexus::proto::classify`, through
+  `Core.nexusHello`: the status, and the body as the transport read it, **to its end or to one
+  byte past 4,096 bytes, and whether reading failed first**. The library is handed that as the
+  reader it asks for, so it reads the body as the transport did and never a copy cut to fit.
+  No header is looked at. Anything else, a failure to connect included, is "none found".
+- **The row:** Settings, Account, under the signed-in row: "Nexus server", with "Found at
+  music.example.org" (the port too, if it is not 443) or "None found". Nothing to press.
+- **When the account changes,** the launcher lets the old client go at once: `stop()` returns
+  without waiting for anything (its request is cancelled, which closes its socket; its
+  threads are interrupted) and the threads end by themselves. Whatever it still brings back is
+  dropped: only the current client's word reaches the row, which goes back to "None found"
+  for the new account until its own client has asked.
+- **The proof that nothing waits for it** is the suite of the design's 5.3, `nexus/
+  NeverWaitsTest`, run with the backend's side broken in each way and the client's own threads
+  held (docs/TESTING.md, "What never waits for the Nexus server").
+
+**What the shared core is pinned to for this.** `native/Cargo.toml` names `a0bf4d8` of the
+Windows repository: slice C1 (`core::nexus::proto`), directly on 0.40.12, whose core is the
+0.40.11 core this app carried before but for that module. It is **not a release of the
+Windows app**, which "The shared core" above asks of a pin, and it is not on GitHub yet; the
+lock file was made from the local repository and is the one the pushed commit gives. Before
+this can be built anywhere else, that commit has to be pushed (to any branch: a pin names a
+commit, and Cargo fetches it by its id), and before it lands on `main` the lead decides
+whether to wait for a Windows release that carries it.
+
 ## Milestones
 
 Each one ends with the app building, its tests passing, a run on the emulator, and a review.

@@ -121,18 +121,76 @@ class NeverWaitsTest(private val broken: Broken) {
         "com.example.car", 4_321, 10_123, MediaSession.ControllerInfo.LEGACY_CONTROLLER_VERSION, 0, true, Bundle.EMPTY, true,
     )
 
+    /** What [Broken.WORKERS_HELD] holds the backend's client's threads with: work that does
+     *  not end while the test runs (and ends, interrupted, when the client is let go of). */
+    private val holding = java.util.concurrent.CountDownLatch(1)
+
+    /** How many of the backend's clients have been put in this case's state so far: each holds
+     *  one request at the stand-in, in the cases where it is held. */
+    private var broke = 0
+    private val seen = HashSet<NexusClient>()
+
+    /** Where the backend's client would keep its files; the DISK cases leave it unusable. */
+    private val nexusFiles get() = File(app.filesDir, "nexus")
+
     @Before
     fun start() {
         DownloadKeeper.visible = false
+        when (broken) {
+            Broken.DISK_BLOCKED -> check(ProcessBuilder("mkfifo", nexusFiles.path).start().waitFor() == 0) { "no pipe made" }
+            Broken.DISK_FULL -> nexusFiles.writeBytes(ByteArray(0))
+            else -> {}
+        }
         standIn.start()
         runBlocking { app.graph.session.restored() }
     }
 
+    private fun hold(workers: List<java.util.concurrent.ExecutorService>) {
+        for (worker in workers) {
+            runCatching { worker.execute { try { holding.await() } catch (_: InterruptedException) {} } }
+        }
+    }
+
+    /** The modes in which the stand-in takes the backend's `hello` and never answers it. */
+    private val holdsHello get() = broken != Broken.ABSENT && broken != Broken.SESSION_ENDED
+
+    /**
+     * The backend's client of the account `graph` has signed in now, once it is in the state
+     * this case puts it in: its `hello` held at the stand-in (or, where the stand-in answers,
+     * answered); and with [Broken.WORKERS_HELD] every thread of its own held too. What a test
+     * does after this, it does with the backend's client stuck.
+     */
+    private fun componentBroken(graph: Graph = app.graph): NexusClient {
+        var made: NexusClient? = null
+        until("the backend's client is made for the account") { graph.nexus.current?.takeIf { it !in seen }?.also { made = it } != null }
+        val client = made!!
+        seen += client
+        broke++
+        if (holdsHello) {
+            until("the backend's client is held at the stand-in") { standIn.nexusHeld >= broke }
+        } else {
+            until("the backend's client has had its answer") { client.asked.get() > 0 }
+        }
+        if (broken == Broken.WORKERS_HELD) hold(client.workers + graph.nexus.workers)
+        return client
+    }
+
     @After
     fun stop() {
+        // What each test did, it did with the backend's client stuck: its requests are held
+        // still, nothing was found, and where it would keep its files is as the case left it.
+        if (holdsHello) assertTrue("the stand-in let a hello go", standIn.nexusHeld >= broke)
+        assertEquals(NexusFound.None, app.graph.nexus.found.value)
+        when (broken) {
+            Broken.DISK_BLOCKED -> assertTrue(java.nio.file.Files.getAttribute(nexusFiles.toPath(), "unix:mode").let { (it as Int) and 0xF000 == 0x1000 })
+            Broken.DISK_FULL -> assertTrue(nexusFiles.isFile && nexusFiles.length() == 0L)
+            else -> {}
+        }
+        holding.countDown()
         for (service in services.asReversed()) runCatching { service.onDestroy() }
         settle()
         graphs.forEach { it.scope.cancel() }
+        (graphs + app.graph).forEach { it.http.connectionPool.evictAll() }
         // **The music server's own connections were never the backend's**: no connection
         // carried both a request of the music server's and one under /nexus/.
         assertTrue(
@@ -196,6 +254,7 @@ class NeverWaitsTest(private val broken: Broken) {
      *  from the second; then lets the service go, as Android does when it wants the memory. */
     private fun savedQueue() {
         standIn.signIn(app)
+        componentBroken()
         val first = service(Foreground())
         until("the first service has read what was saved") { settled(first) }
         first.inside().player.play(songs(), 1, "First Light", source = "album:al-1", playNow = false)
@@ -217,15 +276,27 @@ class NeverWaitsTest(private val broken: Broken) {
         val before = Graph(app, PlainBox).also { graphs += it }
         before.session.signIn(standIn.address, "tester", "a password")
         runBlocking { withTimeout(30_000) { before.accounts.state.first { it != null } } }
+        componentBroken(before)
         runBlocking { before.settings.flush() }
         before.scope.cancel()
         // The app starts: its objects are made, and the saved sign-in is read and published.
+        var graph: Graph? = null
         val restored = timed("cold_start_publishes_the_saved_account", "restored") {
-            val graph = Graph(app, PlainBox).also { graphs += it }
-            runBlocking { withTimeout(30_000) { graph.accounts.restored() } }
+            val made = Graph(app, PlainBox).also { graphs += it; graph = it }
+            // With every thread of the backend's client held from the moment the app's objects
+            // exist, before anything is read: the account is published all the same.
+            if (broken == Broken.WORKERS_HELD) hold(made.nexus.workers)
+            runBlocking { withTimeout(30_000) { made.accounts.restored() } }
         }
         assertNotNull("the saved account was not published", restored)
         assertEquals("tester", restored!!.account.username)
+        if (broken == Broken.WORKERS_HELD) {
+            // (Its launcher held, the backend's client was never made: nothing waited for it.)
+            assertEquals(null, graph!!.nexus.current)
+        } else {
+            // Made afterwards, for the account published, and stuck.
+            componentBroken(graph!!)
+        }
     }
 
     @Test
@@ -307,6 +378,7 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun theNotificationsButtonsWork() {
         standIn.signIn(app)
+        componentBroken()
         val service = service()
         val inside = service.inside()
         until("settled") { settled(service) }
@@ -374,6 +446,7 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun downloadsStartAndResume() {
         standIn.signIn(app)
+        componentBroken()
         val test = "downloads_start_and_resume"
         val downloads = account().downloads!!
         // (Robolectric's phone is on mobile data; whether downloads wait for Wi-Fi is not what
@@ -448,6 +521,7 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun aLikeAndAPlayReachTheMusicServer() {
         standIn.signIn(app)
+        componentBroken()
         val test = "a_like_and_a_play_reach_the_music_server"
         timed(test, "like") {
             account().likes.set(songs()[2], true)
@@ -462,6 +536,7 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun aPlayIsCountedAsReleased() {
         standIn.signIn(app)
+        componentBroken()
         val test = "a_play_is_counted_as_released"
         val log = File(account().account.dirs.data, "plays.log")
         timed(test, "counted") {
@@ -477,6 +552,7 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun anAccountChangeIsNotHeldUp() {
         standIn.signIn(app)
+        val old = componentBroken()
         val test = "an_account_change_is_not_held_up"
         timed(test, "next_account") {
             app.graph.session.signOut()
@@ -484,5 +560,13 @@ class NeverWaitsTest(private val broken: Broken) {
         }
         assertEquals("another", account().account.username)
         assertTrue(app.graph.session.state.value is SessionState.SignedIn)
+        // The old account's client is let go of (once its launcher can run: with every thread
+        // of its own held, the account was published without it), and stops by itself: every
+        // thread of its own ends. What it still brings back is not shown.
+        if (broken == Broken.WORKERS_HELD) holding.countDown()
+        until("the old account's client is let go of") { old.isStopped }
+        for (worker in old.workers) assertTrue("a thread of the old client's is still running", worker.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS))
+        // The new account's is made, and is stuck as the old one was.
+        if (broken != Broken.WORKERS_HELD) assertTrue(componentBroken() !== old)
     }
 }
