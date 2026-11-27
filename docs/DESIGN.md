@@ -300,103 +300,70 @@ How it is built (M1a):
   the answers the four gave before they were made to ask it.)
 - **A quality of its own on mobile data** (Settings, Sound, "On mobile data", under Streaming
   quality: Same as Wi-Fi, which is the default, then the same four choices with the same
-  words; `Settings.mobileBitrate`, the phone's own, as Windows has no mobile data). With
-  Same as Wi-Fi there is one limit and nothing differs: the same requests, the same keys,
-  the same format line (`MobileQualityTest` asks every answer both ways). Otherwise, all in
-  `StreamQuality`:
-  - **Mobile data is a network Android counts as metered**, not a network that is cellular:
-    a VPN over mobile data is metered as the network under it is (Android gives a VPN the
-    meteredness of the networks it goes out by), and so is a phone's hotspot that says it is
-    one, which is mobile data too; it is the rule fetching ahead and lyrics already go by.
-    The network is the phone's default one, because that is the one the app's HTTP client
-    goes out on.
-  - **The lower limit is never exceeded over mobile data, and in doubt, the lower**
-    (`StreamQuality.choose`). Android's callbacks can come late, the default route can move
-    between the choice and the connection, a pooled connection can be on another network
-    than the one Android last named, and there may be no network yet. So the higher form is
-    asked for only when Android's last callback (`NetworkWatch`) and a look at the default
-    network that instant (`NetworkWatch.routeNow`) both say unmetered, and **that request is
-    bound to that very network** (its sockets and its name lookups: `BoundClients`) until the
-    song has begun: if the network has gone or turned metered by the time the connection is
-    made, the request fails rather than go out over mobile data. Anything else is the lower
-    of the two limits (with no network, the lower is also what the format line names). Only
-    the two limits differing for that song brings any of this in: with Same as Wi-Fi, or two
-    limits that come to one file, the network is not even looked at.
-  - **One queue entry, one form, from its first byte to its last.** The form is settled by
-    the stream's first bytes, not before (`SongDataSource.streamBegan`): a read that failed
-    before a byte arrived pins nothing, and the next open chooses again for the network
-    then. From then on the entry is in that form on any network: a drop or a seek after the
-    phone has moved asks for the same form (by the phone's own route), and so does **the new
-    data source Media3 makes for the entry** when its own retries have given up and the
-    service makes it ready again (`EntryCopies`: the copy each entry began on, by the entry's
-    number, which each read is told as the media item's custom cache key). Only a change of
-    the setting chooses again (`StreamQuality.chosenAgain`, and every entry's form forgotten:
-    the song playing is opened again, the rest at their next read; with Same as Wi-Fi exactly
-    a change of Streaming quality, as before); and a file this phone turns out not to play is
-    converted, as before. The next entry opened takes the limit of the network it is opened on.
-  - **What is playing is told by queue entry**, never by song: the format line, and what a
-    failure is laid at, are the current entry's copy. The same song twice in the queue is
-    two entries, and fetching ahead, which reads for no entry, tells nothing (a song fetched
-    ahead on mobile data used to be published as what the entry still playing its Wi-Fi
-    copy was).
-  - **What is kept whole in the other network's form is played as it was kept**
-    (`StreamQuality.choose`): a song fetched ahead on the Wi-Fi, as it is, and played on
-    mobile data comes from the phone as it was fetched, not fetched again at the mobile
-    data rate, and the other way about. The network's own form is preferred when both are
-    kept whole. **Until it has begun it is read from the phone alone** (`SongWhere.keptOnly`):
-    if it has been cleared away since it was chosen (the limit on kept songs), or there are
-    no kept songs to read (the account's folder still held by its turn before), the index is
-    told and the song is chosen again, which is then its network's own form; it never turns
-    into a request for the other form over the network. Once begun, a part cleared away
-    mid-song is fetched in the form it began in. The service counts what is kept only when it
-    has the kept songs. The format line is of the copy sounding, as always.
-  - **Offline, and what fetching ahead passes over, is what the player would open**
-    (`Availability.isKept`, `StreamQuality.keptKeysOf`): with two limits, either limit's form
-    as the player would work it out, so a file this phone has been found not to play (this
-    session, or remembered from a download) is not offered as it is. With one limit the
-    released answer stands, by the song's kind: it counts a file this phone can't play and
-    misses a conversion kept in its place, which is older than this and left for the lead.
-  - **Fetching ahead goes by the network it fetches on.** Each song is fetched through the
-    player's own data source, so in the form of the network it is opened on. When the phone
-    moves between the two, the two limits differ, and **the new network has held for five
-    seconds** (`StreamQuality.movedWithNetwork`; a Wi-Fi at the edge of its reach that comes
-    and goes starts nothing again), `FetchAhead.again`:
-    - what failed is tried again: a failure belongs to the form and network it failed on;
-    - the song being fetched is let go and fetched again from its start in the new form,
-      **unless** that form is the one it is being fetched in (nothing would change: a WMA at
-      320 either way), or it is a conversion three quarters or more of which has arrived
-      (nearly whole: to throw it away at the edge of a Wi-Fi's reach is to fetch it twice;
-      it is let finish in its form);
-    - let go means at once: fetching ahead has an HTTP client of its own over the same
-      connections, whose calls are cancelled (a read held on a stalled connection ends
-      there and then), and its data source asks the server nothing more, retries included.
-    What had arrived of a conversion let go is not kept; of a file as it is, it stays under
-    its own key. And the worker no longer sets itself going, again and again, for a list of
-    nothing but songs that have failed (it did, before there were two limits, whenever the
-    service asked for such a list).
-  - **Downloads are untouched.** A downloaded copy plays in place of a stream whatever either
-    limit says, and downloads are saved at Download quality, as before.
+  words; `Settings.mobileBitrate`, the phone's own, as Windows has no mobile data). **With
+  Same as Wi-Fi the app is the released one**: one limit, the same requests, keys, format
+  line and reloads, and the network is not even looked at (`MobileRacesTest`,
+  `DefaultAsReleasedTest`, and the step-1 `StreamQualityTest` unchanged). Otherwise, all in
+  `StreamQuality`, by four rules (the lead's R1 to R4, after two reviews; what came before
+  them, a request bound to a network, a form pinned to a queue entry, timers in fetching
+  ahead, each brought races of its own and is gone):
+  - **The lower limit is never exceeded over mobile data, and in doubt, the lower.** The
+    Wi-Fi's limit applies only when the app is sure the stream goes out on a network
+    Android doesn't count as metered: its last callback (`NetworkWatch`) and a look at the
+    default network that instant (`NetworkWatch.unmeteredNow`) both say so. Anything else
+    (mobile data; a VPN over it, which is metered as the network under it is; a callback
+    that is late; a network coming or going; none) is the lower of the two. So a choice on
+    mobile data above the Wi-Fi's comes to the Wi-Fi's there too.
+  - **R1, chosen as the stream is opened, looked at once more as its first bytes arrive.**
+    If a form above the lower limit was asked for and the network has since turned out
+    metered, the bytes are not handed on: the read fails as "moved" and the entry is made
+    ready again (below). After the first bytes, a route that changes is accepted: the answer
+    already coming goes on, in its form, to the end of that preparation.
+  - **R2, about bytes, not entries: one form within one preparation, never two joined.**
+    Every request a read makes (a seek past what is held, a dropped connection, the next
+    span of a kept copy) asks `SongWhere.mayAsk`: a form above the lower limit only while
+    sure of an unmetered network. When it may not, nothing is asked: what is kept of that
+    form isn't whole (else nothing would be asked), so the index is told, and the read fails
+    as "moved", which the service's existing recovery takes as "make the entry ready again
+    from where it is" (`onPlayerError`): a new preparation, which chooses afresh, a copy kept
+    whole first, else the form for the network now. A short hiccup beats a failure or a
+    lossless fetch over a capped network. Offline, a read whose copy has gone does the same
+    when another form of the song is kept whole. Every new preparation chooses afresh: after
+    recovery, the process made again, a car resuming, a change of the setting, coming back
+    to an entry. Nothing is remembered of an entry's form beyond its live preparation.
+  - **What is kept whole in the other form is played as it was kept**: a song fetched ahead
+    on the Wi-Fi, as it is, and played on mobile data comes from the phone; the server is
+    asked nothing in that form (R2), so if it has been cleared away meanwhile the entry is
+    made ready again in mobile data's. The network's own form is preferred when both are
+    kept whole.
+  - **R3, the format line** follows what is sounding, per queue entry: what each entry was
+    opened from is told as it is opened (by the entry's number, which each read is told as
+    the media item's custom cache key), as the released app told it by song; fetching ahead,
+    which reads for no entry, tells nothing. **A change of the setting** opens the song
+    playing again when it changes what either limit comes to (with Same as Wi-Fi, exactly a
+    change of Streaming quality), deciding from the copy playing, as released.
+  - **R4, fetching ahead** reads through the player's own data source, so asks as playback
+    does at every open, retry and resume; it also lets go of a form above the lower limit
+    between one read and the next once that may no longer be asked for, and fetches the song
+    again at once in the form for the network now. A failure is recorded against the form it
+    failed in: not tried again in that form until the list changes, tried at once in
+    another. What had arrived of a conversion let go is not kept; of a file as it is, it
+    stays under its own key. (And the worker is no longer set going, again and again, for a
+    list of nothing but songs that have failed, as it was before there were two limits.)
+  - **Offline, and what fetching ahead passes over** (`Availability.isKept`): with two
+    limits, either limit's form as the player would open it, a file this phone has been
+    found not to play left out.
+  - **Downloads are untouched**: a downloaded copy plays in place of a stream whatever either
+    limit says, saved at Download quality, as before.
   - **The kept songs never serve one quality under the other's name**: a song is kept under
-    its id and the rate asked for (0 for the file as it is), and two limits that come to the
-    same form (an MP3 within both, the same choice twice) are the same bytes under the same
-    key. `MobileStreamTest` reads each back from Media3's real cache.
-  - **Two songs at different qualities, one after the other.** Each is its own media item,
-    so ExoPlayer joins them as it joins any two files of a queue: at a change of codec (a
-    FLAC as it is, then the server's MP3) it starts the next decoder for the next song, and
-    if what comes out is the same (sample rate, channels) the sound goes on into the same
-    audio track with no gap. When it is not (a 48 kHz FLAC, then an MP3 at 44.1 kHz; the
-    server's MP3 keeps the file's rate where MP3 has it, and makes 88.2 and 96 kHz into one
-    it has) the audio track is made again for the new format after the last of the old one
-    has played, which is a short gap, as between any two such files today. What the tests
-    can hold (`MobileStreamTest`, on the real ExoPlayer with a renderer standing in for the
-    decoder): the first opened on the Wi-Fi as the file it is (320 kbps, with its length),
-    the phone moved to mobile data, the second opened there as the server's conversion (128
-    kbps, no length); each opened once, in its own form, and every frame of the first, then
-    the second's first frame 24 ms after the first's last. What the sound output does at a
-    change of codec or rate is Android's, and is looked at on the emulator.
-  - **The car** has nothing new: it streams by the same rule, as it plays through the same
-    service. **Jams and linking** are unchanged.
-  - **Diagnostics** says both limits and whether the phone is on mobile data now.
+    its id and the rate asked for (0 for the file as it is), as always.
+  - **Two songs at different qualities, one after the other**, join as any two files of a
+    queue do: the next decoder for the next song, the same audio track when what comes out
+    is the same (sample rate, channels), and a short gap while it is made again when it is
+    not, as between any two such files today. The server's MP3 conversions carry about 35 ms
+    of silence at a join whatever the network (no gapless information; see "Gapless MP3").
+  - **The car** has nothing new; **jams and linking** are unchanged; **Diagnostics** says
+    both limits and whether the phone is on mobile data now.
 - **Songs the server converts** (`SongReader`). Navidrome streams a fresh conversion with
   no length and ignores byte ranges (once it has a whole conversion in its own cache it
   honours them, but there is no knowing that without asking). It converts at the lower of
@@ -3415,8 +3382,7 @@ How it is built (M4a, sound and lyrics):
   made ready again, which keeps the queue, the place and whether it plays); measured, 48 ms of
   silence and the song carries on. A download, or a kept copy being played, is not fetched
   again. **A second quality for mobile data** came after M4a: see "A quality of its own on
-  mobile data" under Playback. A change of it opens the song playing again only when the
-  phone is on mobile data.
+  mobile data" under Playback.
 - **The sleep timer** (`playback/SleepTimer`, held by the `Graph`, so it carries on with every
   screen closed): Windows' choices (5, 10, 15, 30, 45 minutes, an hour, the end of this song,
   off) from the moon on Now Playing, in Windows' menu ("Pause music after") and words. It
