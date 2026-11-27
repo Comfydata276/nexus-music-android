@@ -838,6 +838,65 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_deviceName<'l>(env: J
     call(env, input, |id: String| Ok(handover::device_name(&id)))
 }
 
+// ---- the Nexus server: is it there? -----------------------------------------------------------
+
+#[derive(Deserialize)]
+struct HelloIn {
+    /// The answer's status, as the transport got it (a redirect is never followed).
+    status: u16,
+    /// What the phone's transport read of the body, in order: to its end, or to one byte past
+    /// the most a `hello` may be, whichever came first.
+    body: Vec<u8>,
+    /// False if reading the body failed before its end.
+    whole: bool,
+}
+
+/// `backend`: whether it is the Nexus server. `why`: if not, in a word, for the tests.
+#[derive(Serialize)]
+struct HelloOut {
+    backend: bool,
+    why: &'static str,
+}
+
+/// The body as the phone's transport read it, handed to the core as the reader it asks for:
+/// the bytes read, and then the end, or (if reading failed before the end) the failure. So the
+/// core reads the body exactly as the transport did, never a copy cut to fit.
+struct AsRead<'a> {
+    bytes: &'a [u8],
+    whole: bool,
+}
+
+impl std::io::Read for AsRead<'_> {
+    fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+        if self.bytes.is_empty() {
+            return if self.whole { Ok(0) } else { Err(std::io::Error::other("the body was cut off")) };
+        }
+        let n = into.len().min(self.bytes.len());
+        into[..n].copy_from_slice(&self.bytes[..n]);
+        self.bytes = &self.bytes[n..];
+        Ok(n)
+    }
+}
+
+/// `nexus::proto::classify`: whether an answer to `GET /nexus/api/hello` is the Nexus server's.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_medianexus_music_core_Core_nexusHello<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
+    use nexus_core::nexus::proto::{Found, NoBackend, classify};
+    call(env, input, |given: HelloIn| {
+        let found = classify(given.status, AsRead { bytes: &given.body, whole: given.whole });
+        let why = match found {
+            Found::Backend(_) => "",
+            Found::NoBackend(NoBackend::Redirect) => "redirect",
+            Found::NoBackend(NoBackend::Status(_)) => "status",
+            Found::NoBackend(NoBackend::Empty) => "empty",
+            Found::NoBackend(NoBackend::TooLarge) => "too_large",
+            Found::NoBackend(NoBackend::Cut) => "cut",
+            Found::NoBackend(NoBackend::NotHello(_)) => "not_hello",
+        };
+        Ok(HelloOut { backend: why.is_empty(), why })
+    })
+}
+
 // ---- for the tests of the boundary itself ------------------------------------------------------
 //
 // (In every build of the library, and called by nothing in a release build of the app: see

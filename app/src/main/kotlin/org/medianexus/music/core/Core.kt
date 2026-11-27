@@ -336,6 +336,28 @@ object Core {
     /** `device_name`: the name this device saves the queue under. */
     fun deviceName(id: String): String = across(id, String.serializer(), String.serializer(), ::deviceName)
 
+    // ---- The Nexus server (the core's `nexus::proto`) ----------------------------------------
+
+    @Serializable
+    private class HelloIn(val status: Int, val body: List<Int>, val whole: Boolean)
+
+    /** Whether an answer to the Nexus server's `hello` is the Nexus server's ([backend]); if
+     *  not, why in a word ("redirect", "status", "empty", "too_large", "cut", "not_hello"). */
+    @Serializable
+    class HelloFound(val backend: Boolean, val why: String)
+
+    /**
+     * `nexus::proto::classify`: whether an answer to `GET /nexus/api/hello` is the backend's,
+     * from its status and its body alone. `body` is what the transport read of the body: **to
+     * its end, or to one byte past [HELLO_MAX_BYTES], and never cut shorter**; `whole` is false
+     * if reading it failed before its end. No header is looked at, and a redirect is an answer.
+     */
+    fun nexusHello(status: Int, body: ByteArray, whole: Boolean): HelloFound =
+        across(HelloIn(status, body.map { it.toInt() and 0xFF }, whole), HelloIn.serializer(), HelloFound.serializer(), ::nexusHello)
+
+    /** The most of a `hello`'s body the core reads (`nexus::proto::HELLO_MAX_BYTES`). */
+    const val HELLO_MAX_BYTES = 4096
+
     // ---- Requests: what waits on the network (the core's `gate.rs`, `lidarr.rs`, `musicbrainz.rs`) ----
     //
     // Each of these asks the library for something it gets from Lidarr, the sign-in in front
@@ -1242,5 +1264,6 @@ object Core {
     @JvmStatic private external fun queuePlace(input: ByteArray): ByteArray?
     @JvmStatic private external fun deviceName(input: ByteArray): ByteArray?
     @JvmStatic private external fun echo(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusHello(input: ByteArray): ByteArray?
     @JvmStatic private external fun stop(input: ByteArray): ByteArray?
 }
