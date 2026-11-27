@@ -13,7 +13,10 @@ import org.medianexus.music.core.CoreHttp
  *
  *     requests: last connect or sign-in: finishing the sign-in, answered 400, 812 ms;
  *     browser came back after 74 s, app in front: no; kept running: yes; address: a name;
- *     connected over IPv4
+ *     connected over IPv4; last request: the name gave 2 IPv4 and 2 IPv6, IPv4 answering
+ *
+ * Every check writes it, whatever asked for it (Connect, "Try again", the app starting,
+ * requests switched on), and so does every end of a sign-in.
  */
 internal object Trace {
     const val PREFIX = "requests: last connect or sign-in:"
@@ -54,7 +57,7 @@ internal object Trace {
      *  [System.nanoTime]), if one ended since then. */
     fun last(since: Long): CoreHttp.LastOnLidarr? = CoreHttp.lastOnLidarr?.takeIf { it.at - since >= 0 }
 
-    fun line(step: Step, ended: String, millis: Long, browser: Browser?, addressKind: String, family: String?): String = buildString {
+    fun line(step: Step, ended: String, millis: Long, browser: Browser?, addressKind: String, family: String?, way: String? = null): String = buildString {
         append(PREFIX).append(' ').append(step.words).append(", ").append(ended).append(", ").append(millis).append(" ms")
         if (browser != null) {
             append("; browser ")
@@ -67,5 +70,7 @@ internal object Trace {
         }
         append("; address: ").append(addressKind)
         append("; connected over ").append(family ?: "nothing yet")
+        // (How far the last request's connection got: CoreHttp's `Way`.)
+        if (!way.isNullOrEmpty()) append("; last request: ").append(way)
     }
 }

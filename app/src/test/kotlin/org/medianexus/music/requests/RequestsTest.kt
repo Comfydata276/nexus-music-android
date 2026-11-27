@@ -976,6 +976,34 @@ class RequestsTest {
         }
     }
 
+    /**
+     * **0.6.1 on the owner's phone**: "Couldn't reach Lidarr. It didn't answer in time.", then
+     * "Try again", and the export had no line about it, because only Connect wrote one. Every
+     * check writes it now, whoever asked (Try again, the app starting), and says how far the
+     * last request's connection got.
+     */
+    @Test
+    fun `try again and the app starting write the line too, with how far the connection got`() = runBlocking {
+        val dead = java.net.ServerSocket(0).use { it.localPort }
+        val account = account()
+        val requests = requests(account)
+        requests.switch(true)
+        requests.connect("http://127.0.0.1:$dead", KEY)
+        val before = traces.size
+
+        // Try again.
+        requests.check()
+        assertEquals(before + 1, traces.size)
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} checking Lidarr, connection refused, "))
+        assertTrue(traces.last(), traces.last().endsWith("; last request: IPv4 failed while connecting"))
+
+        // The app starting again, with requests set up as they were.
+        val again = requests(account)
+        again.start()
+        withTimeout(10_000) { while (traces.size < before + 2) delay(20) }
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} checking Lidarr, connection refused, "))
+    }
+
     @Test
     fun `the tab closed without signing in gives the sign-in up, and a browser on its way back still gets through`() = runBlocking {
         val behind = Behind()

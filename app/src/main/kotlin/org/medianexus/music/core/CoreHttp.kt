@@ -195,7 +195,12 @@ internal object CoreHttp {
      * ("IPv4", "IPv6"; null if none was made). Never an address, a header or a body. `at` is
      * [System.nanoTime] when it ended, so that whoever reads it can tell it is their own.
      */
-    class LastOnLidarr(val at: Long, val ended: String, val family: String?)
+    class LastOnLidarr(
+        val at: Long, val ended: String, val family: String?,
+        /** How far its connection got ([Way]), in counts and fixed words; null if it was
+         *  never begun. */
+        val way: String? = null,
+    )
 
     @Volatile var lastOnLidarr: LastOnLidarr? = null
         private set
@@ -204,7 +209,75 @@ internal object CoreHttp {
     private val family = ThreadLocal<String?>()
 
     private fun ended(asked: Asked, words: String) {
-        if (asked.line == "lidarr") lastOnLidarr = LastOnLidarr(System.nanoTime(), words, family.get())
+        if (asked.line == "lidarr") lastOnLidarr = LastOnLidarr(System.nanoTime(), words, family.get(), wayNow.get())
+    }
+
+    /** [Way.words] of the request just made on this thread. */
+    private val wayNow = ThreadLocal<String?>()
+
+    /** Each request on Lidarr's line in flight, and how far its connection has got. */
+    private val ways = ConcurrentHashMap<Call, Way>()
+
+    /**
+     * **How far a request's connection got**, for the diagnostics line: how many addresses
+     * of each kind its name gave, and for each kind tried, the furthest it got (connecting,
+     * securing, connected, reused, asked, answering, or failed while one of those). So a
+     * request that timed out says where: "the name gave 2 IPv4 and 2 IPv6, IPv6 securing,
+     * IPv4 connected, IPv4 asked". Counts and fixed words only, never an address. (OkHttp
+     * tries a second address beside the first when the first is slow to connect, on
+     * threads of its own: hence the lock.)
+     */
+    private class Way : okhttp3.EventListener() {
+        private val lock = Any()
+        private var looked: String? = null
+        private val stages = LinkedHashMap<String, String>()
+        private var chosen: String? = null
+        private val trying = ThreadLocal<String?>()
+
+        private fun kind(address: java.net.InetAddress?): String = if (address is java.net.Inet6Address) "IPv6" else "IPv4"
+
+        private fun at(kind: String?, stage: String) {
+            if (kind != null) synchronized(lock) { stages[kind] = stage }
+        }
+
+        override fun dnsStart(call: Call, domainName: String) {
+            synchronized(lock) { looked = "looking up the name" }
+        }
+
+        override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<java.net.InetAddress>) {
+            val six = inetAddressList.count { it is java.net.Inet6Address }
+            synchronized(lock) { looked = "the name gave ${inetAddressList.size - six} IPv4 and $six IPv6" }
+        }
+
+        override fun connectStart(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy) {
+            val kind = kind(inetSocketAddress.address)
+            trying.set(kind)
+            at(kind, "connecting")
+        }
+
+        override fun secureConnectStart(call: Call) = at(trying.get(), "securing")
+
+        override fun connectEnd(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy, protocol: okhttp3.Protocol?) =
+            at(kind(inetSocketAddress.address), "connected")
+
+        override fun connectFailed(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy, protocol: okhttp3.Protocol?, ioe: IOException) {
+            val kind = kind(inetSocketAddress.address)
+            synchronized(lock) { stages[kind] = "failed while ${stages[kind] ?: "connecting"}" }
+        }
+
+        override fun connectionAcquired(call: Call, connection: okhttp3.Connection) {
+            val kind = kind(connection.route().socketAddress.address)
+            synchronized(lock) {
+                if (kind !in stages) stages[kind] = "reused"
+                chosen = kind
+            }
+        }
+
+        override fun requestHeadersEnd(call: Call, request: Request) = at(synchronized(lock) { chosen }, "asked")
+
+        override fun responseHeadersStart(call: Call) = at(synchronized(lock) { chosen }, "answering")
+
+        fun words(): String = synchronized(lock) { (listOfNotNull(looked) + stages.map { (kind, stage) -> "$kind $stage" }).joinToString(", ") }
     }
 
     /** The same as [words], as a fixed word for the diagnostics line. */
@@ -381,6 +454,7 @@ internal object CoreHttp {
                 // (Lidarr's line: which kind of address the connection went to, for the
                 // diagnostics line. It looks; it changes nothing.)
                 .apply {
+                    if (!public) eventListenerFactory { call -> Way().also { ways[call] = it } }
                     if (!public) addNetworkInterceptor { chain ->
                         chain.connection()?.socket()?.inetAddress?.let { family.set(if (it is java.net.Inet6Address) "IPv6" else "IPv4") }
                         chain.proceed(chain.request())
@@ -782,6 +856,7 @@ internal object CoreHttp {
 
     private fun sent(asked: Asked): ByteArray {
         family.set(null)
+        wayNow.set(null)
         return sending(asked).also { out ->
             when (out.firstOrNull()) {
                 FAILED -> if (lastOnLidarrNow == null) ended(asked, "not sent")
@@ -843,6 +918,7 @@ internal object CoreHttp {
         while (true) {
             val call = client.newCall(going)
             val allowed = if (doing == null) nobodysMillis else doing.enter(call)
+            if (allowed == Doing.REFUSED || allowed == Doing.SPENT) ways.remove(call)
             if (allowed == Doing.REFUSED) return stopped
             // (Its time was spent between the look above and now: not sent.)
             if (allowed == Doing.SPENT) {
@@ -855,13 +931,15 @@ internal object CoreHttp {
             val name = going.url.host.takeIf { asked.line != "lidarr" }
             name?.let { asking(it, +1) }
             val response = try {
-                call.execute()
+                call.execute().also { wayNow.set(ways.remove(call)?.words()) }
             } catch (e: IOException) {
+                wayNow.set(ways.remove(call)?.words())
                 doing?.leave(call)
                 if (doing?.isStopped != true) lastOnLidarrNow = word(e)
                 return if (doing?.isStopped == true) stopped else failed(words(e))
             } finally {
                 name?.let { asking(it, -1) }
+                ways.remove(call)
             }
             // (Sent on by a public service: followed here, a step at a time, or not at all.)
             val next = onward(asked, going.url, response, steps)

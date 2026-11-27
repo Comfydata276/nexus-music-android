@@ -2311,8 +2311,13 @@ it up. As on Windows:
   ("timed out", "answered 400", "nobody came back"), how long that step took; for the
   browser, whether and after how long it came back, whether the app was in front then and
   whether it was being kept running; whether Lidarr's address is a name or a number, and
-  whether the connection went over IPv4 or IPv6. Never an address, a key, a token, a code
-  or a state, and never a sentence from Lidarr or the service.
+  whether the connection went over IPv4 or IPv6; and how far the last request's connection
+  got (how many addresses of each kind the name gave, and for each kind tried: connecting,
+  securing, connected, asked, answering, or failed while one of those). **Every check
+  writes it** (0.6.2), whoever asked: Connect, "Try again", the app starting, requests
+  switched on; in 0.6.1 only Connect did, and the first export from a real phone had none.
+  Never an address, a key, a token, a code or a state, and never a sentence from Lidarr or
+  the service.
 - **What can happen while the browser is open**, each tried on the emulator against a
   stand-in service (docs/TESTING.md, "Requests"):
   - the person signs in: the app comes back in front by itself, connected;

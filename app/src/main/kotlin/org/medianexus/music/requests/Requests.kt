@@ -302,7 +302,8 @@ class Requests internal constructor(
     private fun writeTrace(step: Trace.Step, ended: String, millis: Long, browser: Trace.Browser?, since: Long) {
         try {
             val address = runCatching { Core.lidarrTidy(settingsNow.value.address) }.getOrNull()
-            trace(Trace.line(step, ended, millis, browser, Trace.addressKind(address), Trace.last(since)?.family ?: CoreHttp.lastOnLidarr?.family))
+            val last = Trace.last(since)
+            trace(Trace.line(step, ended, millis, browser, Trace.addressKind(address), last?.family ?: CoreHttp.lastOnLidarr?.family, last?.way))
         } catch (_: Exception) {
         }
     }
@@ -565,7 +566,7 @@ class Requests internal constructor(
      */
     suspend fun check(): RequestsState = check(interrupted = false)
 
-    private suspend fun check(interrupted: Boolean, traced: Traced? = null): RequestsState = withContext(io) {
+    private suspend fun check(interrupted: Boolean, traced: Traced = Traced(Trace.Step.CHECK)): RequestsState = withContext(io) {
         val (mine, at) = turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
@@ -623,7 +624,8 @@ class Requests internal constructor(
             }
             // (Lidarr answered as itself, on this very connection.)
             if (stateNow.value is RequestsState.Connected) verifiedNow.value = Verified(at)
-            if (traced != null) {
+            run {
+                // (Every check, whoever asked for it: "Try again" and the app starting too.)
                 val wire = Trace.last(since)?.ended
                 val (step, ended) = when (checked) {
                     is Outcome.Stopped -> traced.step to "stopped"
