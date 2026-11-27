@@ -296,8 +296,66 @@ How it is built (M1a):
   `library/`), which songs fetching ahead passes over (the same), and the format line before
   the player has opened the song (`PlayerConnection.format`); and the song playing is opened
   again when it says the limit has changed (below). Nothing else reads `Settings.bitrate` for
-  streaming (Settings and Diagnostics show the setting itself). (`StreamQualityTest` holds the answers the four
-  gave before they were made to ask it.)
+  streaming (Settings and Diagnostics show the setting itself). (`StreamQualityTest` holds
+  the answers the four gave before they were made to ask it.)
+- **A quality of its own on mobile data** (Settings, Sound, "On mobile data", under Streaming
+  quality: Same as Wi-Fi, which is the default, then the same four choices with the same
+  words; `Settings.mobileBitrate`, the phone's own, as Windows has no mobile data). With
+  Same as Wi-Fi there is one limit and nothing differs: the same requests, the same keys,
+  the same format line (`MobileQualityTest` asks every answer both ways). Otherwise, all in
+  `StreamQuality`:
+  - **Mobile data is a network Android counts as metered**, not a network that is cellular:
+    a VPN over mobile data is metered as the network under it is (Android gives a VPN the
+    meteredness of the networks it goes out by), and so is a phone's hotspot that says it is
+    one, which is mobile data too; it is the rule fetching ahead and lyrics already go by.
+    The network is the phone's default one as `NetworkWatch` follows it, because that is the
+    one the app's HTTP client goes out on; with none at all nothing streams, and the Wi-Fi
+    limit is the one named.
+  - **Decided as a song's stream is opened**, and only then. A data source opens, every
+    time after the first, the copy it opened first (above), so a song playing, or made
+    ready ahead of its turn for a gapless join, plays on in the form it began in whatever
+    the network does: a drop or a seek after the phone has moved asks for the same form,
+    from the same second. Only a change of the setting opens the song playing again
+    (`StreamQuality.chosenAgain`: the limit for the network the phone is on now has changed
+    because of a setting; with Same as Wi-Fi exactly a change of Streaming quality, as
+    before). The next song opened takes the limit of the network it is opened on.
+  - **What is kept whole in the other network's form is played as it was kept**
+    (`StreamQuality.formToOpen`): a song fetched ahead on the Wi-Fi, as it is, and played on
+    mobile data comes from the phone as it was fetched, not fetched again at the mobile
+    data rate, and the other way about. The network's own form is preferred when both are
+    kept whole. Such a song plays offline (`Availability.isKept` asks both keys) and is not
+    fetched ahead again. The format line is of the copy sounding, as always (`SongCopy`).
+  - **Fetching ahead goes by the network it fetches on.** Each song is fetched through the
+    player's own data source, so in the form of the network it is opened on; when the phone
+    moves between the two and the two limits differ (`StreamQuality.movedWithNetwork`; never
+    with Same as Wi-Fi), the song being fetched is let go (`FetchAhead.again`) and fetched
+    again from its start in the new form. What had arrived of a conversion is not kept; of
+    a file as it is, it stays under its own key. (A transfer on the Wi-Fi that carries on
+    after the phone's default route has moved is still going out on the Wi-Fi; it is let go
+    all the same, which costs a little: the rule is the simpler one.)
+  - **Downloads are untouched.** A downloaded copy plays in place of a stream whatever either
+    limit says, and downloads are saved at Download quality, as before.
+  - **The kept songs never serve one quality under the other's name**: a song is kept under
+    its id and the rate asked for (0 for the file as it is), and two limits that come to the
+    same form (an MP3 within both, the same choice twice) are the same bytes under the same
+    key. `MobileStreamTest` reads each back from Media3's real cache.
+  - **Two songs at different qualities, one after the other.** Each is its own media item,
+    so ExoPlayer joins them as it joins any two files of a queue: at a change of codec (a
+    FLAC as it is, then the server's MP3) it starts the next decoder for the next song, and
+    if what comes out is the same (sample rate, channels) the sound goes on into the same
+    audio track with no gap. When it is not (a 48 kHz FLAC, then an MP3 at 44.1 kHz; the
+    server's MP3 keeps the file's rate where MP3 has it, and makes 88.2 and 96 kHz into one
+    it has) the audio track is made again for the new format after the last of the old one
+    has played, which is a short gap, as between any two such files today. What the tests
+    can hold (`MobileStreamTest`, on the real ExoPlayer with a renderer standing in for the
+    decoder): the first opened on the Wi-Fi as the file it is (320 kbps, with its length),
+    the phone moved to mobile data, the second opened there as the server's conversion (128
+    kbps, no length); each opened once, in its own form, and every frame of the first, then
+    the second's first frame 24 ms after the first's last. What the sound output does at a
+    change of codec or rate is Android's, and is looked at on the emulator.
+  - **The car** has nothing new: it streams by the same rule, as it plays through the same
+    service. **Jams and linking** are unchanged.
+  - **Diagnostics** says both limits and whether the phone is on mobile data now.
 - **Songs the server converts** (`SongReader`). Navidrome streams a fresh conversion with
   no length and ignores byte ranges (once it has a whole conversion in its own cache it
   honours them, but there is no knowing that without asking). It converts at the lower of
@@ -1459,7 +1517,8 @@ simplest form (described where it belongs above). What had to be decided on the 
   Home's "Show all" offline). The Playlists chip no longer has a Downloads row.
 - **The Downloads page groups** as the car's tab does (playlists, albums, songs) with sizes;
   Windows' page is one list of songs.
-- **Settings keeps Windows' sections as chips**, so Streaming quality is under Sound and
+- **Settings keeps Windows' sections as chips**, so Streaming quality (and, the phone's own,
+  On mobile data) is under Sound and
   Offline mode first under Storage, as on Windows, rather than in the order the brief listed.
   Its "playing now" line is the player's format line, not Windows' longer sentence.
 - **The offline indication is a pill in the title bars**, as Windows' top bar has it, rather
@@ -3005,7 +3064,8 @@ How it is built (M2b):
   wide, a rule under it), `SettingHeading`, and its order and words, with only what works on
   the phone: the theme; Report plays to Navidrome; Streaming quality with Windows' words for
   each and what is playing now (changed mid-song, the song switches at once, as Windows'
-  `reload_current`; not one playing from its download); Offline mode; Downloads (Download
+  `reload_current`; not one playing from its download); On mobile data (the phone's own: see
+  Playback, "A quality of its own on mobile data"); Offline mode; Downloads (Download
   quality, Download on Wi-Fi only, Downloaded songs with Remove all); Kept songs (the space,
   with what is kept now, and Fetch ahead); the account and Sign out; the version, Diagnostics
   and Licences (the fonts' OFL, Lucide's ISC and the known media apps' Apache notice, in full).
@@ -3313,10 +3373,9 @@ How it is built (M4a, sound and lyrics):
   song is opened again at the new quality where it had been heard (the player stopped and
   made ready again, which keeps the queue, the place and whether it plays); measured, 48 ms of
   silence and the song carries on. A download, or a kept copy being played, is not fetched
-  again. **Not built: a second quality for mobile data** ("On Wi-Fi", "On mobile data"). It is
-  not small: what a song is streamed as is read in four places (where its bytes come from,
-  whether a kept copy plays offline, fetching ahead, the format line), and each would ask the
-  network as well, with the song playing kept to the form it began in. Left for the lead.
+  again. **A second quality for mobile data** came after M4a: see "A quality of its own on
+  mobile data" under Playback. A change of it opens the song playing again only when the
+  phone is on mobile data.
 - **The sleep timer** (`playback/SleepTimer`, held by the `Graph`, so it carries on with every
   screen closed): Windows' choices (5, 10, 15, 30, 45 minutes, an hour, the end of this song,
   off) from the moon on Now Playing, in Windows' menu ("Pause music after") and words. It
