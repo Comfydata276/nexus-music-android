@@ -44,7 +44,10 @@ class MobileQualityTest {
     private val network = MutableStateFlow(WIFI)
     /** Android's look at the network this instant agrees with its last callback here (where
      *  they disagree: MobileRacesTest). */
-    private val quality = StreamQuality(settings, network, route = { network.value.takeIf { it.connected }?.let { StreamQuality.Route("network", it.unmetered) } }, settleMillis = 0)
+    private val quality = StreamQuality(settings, network, unmeteredNow = { network.value.takeIf { it.connected }?.unmetered })
+
+    /** The keys a song kept whole plays offline under, by its kind. */
+    private fun StreamQuality.keptKeysOf(song: Song) = keptKeysOf(song, song.suffix.isEmpty() || song.suffix.lowercase() in NATIVE_SUFFIXES)
 
     private val flac = Song(id = "f", suffix = "flac", bitRate = 900, samplingRate = 48_000, bitDepth = 24, duration = 200)
     private val mp3Low = Song(id = "m1", suffix = "mp3", bitRate = 128, duration = 200)
@@ -109,12 +112,13 @@ class MobileQualityTest {
         network.value = NONE
         assertFalse(quality.onMobileData())
         assertEquals(160, quality.limit())
-        // And the other way about: lossless on mobile data, a limit at home.
+        // Lossless on mobile data and a limit at home: over mobile data, never more than the
+        // lower of the two (the lead's ruling), so the home limit.
         settings.value = Settings(bitrate = 96, mobileBitrate = 0)
         network.value = WIFI
         assertEquals(StreamForm(96, "mp3"), quality.formOf(flac))
         network.value = MOBILE
-        assertEquals(StreamForm(0, "flac"), quality.formOf(flac))
+        assertEquals(StreamForm(96, "mp3"), quality.formOf(flac))
     }
 
     @Test
@@ -137,7 +141,7 @@ class MobileQualityTest {
     fun aCopyKeptWholeOnTheOtherNetworkIsPlayedAsItWasFetched() {
         settings.value = Settings(bitrate = 0, mobileBitrate = 160)
         val whole = HashSet<String>()
-        fun open(song: Song) = quality.choose(song.id, true, song.suffix, song.bitRate, whole::contains).form
+        fun open(song: Song) = quality.choose(song.id, true, song.suffix, song.bitRate, whole::contains)
         network.value = MOBILE
         // Nothing kept: mobile data's own form.
         assertEquals(StreamForm(160, "mp3"), open(flac))
@@ -201,38 +205,28 @@ class MobileQualityTest {
     fun theSongPlayingIsOpenedAgainForASettingNeverForTheNetwork() = runBlocking {
         settings.value = Settings(bitrate = 0)
         network.value = WIFI
-        val again = mutableListOf<Int>()
-        val moved = mutableListOf<Int>()
-        val watching = launch(Dispatchers.Unconfined) { quality.chosenAgain.collect { again += it } }
-        val watchingNetwork = launch(Dispatchers.Unconfined) { quality.movedWithNetwork.collect { moved += it } }
+        var again = 0
+        val watching = launch(Dispatchers.Unconfined) { quality.chosenAgain.collect { again++ } }
         yield()
-        // "Same as Wi-Fi": the streaming quality changed is the song opened again, wherever.
+        // "Same as Wi-Fi": a change of the streaming quality, and nothing else, as released.
         settings.value = Settings(bitrate = 160)
         network.value = MOBILE
+        network.value = NONE
+        network.value = WIFI
+        settings.value = Settings(bitrate = 160, cacheAhead = 1, offline = true)
+        assertEquals(1, again)
         settings.value = Settings(bitrate = 320)
-        assertEquals(listOf(160, 320), again)
-        // ...and the network changing does nothing.
-        network.value = WIFI
-        assertEquals(emptyList<Int>(), moved)
-        // On the Wi-Fi, the mobile data choice changes nothing playing.
+        assertEquals(2, again)
+        // Two limits: a change of either. (On mobile data at 96, the Wi-Fi's 320 made 160:
+        // the song playing may be in the 320 it began in on the Wi-Fi; it is chosen afresh.)
         settings.value = Settings(bitrate = 320, mobileBitrate = 96)
-        assertEquals(listOf(160, 320), again)
-        // On mobile data it does; the streaming quality then doesn't.
+        assertEquals(3, again)
         network.value = MOBILE
-        assertEquals(listOf(96), moved)
-        settings.value = Settings(bitrate = 320, mobileBitrate = 160)
-        settings.value = Settings(bitrate = 0, mobileBitrate = 160)
-        assertEquals(listOf(160, 320, 160), again)
-        // Back to "Same as Wi-Fi" on mobile data: the limit goes from 160 to the Wi-Fi's.
-        settings.value = Settings(bitrate = 0, mobileBitrate = SAME_AS_WIFI)
-        assertEquals(listOf(160, 320, 160, 0), again)
-        // The same limit by both: the network moving between them is nothing.
-        settings.value = Settings(bitrate = 160, mobileBitrate = 160)
+        settings.value = Settings(bitrate = 160, mobileBitrate = 96)
+        assertEquals(4, again)
         network.value = WIFI
-        network.value = MOBILE
-        assertEquals(listOf(96), moved)
+        assertEquals(4, again)
         watching.cancel()
-        watchingNetwork.cancel()
     }
 
     @Test

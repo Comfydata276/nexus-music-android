@@ -79,19 +79,12 @@ class SongWhere(
     /** The bit rate the downloaded copy was converted to when it was saved (0: the file as
      *  it is on the server). */
     val downloadedKbps: Int = 0,
-    /** The network the server may be asked on until the song has begun to play (an
-     *  `android.net.Network`): a form above mobile data's limit goes out only on the
-     *  unmetered network it was chosen for (see `StreamQuality`). Null: any. */
-    val route: Any? = null,
-    /** A copy kept whole in the other network's form: read from the phone, and until the
-     *  song has begun to play never asked of the server (if it has gone, the song is chosen
-     *  again; see `SongDataSource.open`). */
-    val keptOnly: Boolean = false,
+    /** Whether the server may be asked for the song in this form now: asked at every request
+     *  a read makes, and as its first bytes arrive. False only for a form above the lower of
+     *  two limits while the app isn't sure of an unmetered network (see `StreamQuality`). */
+    val mayAsk: () -> Boolean = { true },
     val stream: (offsetSecs: Int) -> String,
-) {
-    /** The same, as a stream alone: no download to read. */
-    fun streamOnly(): SongWhere = SongWhere(form, key, least, null, 0, route, keptOnly, stream)
-}
+)
 
 /**
  * The copy of a song one read of it is of: its downloaded file, or the server's stream (or
@@ -130,11 +123,6 @@ interface SongLease {
     /** Decides, as the song is opened, where its bytes come from. */
     fun resolve(songId: String): SongWhere
 
-    /** Decides, as the song is opened for a queue entry (`entry`, the entry's number; null
-     *  for a read that is no entry's, fetching ahead), where its bytes come from. An entry
-     *  that has begun to play goes on in the form it began in. */
-    fun resolve(songId: String, entry: Long?): SongWhere = resolve(songId)
-
     /** The account's kept songs, or null to go straight to the server. */
     val cache: Cache?
 
@@ -155,10 +143,9 @@ interface SongLease {
      *  line, and what a failure is to be laid at. Called on a loading thread. */
     fun opened(songId: String, copy: SongCopy) {}
 
-    /** The first bytes of the song have been handed to the player (or to fetching ahead),
-     *  from this copy, for this queue entry (null: no entry's): from here on the entry plays
-     *  this copy. Called on a loading thread. */
-    fun began(songId: String, entry: Long?, copy: SongCopy) = opened(songId, copy)
+    /** The same, for the queue entry the read is for (`entry`, the entry's own number; null
+     *  for a read that is no entry's: fetching ahead). What is playing is told by entry. */
+    fun opened(songId: String, entry: Long?, copy: SongCopy) = opened(songId, copy)
 
     /** The read of the song kept under `key` has closed: whether it is kept whole now is
      *  worth noting (see `store.KeptIndex`). */
@@ -214,14 +201,7 @@ class SongDataSource(
     private val upstream: DataSource.Factory,
     /** Waits before a conversion that failed is asked for again (see [SongReader]). */
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
-    /** The server by one network and no other ([SongWhere.route]); null: by `upstream`. */
-    private val routed: ((Any) -> DataSource.Factory)? = null,
 ) : DataSource {
-    /** Let go (fetching ahead, when the network has changed the form it is to be fetched
-     *  in): from the moment this says so nothing more is asked of the server, retries and
-     *  all, as in offline mode. */
-    @Volatile var stopIf: () -> Boolean = { false }
-
     private val listeners = mutableListOf<TransferListener>()
     private var lease: SongLease? = null
     private var asked: Uri? = null
@@ -244,21 +224,10 @@ class SongDataSource(
     /** The queue entry this read is for (from the media item: see `QueuePlayer`); null for
      *  one that is no entry's (fetching ahead). */
     private var entry: Long? = null
-
-    /**
-     * The stream has handed over its first bytes. **Until then nothing is settled**: a read
-     * that failed before a byte arrived pins no form, and the next open chooses again (the
-     * network may have changed since, and a form chosen for the Wi-Fi must not then be asked
-     * for over mobile data). From then on the entry is in that form, on any network, to its
-     * last byte (see `PlaybackService.resolve` for the entry's next data source).
-     */
-    private var streamBegan = false
-
-    /** The copy this read is of, as far as it has gone (for fetching ahead's [FetchAhead.again]). */
-    val copyNow: SongCopy? get() = copy
-
-    /** The fewest bytes a whole conversion of it comes to (0 for a file as it is). */
-    val leastNow: Long get() = (where ?: first)?.least ?: 0
+    /** The server has been asked for the song by this read (not only its kept copy read). */
+    private var askedServer = false
+    /** Bytes of the stream have been handed on. */
+    private var handedOver = false
 
     override fun addTransferListener(transferListener: TransferListener) {
         listeners += transferListener
@@ -301,7 +270,7 @@ class SongDataSource(
         entry = dataSpec.key?.takeIf { it.startsWith(ENTRY) }?.removePrefix(ENTRY)?.toLongOrNull()
         val began = first
         if (began == null) {
-            val where = lease.resolve(id, entry)
+            val where = lease.resolve(id)
             where.downloaded?.let { file ->
                 // Downloaded: read from the phone, whatever the streaming quality, and with
                 // the server gone. (A file that has gone since is streamed instead.)
@@ -310,14 +279,16 @@ class SongDataSource(
                 if (length != null) {
                     first = where
                     copy = pinned
-                    lease.began(id, entry, pinned)
+                    lease.opened(id, entry, pinned)
                     return length
                 }
                 // It is there and can't be opened: this read streams, and doesn't go back
                 // to look for it.
                 unopenable = true
             }
-            return openStream(lease, id, where.streamOnly(), dataSpec)
+            first = where
+            copy = SongCopy.Stream(where.form).also { lease.opened(id, entry, it) }
+            return openStream(lease, id, where, dataSpec)
         }
         return when (val pinned = copy) {
             is SongCopy.Download -> {
@@ -326,17 +297,8 @@ class SongDataSource(
                 if (!same) throw StreamFailure.moved()
                 openFile(pinned, dataSpec) ?: throw StreamFailure.local()
             }
-            // Not a byte of the stream has arrived: nothing is settled, and it is chosen
-            // again (as a stream: whether to read a download was settled at the first open).
-            else -> if (streamBegan) openStream(lease, id, began, dataSpec) else openStream(lease, id, lease.resolve(id, entry).streamOnly(), dataSpec)
+            else -> openStream(lease, id, began, dataSpec)
         }
-    }
-
-    /** The stream's first bytes are on their way to the player: from here on this is the
-     *  entry's copy. */
-    private fun begin(lease: SongLease, id: String) {
-        streamBegan = true
-        copy?.let { lease.began(id, entry, it) }
     }
 
     /** Opens the downloaded file; null if it can't be opened. */
@@ -354,34 +316,12 @@ class SongDataSource(
         }
     }
 
-    /**
-     * Opens the stream (through the kept songs) in `where`'s form: the one this data source
-     * began in, or, before a byte has arrived, the one chosen now. A copy kept whole in the
-     * other network's form ([SongWhere.keptOnly]) is read from the phone alone until it has
-     * begun: if it isn't there after all (cleared away since it was chosen, or no kept songs
-     * to read), the index is told, and the song is chosen again, which is then not that copy.
-     */
-    private fun openStream(lease: SongLease, id: String, chosen: SongWhere, dataSpec: DataSpec): Long {
-        var where = chosen
-        repeat(2) { _ ->
-            first = where
-            copy = SongCopy.Stream(where.form)
-            this.where = where
-            if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened ${if (lease.cache == null) "without" else "through"} the kept songs, at byte ${dataSpec.position}")
-            val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
-            val keptOnly = where.keptOnly
-            try {
-                return streamed(lease, id) { reader.open(where, dataSpec.position) { lease.offline || stopIf() || (keptOnly && !streamBegan) } }
-            } catch (e: StreamFailure) {
-                if (!(keptOnly && !streamBegan && e.offline && !lease.offline && !stopIf())) throw e
-                runCatching { reader.close() }
-                this.reader = null
-                runCatching { lease.dropped(where.key) }
-                where = lease.resolve(id, entry).streamOnly()
-                if (where.keptOnly && where.key == chosen.key) throw e
-            }
-        }
-        throw StreamFailure.of(NotKeptOffline())
+    /** Opens the stream (through the kept songs) in the form this data source began in. */
+    private fun openStream(lease: SongLease, id: String, where: SongWhere, dataSpec: DataSpec): Long {
+        this.where = where
+        if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened ${if (lease.cache == null) "without" else "through"} the kept songs, at byte ${dataSpec.position}")
+        val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
+        return streamed(lease, id) { reader.open(where, dataSpec.position) { lease.offline } }
     }
 
     /**
@@ -396,8 +336,28 @@ class SongDataSource(
         val calledOff = Thread.currentThread().isInterrupted ||
             generateSequence<Throwable>(e) { it.cause }.take(8).any { it is java.io.InterruptedIOException && it !is java.net.SocketTimeoutException }
         if (!calledOff && !unopenable && runCatching { lease.resolve(id).downloaded != null }.getOrDefault(false)) throw StreamFailure.moved()
+        // Offline, and the copy this read is in isn't on the phone after all (cleared away
+        // since it was chosen): if another form of the song is kept whole, the entry is made
+        // ready again from where it is, and that is chosen. The index hears of it first.
+        if (!calledOff && lease.offline && where?.let { gone(lease, it) } == true) {
+            runCatching { lease.dropped(where!!.key) }
+            if (runCatching { lease.resolve(id).key != where?.key }.getOrDefault(false)) throw StreamFailure.moved()
+        }
         throw StreamFailure.of(e)
     }
+
+    /** The copy kept under `where`'s key isn't whole (or there are no kept songs to read). */
+    private fun gone(lease: SongLease, where: SongWhere): Boolean {
+        val cache = lease.cache ?: return true
+        return (if (where.form.converted) WholeMark.length(cache, where.key) else WholeMark.cached(cache, where.key)) < 0
+    }
+
+    /** The form this read is of, if it is a stream (for fetching ahead's failures). */
+    val streamForm: StreamForm? get() = (copy as? SongCopy.Stream)?.form
+
+    /** Whether a read of the stream may go on: no, once the server has been asked for a form
+     *  it may no longer be asked for (fetching ahead lets go of it then; see `FetchAhead`). */
+    fun mayGoOn(): Boolean = !askedServer || where?.mayAsk?.invoke() != false
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         val reader = reader
@@ -405,7 +365,16 @@ class SongDataSource(
         val id = songId
         return when {
             reader != null && lease != null && id != null -> streamed(lease, id) { reader.read(buffer, offset, length).let { if (it < 0) C.RESULT_END_OF_INPUT else it } }
-                .also { got -> if (got > 0 && !streamBegan) begin(lease, id) }
+                .also { got ->
+                    if (got > 0 && !handedOver) {
+                        // A last look as the first bytes arrive, before any is handed on: a
+                        // form asked for on an unmetered network that has since turned out
+                        // not to be is let go, and the entry made ready again in the form for
+                        // the network now. (After this, the song goes on in its form.)
+                        if (askedServer && where?.mayAsk?.invoke() == false) throw StreamFailure.moved()
+                        handedOver = true
+                    }
+                }
             // The downloaded file: a read of it that fails is that file's failure.
             copy is SongCopy.Download -> try {
                 (plain ?: throw IOException("Not open")).read(buffer, offset, length)
@@ -523,12 +492,27 @@ class SongDataSource(
             lease?.dropped(key)
         }
 
-        /** Before the song has begun, a form chosen for an unmetered network goes out on that
-         *  network alone ([SongWhere.route]); after, by the phone's own route. */
+        /** The server, asked only while it may be asked for this form ([SongWhere.mayAsk]).
+         *  When it may not (a form above the lower limit, and the network not surely
+         *  unmetered), nothing is asked: what is kept of this form isn't whole (else nothing
+         *  would be asked), the index is told so, and the read fails as "moved", for the entry
+         *  to be made ready again from where it is in the form chosen then. */
         private fun http(): DataSource {
-            val route = where?.route?.takeIf { !streamBegan }
-            val factory = route?.let { routed?.invoke(it) } ?: upstream
-            return factory.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }
+            val made = upstream.createDataSource().also { made -> listeners.forEach(made::addTransferListener) }
+            val where = where ?: return made
+            return object : DataSource by made {
+                override fun open(dataSpec: DataSpec): Long {
+                    if (!where.mayAsk()) {
+                        runCatching { lease?.dropped(where.key) }
+                        throw StreamFailure.moved()
+                    }
+                    askedServer = true
+                    return made.open(dataSpec)
+                }
+
+                // (A default method of the interface: `by` doesn't hand it on.)
+                override fun getResponseHeaders(): Map<String, List<String>> = made.responseHeaders
+            }
         }
 
         private fun server(url: String, key: String?, position: Long): DataSpec =
@@ -569,7 +553,7 @@ class SongDataSource(
             if (Thread.currentThread().isInterrupted) return false
             if (generateSequence<Throwable>(error) { it.cause }.take(8).any { it is java.io.InterruptedIOException && it !is java.net.SocketTimeoutException }) return false
             val kind = StreamFailure.of(error)
-            return !kind.refused && !kind.offline
+            return !kind.refused && !kind.offline && !kind.moved
         }
     }
 
@@ -587,13 +571,8 @@ class SongDataSource(
     }
 
     /** Makes one for each read the player starts, for the account signed in at that moment. */
-    class Factory(
-        private val leases: SongLeases,
-        private val upstream: DataSource.Factory,
-        private val pause: (Long) -> Unit = { Thread.sleep(it) },
-        private val routed: ((Any) -> DataSource.Factory)? = null,
-    ) : DataSource.Factory {
-        override fun createDataSource(): SongDataSource = SongDataSource(leases, leases.generation(), upstream, pause, routed)
+    class Factory(private val leases: SongLeases, private val upstream: DataSource.Factory, private val pause: (Long) -> Unit = { Thread.sleep(it) }) : DataSource.Factory {
+        override fun createDataSource(): SongDataSource = SongDataSource(leases, leases.generation(), upstream, pause)
     }
 
     companion object {
@@ -640,6 +619,9 @@ class StreamFailure private constructor(message: String, reason: Int, val status
             if (error is StreamFailure) return error
             // Every cause, as the HTTP data source wraps the real one.
             val chain = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
+            // One of ours, wrapped on its way out (Media3's cache wraps what its upstream
+            // throws): passed on as it is.
+            chain.firstNotNullOfOrNull { it as? StreamFailure }?.let { return it }
             val status = chain.firstNotNullOfOrNull { (it as? HttpDataSource.InvalidResponseCodeException)?.responseCode } ?: 0
             // Asked for again several times already (see SongReader.again): `spent`.
             val spent = chain.any { it is GaveUp }

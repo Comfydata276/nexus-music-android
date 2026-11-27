@@ -76,11 +76,11 @@ class MobileStreamTest {
     private val network = MutableStateFlow(WIFI)
     /** What Android says of the network this instant (`StreamQuality`'s second look): by
      *  default what its last callback said; a test of a race makes them differ. */
-    @Volatile private var lookNow: () -> StreamQuality.Route? = { network.value.takeIf { it.connected }?.let { StreamQuality.Route(if (it.unmetered) "wifi" else "mobile", it.unmetered) } }
-    private val quality = StreamQuality(settings, network, route = { lookNow() }, settleMillis = 0)
+    @Volatile private var lookNow: () -> Boolean? = { network.value.takeIf { it.connected }?.unmetered }
+    private val quality = StreamQuality(settings, network, unmeteredNow = { lookNow() })
 
-    /** The copy each queue entry has begun on, kept as the playback service keeps it. */
-    private val copies = EntryCopies()
+    /** Offline mode. */
+    @Volatile private var offline = false
     private val api = Subsonic("http://server.invalid", "ada", "sesame", OkHttpClient(), OfflineSwitch(false))
 
     /** The songs the queue knows, by id: a FLAC the phone plays as it is, of 10 seconds. */
@@ -95,9 +95,8 @@ class MobileStreamTest {
     private fun file(id: String) = ByteArray(300_000) { (it * 7 + id.hashCode()).toByte() }
     private fun conversion(id: String, kbps: Int) = frames(if (id == "one") 1 else 2, kbps, 10)
 
-    /** Every request the server had: the song, the rate (0: the file), where from, and the
-     *  network it was bound to ("" for the phone's own route). */
-    private data class Asked(val id: String, val kbps: Int, val from: Long, val second: Int, val via: String = "")
+    /** Every request the server had: the song, the rate (0: the file), and where from. */
+    private data class Asked(val id: String, val kbps: Int, val from: Long, val second: Int)
     private val asked = CopyOnWriteArrayList<Asked>()
     private val opened = CopyOnWriteArrayList<Pair<String, SongCopy>>()
 
@@ -122,7 +121,11 @@ class MobileStreamTest {
      *  the server out of reach). */
     @Volatile private var refuse: (Asked) -> Boolean = { false }
 
-    private inner class Server(private val via: String = "") : BaseDataSource(true), HttpDataSource {
+    /** Called as each request is answered, before a byte of it is read (a test of a race
+     *  changes the network here). */
+    @Volatile private var answered: (Asked) -> Unit = {}
+
+    private inner class Server : BaseDataSource(true), HttpDataSource {
         private var bytes = ByteArray(0)
         private var at = 0
         private var uri: Uri? = null
@@ -134,10 +137,11 @@ class MobileStreamTest {
             val id = url.getQueryParameter("id")!!
             val kbps = url.getQueryParameter("maxBitRate")?.toInt() ?: 0
             val from = dataSpec.httpRequestHeaders["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toLongOrNull() ?: dataSpec.position
-            val request = Asked(id, kbps, from, url.getQueryParameter("timeOffset")?.toInt() ?: 0, via)
+            val request = Asked(id, kbps, from, url.getQueryParameter("timeOffset")?.toInt() ?: 0)
             asked += request
             cancelled = false
             if (refuse(request)) throw IOException("No way to the server")
+            answered(request)
             if (kbps > 0) {
                 bytes = conversion(id, kbps)
                 at = 0
@@ -185,19 +189,17 @@ class MobileStreamTest {
             val cache: Cache? = kept.acquire()
             return object : SongLease {
                 override val cache = cache
-                override val offline = false
+                override val offline get() = this@MobileStreamTest.offline
                 override val conversions = this@MobileStreamTest.conversions
-                override fun resolve(songId: String): SongWhere = resolve(songId, null)
-                override fun resolve(songId: String, entry: Long?): SongWhere {
+                override fun resolve(songId: String): SongWhere {
                     val song = songs[songId]
                     val suffix = song?.suffix.orEmpty()
                     val withKept = cache != null
-                    return quality.whereNow(songId, song, suffix.isEmpty() || suffix in NATIVE_SUFFIXES, { withKept && index.isWhole(it) }, null, 0, copies.formOf(entry)) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
+                    return quality.whereNow(songId, song, suffix.isEmpty() || suffix in NATIVE_SUFFIXES, { withKept && index.isWhole(it) }, null, 0) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
                 }
-                override fun began(songId: String, entry: Long?, copy: SongCopy) {
+                override fun opened(songId: String, entry: Long?, copy: SongCopy) {
                     opened += songId to copy
-                    begun += Triple(songId, entry, copy)
-                    if (entry != null) copies.began(entry, copy)
+                    told += Triple(songId, entry, copy)
                 }
                 override fun closed(key: String) {
                     val cache = cache ?: return
@@ -212,10 +214,10 @@ class MobileStreamTest {
         }
     }
 
-    private val begun = CopyOnWriteArrayList<Triple<String, Long?, SongCopy>>()
+    /** What each open told: the song, the queue entry, the copy. */
+    private val told = CopyOnWriteArrayList<Triple<String, Long?, SongCopy>>()
 
-    /** As the playback service makes it: by the phone's own route, or bound to a network. */
-    private val sources = SongDataSource.Factory(Leases(), DataSource.Factory { Server() }, pause = {}, routed = { network -> DataSource.Factory { Server(network.toString()) } })
+    private val sources = SongDataSource.Factory(Leases(), DataSource.Factory { Server() }, pause = {})
 
     @Before
     fun start() {
@@ -235,6 +237,12 @@ class MobileStreamTest {
     }
 
     private var entries = 1L
+
+    /** What fetching ahead is told the form of a song is now, as the service tells it. */
+    private fun formNow(id: String): StreamForm? = songs[id]?.let { song ->
+        val suffix = song.suffix.lowercase()
+        quality.formOf(suffix.isEmpty() || suffix in NATIVE_SUFFIXES, suffix, song.bitRate)
+    }
 
     /** Opens the song as the player does for queue entry `entry` (null: as fetching ahead). */
     private fun open(id: String, at: Long = 0, source: DataSource = sources.createDataSource(), entry: Long? = entries++): DataSource {
@@ -291,7 +299,7 @@ class MobileStreamTest {
         val partWay = open("one")
         assertArrayEquals(file("one").copyOf(100_000), read(partWay, 100_000))
         partWay.close()
-        assertEquals(listOf(Asked("one", 0, 0, 0, "wifi")), asked.toList())
+        assertEquals(listOf(Asked("one", 0, 0, 0)), asked.toList())
         assertEquals(100_000, keptUnder("song:one:0").size)
         // Mobile data: the conversion at mobile data's limit, asked for as such, kept under its
         // own name. Not one byte of the file's part comes into it.
@@ -307,27 +315,30 @@ class MobileStreamTest {
     }
 
     @Test
-    fun aSongOpenedOnOneNetworkKeepsItsFormWhenTheNetworkChanges() {
+    fun r2_aReadThatCannotGoOnInItsFormWithoutExceedingTheLowerLimitFailsToBeMadeReadyAgain() {
         settings.value = Settings(bitrate = 320, mobileBitrate = 128)
         val source = open("one", entry = 100)
         assertEquals(40_000, read(source, 40_000).size)
         // The phone moves to mobile data mid-song. Media3 opens the song's data source again
-        // (the connection dropped, or a seek), at a byte of the stream it has been reading:
-        // it is the same form, from the same second, and nothing is opened at 128.
+        // (the connection dropped, or a seek past what it holds): not at 320 over mobile data,
+        // nor at 128 joined to the 320's bytes. The read fails as "moved", which the service
+        // takes as "make the entry ready again from where it is" (see onPlayerError).
         network.value = MOBILE
         source.close()
-        open("one", 80_000, source, entry = 100)
-        read(source, 10_000)
-        source.close()
-        // Byte 80,000 of a 320 kbps conversion is two seconds in: asked for from the whole
-        // second before it, or the second itself (see SongReader), at 320, and, the song
-        // having begun, by the phone's own route (the Wi-Fi it began on has gone).
-        assertEquals(listOf(Asked("one", 320, 0, 0, "wifi")), asked.take(1))
-        assertEquals(2, asked.size)
-        assertEquals(320, asked[1].kbps)
-        assertEquals("", asked[1].via)
-        assertTrue("asked from second ${asked[1].second}", asked[1].second in 1..2)
-        assertEquals(listOf("one" to SongCopy.Stream(StreamForm(320, "mp3"))), opened.toList())
+        try {
+            open("one", 80_000, source, entry = 100)
+            read(source, 10_000)
+            fail("the 320 went on over mobile data")
+        } catch (e: StreamFailure) {
+            assertTrue(e.moved)
+        }
+        runCatching { source.close() }
+        assertEquals(listOf(Asked("one", 320, 0, 0)), asked.toList())
+        // Made ready again: a new read, chosen afresh, at 128.
+        val again = open("one", 80_000, entry = 100)
+        read(again, 10_000)
+        again.close()
+        assertEquals(128, asked.last().kbps)
         // The next song is opened on mobile data, and takes its limit.
         assertArrayEquals(conversion("two", 128), play("two"))
         assertEquals(Asked("two", 128, 0, 0), asked.last())
@@ -335,7 +346,7 @@ class MobileStreamTest {
 
     @Test
     fun whatWasFetchedAheadOnTheOtherNetworkPlaysAsItWasFetched() {
-        val ahead = FetchAhead(sources, ::cancelAll)
+        val ahead = FetchAhead(sources, ::formNow)
         try {
             // Fetched ahead on the Wi-Fi, as it is.
             ahead.want(listOf("one"))
@@ -343,7 +354,7 @@ class MobileStreamTest {
             // Played on mobile data: from the phone, as fetched, the server not asked again.
             network.value = MOBILE
             assertArrayEquals(file("one"), play("one"))
-            assertEquals(listOf(Asked("one", 0, 0, 0, "wifi")), asked.toList())
+            assertEquals(listOf(Asked("one", 0, 0, 0)), asked.toList())
             assertEquals(SongCopy.Stream(StreamForm(0, "flac")), opened.last().second)
             // What the format line says of it is what is sounding: the file as it is.
             val flac = Song(suffix = "flac", samplingRate = 44_100, bitDepth = 16)
@@ -353,7 +364,7 @@ class MobileStreamTest {
             waitFor { index.isWhole("song:two:128") }
             network.value = WIFI
             assertArrayEquals(conversion("two", 128), play("two"))
-            assertEquals(listOf(Asked("one", 0, 0, 0, "wifi"), Asked("two", 128, 0, 0)), asked.toList())
+            assertEquals(listOf(Asked("one", 0, 0, 0), Asked("two", 128, 0, 0)), asked.toList())
             assertEquals(FormatLine("MP3 · 128 kbps", false), formatLineOf(flac, opened.last().second.kbps, "Live stream"))
         } finally {
             ahead.release()
@@ -363,7 +374,7 @@ class MobileStreamTest {
     @Test
     fun fetchingAheadLetsGoOfASongWhenTheNetworkChangesItsLimitAndFetchesItAgainInTheNewForm() {
         settings.value = Settings(bitrate = 320, mobileBitrate = 128)
-        val ahead = FetchAhead(sources, ::cancelAll)
+        val ahead = FetchAhead(sources, ::formNow)
         try {
             val gate = CountDownLatch(1)
             val reached = CountDownLatch(1)
@@ -373,8 +384,9 @@ class MobileStreamTest {
             assertTrue(reached.await(30, TimeUnit.SECONDS))
             // Part-way through the Wi-Fi's 320, the phone is on mobile data: what the service
             // does when the limit moves with the network.
+            // Not continued at 320 over mobile data: let go between one read and the next,
+            // and fetched again in mobile data's form.
             network.value = MOBILE
-            ahead.again { StreamForm(128, "mp3") }
             gate.countDown()
             waitFor { index.isWhole("song:one:128") }
             assertEquals(listOf(320, 128), asked.map { it.kbps })
@@ -537,54 +549,63 @@ class MobileStreamTest {
         assertEquals(first.last().atUs + 24_000, second.first().atUs)
     }
 
-    // ---- The review's findings (each fails without its fix) ----------------------------------
+    // ---- The lead's rulings R1 to R4 (each test fails without its rule) ---------------------
 
     @Test
-    fun finding1_aLateCallbackOrARouteThatMovedIsTheLowerLimitAndAWifiFormGoesOnlyByTheWifi() {
+    fun r1_aLateCallbackIsTheLowerLimit() {
         // Android's last callback says Wi-Fi, but the network this instant is metered (the
         // default route has moved to mobile data and the callback hasn't come yet).
-        lookNow = { StreamQuality.Route("mobile", false) }
+        lookNow = { false }
         assertArrayEquals(conversion("one", 128), play("one"))
         assertEquals(listOf(Asked("one", 128, 0, 0)), asked.toList())
         // The other way about: the callback says mobile data, the look says Wi-Fi. In doubt.
         asked.clear()
         network.value = MOBILE
-        lookNow = { StreamQuality.Route("wifi", true) }
+        lookNow = { true }
         assertArrayEquals(conversion("two", 128), play("two"))
         assertEquals(listOf(Asked("two", 128, 0, 0)), asked.toList())
-        // Both say Wi-Fi: the file as it is, and the request bound to that very network.
+        // Both say Wi-Fi: the file as it is.
         asked.clear()
         network.value = WIFI
         songs["three"] = Song(id = "three", suffix = "flac", bitRate = 900, duration = 10)
         assertArrayEquals(file("three"), play("three"))
-        assertEquals(listOf(Asked("three", 0, 0, 0, "wifi")), asked.toList())
+        assertEquals(listOf(Asked("three", 0, 0, 0)), asked.toList())
     }
 
     @Test
-    fun finding1_aFirstOpenThatFailsPinsNothingAndTheNextOpenChoosesForTheNetworkNow() {
-        // Chosen for the Wi-Fi, bound to it; the Wi-Fi has gone by the time the connection is
-        // made: the bound request fails (it never goes out over mobile data).
-        refuse = { it.via == "wifi" }
+    fun r1_aHigherFormWhoseNetworkTurnsMeteredBeforeItsFirstByteIsLetGoAndChosenAgain() {
+        // Chosen and asked for on the Wi-Fi; the route moves to mobile data as the answer
+        // comes, before a byte of it has been handed on.
+        answered = { request -> if (request.kbps == 0) { network.value = MOBILE; lookNow = { false } } }
         val source = sources.createDataSource()
         try {
             open("one", source = source, entry = 200)
-            fail("a request bound to a Wi-Fi that has gone was answered")
-        } catch (_: IOException) {
+            read(source, 1_000)
+            fail("the file as it is was handed on over mobile data")
+        } catch (e: StreamFailure) {
+            assertTrue(e.moved)
         }
         runCatching { source.close() }
-        // Android has caught up: mobile data. Media3 opens the same data source again (its
-        // own retry, nothing having arrived): chosen again, at mobile data's limit.
-        network.value = MOBILE
-        refuse = { false }
-        open("one", source = source, entry = 200)
-        assertArrayEquals(conversion("one", 128), read(source))
-        source.close()
-        assertEquals(listOf(Asked("one", 0, 0, 0, "wifi"), Asked("one", 128, 0, 0)), asked.toList())
-        assertEquals(listOf(SongCopy.Stream(StreamForm(128, "mp3"))), begun.map { it.third })
+        // Made ready again (the service's recovery): chosen afresh, at mobile data's limit.
+        answered = {}
+        assertArrayEquals(conversion("one", 128), play("one"))
+        assertEquals(listOf(0, 128), asked.map { it.kbps })
     }
 
     @Test
-    fun finding2_aCopyOfTheOtherFormClearedAwayBeforeItIsReadIsNeverFetchedInThatForm() {
+    fun r1_aRouteThatChangesAfterTheFirstBytesIsAccepted() {
+        val source = open("one", entry = 300)
+        assertEquals(50_000, read(source, 50_000).size)
+        network.value = MOBILE
+        lookNow = { false }
+        // The answer already coming goes on to its end, in its form.
+        assertArrayEquals(file("one").copyOfRange(50_000, 300_000), read(source))
+        source.close()
+        assertEquals(listOf(Asked("one", 0, 0, 0)), asked.toList())
+    }
+
+    @Test
+    fun r2_aCopyOfTheHigherFormClearedAwayIsNeverFetchedInThatFormOverMobileData() {
         // The FLAC fetched whole on the Wi-Fi...
         assertArrayEquals(file("one"), play("one"))
         assertTrue(index.isWhole("song:one:0"))
@@ -595,21 +616,30 @@ class MobileStreamTest {
         kept.release()
         asked.clear()
         network.value = MOBILE
-        assertArrayEquals(conversion("one", 128), play("one"))
-        // Not a byte of the FLAC asked for over mobile data: the song chosen again, at 128.
-        assertEquals(listOf(Asked("one", 128, 0, 0)), asked.toList())
+        val source = sources.createDataSource()
+        try {
+            open("one", source = source)
+            read(source, 1_000)
+            fail("the FLAC was fetched over mobile data")
+        } catch (e: StreamFailure) {
+            assertTrue(e.moved)
+        }
+        runCatching { source.close() }
+        assertEquals(emptyList<Asked>(), asked.toList())
         assertFalse(index.isWhole("song:one:0"))
+        // Made ready again: mobile data's own form.
+        assertArrayEquals(conversion("one", 128), play("one"))
+        assertEquals(listOf(Asked("one", 128, 0, 0)), asked.toList())
     }
 
     @Test
-    fun finding2_withNoKeptSongsToReadTheIndexIsNotTakenAtItsWord() {
+    fun r2_withNoKeptSongsToReadTheIndexIsNotTakenAtItsWord() {
         assertArrayEquals(file("one"), play("one"))
         assertTrue(index.isWhole("song:one:0"))
         asked.clear()
         network.value = MOBILE
         // A lease with no kept songs (the account's folder still held by its turn before),
-        // whose choice still believes the index (as the service's did): the data source does
-        // not take it at its word.
+        // whose choice still believes the index: the read asks the server nothing in that form.
         val bare = object : SongLeases {
             override fun generation() = 1L
             override fun lease(generation: Long): SongLease {
@@ -617,148 +647,124 @@ class MobileStreamTest {
                 inner.release()
                 return object : SongLease by inner {
                     override val cache: Cache? = null
-                    override fun resolve(songId: String, entry: Long?): SongWhere {
-                        val song = songs[songId]
-                        return quality.whereNow(songId, song, true, index::isWhole, null, 0, copies.formOf(entry)) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
-                    }
+                    override fun resolve(songId: String): SongWhere =
+                        quality.whereNow(songId, songs[songId], true, index::isWhole, null, 0) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
+                    // (Defaults of the interface: `by` doesn't hand them on.)
+                    override fun dropped(key: String) = index.gone(key)
+                    // (With no kept songs there is nothing to judge whole when a read closes.)
+                    override fun closed(key: String) {}
                     override fun release() {}
                 }
             }
         }
-        val source = SongDataSource.Factory(bare, DataSource.Factory { Server() }, pause = {}).createDataSource()
-        open("one", source = source)
-        assertArrayEquals(conversion("one", 128), read(source))
-        source.close()
+        val factory = SongDataSource.Factory(bare, DataSource.Factory { Server() }, pause = {})
+        val source = factory.createDataSource()
+        try {
+            open("one", source = source)
+            read(source, 1_000)
+            fail("the FLAC was fetched over mobile data")
+        } catch (e: StreamFailure) {
+            assertTrue(e.moved)
+        }
+        runCatching { source.close() }
+        assertFalse("the index still says the FLAC is whole", index.isWhole("song:one:0"))
+        val again = factory.createDataSource()
+        open("one", source = again)
+        assertArrayEquals(conversion("one", 128), read(again))
+        again.close()
         assertEquals(listOf(Asked("one", 128, 0, 0)), asked.toList())
     }
 
     @Test
-    fun finding3_whatIsPlayingIsToldByQueueEntryAndFetchingAheadTellsNothing() {
-        // The same FLAC twice in the queue: entry 1 begun on the Wi-Fi, as it is.
+    fun r2_offlineAReadWhoseCopyHasGoneIsMadeReadyAgainOnAnotherKeptForm() {
+        // Both forms kept whole: 320 fetched on the Wi-Fi, 128 on mobile data.
+        settings.value = Settings(bitrate = 320, mobileBitrate = 128)
+        assertArrayEquals(conversion("one", 320), play("one"))
+        network.value = MOBILE
+        // (With the 320 kept whole, mobile data would play it as kept: the index is kept from
+        // seeing it for a moment, so that the 128 is fetched too.)
+        index.gone("song:one:320")
+        assertArrayEquals(conversion("one", 128), play("one"))
+        index.kept("song:one:320", songs.getValue("one"))
+        assertTrue(index.isWhole("song:one:320") && index.isWhole("song:one:128"))
+        // Offline; the 128 is cleared away after it was chosen.
+        offline = true
+        val source = sources.createDataSource()
+        open("one", source = source)
+        source.close()
+        val cache = kept.acquire()!!
+        cache.removeResource("song:one:128")
+        kept.release()
+        try {
+            open("one", 50_000, source)
+            read(source, 1_000)
+            fail("a copy that has gone was read")
+        } catch (e: StreamFailure) {
+            assertTrue("$e", e.moved)
+        }
+        runCatching { source.close() }
+        // Made ready again: the 320, from the phone.
+        assertArrayEquals(conversion("one", 320), play("one"))
+    }
+
+    @Test
+    fun r3_whatIsPlayingIsToldAsTheEntryIsOpenedByEntryAndFetchingAheadTellsNothing() {
+        // The same FLAC twice in the queue: entry 1 on the Wi-Fi, as it is.
         val first = open("one", entry = 1)
+        // Told as it opens (before a byte is read), as the released app told it.
+        assertEquals(listOf(Triple("one", 1L as Long?, SongCopy.Stream(StreamForm(0, "flac")) as SongCopy)), told.toList())
         read(first, 50_000)
-        // The phone moves to mobile data; entry 2, the same song, is opened there; and
-        // fetching ahead reads it too (for no entry).
         network.value = MOBILE
         val second = open("one", entry = 2)
-        read(second, 50_000)
         val ahead = open("one", entry = null)
-        read(ahead, 50_000)
         listOf(first, second, ahead).forEach { it.close() }
-        assertEquals(SongCopy.Stream(StreamForm(0, "flac")), copies[1])
-        assertEquals(SongCopy.Stream(StreamForm(128, "mp3")), copies[2])
-        assertEquals(listOf(1L, 2L, null), begun.map { it.second })
+        assertEquals(listOf(1L, 2L, null), told.map { it.second })
+        assertEquals(listOf<SongCopy>(SongCopy.Stream(StreamForm(0, "flac")), SongCopy.Stream(StreamForm(128, "mp3")), SongCopy.Stream(StreamForm(128, "mp3"))), told.map { it.third })
     }
 
     @Test
-    fun finding4_anEntryMadeReadyAgainAfterItsReadsGaveUpGoesOnInTheFormItBegan() {
-        // Entry 7 begins on the Wi-Fi, as it is; its reads give up (the Wi-Fi gone), and the
-        // service makes it ready again: Media3 makes the entry a new data source.
-        val began = open("one", entry = 7)
-        read(began, 60_000)
-        began.close()
-        network.value = MOBILE
-        asked.clear()
-        val again = open("one", at = 60_000, entry = 7)
-        read(again, 10_000)
-        again.close()
-        assertEquals(listOf(Asked("one", 0, 60_000, 0)), asked.toList())
-        // Another entry of the same song, opened now, is mobile data's.
-        assertArrayEquals(conversion("one", 128), play("one"))
-        assertEquals(128, asked.last().kbps)
-        // The person changes the streaming quality: every entry is chosen afresh.
-        copies.forgetStreams()
-        val chosen = open("one", entry = 7)
-        read(chosen, 10_000)
-        chosen.close()
-        assertEquals(128, asked.last().kbps)
-    }
-
-    @Test
-    fun finding5_letGoMeansLetGo_theHeldReadEndsAtOnceAndNothingMoreIsAskedInTheOldForm() {
+    fun r4_aHigherFormIsNotRetriedOnMeteredAndAFailureBelongsToItsForm() {
         settings.value = Settings(bitrate = 320, mobileBitrate = 128)
-        val ahead = FetchAhead(sources, ::cancelAll)
+        val ahead = FetchAhead(sources, ::formNow)
         try {
+            // Held part-way on the Wi-Fi; the connection then drops (the Wi-Fi gone), with
+            // the phone on mobile data. The reader's own retry would ask for 320 again.
             val reached = CountDownLatch(1)
             held = reached
             hold = CountDownLatch(1)
             ahead.want(listOf("one"))
             assertTrue(reached.await(30, TimeUnit.SECONDS))
             network.value = MOBILE
-            val asked320 = asked.count { it.kbps == 320 }
-            val since = System.nanoTime()
-            // Not let go: the held read would wait its 30 seconds.
-            ahead.again { StreamForm(128, "mp3") }
+            cancelAll()
+            // Never asked for at 320 over mobile data; fetched at 128.
             waitFor { index.isWhole("song:one:128") }
-            assertTrue("it took ${(System.nanoTime() - since) / 1_000_000} ms", System.nanoTime() - since < 10_000_000_000)
-            // No try again at 320, by the reader's own retries or anything else.
-            assertEquals(asked320, asked.count { it.kbps == 320 })
-            assertFalse(index.isWhole("song:one:320"))
+            assertEquals(listOf(320, 128), asked.map { it.kbps })
         } finally {
             ahead.release()
         }
     }
 
     @Test
-    fun finding5_aSongWhoseFormDoesNotChangeOrAConversionNearlyWholeIsNotFetchedAgain() {
-        // A WMA: 320 on the Wi-Fi (no limit: converted at 320) and 320 on mobile data.
-        settings.value = Settings(bitrate = 0, mobileBitrate = 320)
-        songs["one"] = Song(id = "one", suffix = "wma", bitRate = 192, duration = 10)
-        val ahead = FetchAhead(sources, ::cancelAll)
-        try {
-            val reached = CountDownLatch(1)
-            held = reached
-            hold = CountDownLatch(1).also { gate = it }
-            ahead.want(listOf("one"))
-            assertTrue(reached.await(30, TimeUnit.SECONDS))
-            network.value = MOBILE
-            ahead.again { StreamForm(320, "mp3") }
-            gate?.countDown()
-            waitFor { index.isWhole("song:one:320") }
-            assertEquals(listOf(320), asked.map { it.kbps })
-            // A FLAC at 320 on the Wi-Fi, 96 on mobile data: nine tenths of the 320 has come
-            // when the phone moves. It is nearly whole: let finish, not thrown away.
-            asked.clear()
-            settings.value = Settings(bitrate = 320, mobileBitrate = 96)
-            network.value = WIFI
-            songs["two"] = Song(id = "two", suffix = "flac", bitRate = 900, duration = 10)
-            holdAt = conversion("two", 320).size * 9 / 10
-            val near = CountDownLatch(1)
-            held = near
-            hold = CountDownLatch(1).also { gate = it }
-            ahead.want(listOf("two"))
-            assertTrue(near.await(30, TimeUnit.SECONDS))
-            network.value = MOBILE
-            ahead.again { StreamForm(96, "mp3") }
-            gate?.countDown()
-            waitFor { index.isWhole("song:two:320") }
-            assertEquals(listOf(320), asked.map { it.kbps })
-        } finally {
-            ahead.release()
-        }
-    }
-
-    @Test
-    fun finding6_aFailureBelongsToTheNetworkItFailedOnAndNothingSpins() {
+    fun r4_aFailureInOneFormIsNotTriedAgainInItButIsInAnotherAndNothingSpins() {
         settings.value = Settings(bitrate = 320, mobileBitrate = 128)
         refuse = { it.kbps == 320 }
-        val ahead = FetchAhead(sources, ::cancelAll)
+        val ahead = FetchAhead(sources, ::formNow)
         try {
             ahead.want(listOf("one"))
             waitFor { asked.isNotEmpty() }
             Thread.sleep(200)
-            // Failed on the Wi-Fi. The service asks for it again (the queue looked at again):
-            // the worker doesn't set itself going, again and again, for a list of nothing but
-            // what has failed.
+            // Failed at 320 on the Wi-Fi. The service asks for it again (the queue looked at
+            // again): not tried again in that form, and the worker doesn't set itself going,
+            // again and again, for a list of nothing but what has failed.
             ahead.want(listOf("one"))
             Thread.sleep(300)
             val runs = ahead.runs
             Thread.sleep(300)
             assertEquals(runs, ahead.runs)
             assertTrue("the worker ran $runs times", runs <= 2)
+            assertEquals(listOf(320), asked.map { it.kbps })
             // The phone moves to mobile data: tried again there, in mobile data's form.
             network.value = MOBILE
-            ahead.again { StreamForm(128, "mp3") }
             ahead.want(listOf("one"))
             waitFor { index.isWhole("song:one:128") }
             assertEquals(listOf(320, 128), asked.map { it.kbps })

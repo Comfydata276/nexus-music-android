@@ -128,7 +128,7 @@ class Graph(
      *  [org.medianexus.music.playback.StreamQuality]). */
     val quality = org.medianexus.music.playback.StreamQuality(
         settings.state, network.state,
-        route = { network.routeNow()?.let { (handle, unmetered) -> org.medianexus.music.playback.StreamQuality.Route(handle, unmetered) } },
+        unmeteredNow = network::unmeteredNow,
     )
 
     /** The unmetered network downloads are bound to while "Download on Wi-Fi only" is on

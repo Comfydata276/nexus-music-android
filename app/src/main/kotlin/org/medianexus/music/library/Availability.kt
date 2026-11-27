@@ -3,6 +3,7 @@ package org.medianexus.music.library
 import java.util.concurrent.ConcurrentHashMap
 import org.medianexus.music.downloads.Catalogue
 import org.medianexus.music.net.Song
+import org.medianexus.music.playback.NATIVE_SUFFIXES
 import org.medianexus.music.playback.StreamQuality
 import org.medianexus.music.store.KeptIndex
 
@@ -38,7 +39,13 @@ class Availability(
      *  out (one fetched ahead on the Wi-Fi plays on mobile data as it was fetched, and the other
      *  way about; a file this phone can't play is never counted: see
      *  `StreamQuality.keptKeysOf`). */
-    fun isKept(song: Song): Boolean = keeping() && quality.keptKeysOf(song, decodes = !quality.twoLimits() || !mustConvert(song)).any(kept::isWhole)
+    fun isKept(song: Song): Boolean {
+        if (!keeping()) return false
+        if (!quality.twoLimits()) return kept.isWhole(keyOf(song))
+        val suffix = song.suffix.lowercase()
+        val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && !mustConvert(song)
+        return quality.keptKeysOf(song, native).any(kept::isWhole)
+    }
 
     /** Whether the song plays with no server. */
     fun plays(song: Song): Boolean = song.id.isNotEmpty() && song.radioUrl.isEmpty() && (isDownloaded(song.id) || isKept(song))

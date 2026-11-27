@@ -25,9 +25,9 @@ import java.util.concurrent.Executors
 @OptIn(UnstableApi::class)
 class FetchAhead(
     private val sources: DataSource.Factory,
-    /** Cancels every request fetching ahead has in flight, a read blocked on a stalled
-     *  connection included (the calls of its own HTTP client: see `PlaybackService`). */
-    private val cancel: () -> Unit = {},
+    /** The form a song would be fetched in now (as `StreamQuality` chooses it for the network
+     *  now); null if it isn't known. */
+    private val formNow: (String) -> StreamForm? = { null },
 ) {
     private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "Nexus:FetchAhead").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
 
@@ -36,75 +36,46 @@ class FetchAhead(
     @Volatile private var going = false
     private val lock = Any()
 
-    /** Goes up when the song being fetched is to be let go and fetched afresh ([again]). */
-    @Volatile private var round = 0
-
-    /** The song being fetched now, the read of it, and how many bytes have come. */
-    @Volatile private var current: Fetching? = null
-
-    private class Fetching(val id: String, val source: DataSource) {
-        @Volatile var bytes = 0L
-    }
-
-    /** Ids tried in this run of the list that failed: not tried again until the list changes,
-     *  or the network does (see [again]). */
-    private val failed = HashSet<String>()
+    /** Ids tried in this run of the list that failed, with the form each failed in: not tried
+     *  again in that form until the list changes. In another form (the phone has moved
+     *  between Wi-Fi and mobile data, and the two limits differ) it is a new try. */
+    private val failed = HashMap<String, StreamForm?>()
 
     /** How many times the worker has been set going (for the tests: it must not spin). */
     @androidx.annotation.VisibleForTesting
     @Volatile internal var runs = 0
 
+    private fun blocked(id: String): Boolean {
+        if (id !in failed) return false
+        val was = failed[id] ?: return true
+        val now = formNow(id) ?: return true
+        return now == was
+    }
+
     /** These songs, in this order, are the ones to have (nothing: stop). */
     fun want(ids: List<String>) {
         synchronized(lock) {
-            if (ids != wanted) failed.retainAll(ids.toSet())
+            if (ids != wanted) failed.keys.retainAll(ids.toSet())
             wanted = ids
-            if (going || ids.none { it !in failed }) return
+            // (Not set going for a list of nothing but what has failed: it used to set itself
+            // going again, and again, for such a list.)
+            if (going || ids.all(::blocked)) return
             going = true
         }
         worker.execute(::run)
-    }
-
-    /**
-     * The phone has moved between Wi-Fi and mobile data, the two limits differ, and the new
-     * network has held (see `StreamQuality.movedWithNetwork`). What is fetched ahead is
-     * fetched in the form of the network it is fetched on, so:
-     *
-     * - **what failed is tried again**: a failure belongs to the form and the network it
-     *   failed on;
-     * - **the song being fetched is let go** and fetched again from its start in the new form
-     *   ([formNow], as the player would open it now), **unless** that form is the one it is
-     *   being fetched in (nothing would change), or it is a conversion **nearly whole**: three
-     *   quarters or more of what its rate and length come to has arrived (to throw that away
-     *   at the edge of a Wi-Fi's reach would be to fetch it twice). Let go means let go at
-     *   once: its requests are cancelled, a read blocked on a stalled connection included,
-     *   and its data source asks the server nothing more, retries included. What had arrived
-     *   of a conversion is not kept; of a file as it is, it stays under its own key.
-     */
-    fun again(formNow: (String) -> StreamForm?) {
-        val going = synchronized(lock) {
-            failed.clear()
-            current
-        } ?: return
-        val reading = going.source as? SongDataSource
-        val copy = reading?.copyNow as? SongCopy.Stream
-        val form = formNow(going.id)
-        if (copy != null && form == copy.form) return
-        if (copy != null && copy.form.converted && reading.leastNow > 0 && going.bytes * 16 >= reading.leastNow * 15) return
-        synchronized(lock) { round++ }
-        cancel()
     }
 
     private fun run() {
         runs++
         try {
             while (true) {
-                val (next, began) = synchronized(lock) { wanted.firstOrNull { it !in failed }?.let { it to round } } ?: break
-                val fetched = fetch(next, began)
+                val next = synchronized(lock) { wanted.firstOrNull { !blocked(it) } } ?: break
+                val outcome = fetch(next)
+                // Let go (the network changed under a form it may no longer be fetched in):
+                // still wanted, and fetched again at once in the form for the network now.
+                if (outcome is Outcome.LetGo) continue
                 synchronized(lock) {
-                    // Let go to be fetched afresh: it stays wanted.
-                    if (round != began) return@synchronized
-                    if (!fetched) failed += next
+                    if (outcome is Outcome.Failed) failed[next] = outcome.form
                     // Done (kept, or the server had nothing): it leaves the wanted list when
                     // the service next looks, as it is kept now. Until then, not again.
                     if (next in wanted) wanted = wanted - next
@@ -112,33 +83,42 @@ class FetchAhead(
             }
         } finally {
             synchronized(lock) { going = false }
-            // Wanted again while finishing: go on. (Only if there is something it may try:
-            // a list of what has failed alone used to set it going again, and again.)
+            // Wanted again while finishing: go on.
             want(wanted)
         }
     }
 
-    /** Reads one song whole; false if it failed. Let go when it is no longer wanted, or
-     *  [again] is asked. */
-    private fun fetch(id: String, began: Int): Boolean {
+    private sealed interface Outcome {
+        data object Fetched : Outcome
+        data class Failed(val form: StreamForm?) : Outcome
+        data object LetGo : Outcome
+    }
+
+    /**
+     * Reads one song whole, through the player's own data source: so in the form the player
+     * would open it in now, and asking the server for nothing a read of the player's may not
+     * ask for (see `StreamQuality.mayAsk`). Fetching ahead goes further: a form above the
+     * lower of two limits is not even **continued** once the network isn't surely unmetered
+     * any more ([SongDataSource.mayGoOn]): it is let go between one read and the next.
+     */
+    private fun fetch(id: String): Outcome {
         val source = sources.createDataSource()
-        // Let go: nothing more is asked of the server, from this moment (see SongDataSource).
-        (source as? SongDataSource)?.stopIf = { round != began || id !in wanted }
-        val fetching = Fetching(id, source)
-        current = fetching
+        val reading = source as? SongDataSource
         val buffer = ByteArray(64 * 1024)
         return try {
             source.open(DataSpec.Builder().setUri(Uri.parse(songUri(id))).build())
-            while (id in wanted && round == began) {
-                val got = source.read(buffer, 0, buffer.size)
-                if (got == C.RESULT_END_OF_INPUT) break
-                fetching.bytes += got
+            while (id in wanted) {
+                if (reading?.mayGoOn() == false) return Outcome.LetGo
+                if (source.read(buffer, 0, buffer.size) == C.RESULT_END_OF_INPUT) break
             }
-            true
+            Outcome.Fetched
+        } catch (e: StreamFailure) {
+            // "Moved": the form it was being fetched in may no longer be asked for here (the
+            // network changed): not a failure, and fetched again at once, chosen afresh.
+            if (e.moved) Outcome.LetGo else Outcome.Failed(reading?.streamForm)
         } catch (_: IOException) {
-            false
+            Outcome.Failed(reading?.streamForm)
         } finally {
-            current = null
             runCatching { source.close() }
         }
     }
