@@ -2842,6 +2842,27 @@ How it is built (M1b):
   notification (Android 13 and later). The player's never needed it: Android exempts
   media-session notifications, so its controls appear with it refused (checked on Android
   17), and downloads run with it refused too.
+- **Android 17 and Lidarr on the home network** (0.6.3, `requests/LocalGate`). Requests
+  need the same permission for Lidarr's address and its sign-in's, and `LocalAccess` had it
+  only for the music server's: **0.6.0 to 0.6.2 timed out on the first real Lidarr**. His
+  router answers his public names with the server's address at home (it can't send traffic
+  out and back in), so on his Wi-Fi Lidarr's name led to 192.168.x; his music server's name
+  led elsewhere, so the app had never been allowed to reach the home network; every check
+  timed out after 8 s, and the trade after the browser's return did too. On mobile data, and
+  on devbox (whose resolver gives Cloudflare's addresses), it worked; the stand-in walks
+  always had a local music server, so the permission was already given. **A name is judged
+  by where it leads from here, address by address** (192.168.x is local, whatever the name
+  leads to on another network); the music side's own judging, which counts such a name as
+  only "maybe", is unchanged. Certainly local without the permission: nothing is sent; the
+  status says `local_network_why` with Continue, which asks (or opens Android's settings once
+  it can't ask again); allowed, in the app or in settings, the check is made again by
+  itself. Unanswered where it may be local: `local_network_refused`, with Allow and Try
+  again. The sign-in's host is judged before the browser opens, so the trade on the way back
+  is not the first to find out. A check nobody pressed for (the app starting) only sets the
+  status: nothing asks until the person taps. The other pages of requests show one sentence
+  for it and send nothing. **Walks of requests must include the shape "music server not
+  local, Lidarr local, permission not held"**, and devbox's resolver does not see what a
+  home's Wi-Fi does.
 - **What the server said** when it refused something the car asked for (`Graph.refusals`) is
   shown where the phone shows a playback error, on Now Playing and the mini player, until
   something next plays.
