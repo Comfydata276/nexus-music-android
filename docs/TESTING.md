@@ -2085,6 +2085,31 @@ the test's own order: it kept the song in flight with a 16 KB / 40 ms throttle, 
 which holds the transfer at a gate on the stand-in server instead (and did the same for every
 test of the class that used the throttle); 3b92072 then did the like for `WifiOnlyTest`'s waits.
 
+## A quality of its own on mobile data: what was checked
+
+On the Android 17 emulator (debug build), signed in at `http://10.0.2.2:4533`, Streaming
+quality Lossless, On mobile data Low. Mobile data is `adb shell svc wifi disable` (data
+stays on: the default network becomes the emulator's cellular `eth0`, without
+`NOT_METERED`). What the server was asked for is in its own log (`scripts/server logs`:
+"Streaming file", `transcoding`, `bitRate`).
+
+| What | Seen |
+|---|---|
+| "Continuous Sweep" (FLAC) started on the Wi-Fi | songs 1 to 4 asked for as they are (`format=raw`): the player's own reads and fetching ahead |
+| Wi-Fi off 11 s into song 1 | song 1 played to its end with nothing asked again; joined to song 2 (AUTO_TRANSITION, no error) |
+| Songs 2 to 4, kept whole from the Wi-Fi, on mobile data | played from the phone, nothing asked; the format line "FLAC · 44.1 kHz · 16-bit" |
+| Songs 5 and 6, first opened on mobile data | asked for at 96 (`transcoding=true bitRate=96`); the format line "MP3 · 96 kbps" |
+| The join from song 4 (FLAC) to song 5 (the server's MP3) | the MP3 decoder started, AUTO_TRANSITION, no error, the same audio track (both 44.1 kHz stereo) |
+| The album again on the Wi-Fi with 1 to 4 kept as they are and 5 to 8 kept at 96, captured (`sweepmix.wav`) and `sweepcheck` | FLAC joins exact; 12.5 ms of silence into song 5 and 35.5 ms at each join between conversions |
+| The control: Low on the Wi-Fi, On mobile data Same as Wi-Fi (`sweepwifi96.wav`) | every song asked for at 96 on the Wi-Fi, as before; 35.1 to 35.5 ms of silence at every one of the seven joins. The silence is the server's conversion (no gapless information: see docs/DESIGN.md, "Gapless MP3"), not the change of quality |
+| Settings, Sound at 384 dp and at 360 dp with type at 1.3 | "On mobile data" under Streaming quality, the choices scrolling sideways as the design's segmented choices do; a quality's words shown under it when one is chosen |
+| Diagnostics, on the Wi-Fi and on mobile data | "Streaming limit: 96 kbps (0 is none), on mobile data 160 kbps; on mobile data now: no" / "yes" |
+| Crashes | none |
+
+Not seen here: a real phone moving between a real Wi-Fi and a real mobile network (the
+emulator's two are both the host's), and a VPN over mobile data (held by a test of what
+the app makes of Android's report of one, `MobileStreamTest`).
+
 ## Your stats and the mixes (M5b): what was checked
 
 **The answers are Windows'.** `MixesTest` ports `builds_mixes_from_listening` (src/mixes.rs)

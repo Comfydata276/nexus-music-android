@@ -8,7 +8,8 @@ import org.medianexus.music.store.KeptIndex
 
 /**
  * Which songs can play with the server gone (Windows' `plays_offline`): those downloaded,
- * and those kept whole among the kept songs in the form they would be streamed in now. Everything here is in memory: it is asked
+ * and those kept whole among the kept songs in a form they would be played in now (the form
+ * for the network the phone is on, or the other network's: see `StreamQuality`). Everything here is in memory: it is asked
  * of every row of every page, and of every song the car shows offline.
  */
 class Availability(
