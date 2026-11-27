@@ -68,8 +68,10 @@ android {
         applicationId = "org.medianexus.music"
         minSdk = 31
         targetSdk = 37
-        versionCode = 11
-        versionName = "0.6.2"
+        // A trial build can be given its own version from the command line
+        // (-PversionCode=12 -PversionName=0.6.2-link1); without them, the app's own.
+        versionCode = providers.gradleProperty("versionCode").orNull?.toInt() ?: 11
+        versionName = providers.gradleProperty("versionName").orNull ?: "0.6.2"
         buildConfigField("boolean", "JAMS", jamsExist.toString())
         buildConfigField("boolean", "LINK", linkExists.toString())
         // The app carries a library of its own, compiled for these two kinds of processor
