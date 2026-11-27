@@ -132,7 +132,7 @@ class PlaybackService : MediaLibraryService() {
          *  phone turned out not to play as they are. By song id, which is only this server's
          *  to give: another account's server can use the same ids for other songs. */
         val conversions = Conversions()
-        val needsConverting = NeedsConverting()
+        val needsConverting = NeedsConverting().also { found -> account.undecodable = { it in found } }
         /** Who made each search lately, by browser: told when one is to be made again. */
         val searchedBy = Searchers<MediaSession.ControllerInfo>()
         /** The account's saved queue, for this service's turn at it: nothing is written to
@@ -240,9 +240,20 @@ class PlaybackService : MediaLibraryService() {
 
         // One HTTP client for everything, so audio shares the warm connections; for audio,
         // with a shorter limit on a read that has stalled.
-        val http = OkHttpDataSource.Factory(Http.forStreams(graph.http))
-        val sources = SongDataSource.Factory(Leases(), http)
-        ahead = FetchAhead(sources)
+        val streams = Http.forStreams(graph.http)
+        val http = OkHttpDataSource.Factory(streams)
+        // A form above mobile data's limit goes out only on the unmetered network it was
+        // chosen for, until the song has begun (see StreamQuality).
+        val bound = org.medianexus.music.net.BoundClients(streams)
+        val sources = SongDataSource.Factory(Leases(), http, routed = { network -> OkHttpDataSource.Factory(bound.on(network)) })
+        // Fetching ahead reads through a factory of its own, over the same client, so that
+        // what it has in flight can be cancelled at once (FetchAhead.again).
+        val aheadCalls = org.medianexus.music.net.CancellableCalls()
+        val aheadSources = SongDataSource.Factory(
+            Leases(), OkHttpDataSource.Factory(aheadCalls.through(streams)),
+            routed = { network -> OkHttpDataSource.Factory(aheadCalls.through(bound.on(network))) },
+        )
+        ahead = FetchAhead(aheadSources, aheadCalls::cancelAll)
         val extractors = songExtractors()
         val mediaSources = DefaultMediaSourceFactory(sources, extractors).setLoadErrorHandlingPolicy(RideOut())
         exo = ExoPlayer.Builder(this, renderers(), mediaSources)
@@ -328,9 +339,11 @@ class PlaybackService : MediaLibraryService() {
         // from where it is, as on Windows (`reload_current`). Only for a setting: a song
         // playing when the phone moves between Wi-Fi and mobile data plays on as it began.
         scope.launch { graph.quality.chosenAgain.collect { qualityChanged() } }
-        // The phone moved between Wi-Fi and mobile data, and the two limits differ: what is
-        // being fetched ahead is let go and fetched in the new network's form.
-        scope.launch { graph.quality.movedWithNetwork.collect { ahead.again(); aheadNow() } }
+        // The phone moved between Wi-Fi and mobile data, the two limits differ, and the new
+        // network has held: what is being fetched ahead is fetched in the new network's form
+        // (see FetchAhead.again: not a song whose form doesn't change, nor a conversion nearly
+        // whole), and what failed is tried again.
+        scope.launch { graph.quality.movedWithNetwork.collect { ahead.again(::formNow); aheadNow() } }
         // The person switched an app off in Settings (or forgot it): a connection it has
         // open is cut. Media3 has no way to throw a controller out, so it is left with
         // nothing: no command it may send, and nothing more it is told. (Every command is
@@ -1085,11 +1098,17 @@ class PlaybackService : MediaLibraryService() {
                 // while a stream is open, it stops that stream as well.
                 override val offline: Boolean get() = graph.offline.on
                 override val conversions = era.conversions
-                override fun resolve(songId: String): SongWhere = resolve(era, songId)
-                override fun opened(songId: String, copy: SongCopy) {
-                    // (From a loading thread.) Which copy each song is being read from: for
-                    // the format line, and so that a failure is laid at the right door.
-                    main.post { if (current === era) nowReading(songId, copy) }
+                override fun resolve(songId: String): SongWhere = resolve(era, songId, null, cache != null)
+                override fun resolve(songId: String, entry: Long?): SongWhere = resolve(era, songId, entry, cache != null)
+                override fun began(songId: String, entry: Long?, copy: SongCopy) {
+                    // (From a loading thread.) Which copy each queue entry is being read
+                    // from: for the format line, so that a failure is laid at the right door,
+                    // and so that the entry goes on in it. Noted at once, so that the entry's
+                    // next read, which may come before the main thread does, finds it.
+                    // Fetching ahead reads for no entry, and tells nothing.
+                    if (entry == null || current !== era) return
+                    reading.began(entry, copy)
+                    main.post { if (current === era) nowReading(entry) }
                 }
                 override fun closed(key: String) {
                     // Whether that song is kept whole now, for the account's index of them.
@@ -1157,21 +1176,18 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- Where songs come from ------------------------------------------------------------------
 
-    /** The copy each song was last opened from, by song id (the song playing, and the next,
+    /** The copy each queue entry has begun to play from (the entry playing, and the next,
      *  made ready ahead of its turn): what the player's own data source says, not what the
-     *  downloads and settings would give now (see [SongDataSource.open]). */
-    private val reading = object : LinkedHashMap<String, SongCopy>() {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SongCopy>?) = size > 32
-    }
+     *  downloads and settings would give now (see [SongDataSource.open], [EntryCopies]). */
+    private val reading = EntryCopies()
 
     /** Queue entries made ready again once after an error that blames nothing (see
      *  onPlayerError): not twice. */
     private val triedAgain = HashSet<Long>()
 
-    private fun nowReading(songId: String, copy: SongCopy) {
-        reading.remove(songId)
-        reading[songId] = copy
-        if (player.queue.current()?.id == songId) publishExtras()
+    /** An entry's copy has begun (already noted in [reading], on the loading thread). */
+    private fun nowReading(entry: Long) {
+        if (player.queue.currentUid() == entry) publishExtras()
     }
 
 
@@ -1179,8 +1195,9 @@ class PlaybackService : MediaLibraryService() {
      *  said otherwise. */
     private fun serverThere(): Boolean = graph.watch.state.value.let { it.sure && !it.offline }
 
-    /** Called on the player's loading threads, for a read that belongs to `era`. */
-    private fun resolve(era: Era, songId: String): SongWhere {
+    /** Called on the player's loading threads, for a read that belongs to `era`, for the
+     *  queue entry `entry` (null: fetching ahead), with or without the kept songs to read. */
+    private fun resolve(era: Era, songId: String, entry: Long?, withKept: Boolean): SongWhere {
         val api = era.account.api
         val song = player.songFor(songId)
         // A downloaded copy first, then the kept copy, then the server. A download that
@@ -1189,19 +1206,21 @@ class PlaybackService : MediaLibraryService() {
         // isn't yet known to be: a cold start in a dead spot). And only a
         // file still as long as the one that was verified: one that isn't is no download,
         // and the catalogue is told so now, not at the next start (`Downloads.notWhole`).
-        val entry = era.account.catalogue.entry(songId)
-        val whole = if (entry != null) era.account.catalogue.wholeFileOf(songId) else null
-        if (entry != null && whole == null) era.account.downloads?.notWhole(songId)
-        val downloaded = whole.takeIf { entry?.stale != true || !serverThere() }
+        val catalogued = era.account.catalogue.entry(songId)
+        val whole = if (catalogued != null) era.account.catalogue.wholeFileOf(songId) else null
+        if (catalogued != null && whole == null) era.account.downloads?.notWhole(songId)
+        val downloaded = whole.takeIf { catalogued?.stale != true || !serverThere() }
         val suffix = song?.suffix?.lowercase().orEmpty()
         // (As the server converts it, if this phone is known not to decode the file itself:
         // found by this session's player, or remembered from a download.)
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting && !era.account.catalogue.convertsFor(songId, song?.size ?: 0)
-        // In the form for the network it is opened on, unless it is kept whole only in the
-        // other network's: then that copy, as it was fetched (see StreamQuality.formToOpen).
-        val keeping = graph.settings.value.cacheLimitMb > 0
+        // An entry that has begun goes on in its form; otherwise the form for the network it
+        // is opened on (in doubt, the lower), unless it is kept whole only in the other
+        // network's: then that copy, as it was fetched (see StreamQuality.choose). What is
+        // kept counts only if there are kept songs to read it from.
+        val keeping = withKept && graph.settings.value.cacheLimitMb > 0
         val kept = era.account.keptIndex
-        return graph.quality.whereNow(songId, song, native, { key -> keeping && kept.isWhole(key) }, downloaded, entry?.bitrate ?: 0) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
+        return graph.quality.whereNow(songId, song, native, { key -> keeping && kept.isWhole(key) }, downloaded, catalogued?.bitrate ?: 0, reading.formOf(entry)) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
     }
 
     // ---- The queue changing -----------------------------------------------------------------
@@ -1252,7 +1271,7 @@ class PlaybackService : MediaLibraryService() {
             putInt(EXTRA_ORIGIN, queue.currentOrigin() ?: -1)
             putBoolean(EXTRA_CONVERTED, queue.current()?.id?.let { id -> era?.needsConverting?.let { id in it } } == true)
             // The copy the song playing is being read from: what the format line says.
-            putInt(EXTRA_PLAYING_KBPS, queue.current()?.id?.let { reading[it]?.kbps } ?: -1)
+            putInt(EXTRA_PLAYING_KBPS, reading[queue.currentUid()]?.kbps ?: -1)
             putBoolean(EXTRA_SETTLED, era?.restoring?.isCompleted == true)
             // The song these extras are about: the player's own word on what's playing can
             // reach a controller before or after them.
@@ -1707,7 +1726,7 @@ class PlaybackService : MediaLibraryService() {
             val song = player.queue.current() ?: return
             val failure = error.cause as? StreamFailure
             // The copy that was being played, by the player's own data source.
-            val copy = reading[song.id]
+            val copy = reading[player.queue.currentUid()]
             val download = copy as? SongCopy.Download
             when {
                 // An internet radio station is somewhere else on the internet, not the music
@@ -1721,7 +1740,7 @@ class PlaybackService : MediaLibraryService() {
                 // replaced), or a download has arrived while its stream failed: made ready
                 // again from where it is, by time, on whatever is best now. Nothing failed.
                 failure?.moved == true -> {
-                    reading.remove(song.id)
+                    reading.forget(player.queue.currentUid())
                     publishExtras()
                     exo.prepare()
                 }
@@ -1734,7 +1753,7 @@ class PlaybackService : MediaLibraryService() {
                 // over (it has just failed where it stands).
                 download != null && Recovery.laidAtTheFile(error.errorCode, failure?.local == true) -> {
                     graph.diagnostics.note("a downloaded copy wouldn't play (${error.errorCodeName}): it needs a fresh copy")
-                    reading.remove(song.id)
+                    reading.forget(player.queue.currentUid())
                     publishExtras()
                     val uid = player.queue.currentUid()
                     val downloads = era?.account?.downloads
@@ -1767,7 +1786,7 @@ class PlaybackService : MediaLibraryService() {
                 }
                 download == null && undecodable(error) && era?.needsConverting?.mark(song.id) == true -> {
                     // The phone can't play this file as it is: have the server convert it.
-                    reading.remove(song.id)
+                    reading.forget(player.queue.currentUid())
                     publishExtras()
                     exo.prepare()
                 }
@@ -2909,14 +2928,30 @@ class PlaybackService : MediaLibraryService() {
      *  new form. Stopping and making ready again keeps the queue and the place in the song,
      *  and whether it is playing. */
     private fun qualityChanged() {
+        // Every entry is chosen afresh at its next read (the person changed the setting): not
+        // only the one playing, which is opened again below, but one made ready ahead of its
+        // turn, or waiting for the server, as when there was no such thing as an entry's form.
+        reading.forgetStreams()
         aheadNow()
         val song = player.queue.current() ?: return
         // (From its download as the player has it open; if it isn't open yet, as it would be.)
-        val downloaded = reading[song.id]?.let { it is SongCopy.Download } ?: (era?.account?.availability?.isDownloaded(song.id) == true)
+        val entry = player.queue.currentUid()
+        val downloaded = reading[entry]?.let { it is SongCopy.Download } ?: (era?.account?.availability?.isDownloaded(song.id) == true)
         if (!Recovery.reopensForQuality(exo.playbackState, downloaded, song.radioUrl.isNotEmpty(), waitingFor != null)) return
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "streaming quality changed: the song playing is opened again at ${graph.quality.limit()} kbps")
         exo.stop()
         exo.prepare()
+    }
+
+    /** The form a song would be opened in now, as a read for no entry (fetching ahead):
+     *  for [FetchAhead.again]. Null if it isn't known. Called on the main thread. */
+    private fun formNow(songId: String): StreamForm? {
+        val era = era ?: return null
+        val song = player.songFor(songId) ?: return null
+        val suffix = song.suffix.lowercase()
+        val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting && !era.account.catalogue.convertsFor(songId, song.size)
+        val keeping = graph.settings.value.cacheLimitMb > 0
+        return graph.quality.choose(songId, native, suffix, song.bitRate) { key -> keeping && era.account.keptIndex.isWhole(key) }.form
     }
 
     private fun aheadNow() {

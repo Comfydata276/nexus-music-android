@@ -23,7 +23,12 @@ import java.util.concurrent.Executors
  * kept, and of a file as it is the part that arrived stays for the player to carry on from.
  */
 @OptIn(UnstableApi::class)
-class FetchAhead(private val sources: DataSource.Factory) {
+class FetchAhead(
+    private val sources: DataSource.Factory,
+    /** Cancels every request fetching ahead has in flight, a read blocked on a stalled
+     *  connection included (the calls of its own HTTP client: see `PlaybackService`). */
+    private val cancel: () -> Unit = {},
+) {
     private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "Nexus:FetchAhead").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
 
     /** The song ids wanted now, in the order they will play. */
@@ -34,31 +39,64 @@ class FetchAhead(private val sources: DataSource.Factory) {
     /** Goes up when the song being fetched is to be let go and fetched afresh ([again]). */
     @Volatile private var round = 0
 
-    /** Ids tried in this run of the list that failed: not tried again until the list changes. */
+    /** The song being fetched now, the read of it, and how many bytes have come. */
+    @Volatile private var current: Fetching? = null
+
+    private class Fetching(val id: String, val source: DataSource) {
+        @Volatile var bytes = 0L
+    }
+
+    /** Ids tried in this run of the list that failed: not tried again until the list changes,
+     *  or the network does (see [again]). */
     private val failed = HashSet<String>()
+
+    /** How many times the worker has been set going (for the tests: it must not spin). */
+    @androidx.annotation.VisibleForTesting
+    @Volatile internal var runs = 0
 
     /** These songs, in this order, are the ones to have (nothing: stop). */
     fun want(ids: List<String>) {
         synchronized(lock) {
             if (ids != wanted) failed.retainAll(ids.toSet())
             wanted = ids
-            if (going || ids.isEmpty()) return
+            if (going || ids.none { it !in failed }) return
             going = true
         }
         worker.execute(::run)
     }
 
     /**
-     * The song being fetched is let go and fetched again from its start: the limit for a
-     * stream opened now has changed with the network (Wi-Fi to mobile data, or back), and
-     * what is fetched ahead is fetched in the form of the network it is fetched on. What had
-     * arrived of a conversion is not kept; of a file as it is, it stays under its own key.
+     * The phone has moved between Wi-Fi and mobile data, the two limits differ, and the new
+     * network has held (see `StreamQuality.movedWithNetwork`). What is fetched ahead is
+     * fetched in the form of the network it is fetched on, so:
+     *
+     * - **what failed is tried again**: a failure belongs to the form and the network it
+     *   failed on;
+     * - **the song being fetched is let go** and fetched again from its start in the new form
+     *   ([formNow], as the player would open it now), **unless** that form is the one it is
+     *   being fetched in (nothing would change), or it is a conversion **nearly whole**: three
+     *   quarters or more of what its rate and length come to has arrived (to throw that away
+     *   at the edge of a Wi-Fi's reach would be to fetch it twice). Let go means let go at
+     *   once: its requests are cancelled, a read blocked on a stalled connection included,
+     *   and its data source asks the server nothing more, retries included. What had arrived
+     *   of a conversion is not kept; of a file as it is, it stays under its own key.
      */
-    fun again() {
+    fun again(formNow: (String) -> StreamForm?) {
+        val going = synchronized(lock) {
+            failed.clear()
+            current
+        } ?: return
+        val reading = going.source as? SongDataSource
+        val copy = reading?.copyNow as? SongCopy.Stream
+        val form = formNow(going.id)
+        if (copy != null && form == copy.form) return
+        if (copy != null && copy.form.converted && reading.leastNow > 0 && going.bytes * 16 >= reading.leastNow * 15) return
         synchronized(lock) { round++ }
+        cancel()
     }
 
     private fun run() {
+        runs++
         try {
             while (true) {
                 val (next, began) = synchronized(lock) { wanted.firstOrNull { it !in failed }?.let { it to round } } ?: break
@@ -74,8 +112,9 @@ class FetchAhead(private val sources: DataSource.Factory) {
             }
         } finally {
             synchronized(lock) { going = false }
-            // Wanted again while finishing: go on.
-            if (wanted.isNotEmpty()) want(wanted)
+            // Wanted again while finishing: go on. (Only if there is something it may try:
+            // a list of what has failed alone used to set it going again, and again.)
+            want(wanted)
         }
     }
 
@@ -83,14 +122,23 @@ class FetchAhead(private val sources: DataSource.Factory) {
      *  [again] is asked. */
     private fun fetch(id: String, began: Int): Boolean {
         val source = sources.createDataSource()
+        // Let go: nothing more is asked of the server, from this moment (see SongDataSource).
+        (source as? SongDataSource)?.stopIf = { round != began || id !in wanted }
+        val fetching = Fetching(id, source)
+        current = fetching
         val buffer = ByteArray(64 * 1024)
         return try {
             source.open(DataSpec.Builder().setUri(Uri.parse(songUri(id))).build())
-            while (id in wanted && round == began && source.read(buffer, 0, buffer.size) != C.RESULT_END_OF_INPUT) Unit
+            while (id in wanted && round == began) {
+                val got = source.read(buffer, 0, buffer.size)
+                if (got == C.RESULT_END_OF_INPUT) break
+                fetching.bytes += got
+            }
             true
         } catch (_: IOException) {
             false
         } finally {
+            current = null
             runCatching { source.close() }
         }
     }

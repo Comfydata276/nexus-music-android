@@ -974,6 +974,9 @@ class QueuePlayer(
         // source passes an address that names no song straight through.
         .setUri(if (song.radioUrl.isNotEmpty()) song.radioUrl else songUri(song.id))
         .setTag(SongTag(song, uid))
+        // Each read of the entry is told which entry it is for (Media3 hands this on as the
+        // read's key; the data source keeps its own key for the kept songs): see EntryCopies.
+        .setCustomCacheKey(SongDataSource.ENTRY + uid)
         .setMediaMetadata(metadataFor(song))
         .build()
 

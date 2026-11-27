@@ -56,6 +56,18 @@ class NetworkWatch(context: Context) {
         }
     }
 
+    /** The phone's default network this instant, and whether it is unmetered, asked of
+     *  Android there and then (not its last callback, which can come late): null if there is
+     *  none or it can't be had. On any thread. */
+    fun routeNow(): Pair<Network, Boolean>? = try {
+        val manager = connectivity
+        val network = manager?.activeNetwork
+        val capabilities = network?.let(manager::getNetworkCapabilities)
+        if (network == null || capabilities == null) null else network to capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    } catch (_: RuntimeException) {
+        null
+    }
+
     /** As it stands this instant (also the value at start-up, before any callback). */
     private fun read(): NetworkNow {
         val manager = connectivity ?: return NetworkNow()

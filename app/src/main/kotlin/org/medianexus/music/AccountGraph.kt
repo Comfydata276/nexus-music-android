@@ -446,7 +446,14 @@ class AccountGraph(
     val catalogue = Catalogue(downloadsDir, note = wiring?.note ?: {})
 
     /** Which songs play with the server gone. */
-    val availability = Availability(catalogue, keptIndex, wiring?.quality ?: org.medianexus.music.playback.StreamQuality(settings), keeping = { settings.value.cacheLimitMb > 0 })
+    /** The songs the playback service has found this phone can't play as they are, in its
+     *  turn at this account (it puts its own here while it has one: see `PlaybackService`). */
+    @Volatile var undecodable: (String) -> Boolean = { false }
+
+    val availability = Availability(
+        catalogue, keptIndex, wiring?.quality ?: org.medianexus.music.playback.StreamQuality(settings), keeping = { settings.value.cacheLimitMb > 0 },
+        mustConvert = { song -> undecodable(song.id) || catalogue.convertsFor(song.id, song.size) },
+    )
 
     /** The account's downloads; null where nothing of Android is to hand (tests). */
     val downloads: Downloads? = wiring?.downloads?.invoke(this)

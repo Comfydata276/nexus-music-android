@@ -19,6 +19,10 @@ class Availability(
      *  are kept at all. */
     private val quality: StreamQuality,
     private val keeping: () -> Boolean,
+    /** Whether this phone is known not to play the song's file as it is (the player found
+     *  so this session, or a download did and it was remembered): the player then opens only
+     *  conversions of it, and so is only a conversion counted here. Asked with two limits. */
+    private val mustConvert: (Song) -> Boolean = { false },
 ) {
     /** Downloaded: also a download that needs a fresh copy (it failed once when played),
      *  which stays on the phone, and is played with no server, until the new one has taken
@@ -29,10 +33,12 @@ class Availability(
      *  the phone is on now). */
     fun keyOf(song: Song): String = quality.keyOf(song)
 
-    /** Kept whole in the form it would be streamed in now, or in the other network's (one
-     *  fetched ahead on the Wi-Fi plays on mobile data as it was fetched, and the other way
-     *  about: see `StreamQuality.formToOpen`). */
-    fun isKept(song: Song): Boolean = keeping() && quality.keysOf(song).any(kept::isWhole)
+    /** Kept whole in a form the player would open it in: with one limit, the form it would be
+     *  streamed in now (as always); with two, either limit's, as the player would work them
+     *  out (one fetched ahead on the Wi-Fi plays on mobile data as it was fetched, and the other
+     *  way about; a file this phone can't play is never counted: see
+     *  `StreamQuality.keptKeysOf`). */
+    fun isKept(song: Song): Boolean = keeping() && quality.keptKeysOf(song, decodes = !quality.twoLimits() || !mustConvert(song)).any(kept::isWhole)
 
     /** Whether the song plays with no server. */
     fun plays(song: Song): Boolean = song.id.isNotEmpty() && song.radioUrl.isEmpty() && (isDownloaded(song.id) || isKept(song))

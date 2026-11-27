@@ -42,7 +42,9 @@ class MobileQualityTest {
 
     private val settings = MutableStateFlow(Settings())
     private val network = MutableStateFlow(WIFI)
-    private val quality = StreamQuality(settings, network)
+    /** Android's look at the network this instant agrees with its last callback here (where
+     *  they disagree: MobileRacesTest). */
+    private val quality = StreamQuality(settings, network, route = { network.value.takeIf { it.connected }?.let { StreamQuality.Route("network", it.unmetered) } }, settleMillis = 0)
 
     private val flac = Song(id = "f", suffix = "flac", bitRate = 900, samplingRate = 48_000, bitDepth = 24, duration = 200)
     private val mp3Low = Song(id = "m1", suffix = "mp3", bitRate = 128, duration = 200)
@@ -68,15 +70,15 @@ class MobileQualityTest {
         assertEquals(SAME_AS_WIFI, Settings().mobileBitrate)
         for (cap in QUALITIES) {
             settings.value = Settings(bitrate = cap)
-            val onWifi = songs.map { listOf(quality.formOf(it), quality.keyOf(it), quality.keysOf(it), formatLine(it, quality.limit(), false, LIVE)) }
+            val onWifi = songs.map { listOf(quality.formOf(it), quality.keyOf(it), quality.keptKeysOf(it), formatLine(it, quality.limit(), false, LIVE)) }
             val natives = songs.map { quality.formOf(true, it.suffix, it.bitRate) to quality.formOf(false, it.suffix, it.bitRate) }
             for (net in listOf(MOBILE, VPN_OVER_MOBILE, NONE)) {
                 network.value = net
                 assertEquals(cap, quality.limit())
-                assertEquals(onWifi, songs.map { listOf(quality.formOf(it), quality.keyOf(it), quality.keysOf(it), formatLine(it, quality.limit(), false, LIVE)) })
+                assertEquals(onWifi, songs.map { listOf(quality.formOf(it), quality.keyOf(it), quality.keptKeysOf(it), formatLine(it, quality.limit(), false, LIVE)) })
                 assertEquals(natives, songs.map { quality.formOf(true, it.suffix, it.bitRate) to quality.formOf(false, it.suffix, it.bitRate) })
                 // One form, one key: nothing kept is looked for under another name.
-                for (song in songs) assertEquals(1, quality.keysOf(song).size)
+                for (song in songs) assertEquals(1, quality.keptKeysOf(song).size)
             }
             network.value = WIFI
         }
@@ -103,10 +105,10 @@ class MobileQualityTest {
         // A Wi-Fi Android counts as metered (a phone's hotspot) is mobile data's too.
         network.value = METERED_WIFI
         assertEquals(160, quality.limit())
-        // No network: nothing streams; the Wi-Fi limit is the one named.
+        // No network: nothing streams, and not knowing, the lower of the two is the one named.
         network.value = NONE
         assertFalse(quality.onMobileData())
-        assertEquals(0, quality.limit())
+        assertEquals(160, quality.limit())
         // And the other way about: lossless on mobile data, a limit at home.
         settings.value = Settings(bitrate = 96, mobileBitrate = 0)
         network.value = WIFI
@@ -119,23 +121,23 @@ class MobileQualityTest {
     fun theTwoFormsHaveTwoKeysAndOneFormOneKey() {
         settings.value = Settings(bitrate = 0, mobileBitrate = 160)
         network.value = MOBILE
-        assertEquals(listOf("song:f:160", "song:f:0"), quality.keysOf(flac))
+        assertEquals(listOf("song:f:0", "song:f:160"), quality.keptKeysOf(flac))
         network.value = WIFI
-        assertEquals(listOf("song:f:0", "song:f:160"), quality.keysOf(flac))
+        assertEquals(listOf("song:f:0", "song:f:160"), quality.keptKeysOf(flac))
         // An MP3 within both limits is the same file either way: one key.
-        assertEquals(listOf("song:m1:0"), quality.keysOf(mp3Low))
+        assertEquals(listOf("song:m1:0"), quality.keptKeysOf(mp3Low))
         // A file the phone can't play: 320 with no limit, 160 on mobile data.
-        assertEquals(listOf("song:w:320", "song:w:160"), quality.keysOf(wma))
+        assertEquals(listOf("song:w:320", "song:w:160"), quality.keptKeysOf(wma))
         // The same limit chosen twice is one form.
         settings.value = Settings(bitrate = 160, mobileBitrate = 160)
-        assertEquals(listOf("song:f:160"), quality.keysOf(flac))
+        assertEquals(listOf("song:f:160"), quality.keptKeysOf(flac))
     }
 
     @Test
     fun aCopyKeptWholeOnTheOtherNetworkIsPlayedAsItWasFetched() {
         settings.value = Settings(bitrate = 0, mobileBitrate = 160)
         val whole = HashSet<String>()
-        fun open(song: Song) = quality.formToOpen(song.id, true, song.suffix, song.bitRate, whole::contains)
+        fun open(song: Song) = quality.choose(song.id, true, song.suffix, song.bitRate, whole::contains).form
         network.value = MOBILE
         // Nothing kept: mobile data's own form.
         assertEquals(StreamForm(160, "mp3"), open(flac))
