@@ -94,7 +94,8 @@ private fun RequestsNotOn() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RequestsSettings() {
-    val askLocal = org.medianexus.music.ui.shell.rememberLocalNetworkAsk(org.medianexus.music.ui.shell.LocalUi.current.graph.localAccess)
+    val localAccess = org.medianexus.music.ui.shell.LocalUi.current.graph.localAccess
+    val askLocal = org.medianexus.music.ui.shell.rememberLocalNetworkAsk(localAccess)
     val here = requestsHere()
     if (here == null) {
         RequestsNotOn()
@@ -252,8 +253,10 @@ fun RequestsSettings() {
                     if (!edited && state is RequestsState.LocalNetwork) {
                         // Allowed, requests check again by themselves (`Requests.start`); refused
                         // for good, this opens the app's page in Android's settings instead.
-                        TextButton(stringResource(if (state.certain) R.string.continue_on else R.string.allow), { askLocal(null) }, primary = true)
-                        if (!state.certain) TextButton(stringResource(R.string.try_again), { scope.launch { requests.check() } })
+                        // (Already allowed, by now: it only checks.)
+                        TextButton(stringResource(if (state.certain) R.string.continue_on else R.string.allow), { if (localAccess.held) scope.launch { requests.check() } else askLocal(null) }, primary = true)
+                        // (Judged afresh: a verdict from another network never strands anyone.)
+                        TextButton(stringResource(R.string.try_again), { scope.launch { requests.check() } })
                     }
                     if (signedInAs != null && !waiting) LinkText(stringResource(R.string.sign_out), { scope.launch { requests.signOut() } }, color = colors.accentBright)
                 }

@@ -83,8 +83,8 @@ internal object Trace {
         }
         append("; address: ").append(addressKind)
         append("; connected over ").append(family ?: "nothing yet")
-        // (How far the last request's connection got: CoreHttp's `Way`.)
-        if (!way.isNullOrEmpty()) append("; last request: ").append(way)
+        // (The short fields before the long last one, so the cut at 300 characters takes
+        // only the end of that. Not judged, nothing is said about the home network.)
         if (near != null) {
             append("; on the home network: ").append(
                 when (near) {
@@ -95,5 +95,7 @@ internal object Trace {
             )
         }
         if (held != null) append("; allowed to reach it: ").append(if (held) "yes" else "no")
+        // (How far the last request's connection got: CoreHttp's `Way`. Last: it is long.)
+        if (!way.isNullOrEmpty()) append("; last request: ").append(way)
     }
 }

@@ -72,6 +72,10 @@ object RequestsWords {
      *  owns them is finishing what the last sign-in left (`RequestsNow.NotYet`). */
     /** Lidarr is on the home network from here, and the app isn't allowed to reach it
      *  (Android 17): what the pages say, where Settings, Requests asks. */
+    /** What a request's failure says, as the client has it, when its connection never
+     *  opened: what the home network without the permission looks like. */
+    internal val UNANSWERED = setOf("timed out", "couldn't connect", "connection refused", "no route", "not allowed by the phone", "connection failed", "out of time")
+
     const val HOME_NETWORK = "Nexus Music isn't allowed to reach devices on your home network, where Lidarr is. Allow it in Settings, Requests."
 
     const val NOT_YET = "Requests aren't ready yet: the app is finishing what the last sign-in left. They'll be here in a moment."
@@ -296,6 +300,8 @@ class Requests internal constructor(
 
     /** A sign-in under way: the door the browser comes back through, when it must be over
      *  by, and whether it has been given up meanwhile. */
+    /** (`near`: where the sign-in's host was judged to be before the browser opened, for the
+     *  diagnostics line only.) */
     private class Attempt(val door: BrowserReturn, val host: String, val until: Long, val hold: Hold, val near: Nearness? = null) {
         val retired = MutableStateFlow(false)
 
@@ -316,7 +322,18 @@ class Requests internal constructor(
     /** Whether the last request since `since` went unanswered (it didn't connect, or timed
      *  out): what the home network without the permission looks like. One that was answered,
      *  whatever with, was reached. */
-    private fun unanswered(since: Long): Boolean = Trace.last(since)?.ended?.let { !it.startsWith("answered") && it != "stopped" } ?: false
+    private fun unanswered(since: Long): Boolean = Trace.last(since)?.let { !it.opened && it.ended in RequestsWords.UNANSWERED } ?: false
+
+    /**
+     * Where these addresses are from here, **judged only while the permission is not held and
+     * requests may be sent at all** (offline mode keeps its own sentence; nothing is looked up
+     * then, or with the permission held, or before Android 17): the nearest of them, or null
+     * if none could be judged.
+     */
+    private suspend fun judged(addresses: List<String>): Nearness? {
+        if (local.held || CoreHttp.unsent() != null) return null
+        return addresses.mapNotNull { local.near(it) }.minByOrNull { it.ordinal }
+    }
 
     /** Writes the line about the last attempt (`near`: where what it reached for was, from
      *  here; null if not judged). Never throws. */
@@ -623,19 +640,25 @@ class Requests internal constructor(
         // its pass there), as they are from here; on the home network without the
         // permission, nothing is sent, and the person is to be asked.
         val service = believed(settingsNow.value)?.service?.takeIf { open != null }
-        val near = listOfNotNull(at.address, service).map { local.near(it) }.minByOrNull { it.ordinal } ?: Nearness.NOT
-        if (near == Nearness.LOCAL && !local.held) {
+        val hosts = listOfNotNull(at.address, service)
+        var near = judged(hosts)
+        if (near == Nearness.LOCAL) {
             turn.withLock {
                 if (checks != mine) return@withContext stateNow.value
                 stateNow.value = RequestsState.LocalNetwork(certain = true)
                 writeTrace(traced.step, "not allowed to reach the home network", 0, traced.browser, System.nanoTime(), near)
-                return@withContext stateNow.value
             }
+            // (Given meanwhile, while this was looking: its news may have come and gone
+            // before the state above was there to act on it. Checked again at once.)
+            return@withContext if (local.held) check(interrupted, traced) else stateNow.value
         }
         val since = System.nanoTime()
         val checked = Core.lidarrCheck(at)
-        // (Unanswered, and it may be on the home network without the permission: said so.)
-        val mayBeLocal = near != Nearness.NOT && !local.held && unanswered(since) && checked !is Outcome.Stopped && (checked as? Outcome.Got)?.value?.version == null
+        // (The connection never opened, and it may be on the home network without the
+        // permission, judged now: said so. Opened and then failed, it is what it was.)
+        val failedUnanswered = unanswered(since) && checked !is Outcome.Stopped && (checked as? Outcome.Got)?.value?.version == null
+        if (failedUnanswered) judged(hosts)?.let { near = it }
+        val mayBeLocal = failedUnanswered && !local.held && near != null && near != Nearness.NOT
         turn.withLock {
             if (checks != mine) return@withContext stateNow.value
             val answered = (checked as? Outcome.Got)?.value?.door
@@ -707,16 +730,29 @@ class Requests internal constructor(
         // The sign-in's host as it is from here: the browser comes back, and the app trades
         // its code there. On the home network without the permission, the trade would be
         // the first to find out, after the person had signed in: asked about first instead.
-        val service = turn.withLock { read(); settingsNow.value.door?.service }
-        val near = service?.let { local.near(it) }
+        // (Only after the guards 0.6.2 had: on, readable, and a sign-in the library's rule
+        // believes; one it refuses keeps its own sentence below.)
+        val service = turn.withLock {
+            read()
+            val settings = settingsNow.value
+            settings.door?.takeIf { !unreadable && settings.on && Core.gateRefused(it, settings.address) == null }?.service
+        }
+        val near = service?.let { judged(listOf(it)) }
+        var certain = false
         turn.withLock {
             read()
             val settings = settingsNow.value
             val found = settings.door ?: return@withContext null
             if (near == Nearness.LOCAL && !local.held && !unreadable && settings.on) {
+                // (As a new sign-in retires one under way, so does this: no browser is left
+                // waiting behind a screen that no longer offers to cancel it.)
+                giveUpAttempt()
+                checks++
+                if (settings.signingIn) write(settings.copy(signingIn = false))
                 stateNow.value = RequestsState.LocalNetwork(certain = true)
                 writeTrace(Trace.Step.BROWSER, "not allowed to reach the home network", 0, null, System.nanoTime(), near)
-                return@withContext null
+                certain = true
+                return@withLock null
             }
             if (unreadable || !settings.on) return@withContext null
             // (Only a sign-in the library's rule believes: no browser is sent to another.)
@@ -751,6 +787,9 @@ class Requests internal constructor(
             stateNow.value = RequestsState.SigningIn(host)
             scope.launch(io) { waitFor(mine, found, secret) }.invokeOnCompletion { hold.release() }
             link
+        }.also {
+            // (Given meanwhile: checked again at once, as a check does.)
+            if (certain && local.held) check()
         }
     }
 
@@ -792,7 +831,11 @@ class Requests internal constructor(
             val token = (done as? Outcome.Got)?.value
             // (The trade went unanswered, and the sign-in may be on the home network without
             // the permission: said so.)
-            val mayBeLocal = done is Outcome.Failed && !local.held && (mine.near ?: Nearness.NOT) != Nearness.NOT && unanswered(tradeSince)
+            // (The trade's connection never opened, and the sign-in's host is on the home
+            // network from here, judged now and not before the browser opened: the network
+            // may have changed meanwhile. Said so.)
+            val nearNow = if (done is Outcome.Failed && unanswered(tradeSince)) judged(listOf(found.service)) else null
+            val mayBeLocal = nearNow != null && nearNow != Nearness.NOT
             // 0: this sign-in has been retired meanwhile; 1: it didn't go through; 2: signed in.
             val ended = withContext(NonCancellable) {
                 turn.withLock {
@@ -839,7 +882,7 @@ class Requests internal constructor(
                 val wire = Trace.last(tradeSince)?.ended
                 when {
                     ended == 0 || mine.retired.value -> writeTrace(Trace.Step.BROWSER, "given up", millisSince(mine.began), browser, mine.began, mine.near)
-                    done != null -> writeTrace(Trace.Step.FINISH, if (token != null) "token not kept" else wire ?: "failed", millisSince(tradeSince), browser, tradeSince, mine.near)
+                    done != null -> writeTrace(Trace.Step.FINISH, if (token != null) "token not kept" else wire ?: "failed", millisSince(tradeSince), browser, tradeSince, nearNow ?: mine.near)
                     code != null -> writeTrace(Trace.Step.BROWSER, "app not back in front", millisSince(mine.began), browser, mine.began, mine.near)
                     came is BrowserReturn.Came.TurnedDown -> writeTrace(Trace.Step.BROWSER, "turned down by the service", millisSince(mine.began), browser, mine.began, mine.near)
                     came is BrowserReturn.Came.Failed -> writeTrace(Trace.Step.BROWSER, "return door failed", millisSince(mine.began), browser, mine.began, mine.near)

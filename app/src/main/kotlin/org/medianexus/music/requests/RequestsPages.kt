@@ -514,9 +514,10 @@ class RequestsPages internal constructor(
     /** The way to Lidarr, or why there is none: the library's sentence for where the
      *  connection stands. */
     private suspend fun way(): Pair<LidarrAt?, String> {
-        // (On the home network without the permission: nothing is sent, and the pages say
-        // what Settings, Requests says, without asking anything themselves.)
-        if (requests.state.value is RequestsState.LocalNetwork) return null to RequestsWords.HOME_NETWORK
+        // (Certainly on the home network without the permission: nothing is sent, and the
+        // pages say what Settings, Requests says, without asking anything themselves. Only
+        // maybe there, they ask as before.)
+        if ((requests.state.value as? RequestsState.LocalNetwork)?.certain == true) return null to RequestsWords.HOME_NETWORK
         requests.lidarr()?.let { return it to "" }
         return null to when (val state = requests.state.value) {
             is RequestsState.NeedsSignIn, is RequestsState.SigningIn -> Words.signInNeeded

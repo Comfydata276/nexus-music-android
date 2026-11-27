@@ -219,11 +219,14 @@ class Graph(
                     // (The last attempt, and the last that failed, each with the network it was
                     // made on: a success afterwards does not wipe the failure.)
                     trace = { line, failed ->
-                        val on = "$line; network: ${transportNow(context)}"
+                        // (Before the long last part, so that the cut at 300 characters can't take it.)
+                        val network = "; network: ${transportNow(context)}"
+                        val long = line.indexOf("; last request:")
+                        val on = if (long < 0) line + network else line.substring(0, long) + network + line.substring(long)
                         diagnostics.replacing(org.medianexus.music.requests.Trace.PREFIX, on)
                         if (failed) diagnostics.replacing(org.medianexus.music.requests.Trace.FAILED_PREFIX, on.replaceFirst(org.medianexus.music.requests.Trace.PREFIX, org.medianexus.music.requests.Trace.FAILED_PREFIX))
                     },
-                    local = org.medianexus.music.requests.AppLocalGate(localAccess),
+                    local = org.medianexus.music.requests.AppLocalGate(localAccess) { transportNow(context).startsWith("VPN") },
                     note = { diagnostics.note(it) },
                     // (A sign-in is finished only with the app's own screen in front: resumed.)
                     front = resumed,

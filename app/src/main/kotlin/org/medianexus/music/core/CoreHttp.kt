@@ -232,6 +232,9 @@ internal object CoreHttp {
         /** How far its connection got ([Way]), in counts and fixed words; null if it was
          *  never begun. */
         val way: String? = null,
+        /** Whether its connection opened at all (TCP up, or one already open was used):
+         *  false for a time-out or a failure while connecting. */
+        val opened: Boolean = false,
     )
 
     @Volatile var lastOnLidarr: LastOnLidarr? = null
@@ -241,11 +244,11 @@ internal object CoreHttp {
     private val family = ThreadLocal<String?>()
 
     private fun ended(asked: Asked, words: String) {
-        if (asked.line == "lidarr") lastOnLidarr = LastOnLidarr(System.nanoTime(), words, family.get(), wayNow.get())
+        if (asked.line == "lidarr") lastOnLidarr = LastOnLidarr(System.nanoTime(), words, family.get(), wayNow.get()?.words(), wayNow.get()?.opened == true)
     }
 
     /** [Way.words] of the request just made on this thread. */
-    private val wayNow = ThreadLocal<String?>()
+    private val wayNow = ThreadLocal<Way?>()
 
     /** Each request on Lidarr's line in flight, and how far its connection has got. */
     private val ways = ConcurrentHashMap<Call, Way>()
@@ -264,6 +267,9 @@ internal object CoreHttp {
         private var looked: String? = null
         private val stages = LinkedHashMap<String, String>()
         private var chosen: String? = null
+
+        /** Some connection of its opened: TCP up, or one already open used. */
+        @Volatile var opened = false
         private val trying = ThreadLocal<String?>()
 
         private fun kind(address: java.net.InetAddress?): String = if (address is java.net.Inet6Address) "IPv6" else "IPv4"
@@ -287,10 +293,15 @@ internal object CoreHttp {
             at(kind, "connecting")
         }
 
-        override fun secureConnectStart(call: Call) = at(trying.get(), "securing")
+        override fun secureConnectStart(call: Call) {
+            opened = true
+            at(trying.get(), "securing")
+        }
 
-        override fun connectEnd(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy, protocol: okhttp3.Protocol?) =
+        override fun connectEnd(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy, protocol: okhttp3.Protocol?) {
+            opened = true
             at(kind(inetSocketAddress.address), "connected")
+        }
 
         override fun connectFailed(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy, protocol: okhttp3.Protocol?, ioe: IOException) {
             val kind = kind(inetSocketAddress.address)
@@ -298,6 +309,7 @@ internal object CoreHttp {
         }
 
         override fun connectionAcquired(call: Call, connection: okhttp3.Connection) {
+            opened = true
             val kind = kind(connection.route().socketAddress.address)
             synchronized(lock) {
                 if (kind !in stages) stages[kind] = "reused"
@@ -1034,9 +1046,9 @@ internal object CoreHttp {
             val name = going.url.host.takeIf { asked.line != "lidarr" }
             name?.let { asking(it, +1) }
             val response = try {
-                call.execute().also { wayNow.set(ways.remove(call)?.words()) }
+                call.execute().also { wayNow.set(ways.remove(call)) }
             } catch (e: IOException) {
-                wayNow.set(ways.remove(call)?.words())
+                wayNow.set(ways.remove(call))
                 doing?.leave(call)
                 if (doing?.isStopped != true) lastOnLidarrNow = word(e)
                 return if (doing?.isStopped == true) stopped else failed(words(e))
