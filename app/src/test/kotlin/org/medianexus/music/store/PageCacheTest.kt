@@ -225,8 +225,9 @@ class PageCacheTest {
         val asked = CompletableDeferred<Unit>()
         val gate = CompletableDeferred<Unit>()
         val failing = spec { asked.complete(Unit); gate.await(); throw ApiError.Network("(down)") }
-        val seen = java.util.Collections.synchronizedList(mutableListOf<Page<List<String>>>())
-        val watching = scope.launch { cache.live(failing).collect { seen += it } }
+        // Collect on runBlocking's thread so assertions can walk the pages seen so far.
+        val seen = mutableListOf<Page<List<String>>>()
+        val watching = launch { cache.live(failing).collect { seen += it } }
         withTimeout(5_000) { asked.await() }
         // A change made here while the server is being asked (an unlike, say).
         cache.update(failing) { it + "changed" }
