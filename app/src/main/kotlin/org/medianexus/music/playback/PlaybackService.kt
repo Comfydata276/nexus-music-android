@@ -1083,6 +1083,7 @@ class PlaybackService : MediaLibraryService() {
                 override val offline: Boolean get() = graph.offline.on
                 override val conversions = era.conversions
                 override fun resolve(songId: String): SongWhere = resolve(era, songId, cache != null)
+                override fun resolve(songId: String, entry: Long?): SongWhere = resolve(era, songId, cache != null, entry != null && entry in movedEntries)
                 override fun opened(songId: String, entry: Long?, copy: SongCopy) {
                     // (From a loading thread.) Which copy each queue entry is being read
                     // from: for the format line, and so that a failure is laid at the right
@@ -1178,9 +1179,18 @@ class PlaybackService : MediaLibraryService() {
      *  said otherwise. */
     private fun serverThere(): Boolean = graph.watch.state.value.let { it.sure && !it.offline }
 
+    /**
+     * Queue entries a read of which failed as "moved" (it could not go on in its form without
+     * going over the lower limit): their next preparation takes the lower limit's form,
+     * whatever the network says, so it can't fail so again (a network that keeps coming and
+     * going could otherwise have it made ready again without end). Forgotten when the
+     * setting is changed. Read on the loading threads.
+     */
+    private val movedEntries: MutableSet<Long> = java.util.Collections.synchronizedSet(LinkedHashSet())
+
     /** Called on the player's loading threads, for a read that belongs to `era`, with or
-     *  without the kept songs to read. */
-    private fun resolve(era: Era, songId: String, withKept: Boolean): SongWhere {
+     *  without the kept songs to read; `lowerOnly` for an entry in [movedEntries]. */
+    private fun resolve(era: Era, songId: String, withKept: Boolean, lowerOnly: Boolean = false): SongWhere {
         val api = era.account.api
         val song = player.songFor(songId)
         // A downloaded copy first, then the kept copy, then the server. A download that
@@ -1202,7 +1212,7 @@ class PlaybackService : MediaLibraryService() {
         // is kept counts only if there are kept songs to read it from.
         val keeping = withKept && graph.settings.value.cacheLimitMb > 0
         val kept = era.account.keptIndex
-        return graph.quality.whereNow(songId, song, native, { key -> keeping && kept.isWhole(key) }, downloaded, catalogued?.bitrate ?: 0) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
+        return graph.quality.whereNow(songId, song, native, { key -> keeping && kept.isWhole(key) }, downloaded, catalogued?.bitrate ?: 0, lowerOnly) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
     }
 
     // ---- The queue changing -----------------------------------------------------------------
@@ -1254,6 +1264,8 @@ class PlaybackService : MediaLibraryService() {
             putBoolean(EXTRA_CONVERTED, queue.current()?.id?.let { id -> era?.needsConverting?.let { id in it } } == true)
             // The copy the song playing is being read from: what the format line says.
             putInt(EXTRA_PLAYING_KBPS, queue.currentUid()?.let { reading[it]?.kbps } ?: -1)
+            // The entry that copy is of: the same song twice in a row is two entries.
+            putLong(EXTRA_ENTRY, queue.currentUid() ?: -1)
             putBoolean(EXTRA_SETTLED, era?.restoring?.isCompleted == true)
             // The song these extras are about: the player's own word on what's playing can
             // reach a controller before or after them.
@@ -1722,7 +1734,14 @@ class PlaybackService : MediaLibraryService() {
                 // replaced), or a download has arrived while its stream failed: made ready
                 // again from where it is, by time, on whatever is best now. Nothing failed.
                 failure?.moved == true -> {
-                    player.queue.currentUid()?.let(reading::remove)
+                    player.queue.currentUid()?.let { entry ->
+                        reading.remove(entry)
+                        // Made ready again in the lower form (see movedEntries).
+                        synchronized(movedEntries) {
+                            movedEntries += entry
+                            while (movedEntries.size > 32) movedEntries.remove(movedEntries.first())
+                        }
+                    }
                     publishExtras()
                     exo.prepare()
                 }
@@ -2020,6 +2039,9 @@ class PlaybackService : MediaLibraryService() {
     /** The words the car, the notification and the app show for a playback error. */
     @androidx.annotation.VisibleForTesting
     internal fun explain(error: PlaybackException, song: Song?): PlaybackException? = when {
+        // "Moved": the entry is being made ready again from where it is, at once (see
+        // onPlayerError), as quietly as the player's own retries: nothing to tell anyone.
+        (error.cause as? StreamFailure)?.moved == true -> null
         // Android 17, a server on the home network, and no permission to reach it: waiting
         // for it to come back would be waiting for ever. Say what will put it right.
         // The player's own error is not passed on as the cause: a playback error goes to
@@ -2910,6 +2932,7 @@ class PlaybackService : MediaLibraryService() {
      *  new form. Stopping and making ready again keeps the queue and the place in the song,
      *  and whether it is playing. */
     private fun qualityChanged() {
+        movedEntries.clear()
         aheadNow()
         val song = player.queue.current() ?: return
         // (From its download as the player has it open; if it isn't open yet, as it would be.)
@@ -3050,6 +3073,7 @@ class PlaybackService : MediaLibraryService() {
         /** The bit rate the song playing was converted to, in the copy it is being played from
          *  (0: the file as it is; absent or -1: not opened yet). */
         const val EXTRA_PLAYING_KBPS = "org.medianexus.music.PLAYING_KBPS"
+        const val EXTRA_ENTRY = "org.medianexus.music.PLAYING_ENTRY"
         /** In the session's extras: the saved queue has been read and put back, so what the
          *  player says is playing (nothing, perhaps) is so, not merely not known yet. */
         const val EXTRA_SETTLED = "org.medianexus.music.SETTLED"

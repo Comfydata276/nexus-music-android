@@ -119,7 +119,7 @@ class PlayerConnection(
 
     /** The copy the player is playing a song from: the bit rate it was converted to (0: the
      *  file as it is; -1: not opened yet). */
-    private data class Copy(val songId: String = "", val kbps: Int = -1)
+    private data class Copy(val songId: String = "", val kbps: Int = -1, val entry: Long = -1)
 
     private val copyNow = MutableStateFlow(Copy())
 
@@ -196,7 +196,10 @@ class PlayerConnection(
         if (song == null) return@combine FormatLine("", false)
         // What the player says it is playing this song from, once it has opened it: a song
         // goes on from the copy it started on, whatever has been downloaded or changed since.
-        if (playing.songId == song.id && playing.kbps >= 0) return@combine formatLineOf(song, playing.kbps, liveStream)
+        // (Of this queue entry, where the entry is known: the same song twice in a row is two
+        // entries, and the extras can arrive a moment before or after the player's word.)
+        val entry = entryNow.value
+        if (playing.songId == song.id && playing.kbps >= 0 && (entry == AppCommands.NONE || playing.entry == entry)) return@combine formatLineOf(song, playing.kbps, liveStream)
         // Until then (it is still being made ready), what it would be opened from now.
         val saved = downloads?.songs?.get(song.id)?.takeIf { !it.stale }
         when {
@@ -325,7 +328,7 @@ class PlayerConnection(
             paused = !playing,
         )
         convertedNow.value = extras.getBoolean(PlaybackService.EXTRA_CONVERTED)
-        copyNow.value = Copy(extras.getString(PlaybackService.EXTRA_SONG).orEmpty(), extras.getInt(PlaybackService.EXTRA_PLAYING_KBPS, -1))
+        copyNow.value = Copy(extras.getString(PlaybackService.EXTRA_SONG).orEmpty(), extras.getInt(PlaybackService.EXTRA_PLAYING_KBPS, -1), extras.getLong(PlaybackService.EXTRA_ENTRY, -1))
         // Only once the service has put back the saved queue: before that, after Android has
         // stopped the app and it is starting again, it says "nothing" for a moment.
         // And only when the player's word on the song and the extras' agree: the two travel

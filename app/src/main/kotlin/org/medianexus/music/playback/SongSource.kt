@@ -123,6 +123,9 @@ interface SongLease {
     /** Decides, as the song is opened, where its bytes come from. */
     fun resolve(songId: String): SongWhere
 
+    /** The same, for the queue entry the read is for (null: fetching ahead). */
+    fun resolve(songId: String, entry: Long?): SongWhere = resolve(songId)
+
     /** The account's kept songs, or null to go straight to the server. */
     val cache: Cache?
 
@@ -270,7 +273,7 @@ class SongDataSource(
         entry = dataSpec.key?.takeIf { it.startsWith(ENTRY) }?.removePrefix(ENTRY)?.toLongOrNull()
         val began = first
         if (began == null) {
-            val where = lease.resolve(id)
+            val where = lease.resolve(id, entry)
             where.downloaded?.let { file ->
                 // Downloaded: read from the phone, whatever the streaming quality, and with
                 // the server gone. (A file that has gone since is streamed instead.)

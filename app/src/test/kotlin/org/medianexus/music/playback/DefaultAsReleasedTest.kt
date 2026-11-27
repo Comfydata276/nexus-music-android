@@ -76,6 +76,17 @@ class DefaultAsReleasedTest {
     }
 
     @Test
+    fun aReadThatFailedAsMovedIsToldToNobody() {
+        // The service makes the entry ready again at once (onPlayerError); the car, the
+        // notification and the screens are told nothing, as of the player's own retries.
+        val moved = androidx.media3.common.PlaybackException("moved", StreamFailure.moved(), androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED)
+        org.junit.Assert.assertNull(service.explain(moved, Song(id = "s1", title = "One")))
+        // Any other failure is still told, as before.
+        val lost = androidx.media3.common.PlaybackException("lost", StreamFailure.of(java.net.SocketException("gone")), androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED)
+        org.junit.Assert.assertNotNull(service.explain(lost, Song(id = "s1", title = "One")))
+    }
+
+    @Test
     fun aQualityChangedWhileAStreamPlaysWhoseDownloadHasFinishedOpensItAgainAsReleased() {
         assertEquals(org.medianexus.music.store.SAME_AS_WIFI, app.graph.settings.value.mobileBitrate)
         val inside = service.inside()

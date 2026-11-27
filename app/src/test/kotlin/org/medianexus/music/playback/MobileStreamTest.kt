@@ -191,11 +191,14 @@ class MobileStreamTest {
                 override val cache = cache
                 override val offline get() = this@MobileStreamTest.offline
                 override val conversions = this@MobileStreamTest.conversions
-                override fun resolve(songId: String): SongWhere {
+                override fun resolve(songId: String): SongWhere = resolve(songId, null)
+                override fun resolve(songId: String, entry: Long?): SongWhere {
                     val song = songs[songId]
                     val suffix = song?.suffix.orEmpty()
                     val withKept = cache != null
-                    return quality.whereNow(songId, song, suffix.isEmpty() || suffix in NATIVE_SUFFIXES, { withKept && index.isWhole(it) }, null, 0) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
+                    // (As the service does: an entry made ready again after "moved" takes the
+                    // lower form.)
+                    return quality.whereNow(songId, song, suffix.isEmpty() || suffix in NATIVE_SUFFIXES, { withKept && index.isWhole(it) }, null, 0, entry != null && entry in movedEntries) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
                 }
                 override fun opened(songId: String, entry: Long?, copy: SongCopy) {
                     opened += songId to copy
@@ -213,6 +216,9 @@ class MobileStreamTest {
             }
         }
     }
+
+    /** Entries made ready again after a read of them failed as "moved" (the service's). */
+    private val movedEntries = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
 
     /** What each open told: the song, the queue entry, the copy. */
     private val told = CopyOnWriteArrayList<Triple<String, Long?, SongCopy>>()
@@ -593,6 +599,37 @@ class MobileStreamTest {
     }
 
     @Test
+    fun fix1_aNetworkThatComesBackBeforeEachTryAndGoesBeforeEachFirstByteGivesOneReadyingAgain() {
+        // Every request is answered just as the Wi-Fi goes (the route on mobile data before
+        // the first byte arrives), and the Wi-Fi is back before the entry is made ready again.
+        answered = { network.value = MOBILE; lookNow = { false } }
+        var readied = 0
+        var played: ByteArray? = null
+        while (played == null) {
+            check(readied < 5) { "made ready again $readied times" }
+            network.value = WIFI
+            lookNow = { true }
+            val source = sources.createDataSource()
+            try {
+                open("one", source = source, entry = 9)
+                played = read(source)
+            } catch (e: StreamFailure) {
+                assertTrue(e.moved)
+                // What the service does with it (onPlayerError): the entry noted, and made
+                // ready again.
+                movedEntries += 9L
+                readied++
+            } finally {
+                runCatching { source.close() }
+            }
+        }
+        // Once: the lower form, which "moved" can't come of, played whatever the network did.
+        assertEquals(1, readied)
+        assertArrayEquals(conversion("one", 128), played)
+        assertEquals(listOf(0, 128), asked.map { it.kbps })
+    }
+
+    @Test
     fun r1_aRouteThatChangesAfterTheFirstBytesIsAccepted() {
         val source = open("one", entry = 300)
         assertEquals(50_000, read(source, 50_000).size)
@@ -768,6 +805,23 @@ class MobileStreamTest {
             ahead.want(listOf("one"))
             waitFor { index.isWhole("song:one:128") }
             assertEquals(listOf(320, 128), asked.map { it.kbps })
+            // A song that failed in both forms is tried in neither again (a second failure
+            // doesn't wipe out the first), however the network comes and goes.
+            refuse = { it.id == "two" }
+            ahead.want(listOf("two"))
+            waitFor { asked.count { it.id == "two" } == 1 }
+            Thread.sleep(200)
+            network.value = WIFI
+            ahead.want(listOf("two"))
+            waitFor { asked.count { it.id == "two" } == 2 }
+            Thread.sleep(200)
+            network.value = MOBILE
+            ahead.want(listOf("two"))
+            Thread.sleep(300)
+            network.value = WIFI
+            ahead.want(listOf("two"))
+            Thread.sleep(300)
+            assertEquals(listOf(128, 320), asked.filter { it.id == "two" }.map { it.kbps })
         } finally {
             ahead.release()
         }

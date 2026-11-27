@@ -325,8 +325,12 @@ How it is built (M1a):
     sure of an unmetered network. When it may not, nothing is asked: what is kept of that
     form isn't whole (else nothing would be asked), so the index is told, and the read fails
     as "moved", which the service's existing recovery takes as "make the entry ready again
-    from where it is" (`onPlayerError`): a new preparation, which chooses afresh, a copy kept
-    whole first, else the form for the network now. A short hiccup beats a failure or a
+    from where it is" (`onPlayerError`). **That entry's next preparation takes the lower
+    form whatever the network says** (`movedEntries`, forgotten when the setting changes),
+    so it cannot fail as "moved" again: a network that comes back before each try and goes
+    before each first byte gives one preparation more, not one after another. And "moved"
+    is **told to nobody**: no error to the car, the notification or the screens (`explain`),
+    no song passed over, no stop, as quietly as the player's own retries. A short hiccup beats a failure or a
     lossless fetch over a capped network. Offline, a read whose copy has gone does the same
     when another form of the song is kept whole. Every new preparation chooses afresh: after
     recovery, the process made again, a car resuming, a change of the setting, coming back
@@ -339,7 +343,9 @@ How it is built (M1a):
   - **R3, the format line** follows what is sounding, per queue entry: what each entry was
     opened from is told as it is opened (by the entry's number, which each read is told as
     the media item's custom cache key), as the released app told it by song; fetching ahead,
-    which reads for no entry, tells nothing. **A change of the setting** opens the song
+    which reads for no entry, tells nothing. The app's screens match the copy to the entry
+    they are showing (`EXTRA_ENTRY`), so the same song twice in a row never shows the
+    previous entry's form for an instant. **A change of the setting** opens the song
     playing again when it changes what either limit comes to (with Same as Wi-Fi, exactly a
     change of Streaming quality), deciding from the copy playing, as released.
   - **R4, fetching ahead** reads through the player's own data source, so asks as playback
@@ -347,7 +353,9 @@ How it is built (M1a):
     between one read and the next once that may no longer be asked for, and fetches the song
     again at once in the form for the network now. A failure is recorded against the form it
     failed in: not tried again in that form until the list changes, tried at once in
-    another. What had arrived of a conversion let go is not kept; of a file as it is, it
+    another; one that has failed in both is tried in neither (a second failure doesn't
+    wipe out the first). A read refused as "moved" is a failure in its form, and the song
+    stays wanted in the other. What had arrived of a conversion let go is not kept; of a file as it is, it
     stays under its own key. (And the worker is no longer set going, again and again, for a
     list of nothing but songs that have failed, as it was before there were two limits.)
   - **Offline, and what fetching ahead passes over** (`Availability.isKept`): either limit's
@@ -366,6 +374,21 @@ How it is built (M1a):
     of silence at a join whatever the network (no gapless information; see "Gapless MP3").
   - **The car** has nothing new; **jams and linking** are unchanged; **Diagnostics** says
     both limits and whether the phone is on mobile data now.
+  - **Known, and accepted** (the lead's rulings on the third review):
+    - A request's own follow-ups (a redirect to another host, OkHttp's retry of a failed
+      exchange) can leave over mobile data after the network changes between the check and
+      the socket; the first-byte check refuses the answer before anything reaches the
+      player. Likewise a first span read from the kept songs, then the rest from the server
+      on a network that changes as it is asked: the song had begun.
+    - Making the two limits equal turns the checks off: a next song already prepared in its
+      old form goes on in it, as a song prepared before any change of quality does in 0.6.3.
+    - A song whose fetching ahead failed in one form is not fetched ahead in the other when
+      the phone moves between networks with nothing else changing (nothing asks again); it
+      streams when its turn comes, as in 0.6.3 after any failure fetching ahead.
+    - **A difference from 0.6.3 at the default:** a failure fetching ahead belongs to the form
+      it failed in, so after the streaming quality is changed a song that failed at 96 may
+      be fetched ahead at 160 (0.6.3 kept it failed, by song, until the list changed). And
+      the worker is no longer set going again and again for a list of nothing but failures.
 - **Songs the server converts** (`SongReader`). Navidrome streams a fresh conversion with
   no length and ignores byte ranges (once it has a whole conversion in its own cache it
   honours them, but there is no knowing that without asking). It converts at the lower of

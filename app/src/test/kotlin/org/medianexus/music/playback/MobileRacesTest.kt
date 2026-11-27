@@ -100,7 +100,7 @@ class MobileRacesTest {
                 look = seen
                 for (song in listOf(flac, aac, Song(id = "m", suffix = "mp3", bitRate = 128), Song(id = "w", suffix = "wma"))) for (native in listOf(true, false)) {
                     val form = streamForm(native, cap, song.suffix, song.bitRate)
-                    assertEquals(form, quality.choose(song.id, native, song.suffix, song.bitRate) { true })
+                    assertEquals(form, quality.choose(song.id, native, song.suffix, song.bitRate, { true }))
                     assertTrue(quality.mayAsk(form, native, song.suffix, song.bitRate))
                     val where = quality.whereNow(song.id, song, native, { true }, null, 0) { kbps, offset -> "$kbps/$offset" }
                     assertEquals(cacheKey(song.id, form), where.key)

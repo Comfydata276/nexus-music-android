@@ -65,7 +65,7 @@ class StreamQuality(
 
     /** The form a song is asked of the server in now, if nothing of it is kept. `native`: the
      *  phone plays its file as it is (by its kind, and not known to fail on this phone). */
-    fun formOf(native: Boolean, suffix: String, fileKbps: Int): StreamForm = choose("", native, suffix, fileKbps) { false }
+    fun formOf(native: Boolean, suffix: String, fileKbps: Int): StreamForm = choose("", native, suffix, fileKbps, { false })
 
     /** The form a song would be streamed in now, by its kind alone and Android's last word
      *  on the network: for the format line and for asking whether it is kept, with no player. */
@@ -93,13 +93,15 @@ class StreamQuality(
      * forms of it: the Wi-Fi's only when [sureUnmetered], else the lower limit's; unless it is
      * kept whole only in the other form (fetched ahead, or played, on the other network), when
      * that copy is played from the phone as it was fetched. `keptWhole` says whether a key is
-     * kept whole and can be read now.
+     * kept whole and can be read now. `lowerOnly`: the lower limit's form, whatever the
+     * network says (an entry made ready again after a read of it failed as "moved", which so
+     * can't fail so again).
      */
-    fun choose(songId: String, native: Boolean, suffix: String, fileKbps: Int, keptWhole: (String) -> Boolean): StreamForm {
+    fun choose(songId: String, native: Boolean, suffix: String, fileKbps: Int, keptWhole: (String) -> Boolean, lowerOnly: Boolean = false): StreamForm {
         val chosen = settings.value
         val wifi = streamForm(native, limitFor(chosen, Net.WIFI), suffix, fileKbps)
         val lower = streamForm(native, limitFor(chosen, Net.MOBILE), suffix, fileKbps)
-        if (wifi == lower) return wifi
+        if (wifi == lower || lowerOnly) return lower
         val own = if (sureUnmetered()) wifi else lower
         val other = if (own == wifi) lower else wifi
         return if (!keptWhole(cacheKey(songId, own)) && keptWhole(cacheKey(songId, other))) other else own
@@ -131,11 +133,12 @@ class StreamQuality(
         keptWhole: (String) -> Boolean,
         downloaded: java.io.File?,
         downloadedKbps: Int,
+        lowerOnly: Boolean = false,
         stream: (kbps: Int, offsetSecs: Int) -> String,
     ): SongWhere {
         val suffix = song?.suffix?.lowercase().orEmpty()
         val fileKbps = song?.bitRate ?: 0
-        val form = choose(songId, native, suffix, fileKbps, keptWhole)
+        val form = choose(songId, native, suffix, fileKbps, keptWhole, lowerOnly)
         val least = if (form.converted && song != null) leastBytes(song.duration, form.bitrate, song.bitRate) else 0
         return SongWhere(form, cacheKey(songId, form), least, downloaded, downloadedKbps, mayAsk = { mayAsk(form, native, suffix, fileKbps) }) { offset -> stream(form.bitrate, offset) }
     }

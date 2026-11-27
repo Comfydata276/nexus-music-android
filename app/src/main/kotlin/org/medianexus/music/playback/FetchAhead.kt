@@ -39,17 +39,16 @@ class FetchAhead(
     /** Ids tried in this run of the list that failed, with the form each failed in: not tried
      *  again in that form until the list changes. In another form (the phone has moved
      *  between Wi-Fi and mobile data, and the two limits differ) it is a new try. */
-    private val failed = HashMap<String, StreamForm?>()
+    private val failed = HashMap<String, MutableSet<StreamForm?>>()
 
     /** How many times the worker has been set going (for the tests: it must not spin). */
     @androidx.annotation.VisibleForTesting
     @Volatile internal var runs = 0
 
     private fun blocked(id: String): Boolean {
-        if (id !in failed) return false
-        val was = failed[id] ?: return true
+        val was = failed[id] ?: return false
         val now = formNow(id) ?: return true
-        return now == was
+        return now in was || null in was
     }
 
     /** These songs, in this order, are the ones to have (nothing: stop). */
@@ -75,7 +74,11 @@ class FetchAhead(
                 // still wanted, and fetched again at once in the form for the network now.
                 if (outcome is Outcome.LetGo) continue
                 synchronized(lock) {
-                    if (outcome is Outcome.Failed) failed[next] = outcome.form
+                    if (outcome is Outcome.Failed) failed.getOrPut(next) { HashSet() } += outcome.form
+                    // Refused in its form ("moved"): a failure in that form, and still wanted,
+                    // in another (not in that one again: a network that comes and goes can't
+                    // keep it asking).
+                    if (outcome is Outcome.Failed && outcome.moved) return@synchronized
                     // Done (kept, or the server had nothing): it leaves the wanted list when
                     // the service next looks, as it is kept now. Until then, not again.
                     if (next in wanted) wanted = wanted - next
@@ -90,7 +93,7 @@ class FetchAhead(
 
     private sealed interface Outcome {
         data object Fetched : Outcome
-        data class Failed(val form: StreamForm?) : Outcome
+        data class Failed(val form: StreamForm?, val moved: Boolean = false) : Outcome
         data object LetGo : Outcome
     }
 
@@ -114,8 +117,8 @@ class FetchAhead(
             Outcome.Fetched
         } catch (e: StreamFailure) {
             // "Moved": the form it was being fetched in may no longer be asked for here (the
-            // network changed): not a failure, and fetched again at once, chosen afresh.
-            if (e.moved) Outcome.LetGo else Outcome.Failed(reading?.streamForm)
+            // network changed): a failure in that form, fetched again at once in another.
+            Outcome.Failed(reading?.streamForm, moved = e.moved)
         } catch (_: IOException) {
             Outcome.Failed(reading?.streamForm)
         } finally {
