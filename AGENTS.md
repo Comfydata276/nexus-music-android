@@ -29,6 +29,18 @@ scripts/dx ./gradlew --no-daemon :app:lintDebug            # lint
 scripts/dx ./gradlew --no-daemon :app:assembleRelease      # shrunk build: the one to measure
 ```
 
+A **trial build with linking the person's devices** (off in every released build: see
+`link/LinkBuild.kt`) is made from `main` with the property switched on and a version of its
+own, signed with the project's key (`NEXUS_SIGN=1`: `scripts/dx` hands it to the build), for
+example:
+
+```sh
+NEXUS_SIGN=1 scripts/dx ./gradlew --no-daemon -PlinkExists=true -PversionCode=12 -PversionName=0.6.2-link1 :app:assembleRelease
+```
+
+Without the three properties the build is the app as released. `scripts/check --release`
+passes either way (the tests of a build without linking switch it off for themselves).
+
 Every one of those first builds the shared core, the Rust library the app carries
 (`native/`, from the Windows repository's `core/` at a pinned commit: docs/DESIGN.md, "The
 shared core"), and fails if it can't. The image has Rust for it: one built before the
