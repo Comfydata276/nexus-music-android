@@ -34,7 +34,7 @@ import org.medianexus.music.graph
  * anything, and a test of that would prove nothing. Every OkHttp client made while [trust] is
  * in force (the app's own, and any other) trusts that certificate as well as the system's.
  */
-class BackendStandIn(val broken: Broken) {
+class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
     /** How the backend's side is broken. The names are the design's (5.3). */
     enum class Broken {
         /** No backend: the music server is left to answer `/nexus/`, and answers as Navidrome
@@ -63,6 +63,18 @@ class BackendStandIn(val broken: Broken) {
          *  way through its body, the connection held open: a side left half done. (Stage 1
          *  of the phone has no signing in to be killed between the halves of.) */
         HALF_CONNECTED,
+
+        /** Stalled, and every thread of the phone's client for the backend (its launcher, its
+         *  worker, its HTTP dispatcher's) held by the test in work that never ends. */
+        WORKERS_HELD,
+
+        /** Stalled, and where the client would keep its files (`files/nexus`) is a pipe that
+         *  nothing reads: a write there hangs. (The client keeps no file at this stage.) */
+        DISK_BLOCKED,
+
+        /** Stalled, and where the client would keep its files is taken by a file: a write
+         *  there fails, as on a full disk. */
+        DISK_FULL,
     }
 
     private val server = MockWebServer()
@@ -83,13 +95,17 @@ class BackendStandIn(val broken: Broken) {
 
     private val release = CountDownLatch(1)
 
+    /** Set, it answers everything under `/nexus/` instead of [broken]: a backend that is
+     *  there, or answers in some way a test wants. */
+    @Volatile var answer: ((RecordedRequest) -> MockResponse)? = null
+
     /** Songs, by id, that the server has; and the album they are all on. */
     val songs = listOf("s1", "s2", "s3")
 
     private val audio: ByteArray by lazy { BackendStandIn::class.java.getResourceAsStream("/audio/three-seconds.flac")!!.use { it.readBytes() } }
 
     fun start() {
-        server.useHttps(tls.socketFactory)
+        if (https) server.useHttps(tls.socketFactory)
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.url.encodedPath
@@ -113,12 +129,12 @@ class BackendStandIn(val broken: Broken) {
     }
 
     /** The origin, by the name the certificate is for, as a person types it. */
-    val address: String get() = "https://localhost:${server.port}"
+    val address: String get() = "${if (https) "https" else "http"}://localhost:${server.port}"
 
     /** The address shown in the Settings row: the origin's host and port. */
     val shown: String get() = "localhost:${server.port}"
 
-    private fun nexus(request: RecordedRequest): MockResponse = when (broken) {
+    private fun nexus(request: RecordedRequest): MockResponse = answer?.invoke(request) ?: when (broken) {
         Broken.ABSENT ->
             if (request.method == "GET") {
                 MockResponse.Builder().code(302).setHeader("Location", "/app/").setHeader("Content-Type", "text/html; charset=utf-8").body("<a href=\"/app/\">Found</a>.\n\n").build()
@@ -129,7 +145,7 @@ class BackendStandIn(val broken: Broken) {
             nexusHeld++
             MockResponse.Builder().onResponseStart(SocketEffect.Stall).build()
         }
-        Broken.STALLED -> {
+        Broken.STALLED, Broken.WORKERS_HELD, Broken.DISK_BLOCKED, Broken.DISK_FULL -> {
             nexusHeld++
             release.await()
             MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build()
@@ -187,6 +203,9 @@ class BackendStandIn(val broken: Broken) {
     }
 
     companion object {
+        /** The backend, there: its `hello`. */
+        fun hello(): MockResponse = MockResponse.Builder().code(200).setHeader("Content-Type", "application/json").body(HELLO).build()
+
         /** A valid `hello` (the shared library's own example, design 12.1). */
         const val HELLO = """{"nexus":"0.1.0","id":"0123456789abcdef0123456789abcdef","speaks":[1,1],"has":["plays"]}"""
 

@@ -245,6 +245,16 @@ private fun Account(graph: Graph) {
     SettingRow(signedIn.account.server, stringResource(R.string.signed_in_as, signedIn.account.username)) {
         TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
     }
+    // The Nexus server beside the music server, if there is one (nexus/Nexus.kt): what was
+    // found, and nothing to do yet.
+    val nexus by graph.nexus.found.collectAsStateWithLifecycle()
+    SettingRow(
+        stringResource(R.string.nexus_server),
+        when (val found = nexus) {
+            is org.medianexus.music.nexus.NexusFound.At -> stringResource(R.string.nexus_found_at, found.address)
+            org.medianexus.music.nexus.NexusFound.None -> stringResource(R.string.nexus_none_found)
+        },
+    ) {}
     // Linking the person's devices: two rows, only in a build in which it exists (none
     // that is released: see link/LinkBuild.kt).
     if (org.medianexus.music.link.LinkBuild.on) org.medianexus.music.ui.link.LinkRows(graph)

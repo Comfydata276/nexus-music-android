@@ -263,6 +263,14 @@ class Graph(
         )
     }
 
+    /**
+     * The Nexus server's client (`nexus/Nexus.kt`): made for each account **after** it has been
+     * published here, on a thread of its own, and let go of when the account changes. Nothing
+     * of the account's, and nothing `accounts.restored` waits for, makes it or waits on it.
+     * It shows one row under Settings, and does nothing else.
+     */
+    val nexus = org.medianexus.music.nexus.NexusLauncher(accounts.state, scope, userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)")
+
     val toasts = Toasts()
 
     /** What the server last said in refusing something asked from the car (see [Refusals]). */
