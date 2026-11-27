@@ -1032,8 +1032,8 @@ class RequestsTest {
     fun `lidarr on the home network without the permission is asked about first, and checked again once it is given`() = runBlocking {
         val behind = Behind()
         val gate = Gate({ Nearness.LOCAL })
+        // (Switched on while the app runs: no start.)
         val requests = requests(local = gate)
-        requests.start()
         requests.switch(true)
         val asked = behind.lidarr.asked.size
         assertEquals(RequestsState.LocalNetwork(certain = true), requests.connect(behind.lidarr.address, KEY))

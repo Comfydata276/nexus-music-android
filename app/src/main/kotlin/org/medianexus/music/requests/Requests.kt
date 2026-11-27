@@ -466,8 +466,15 @@ class Requests internal constructor(
             }
             check(interrupted = interrupted)
         }
-        // Allowed to reach the home network (in the app, or in Android's settings): checked
-        // again by itself, if that is what stood in the way.
+    }
+
+    private val watchingAllowed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Allowed to reach the home network (in the app, or in Android's settings): checked
+     *  again by itself, if that is what stood in the way. Begun by the first check, however
+     *  it was asked for (the app starting, or requests switched on while it runs). */
+    private fun watchAllowed() {
+        if (!watchingAllowed.compareAndSet(false, true)) return
         scope.launch(io) {
             local.allowed.collect { given -> if (given > 0 && stateNow.value is RequestsState.LocalNetwork) check() }
         }
@@ -594,6 +601,7 @@ class Requests internal constructor(
     suspend fun check(): RequestsState = check(interrupted = false)
 
     private suspend fun check(interrupted: Boolean, traced: Traced = Traced(Trace.Step.CHECK)): RequestsState = withContext(io) {
+        watchAllowed()
         val (mine, at) = turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
