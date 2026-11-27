@@ -289,6 +289,15 @@ How it is built (M1a):
   sends the file for it whatever is asked (it converts nothing, and takes no notice of a
   time to start from), so asking for a conversion only made seeking wrong. A file that
   turns out not to decode is converted from then on.
+- **What a song is streamed as is read in one place** (`StreamQuality`, held by the
+  `Graph`): the streaming limit, the form a song is asked for in, and the key it is kept
+  under. Four things ask it and must never disagree: where a song's bytes come from
+  (`PlaybackService.resolve`), whether a kept copy plays with no server (`Availability`, in
+  `library/`), which songs fetching ahead passes over (the same), and the format line before
+  the player has opened the song (`PlayerConnection.format`); and the song playing is opened
+  again when it says the limit has changed (below). Nothing else reads `Settings.bitrate` for
+  streaming (Settings and Diagnostics show the setting itself). (`StreamQualityTest` holds the answers the four
+  gave before they were made to ask it.)
 - **Songs the server converts** (`SongReader`). Navidrome streams a fresh conversion with
   no length and ignores byte ranges (once it has a whole conversion in its own cache it
   honours them, but there is no knowing that without asking). It converts at the lower of

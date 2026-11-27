@@ -87,7 +87,7 @@ class CarColdTest {
     }
 
     private fun tree(): CarTree {
-        val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+        val availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
         val state = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) }
         return CarTree(library, CarWords(), CarOffline(now = { offline }, availability = availability, downloads = state, unsure = { unsure }))
     }
@@ -195,7 +195,7 @@ class CarColdTest {
         // the phone, at once and with nothing: the server itself is never waited on.
         val known = kotlinx.coroutines.CompletableDeferred<Unit>()
         val tree2 = CarTree(library, CarWords(), CarOffline(
-            now = { offline }, availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true }),
+            now = { offline }, availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true }),
             downloads = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) },
             unsure = { unsure }, settle = { known.await() },
         ))
@@ -217,7 +217,7 @@ class CarColdTest {
         offline = false
         unsure = true
         return CarTree(library, CarWords(), CarOffline(
-            now = { offline }, availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true }),
+            now = { offline }, availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true }),
             downloads = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) },
             unsure = { unsure }, settle = { kotlinx.coroutines.awaitCancellation() },
         ))
@@ -330,7 +330,7 @@ class CarColdTest {
         fun early() = asked.incrementAndGet() <= looks
         return CarTree(library, CarWords(), CarOffline(
             now = { if (unsureFirst) false else early() },
-            availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true }),
+            availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true }),
             downloads = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) },
             unsure = { if (unsureFirst) early() else false },
             settle = { kotlinx.coroutines.awaitCancellation() },

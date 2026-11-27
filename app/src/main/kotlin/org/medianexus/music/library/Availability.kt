@@ -3,9 +3,7 @@ package org.medianexus.music.library
 import java.util.concurrent.ConcurrentHashMap
 import org.medianexus.music.downloads.Catalogue
 import org.medianexus.music.net.Song
-import org.medianexus.music.playback.NATIVE_SUFFIXES
-import org.medianexus.music.playback.cacheKey
-import org.medianexus.music.playback.streamForm
+import org.medianexus.music.playback.StreamQuality
 import org.medianexus.music.store.KeptIndex
 
 /**
@@ -16,9 +14,9 @@ import org.medianexus.music.store.KeptIndex
 class Availability(
     private val downloads: Catalogue,
     private val kept: KeptIndex,
-    /** The streaming limit now (kbps; 0 for the files as they are) and whether kept songs
+    /** What songs are streamed as now (the one place that says), and whether kept songs
      *  are kept at all. */
-    private val cap: () -> Int,
+    private val quality: StreamQuality,
     private val keeping: () -> Boolean,
 ) {
     /** Downloaded: also a download that needs a fresh copy (it failed once when played),
@@ -27,11 +25,7 @@ class Availability(
     fun isDownloaded(id: String): Boolean = downloads.has(id)
 
     /** The key a song is kept under in the form it would be streamed in now. */
-    fun keyOf(song: Song): String {
-        val suffix = song.suffix.lowercase()
-        val native = suffix.isEmpty() || suffix in NATIVE_SUFFIXES
-        return cacheKey(song.id, streamForm(native, cap(), suffix, song.bitRate))
-    }
+    fun keyOf(song: Song): String = quality.keyOf(song)
 
     fun isKept(song: Song): Boolean = keeping() && kept.isWhole(keyOf(song))
 

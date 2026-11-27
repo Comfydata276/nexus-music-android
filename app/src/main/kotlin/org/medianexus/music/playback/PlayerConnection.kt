@@ -96,6 +96,9 @@ class PlayerConnection(
     /** The person's other devices as the new linking knows them: which one is steered, by its
      *  place in the room (review Z1). Null where there is none to know (the jam's own player). */
     private val linked: Linked? = null,
+    /** What songs are streamed as (the app's one place for it): the format line's, before
+     *  the player has opened the song. */
+    private val quality: StreamQuality = StreamQuality(settings.state),
 ) {
     private var future: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -184,7 +187,7 @@ class PlayerConnection(
 
     /** What's being played, as the line under the song says it. */
     val format: StateFlow<FormatLine> = combine(
-        currentSong, convertedNow, settings.state.map { it.bitrate }.distinctUntilChanged(),
+        currentSong, convertedNow, quality.limits,
         // A song played from its download plays as it was saved, whatever the streaming
         // quality is (unless the download needs a fresh copy: then the server's is preferred).
         accounts.state.flatMapLatest { account -> account?.catalogue?.state ?: flowOf(null) },

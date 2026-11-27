@@ -20,7 +20,7 @@ import org.medianexus.music.playback.Repeat
  * can't be used: it shows the other player while this phone steers one.
  */
 class OwnPlayer(private val app: Context, private val graph: Graph) : HostPlayer, HostLibrary {
-    val connection = PlayerConnection(app, graph.accounts, graph.settings, graph.scope)
+    val connection = PlayerConnection(app, graph.accounts, graph.settings, graph.scope, quality = graph.quality)
     private val audio = app.getSystemService(AudioManager::class.java)
 
     override fun now(): HostNow {

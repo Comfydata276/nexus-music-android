@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,6 +19,7 @@ import org.medianexus.music.downloads.Downloaded
 import org.medianexus.music.library.Availability
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.KeptIndex
+import org.medianexus.music.store.Settings
 
 /**
  * What a song is streamed as, read in four places: where its bytes come from (the form the
@@ -35,17 +37,21 @@ class StreamQualityTest {
 
     // ---- How each of the four places is reached ----------------------------------------
 
+    /** The one place, with the streaming limit at `cap`. */
+    private fun quality(cap: Int) = StreamQuality(MutableStateFlow(Settings(bitrate = cap)))
+
     /** Where the bytes come from: the form `PlaybackService.resolve` asks for. */
     private fun resolved(cap: Int, native: Boolean, suffix: String, fileKbps: Int): StreamForm =
-        streamForm(native, cap, suffix, fileKbps)
+        quality(cap).formOf(native, suffix, fileKbps)
 
     /** Whether a kept copy plays offline (and what fetching ahead passes over). */
     private fun availability(cap: Int, keeping: Boolean = true) =
-        Availability(catalogue, kept, cap = { cap }, keeping = { keeping })
+        Availability(catalogue, kept, quality(cap), keeping = { keeping })
 
-    /** The format line before the player has opened the song. */
+    /** The format line before the player has opened the song (`PlayerConnection.format`
+     *  gives `formatLine` the limit as the one place has it). */
     private fun lineBeforeOpening(song: Song, cap: Int, converted: Boolean): FormatLine =
-        formatLine(song, cap, converted, LIVE)
+        formatLine(song, quality(cap).limit(), converted, LIVE)
 
     // ------------------------------------------------------------------------------------
 

@@ -118,7 +118,7 @@ class VoiceMisspeltTest {
         val kept = KeptIndex(java.io.File(folder.newFolder(), "kept.json"), scope, Dispatchers.IO)
         val api = Subsonic("http://127.0.0.1:9", "ada", "sesame", OkHttpClient(), OfflineSwitch(true))
         val library = Library(api, PageCache(folder.newFolder(), scope, Dispatchers.IO), search = server)
-        val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+        val availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
         val state = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) }
         return CarTree(library, CarWords(), CarOffline(now = offline, availability = availability, downloads = state, unsure = unsure, settle = settle))
     }
@@ -176,7 +176,7 @@ class VoiceMisspeltTest {
         val kept = KeptIndex(java.io.File(folder.root, "kept.json"), scope, Dispatchers.IO)
         val api = Subsonic("http://127.0.0.1:9", "ada", "sesame", OkHttpClient(), OfflineSwitch(true))
         val library = Library(api, PageCache(folder.newFolder("pages"), scope, Dispatchers.IO))
-        val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+        val availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
         val state = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) }
         val tree = CarTree(library, CarWords(), CarOffline(now = { true }, availability = availability, downloads = state, liked = { it == "d2" }))
         val songs = tree.search("harbour song").filter { it.group == CarWords().songs }

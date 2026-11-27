@@ -326,7 +326,7 @@ class PlaybackService : MediaLibraryService() {
         }
         // Streaming quality changed in Settings: the song playing switches to it at once,
         // from where it is, as on Windows (`reload_current`).
-        scope.launch { graph.settings.state.map { it.bitrate }.distinctUntilChanged().drop(1).collect { qualityChanged() } }
+        scope.launch { graph.quality.limits.drop(1).collect { qualityChanged() } }
         // The person switched an app off in Settings (or forgot it): a connection it has
         // open is cut. Media3 has no way to throw a controller out, so it is left with
         // nothing: no command it may send, and nothing more it is told. (Every command is
@@ -1193,7 +1193,7 @@ class PlaybackService : MediaLibraryService() {
         // (As the server converts it, if this phone is known not to decode the file itself:
         // found by this session's player, or remembered from a download.)
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting && !era.account.catalogue.convertsFor(songId, song?.size ?: 0)
-        val form = streamForm(native, graph.settings.value.bitrate, suffix, song?.bitRate ?: 0)
+        val form = graph.quality.formOf(native, suffix, song?.bitRate ?: 0)
         val least = if (form.converted && song != null) leastBytes(song.duration, form.bitrate, song.bitRate) else 0
         return SongWhere(form, cacheKey(songId, form), least, downloaded, entry?.bitrate ?: 0) { offset -> api.streamUrl(songId, form.bitrate, offset) }
     }
@@ -2908,7 +2908,7 @@ class PlaybackService : MediaLibraryService() {
         // (From its download as the player has it open; if it isn't open yet, as it would be.)
         val downloaded = reading[song.id]?.let { it is SongCopy.Download } ?: (era?.account?.availability?.isDownloaded(song.id) == true)
         if (!Recovery.reopensForQuality(exo.playbackState, downloaded, song.radioUrl.isNotEmpty(), waitingFor != null)) return
-        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "streaming quality changed: the song playing is opened again at ${graph.settings.value.bitrate} kbps")
+        if (BuildConfig.DEBUG) android.util.Log.d(TAG, "streaming quality changed: the song playing is opened again at ${graph.quality.limit()} kbps")
         exo.stop()
         exo.prepare()
     }

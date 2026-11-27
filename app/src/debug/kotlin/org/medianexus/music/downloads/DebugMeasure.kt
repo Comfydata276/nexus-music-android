@@ -40,7 +40,7 @@ object DebugMeasure {
             }.sorted()[2]
             var catalogue = first
             val load = median { catalogue = Catalogue(dir) }
-            val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+            val availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
             val others = songs.map { it.copy(id = it.id + "-x") }
             val askAll = median { for (song in songs) availability.plays(song); for (song in others) availability.plays(song) }
             val playable = median { availability.playable() }

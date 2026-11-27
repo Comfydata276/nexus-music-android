@@ -295,7 +295,7 @@ class PinnedCopyTest {
         val file = File(dir, "s1.flac").also { it.writeBytes(ByteArray(10)) }
         catalogue.add(Downloaded(Song(id = "s1", title = "One"), "s1.flac", 10, at = 1_000, suffix = "flac", modified = 1_000_000))
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
-        val availability = Availability(catalogue, KeptIndex(File(folder.root, "kept.json"), scope, kotlinx.coroutines.Dispatchers.Unconfined), cap = { 0 }, keeping = { false })
+        val availability = Availability(catalogue, KeptIndex(File(folder.root, "kept.json"), scope, kotlinx.coroutines.Dispatchers.Unconfined), quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { false })
         assertTrue(availability.isDownloaded("s1"))
         // That file couldn't be parsed: it needs a fresh copy. It is still a download, on
         // the phone, and still what plays with no server. (It used to be set aside for the

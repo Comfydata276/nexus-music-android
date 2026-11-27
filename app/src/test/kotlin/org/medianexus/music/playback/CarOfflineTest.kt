@@ -70,7 +70,7 @@ class CarOfflineTest {
     fun stop() = scope.cancel()
 
     private fun tree(): CarTree {
-        val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+        val availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
         val state = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) }
         return CarTree(library, CarWords(), CarOffline(now = { offline }, availability = availability, downloads = state))
     }
@@ -146,7 +146,7 @@ class CarOfflineTest {
 
     @Test
     fun aSongChosenInTheCarThatDoesNotPlayStartsNothingNotItsNeighbour() = runBlocking {
-        val availability = Availability(catalogue, kept, cap = { 0 }, keeping = { true })
+        val availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
         // Song 1 of the album, tapped in the car (the kept page lists it): it isn't on the
         // phone. It used to start song 2 in its place.
         val list = tree().play(CarNode.Track("s1", ListRef.Album("al-1"), 0))!!

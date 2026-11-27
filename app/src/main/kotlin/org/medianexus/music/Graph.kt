@@ -124,6 +124,10 @@ class Graph(
     /** The phone's network, as Android reports it and as it changes (see [NetworkWatch]). */
     val network = org.medianexus.music.net.NetworkWatch(app)
 
+    /** What songs are streamed as: the one place the streaming limit is read (see
+     *  [org.medianexus.music.playback.StreamQuality]). */
+    val quality = org.medianexus.music.playback.StreamQuality(settings.state)
+
     /** The unmetered network downloads are bound to while "Download on Wi-Fi only" is on
      *  (see [org.medianexus.music.net.UnmeteredNetwork]). */
     val unmetered = org.medianexus.music.net.UnmeteredNetwork(app, http) { diagnostics.note(it) }
@@ -259,6 +263,7 @@ class Graph(
                 settingsStore = settings,
                 front = front,
                 requests = { requestsOwners },
+                quality = quality,
             ),
         )
     }
@@ -388,7 +393,7 @@ class Graph(
     val linked = org.medianexus.music.playback.Linked()
 
     /** The screens' one way to the player (the playback service's session). */
-    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), steered, linked)
+    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), steered, linked, quality)
 
     /** The jam relay's host key, sealed as the password is (see `jam/KeyVault`). */
     val relayKey = org.medianexus.music.jam.KeyVault(java.io.File(context.noBackupFilesDir, "relay-key.sealed"), KeystoreBox())

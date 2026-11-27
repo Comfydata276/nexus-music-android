@@ -62,6 +62,9 @@ class AccountWiring(
     /** What owns each account's requests for the life of the process (the app's own, not
      *  an account's). Asked only in a build that has requests. */
     val requests: (() -> org.medianexus.music.requests.RequestsOwners)? = null,
+    /** What songs are streamed as (the app's one place for it). Null: by these settings
+     *  alone (tests). */
+    val quality: org.medianexus.music.playback.StreamQuality? = null,
 )
 
 /**
@@ -443,7 +446,7 @@ class AccountGraph(
     val catalogue = Catalogue(downloadsDir, note = wiring?.note ?: {})
 
     /** Which songs play with the server gone. */
-    val availability = Availability(catalogue, keptIndex, cap = { settings.value.bitrate }, keeping = { settings.value.cacheLimitMb > 0 })
+    val availability = Availability(catalogue, keptIndex, wiring?.quality ?: org.medianexus.music.playback.StreamQuality(settings), keeping = { settings.value.cacheLimitMb > 0 })
 
     /** The account's downloads; null where nothing of Android is to hand (tests). */
     val downloads: Downloads? = wiring?.downloads?.invoke(this)

@@ -66,7 +66,7 @@ class CarMixesTest {
     fun stop() = scope.cancel()
 
     private fun tree(): CarTree {
-        val availability = Availability(catalogue, KeptIndex(File(folder.root, "kept.json"), scope, Dispatchers.IO), cap = { 0 }, keeping = { true })
+        val availability = Availability(catalogue, KeptIndex(File(folder.root, "kept.json"), scope, Dispatchers.IO), quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
         val state = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) }
         return CarTree(library, CarWords(mixTitle = { it.name.ifEmpty { it.id } }), CarOffline(now = { offline }, availability = availability, downloads = state), mixes = { set() })
     }
