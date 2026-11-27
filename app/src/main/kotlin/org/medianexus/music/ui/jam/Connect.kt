@@ -125,7 +125,8 @@ private fun ConnectSheet(choose: (() -> Unit) -> Unit) {
             }
         }
         // The new linking's devices (Windows' "Linked devices (new)").
-        if (linkHere) org.medianexus.music.ui.link.LinkedDevices(link, choose)
+        val linkMyDevices = ui.graph.settings.state.collectAsStateWithLifecycle().value.linkDevices
+        if (org.medianexus.music.ui.link.ConnectView.listsLinked(linkHere, linkMyDevices)) org.medianexus.music.ui.link.LinkedDevices(link, choose)
         // The old linking's, through a jam's session: only where jams exist, as it was.
         if (state != null) {
             val others = state.devices.filter { !it.active }

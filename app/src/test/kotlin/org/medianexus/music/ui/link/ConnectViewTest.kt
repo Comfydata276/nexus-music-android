@@ -116,4 +116,14 @@ class ConnectViewTest {
         assertEquals(ConnectView.There.PLAYING, ConnectView.there(pausedRow, there("Study PC", playing = true)))
         assertEquals(ConnectView.There.PAUSED, ConnectView.there(playingRow, there("Study PC", playing = false)))
     }
+
+    // ---- "Link my devices" off --------------------------------------------------------------
+
+    @Test
+    fun withLinkMyDevicesOffTheLinkedDevicesPartIsNotDrawn() {
+        // (The library still lists the devices seen before, each "Looking for it…": not drawn.)
+        assertFalse(ConnectView.listsLinked(link = true, linkMyDevices = false))
+        assertTrue(ConnectView.listsLinked(link = true, linkMyDevices = true))
+        assertFalse("no linking in the build", ConnectView.listsLinked(link = false, linkMyDevices = true))
+    }
 }

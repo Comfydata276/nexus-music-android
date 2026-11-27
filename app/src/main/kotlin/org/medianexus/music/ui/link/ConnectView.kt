@@ -71,4 +71,11 @@ internal object ConnectView {
         val row = state.devices.firstOrNull { it.steered } ?: return There.NAME_ONLY
         return if (row.playing) There.PLAYING else There.PAUSED
     }
+
+    /**
+     * Whether the sheet draws "Linked devices (new)" at all: in a build with the new linking,
+     * and only while "Link my devices" is on. Off, the sheet is as it is with nothing linked
+     * (the library may still hand over the devices seen before, each "Looking for it…").
+     */
+    fun listsLinked(link: Boolean, linkMyDevices: Boolean): Boolean = link && linkMyDevices
 }
