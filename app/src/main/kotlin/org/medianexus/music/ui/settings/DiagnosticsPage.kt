@@ -77,7 +77,7 @@ fun aboutTheApp(graph: Graph, context: Context): List<String> {
         "Signed in: ${yes(graph.session.state.value is SessionState.SignedIn)}",
         "Server address uses HTTPS: ${yes(settings.server.startsWith("https://"))}",
         "Offline mode: ${onOff(settings.offline)}; kept from reaching the home network: ${yes(graph.localAccess.blocked.value)}",
-        "Streaming limit: ${settings.bitrate} kbps (0 is none); kept songs limit: ${settings.cacheLimitMb} MB",
+        "Streaming limit: ${settings.bitrate} kbps (0 is none), on mobile data ${if (settings.mobileBitrate == org.medianexus.music.store.SAME_AS_WIFI) "the same" else "${settings.mobileBitrate} kbps"}; on mobile data now: ${yes(graph.quality.onMobileData())}; kept songs limit: ${settings.cacheLimitMb} MB",
         "Android Auto on this phone: ${auto?.let { "version $it" } ?: "not found"}",
         "Known hosts of media apps listed: ${graph.callers.listed}",
     )

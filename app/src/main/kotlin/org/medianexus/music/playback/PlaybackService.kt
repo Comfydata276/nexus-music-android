@@ -325,8 +325,12 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         // Streaming quality changed in Settings: the song playing switches to it at once,
-        // from where it is, as on Windows (`reload_current`).
-        scope.launch { graph.quality.limits.drop(1).collect { qualityChanged() } }
+        // from where it is, as on Windows (`reload_current`). Only for a setting: a song
+        // playing when the phone moves between Wi-Fi and mobile data plays on as it began.
+        scope.launch { graph.quality.chosenAgain.collect { qualityChanged() } }
+        // The phone moved between Wi-Fi and mobile data, and the two limits differ: what is
+        // being fetched ahead is let go and fetched in the new network's form.
+        scope.launch { graph.quality.movedWithNetwork.collect { ahead.again(); aheadNow() } }
         // The person switched an app off in Settings (or forgot it): a connection it has
         // open is cut. Media3 has no way to throw a controller out, so it is left with
         // nothing: no command it may send, and nothing more it is told. (Every command is
@@ -1193,9 +1197,11 @@ class PlaybackService : MediaLibraryService() {
         // (As the server converts it, if this phone is known not to decode the file itself:
         // found by this session's player, or remembered from a download.)
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && songId !in era.needsConverting && !era.account.catalogue.convertsFor(songId, song?.size ?: 0)
-        val form = graph.quality.formOf(native, suffix, song?.bitRate ?: 0)
-        val least = if (form.converted && song != null) leastBytes(song.duration, form.bitrate, song.bitRate) else 0
-        return SongWhere(form, cacheKey(songId, form), least, downloaded, entry?.bitrate ?: 0) { offset -> api.streamUrl(songId, form.bitrate, offset) }
+        // In the form for the network it is opened on, unless it is kept whole only in the
+        // other network's: then that copy, as it was fetched (see StreamQuality.formToOpen).
+        val keeping = graph.settings.value.cacheLimitMb > 0
+        val kept = era.account.keptIndex
+        return graph.quality.whereNow(songId, song, native, { key -> keeping && kept.isWhole(key) }, downloaded, entry?.bitrate ?: 0) { kbps, offset -> api.streamUrl(songId, kbps, offset) }
     }
 
     // ---- The queue changing -----------------------------------------------------------------

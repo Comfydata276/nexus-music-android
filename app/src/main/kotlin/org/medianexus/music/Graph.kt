@@ -126,7 +126,7 @@ class Graph(
 
     /** What songs are streamed as: the one place the streaming limit is read (see
      *  [org.medianexus.music.playback.StreamQuality]). */
-    val quality = org.medianexus.music.playback.StreamQuality(settings.state)
+    val quality = org.medianexus.music.playback.StreamQuality(settings.state, network.state)
 
     /** The unmetered network downloads are bound to while "Download on Wi-Fi only" is on
      *  (see [org.medianexus.music.net.UnmeteredNetwork]). */

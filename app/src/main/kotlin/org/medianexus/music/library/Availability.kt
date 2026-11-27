@@ -24,10 +24,14 @@ class Availability(
      *  its place (see `Downloads.demote`). */
     fun isDownloaded(id: String): Boolean = downloads.has(id)
 
-    /** The key a song is kept under in the form it would be streamed in now. */
+    /** The key a song is kept under in the form it would be streamed in now (on the network
+     *  the phone is on now). */
     fun keyOf(song: Song): String = quality.keyOf(song)
 
-    fun isKept(song: Song): Boolean = keeping() && kept.isWhole(keyOf(song))
+    /** Kept whole in the form it would be streamed in now, or in the other network's (one
+     *  fetched ahead on the Wi-Fi plays on mobile data as it was fetched, and the other way
+     *  about: see `StreamQuality.formToOpen`). */
+    fun isKept(song: Song): Boolean = keeping() && quality.keysOf(song).any(kept::isWhole)
 
     /** Whether the song plays with no server. */
     fun plays(song: Song): Boolean = song.id.isNotEmpty() && song.radioUrl.isEmpty() && (isDownloaded(song.id) || isKept(song))

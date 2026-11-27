@@ -94,6 +94,9 @@ data class Settings(
     val repeat: Int = 0,
     /** Bitrate cap in kbps sent to the server; 0 streams the original files. */
     val bitrate: Int = 0,
+    /** The cap for a song streamed over mobile data (a network Android counts as metered),
+     *  or [SAME_AS_WIFI] for the one above. The phone's own: Windows has no mobile data. */
+    val mobileBitrate: Int = SAME_AS_WIFI,
     val scrobble: Boolean = true,
     /** Seconds of overlap between tracks; 0 for none. */
     val crossfade: Float = 0f,
@@ -266,6 +269,12 @@ private val FLAT = List(EQ_BANDS) { 0f }
 
 /** Streaming and download quality: the bitrate cap sent to the server (0 = the original). */
 val QUALITIES = listOf(96, 160, 320, 0)
+
+/** "On mobile data": the streaming quality above, whatever the network. */
+const val SAME_AS_WIFI = -1
+
+/** The choices for "On mobile data", in the order Settings shows them. */
+val MOBILE_QUALITIES = listOf(SAME_AS_WIFI) + QUALITIES
 
 /** How much space kept songs may take, in megabytes. The first keeps none. */
 val CACHE_LIMITS = listOf(0, 1024, 2048, 5120, 10240, 20480)

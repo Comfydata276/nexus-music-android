@@ -53,7 +53,9 @@ import org.medianexus.music.SessionState
 import org.medianexus.music.downloads.Downloads
 import org.medianexus.music.store.CACHE_AHEAD
 import org.medianexus.music.store.CACHE_LIMITS
+import org.medianexus.music.store.MOBILE_QUALITIES
 import org.medianexus.music.store.QUALITIES
+import org.medianexus.music.store.SAME_AS_WIFI
 import org.medianexus.music.ui.parts.ChipRow
 import org.medianexus.music.ui.parts.Segmented
 import org.medianexus.music.ui.parts.TextButton
@@ -162,6 +164,17 @@ private fun Sound(graph: Graph) {
     val detail = stringResource(QUALITY_DETAILS[at]) + if (format.text.isNotEmpty()) "\n" + stringResource(R.string.playing_now_as, format.text) else ""
     SettingRow(title, detail, stacked = true) {
         Choices(QUALITY_NAMES.map { stringResource(it) }, at, title) { chosen -> graph.settings.update { it.copy(bitrate = QUALITIES[chosen]) } }
+    }
+    // The phone's own (Windows has no mobile data): a second limit for songs streamed over
+    // it, the same choices and words, and "Same as Wi-Fi" first, which is the one above.
+    val mobileAt = MOBILE_QUALITIES.indexOf(settings.mobileBitrate).takeIf { it >= 0 } ?: 0
+    val mobileTitle = stringResource(R.string.on_mobile_data)
+    val mobileDetail = stringResource(R.string.on_mobile_data_detail) +
+        if (MOBILE_QUALITIES[mobileAt] != SAME_AS_WIFI) "\n" + stringResource(QUALITY_DETAILS[mobileAt - 1]) else ""
+    SettingRow(mobileTitle, mobileDetail, stacked = true) {
+        Choices((listOf(R.string.same_as_wifi) + QUALITY_NAMES).map { stringResource(it) }, mobileAt, mobileTitle) { chosen ->
+            graph.settings.update { it.copy(mobileBitrate = MOBILE_QUALITIES[chosen]) }
+        }
     }
     VolumeAndTone(graph)
 }

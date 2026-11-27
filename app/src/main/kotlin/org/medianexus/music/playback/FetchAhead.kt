@@ -31,6 +31,9 @@ class FetchAhead(private val sources: DataSource.Factory) {
     @Volatile private var going = false
     private val lock = Any()
 
+    /** Goes up when the song being fetched is to be let go and fetched afresh ([again]). */
+    @Volatile private var round = 0
+
     /** Ids tried in this run of the list that failed: not tried again until the list changes. */
     private val failed = HashSet<String>()
 
@@ -45,14 +48,29 @@ class FetchAhead(private val sources: DataSource.Factory) {
         worker.execute(::run)
     }
 
+    /**
+     * The song being fetched is let go and fetched again from its start: the limit for a
+     * stream opened now has changed with the network (Wi-Fi to mobile data, or back), and
+     * what is fetched ahead is fetched in the form of the network it is fetched on. What had
+     * arrived of a conversion is not kept; of a file as it is, it stays under its own key.
+     */
+    fun again() {
+        synchronized(lock) { round++ }
+    }
+
     private fun run() {
         try {
             while (true) {
-                val next = synchronized(lock) { wanted.firstOrNull { it !in failed } } ?: break
-                if (!fetch(next)) synchronized(lock) { failed += next }
-                // Done (kept, or the server had nothing): it leaves the wanted list when the
-                // service next looks, as it is kept now. Until then, not again.
-                synchronized(lock) { if (next in wanted) wanted = wanted - next }
+                val (next, began) = synchronized(lock) { wanted.firstOrNull { it !in failed }?.let { it to round } } ?: break
+                val fetched = fetch(next, began)
+                synchronized(lock) {
+                    // Let go to be fetched afresh: it stays wanted.
+                    if (round != began) return@synchronized
+                    if (!fetched) failed += next
+                    // Done (kept, or the server had nothing): it leaves the wanted list when
+                    // the service next looks, as it is kept now. Until then, not again.
+                    if (next in wanted) wanted = wanted - next
+                }
             }
         } finally {
             synchronized(lock) { going = false }
@@ -61,13 +79,14 @@ class FetchAhead(private val sources: DataSource.Factory) {
         }
     }
 
-    /** Reads one song whole; false if it failed. */
-    private fun fetch(id: String): Boolean {
+    /** Reads one song whole; false if it failed. Let go when it is no longer wanted, or
+     *  [again] is asked. */
+    private fun fetch(id: String, began: Int): Boolean {
         val source = sources.createDataSource()
         val buffer = ByteArray(64 * 1024)
         return try {
             source.open(DataSpec.Builder().setUri(Uri.parse(songUri(id))).build())
-            while (id in wanted && source.read(buffer, 0, buffer.size) != C.RESULT_END_OF_INPUT) Unit
+            while (id in wanted && round == began && source.read(buffer, 0, buffer.size) != C.RESULT_END_OF_INPUT) Unit
             true
         } catch (_: IOException) {
             false

@@ -414,6 +414,9 @@
     <string name="quality_high_detail">320 kbps MP3, about 0.14 GB an hour</string>
     <string name="quality_lossless_detail">Your files exactly as stored, at their own sample rate and bit depth. About 0.4 GB an hour for CD-quality FLAC, more for hi-res.</string>
     <string name="playing_now_as">Playing now: %1$s</string>
+    <string name="on_mobile_data">On mobile data</string>
+    <string name="on_mobile_data_detail">The quality for songs streamed over mobile data. A song already playing, or fetched ahead, plays as it is.</string>
+    <string name="same_as_wifi">Same as Wi-Fi</string>
 
     <!-- Sound: volume and tone (Windows' SettingsPage, "Volume and tone", and EqPanel) -->
     <string name="volume_and_tone">Volume and tone</string>
