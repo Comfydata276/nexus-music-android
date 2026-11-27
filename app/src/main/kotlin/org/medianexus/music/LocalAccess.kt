@@ -157,6 +157,10 @@ class LocalAccess(private val context: Context, private val session: Session, pr
      *  be on the home network, and the permission isn't held. */
     suspend fun mayBeWhy(address: String): Boolean = APPLIES && !isGranted() && nearnessOf(address) != Nearness.NOT
 
+    /** Whether the app may reach the home network now (always, before Android 17). For
+     *  requests (`requests/LocalGate`), which ask about Lidarr's address, not the server's. */
+    val held: Boolean get() = isGranted()
+
     private fun isGranted(): Boolean =
         !APPLIES || ContextCompat.checkSelfPermission(context, PERMISSION) == PackageManager.PERMISSION_GRANTED
 

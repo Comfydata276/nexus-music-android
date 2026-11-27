@@ -21,6 +21,13 @@ import org.medianexus.music.core.CoreHttp
 internal object Trace {
     const val PREFIX = "requests: last connect or sign-in:"
 
+    /** The same line for the last attempt that failed, kept beside the last attempt, so a
+     *  success afterwards (the check as the app starts) does not wipe it. */
+    const val FAILED_PREFIX = "requests: last failed connect or sign-in:"
+
+    /** How an attempt ends when it went well (or was given up by the person). */
+    val FINE = setOf("connected", "sign-in found", "given up", "stopped")
+
     /** Where an attempt ended. */
     enum class Step(val words: String) {
         CHECK("checking Lidarr"),
@@ -57,7 +64,13 @@ internal object Trace {
      *  [System.nanoTime]), if one ended since then. */
     fun last(since: Long): CoreHttp.LastOnLidarr? = CoreHttp.lastOnLidarr?.takeIf { it.at - since >= 0 }
 
-    fun line(step: Step, ended: String, millis: Long, browser: Browser?, addressKind: String, family: String?, way: String? = null): String = buildString {
+    fun line(
+        step: Step, ended: String, millis: Long, browser: Browser?, addressKind: String, family: String?, way: String? = null,
+        /** Where what it reached for was from here (`LocalGate`), if judged. */
+        near: org.medianexus.music.net.LocalNetwork.Nearness? = null,
+        /** Whether the app may reach the home network. */
+        held: Boolean? = null,
+    ): String = buildString {
         append(PREFIX).append(' ').append(step.words).append(", ").append(ended).append(", ").append(millis).append(" ms")
         if (browser != null) {
             append("; browser ")
@@ -72,5 +85,15 @@ internal object Trace {
         append("; connected over ").append(family ?: "nothing yet")
         // (How far the last request's connection got: CoreHttp's `Way`.)
         if (!way.isNullOrEmpty()) append("; last request: ").append(way)
+        if (near != null) {
+            append("; on the home network: ").append(
+                when (near) {
+                    org.medianexus.music.net.LocalNetwork.Nearness.LOCAL -> "yes"
+                    org.medianexus.music.net.LocalNetwork.Nearness.MAYBE -> "maybe"
+                    org.medianexus.music.net.LocalNetwork.Nearness.NOT -> "no"
+                },
+            )
+        }
+        if (held != null) append("; allowed to reach it: ").append(if (held) "yes" else "no")
     }
 }

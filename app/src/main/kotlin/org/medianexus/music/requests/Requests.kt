@@ -28,6 +28,7 @@ import org.medianexus.music.core.LidarrAt
 import org.medianexus.music.core.Outcome
 import org.medianexus.music.core.SignInDoor
 import org.medianexus.music.core.Words
+import org.medianexus.music.net.LocalNetwork.Nearness
 import org.medianexus.music.store.Account
 
 /**
@@ -69,6 +70,10 @@ object RequestsWords {
 
     /** The person's toggle is on and the account's requests are not to be used yet: what
      *  owns them is finishing what the last sign-in left (`RequestsNow.NotYet`). */
+    /** Lidarr is on the home network from here, and the app isn't allowed to reach it
+     *  (Android 17): what the pages say, where Settings, Requests asks. */
+    const val HOME_NETWORK = "Nexus Music isn't allowed to reach devices on your home network, where Lidarr is. Allow it in Settings, Requests."
+
     const val NOT_YET = "Requests aren't ready yet: the app is finishing what the last sign-in left. They'll be here in a moment."
 
     /** What this phone kept of requests was something the app could make nothing of, and
@@ -132,6 +137,14 @@ sealed interface RequestsState {
     /** What is kept on the phone about the connection is there and couldn't be read. It is
      *  left as it is, and nothing can be changed until a start that can read it. */
     data object CantRead : RequestsState
+
+    /**
+     * Android 17: Lidarr, or the sign-in in front of it, is on the home network from here,
+     * and the app isn't allowed to reach it (`LocalGate`). `certain`: it certainly is, and
+     * nothing was sent (the person is to be asked first); otherwise it failed to answer and
+     * may be. Allowed, it is checked again by itself.
+     */
+    data class LocalNetwork(val certain: Boolean) : RequestsState
 }
 
 /**
@@ -165,7 +178,9 @@ class Requests internal constructor(
     private val awake: () -> Hold = { Hold({ false }, {}) },
     /** Writes the diagnostics line about the last attempt to connect or sign in ([Trace]),
      *  in place of the one before it. */
-    private val trace: (String) -> Unit = {},
+    private val trace: (line: String, failed: Boolean) -> Unit = { _, _ -> },
+    /** Android 17's local-network permission, for Lidarr's address and its sign-in's. */
+    private val local: LocalGate = LocalGate.NONE,
     private val note: (String) -> Unit = {},
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** How long the browser is waited for (a test's own). */
@@ -281,7 +296,7 @@ class Requests internal constructor(
 
     /** A sign-in under way: the door the browser comes back through, when it must be over
      *  by, and whether it has been given up meanwhile. */
-    private class Attempt(val door: BrowserReturn, val host: String, val until: Long, val hold: Hold) {
+    private class Attempt(val door: BrowserReturn, val host: String, val until: Long, val hold: Hold, val near: Nearness? = null) {
         val retired = MutableStateFlow(false)
 
         /** When the browser was sent to the sign-in page ([System.nanoTime]). */
@@ -298,12 +313,19 @@ class Requests internal constructor(
 
     private fun millisSince(nanos: Long): Long = (System.nanoTime() - nanos) / 1_000_000
 
-    /** Writes the line about the last attempt. Never throws. */
-    private fun writeTrace(step: Trace.Step, ended: String, millis: Long, browser: Trace.Browser?, since: Long) {
+    /** Whether the last request since `since` went unanswered (it didn't connect, or timed
+     *  out): what the home network without the permission looks like. One that was answered,
+     *  whatever with, was reached. */
+    private fun unanswered(since: Long): Boolean = Trace.last(since)?.ended?.let { !it.startsWith("answered") && it != "stopped" } ?: false
+
+    /** Writes the line about the last attempt (`near`: where what it reached for was, from
+     *  here; null if not judged). Never throws. */
+    private fun writeTrace(step: Trace.Step, ended: String, millis: Long, browser: Trace.Browser?, since: Long, near: Nearness? = null) {
         try {
             val address = runCatching { Core.lidarrTidy(settingsNow.value.address) }.getOrNull()
             val last = Trace.last(since)
-            trace(Trace.line(step, ended, millis, browser, Trace.addressKind(address), last?.family ?: CoreHttp.lastOnLidarr?.family, last?.way))
+            val line = Trace.line(step, ended, millis, browser, Trace.addressKind(address), last?.family ?: CoreHttp.lastOnLidarr?.family, last?.way, near, local.held)
+            trace(line, ended !in Trace.FINE)
         } catch (_: Exception) {
         }
     }
@@ -443,6 +465,11 @@ class Requests internal constructor(
                 (settings.signingIn && write(settings.copy(signingIn = false)))
             }
             check(interrupted = interrupted)
+        }
+        // Allowed to reach the home network (in the app, or in Android's settings): checked
+        // again by itself, if that is what stood in the way.
+        scope.launch(io) {
+            local.allowed.collect { given -> if (given > 0 && stateNow.value is RequestsState.LocalNetwork) check() }
         }
     }
 
@@ -584,8 +611,23 @@ class Requests internal constructor(
             verifiedNow.value = null
             ++checks to at
         }
+        // Lidarr's address, and the sign-in's if someone is signed in to it (a check renews
+        // its pass there), as they are from here; on the home network without the
+        // permission, nothing is sent, and the person is to be asked.
+        val service = believed(settingsNow.value)?.service?.takeIf { open != null }
+        val near = listOfNotNull(at.address, service).map { local.near(it) }.minByOrNull { it.ordinal } ?: Nearness.NOT
+        if (near == Nearness.LOCAL && !local.held) {
+            turn.withLock {
+                if (checks != mine) return@withContext stateNow.value
+                stateNow.value = RequestsState.LocalNetwork(certain = true)
+                writeTrace(traced.step, "not allowed to reach the home network", 0, traced.browser, System.nanoTime(), near)
+                return@withContext stateNow.value
+            }
+        }
         val since = System.nanoTime()
         val checked = Core.lidarrCheck(at)
+        // (Unanswered, and it may be on the home network without the permission: said so.)
+        val mayBeLocal = near != Nearness.NOT && !local.held && unanswered(since) && checked !is Outcome.Stopped && (checked as? Outcome.Got)?.value?.version == null
         turn.withLock {
             if (checks != mine) return@withContext stateNow.value
             val answered = (checked as? Outcome.Got)?.value?.door
@@ -622,6 +664,7 @@ class Requests internal constructor(
                     }
                 }
             }
+            if (mayBeLocal) stateNow.value = RequestsState.LocalNetwork(certain = false)
             // (Lidarr answered as itself, on this very connection.)
             if (stateNow.value is RequestsState.Connected) verifiedNow.value = Verified(at)
             run {
@@ -638,7 +681,7 @@ class Requests internal constructor(
                         else -> traced.step to (wire ?: "failed")
                     }
                 }
-                writeTrace(step, ended, millisSince(since), traced.browser, since)
+                writeTrace(step, ended, millisSince(since), traced.browser, since, near)
             }
             stateNow.value
         }
@@ -653,10 +696,20 @@ class Requests internal constructor(
      * (then [state] says why). Starting another retires this one.
      */
     suspend fun signIn(): String? = withContext(io) {
+        // The sign-in's host as it is from here: the browser comes back, and the app trades
+        // its code there. On the home network without the permission, the trade would be
+        // the first to find out, after the person had signed in: asked about first instead.
+        val service = turn.withLock { read(); settingsNow.value.door?.service }
+        val near = service?.let { local.near(it) }
         turn.withLock {
             read()
             val settings = settingsNow.value
             val found = settings.door ?: return@withContext null
+            if (near == Nearness.LOCAL && !local.held && !unreadable && settings.on) {
+                stateNow.value = RequestsState.LocalNetwork(certain = true)
+                writeTrace(Trace.Step.BROWSER, "not allowed to reach the home network", 0, null, System.nanoTime(), near)
+                return@withContext null
+            }
             if (unreadable || !settings.on) return@withContext null
             // (Only a sign-in the library's rule believes: no browser is sent to another.)
             Core.gateRefused(found, settings.address)?.let { why ->
@@ -684,7 +737,7 @@ class Requests internal constructor(
             // (Taken here, with the app's screen in front: Android allows it only then. Let
             // go however the wait ends, or if it is never begun.)
             val hold = awake()
-            val mine = Attempt(door, host, until = clock() + waitMillis, hold)
+            val mine = Attempt(door, host, until = clock() + waitMillis, hold, near)
             attempt = mine
             write(settings.copy(signingIn = true))
             stateNow.value = RequestsState.SigningIn(host)
@@ -703,7 +756,7 @@ class Requests internal constructor(
         var tradeSince = 0L
         try {
             if (came is BrowserReturn.Came.GivenUp) {
-                writeTrace(Trace.Step.BROWSER, "given up", millisSince(mine.began), browser, mine.began)
+                writeTrace(Trace.Step.BROWSER, "given up", millisSince(mine.began), browser, mine.began, mine.near)
                 return
             }
             val code = came as? BrowserReturn.Came.Code
@@ -729,6 +782,9 @@ class Requests internal constructor(
             tradeSince = System.nanoTime()
             val done = if (code != null && returned && !mine.retired.value) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) } else null
             val token = (done as? Outcome.Got)?.value
+            // (The trade went unanswered, and the sign-in may be on the home network without
+            // the permission: said so.)
+            val mayBeLocal = done is Outcome.Failed && !local.held && (mine.near ?: Nearness.NOT) != Nearness.NOT && unanswered(tradeSince)
             // 0: this sign-in has been retired meanwhile; 1: it didn't go through; 2: signed in.
             val ended = withContext(NonCancellable) {
                 turn.withLock {
@@ -759,7 +815,7 @@ class Requests internal constructor(
                             came is BrowserReturn.Came.Failed -> Words.notHeard(came.why)
                             else -> null
                         }
-                        stateNow.value = RequestsState.NeedsSignIn(mine.host, why = why)
+                        stateNow.value = if (mayBeLocal) RequestsState.LocalNetwork(certain = false) else RequestsState.NeedsSignIn(mine.host, why = why)
                         1
                     }
                 }
@@ -774,12 +830,12 @@ class Requests internal constructor(
             if (ended != 2) {
                 val wire = Trace.last(tradeSince)?.ended
                 when {
-                    ended == 0 || mine.retired.value -> writeTrace(Trace.Step.BROWSER, "given up", millisSince(mine.began), browser, mine.began)
-                    done != null -> writeTrace(Trace.Step.FINISH, if (token != null) "token not kept" else wire ?: "failed", millisSince(tradeSince), browser, tradeSince)
-                    code != null -> writeTrace(Trace.Step.BROWSER, "app not back in front", millisSince(mine.began), browser, mine.began)
-                    came is BrowserReturn.Came.TurnedDown -> writeTrace(Trace.Step.BROWSER, "turned down by the service", millisSince(mine.began), browser, mine.began)
-                    came is BrowserReturn.Came.Failed -> writeTrace(Trace.Step.BROWSER, "return door failed", millisSince(mine.began), browser, mine.began)
-                    else -> writeTrace(Trace.Step.BROWSER, "nobody came back", millisSince(mine.began), browser, mine.began)
+                    ended == 0 || mine.retired.value -> writeTrace(Trace.Step.BROWSER, "given up", millisSince(mine.began), browser, mine.began, mine.near)
+                    done != null -> writeTrace(Trace.Step.FINISH, if (token != null) "token not kept" else wire ?: "failed", millisSince(tradeSince), browser, tradeSince, mine.near)
+                    code != null -> writeTrace(Trace.Step.BROWSER, "app not back in front", millisSince(mine.began), browser, mine.began, mine.near)
+                    came is BrowserReturn.Came.TurnedDown -> writeTrace(Trace.Step.BROWSER, "turned down by the service", millisSince(mine.began), browser, mine.began, mine.near)
+                    came is BrowserReturn.Came.Failed -> writeTrace(Trace.Step.BROWSER, "return door failed", millisSince(mine.began), browser, mine.began, mine.near)
+                    else -> writeTrace(Trace.Step.BROWSER, "nobody came back", millisSince(mine.began), browser, mine.began, mine.near)
                 }
             }
             if (ended == 0) {
@@ -972,4 +1028,6 @@ fun Requests.says(state: RequestsState): String = when (state) {
     is RequestsState.SigningIn -> Words.finishInBrowser(state.host)
     is RequestsState.Unreachable -> state.why
     RequestsState.CantRead -> ""
+    // (The app's own words, from its resources: the screens say it.)
+    is RequestsState.LocalNetwork -> ""
 }

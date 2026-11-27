@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -28,6 +29,7 @@ import org.junit.rules.TemporaryFolder
 import org.medianexus.music.core.Core
 import org.medianexus.music.core.Outcome
 import org.medianexus.music.core.StandIn
+import org.medianexus.music.net.LocalNetwork.Nearness
 import org.medianexus.music.store.Account
 import org.medianexus.music.store.AccountDirs
 import org.medianexus.music.store.SecretBox
@@ -89,6 +91,7 @@ class RequestsTest {
         front: MutableStateFlow<Boolean> = MutableStateFlow(true),
         /** How the app runs what must be finished behind whoever asked (its own work). */
         afterwards: (suspend () -> Unit) -> Unit = { work -> behind.launch { work() } },
+        local: LocalGate = LocalGate.NONE,
     ): Requests {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         lateinit var made: Requests
@@ -108,7 +111,8 @@ class RequestsTest {
                 val once = java.util.concurrent.atomic.AtomicBoolean(false)
                 Requests.Hold({ !once.get() }) { if (once.compareAndSet(false, true)) awake.decrementAndGet() }
             },
-            trace = { traces += it },
+            trace = { line, _ -> traces += line },
+            local = local,
             note = { notes += it }, waitMillis = waitMillis, front = front,
         )
         return made
@@ -995,13 +999,109 @@ class RequestsTest {
         requests.check()
         assertEquals(before + 1, traces.size)
         assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} checking Lidarr, connection refused, "))
-        assertTrue(traces.last(), traces.last().endsWith("; last request: IPv4 failed while connecting"))
+        assertTrue(traces.last(), traces.last().contains("; last request: IPv4 failed while connecting;"))
 
         // The app starting again, with requests set up as they were.
         val again = requests(account)
         again.start()
         withTimeout(10_000) { while (traces.size < before + 2) delay(20) }
         assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} checking Lidarr, connection refused, "))
+    }
+
+    /** Android 17's permission as a test says it is: where each address is, whether it is
+     *  held, and its being given. */
+    private class Gate(var near: (String) -> Nearness, @Volatile var holds: Boolean = false) : LocalGate {
+        val given = MutableStateFlow(0)
+        override suspend fun near(address: String) = near.invoke(address)
+        override val held: Boolean get() = holds
+        override val allowed: Flow<Int> = given
+
+        fun give() {
+            holds = true
+            given.value++
+        }
+    }
+
+    /**
+     * **0.6.0 to 0.6.2 on the owner's Wi-Fi**: Lidarr's name led to the server's address on the
+     * home network, the app had never been allowed to reach it (Android 17), and every check
+     * timed out. On the home network without the permission nothing is sent: the screen says
+     * why and asks, and once it is given the check is made again by itself.
+     */
+    @Test
+    fun `lidarr on the home network without the permission is asked about first, and checked again once it is given`() = runBlocking {
+        val behind = Behind()
+        val gate = Gate({ Nearness.LOCAL })
+        val requests = requests(local = gate)
+        requests.start()
+        requests.switch(true)
+        val asked = behind.lidarr.asked.size
+        assertEquals(RequestsState.LocalNetwork(certain = true), requests.connect(behind.lidarr.address, KEY))
+        assertEquals("nothing is sent", asked, behind.lidarr.asked.size)
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} checking Lidarr, not allowed to reach the home network, 0 ms"))
+        assertTrue(traces.last(), traces.last().endsWith("; on the home network: yes; allowed to reach it: no"))
+        // "Try again" (and the app starting) say the same, and send nothing either.
+        assertEquals(RequestsState.LocalNetwork(certain = true), requests.check())
+        assertEquals(asked, behind.lidarr.asked.size)
+
+        gate.give()
+        assertEquals(RequestsState.NeedsSignIn(behind.host), requests.until { it is RequestsState.NeedsSignIn })
+        assertTrue(behind.lidarr.asked.size > asked)
+    }
+
+    /** Where it only may be on the home network (a VPN's range, say), it is tried; unanswered
+     *  without the permission, the screen says the permission may be why. Answered with an
+     *  error, or with the permission held, it is what it always was. */
+    @Test
+    fun `lidarr that may be on the home network is tried, and unanswered without the permission says why`() = runBlocking {
+        val dead = java.net.ServerSocket(0).use { it.localPort }
+        val gate = Gate({ Nearness.MAYBE })
+        val requests = requests(local = gate)
+        requests.switch(true)
+        assertEquals(RequestsState.LocalNetwork(certain = false), requests.connect("http://127.0.0.1:$dead", KEY))
+        assertTrue(traces.last(), traces.last().contains(", connection refused, ") && traces.last().endsWith("; on the home network: maybe; allowed to reach it: no"))
+        // A Lidarr that answers, wrongly keyed: said as ever.
+        val lidarr = lidarr()
+        assertTrue(requests.connect(lidarr.address, "wrongkeywrongkeywrongkeywrongkey") is RequestsState.Unreachable)
+        // Held: as ever too.
+        gate.holds = true
+        assertTrue(requests.connect("http://127.0.0.1:$dead", KEY) is RequestsState.Unreachable)
+    }
+
+    /** The sign-in on the home network without the permission: asked about before the
+     *  browser is opened, so the trade on the way back is not the first to find out; and a
+     *  trade that goes unanswered there says the permission may be why. */
+    @Test
+    fun `the sign-in on the home network is asked about before the browser opens, and an unanswered trade says why`() = runBlocking {
+        val behind = Behind()
+        val gate = Gate({ address -> if (address.trimEnd('/') == behind.service.address) Nearness.LOCAL else Nearness.NOT })
+        val requests = requests(local = gate)
+        requests.switch(true)
+        assertEquals(RequestsState.NeedsSignIn(behind.host), requests.connect(behind.lidarr.address, KEY))
+        assertNull(requests.signIn())
+        assertEquals(RequestsState.LocalNetwork(certain = true), requests.state.value)
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} waiting for the browser, not allowed to reach the home network"))
+
+        // Only maybe there: the browser opens; the service goes quiet before the trade.
+        gate.near = { address -> if (address.trimEnd('/') == behind.service.address) Nearness.MAYBE else Nearness.NOT }
+        requests.check()
+        val link = requests.signIn()!!
+        val back = signedInAt(link)
+        behind.service.close()
+        browse(back)
+        assertEquals(RequestsState.LocalNetwork(certain = false), requests.until { it is RequestsState.LocalNetwork || it is RequestsState.NeedsSignIn && it.why != null })
+        assertTrue(traces.last(), traces.last().startsWith("${Trace.PREFIX} finishing the sign-in, connection refused, "))
+    }
+
+    @Test
+    fun `a name is judged by where it leads from here`() = runBlocking {
+        fun at(vararg addresses: String): (String) -> List<java.net.InetAddress> = { addresses.map { java.net.InetAddress.getByName(it) } }
+        assertEquals(Nearness.LOCAL, LocalGate.nearnessOf("lidarr.example.org", at("192.168.1.20")))
+        assertEquals(Nearness.NOT, LocalGate.nearnessOf("lidarr.example.org", at("104.21.3.4", "2606:4700::1")))
+        assertEquals(Nearness.MAYBE, LocalGate.nearnessOf("lidarr.example.org", at("100.101.102.103")))
+        assertEquals(Nearness.LOCAL, LocalGate.nearnessOf("192.168.1.20"))
+        assertEquals(Nearness.NOT, LocalGate.nearnessOf("localhost"))
+        assertEquals(Nearness.NOT, LocalGate.nearnessOf("nowhere.example", { throw java.net.UnknownHostException() }))
     }
 
     @Test

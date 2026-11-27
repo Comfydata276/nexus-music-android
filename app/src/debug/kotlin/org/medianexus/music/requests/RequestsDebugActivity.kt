@@ -307,6 +307,7 @@ class RequestsDebugActivity : Activity() {
             is RequestsState.SigningIn -> Words.finishInBrowser(state.host)
             is RequestsState.Unreachable -> state.why
             RequestsState.CantRead -> "(what is kept about requests can't be read)"
+            is RequestsState.LocalNetwork -> "(on the home network, not allowed to reach it${if (state.certain) "" else ", maybe"})"
         }
         return listOf(
             "REQUESTS (debug stand-in for the screens)",

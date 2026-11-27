@@ -94,6 +94,7 @@ private fun RequestsNotOn() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RequestsSettings() {
+    val askLocal = org.medianexus.music.ui.shell.rememberLocalNetworkAsk(org.medianexus.music.ui.shell.LocalUi.current.graph.localAccess)
     val here = requestsHere()
     if (here == null) {
         RequestsNotOn()
@@ -197,7 +198,12 @@ fun RequestsSettings() {
 
             // Where things stand, and the one thing to do next (Windows' box under the fields).
             val standing = standing(state)
-            val says = remember(state) { requests.says(state) }
+            // (On the home network without the permission: the app's own words for it, as
+            // the music server's sign-in has them.)
+            val says = when (state) {
+                is RequestsState.LocalNetwork -> stringResource(if (state.certain) R.string.local_network_why else R.string.local_network_refused)
+                else -> remember(state) { requests.says(state) }
+            }
             val waiting = state is RequestsState.SigningIn
             val signedInAs = (state as? RequestsState.Connected)?.signedInAs
             Column(
@@ -243,6 +249,12 @@ fun RequestsSettings() {
                     }
                     if (!edited && state is RequestsState.NeedsSignIn) TextButton(stringResource(R.string.sign_in_with_browser), ::signIn, primary = true)
                     if (!edited && state is RequestsState.Unreachable) TextButton(stringResource(R.string.try_again), { scope.launch { requests.check() } })
+                    if (!edited && state is RequestsState.LocalNetwork) {
+                        // Allowed, requests check again by themselves (`Requests.start`); refused
+                        // for good, this opens the app's page in Android's settings instead.
+                        TextButton(stringResource(if (state.certain) R.string.continue_on else R.string.allow), { askLocal(null) }, primary = true)
+                        if (!state.certain) TextButton(stringResource(R.string.try_again), { scope.launch { requests.check() } })
+                    }
                     if (signedInAs != null && !waiting) LinkText(stringResource(R.string.sign_out), { scope.launch { requests.signOut() } }, color = colors.accentBright)
                 }
             }
@@ -257,7 +269,7 @@ private fun standing(state: RequestsState): Standing = when (state) {
     RequestsState.Connecting, is RequestsState.SigningIn -> Standing.WAITING
     is RequestsState.Connected -> Standing.GOOD
     is RequestsState.NeedsSignIn -> Standing.SIGN_IN
-    is RequestsState.Unreachable, RequestsState.CantRead -> Standing.BAD
+    is RequestsState.Unreachable, RequestsState.CantRead, is RequestsState.LocalNetwork -> Standing.BAD
 }
 
 /**

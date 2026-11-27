@@ -216,7 +216,14 @@ class Graph(
                     afterwards = afterwards,
                     comeBack = { org.medianexus.music.requests.BrowserTab.comeBack(context.applicationContext) },
                     awake = { org.medianexus.music.requests.SignInService.hold(context) },
-                    trace = { diagnostics.replacing(org.medianexus.music.requests.Trace.PREFIX, it) },
+                    // (The last attempt, and the last that failed, each with the network it was
+                    // made on: a success afterwards does not wipe the failure.)
+                    trace = { line, failed ->
+                        val on = "$line; network: ${transportNow(context)}"
+                        diagnostics.replacing(org.medianexus.music.requests.Trace.PREFIX, on)
+                        if (failed) diagnostics.replacing(org.medianexus.music.requests.Trace.FAILED_PREFIX, on.replaceFirst(org.medianexus.music.requests.Trace.PREFIX, org.medianexus.music.requests.Trace.FAILED_PREFIX))
+                    },
+                    local = org.medianexus.music.requests.AppLocalGate(localAccess),
                     note = { diagnostics.note(it) },
                     // (A sign-in is finished only with the app's own screen in front: resumed.)
                     front = resumed,
@@ -542,4 +549,24 @@ class Graph(
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 fun quietMedia3(debug: Boolean) {
     androidx.media3.common.util.Log.setLogStackTraces(debug)
+}
+
+/** The kind of network the phone is on now, in a word, for the diagnostics line about
+ *  requests: Wi-Fi, mobile data, Ethernet, a VPN over one of them, or none. Nothing more. */
+internal fun transportNow(context: android.content.Context): String = try {
+    val manager = context.getSystemService(android.net.ConnectivityManager::class.java)
+    val caps = manager?.activeNetwork?.let { manager.getNetworkCapabilities(it) }
+    if (caps == null) {
+        "none"
+    } else {
+        val kind = when {
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile data"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+            else -> "other"
+        }
+        if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) "VPN over $kind" else kind
+    }
+} catch (_: RuntimeException) {
+    "unknown"
 }
