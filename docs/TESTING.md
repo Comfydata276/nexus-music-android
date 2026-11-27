@@ -2125,6 +2125,16 @@ format line "FLAC · 44.1 kHz · 16-bit" on song 4. No crash. The "moved" recove
 that may not go on in its form) is held by `MobileStreamTest`'s r1_ and r2_ tests; on the
 emulator these short songs were held whole before the Wi-Fi went.
 
+**The trial build 0.7.0-trial1** (code 15, with linking; built from 6636f7c), on the Android 17
+emulator: installed over 0.6.3 (code 13) and over 0.6.3-link1 (code 14), each with a sign-in, a
+queue and a downloaded album, and on the link build a relay saved (a local relay): after each,
+still signed in, the queue in place, the album still downloaded, "A relay is saved", Link my
+devices on. Same as Wi-Fi (the default after the upgrade), on mobile data: "Collected Works" asked
+for as it is, as 0.6.3 does. Lossless and Low: from its first song on the Wi-Fi, songs 1 to 4 as
+they are; Wi-Fi off 17 s in; songs 5 on asked for at 96 as each was opened, the format line "MP3 ·
+96 kbps"; Wi-Fi back: the next songs asked for as they are, the line "FLAC · 44.1 kHz · 16-bit".
+No playback error, no crash.
+
 Not seen here: a real phone moving between a real Wi-Fi and a real mobile network (the
 emulator's two are both the host's), and a VPN over mobile data (held by a test of what
 the app makes of Android's report of one, `MobileStreamTest`).
