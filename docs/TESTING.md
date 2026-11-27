@@ -2106,6 +2106,17 @@ stays on: the default network becomes the emulator's cellular `eth0`, without
 | Diagnostics, on the Wi-Fi and on mobile data | "Streaming limit: 96 kbps (0 is none), on mobile data 160 kbps; on mobile data now: no" / "yes" |
 | Crashes | none |
 
+**After the review's fixes** (the same emulator and server, Lossless and Low, kept songs
+cleared): "Continuous Sweep" from its first song on the Wi-Fi, songs 1 to 4 asked for as they
+are; Wi-Fi off 11 s in; song 5 opened 3 s later at 96, 6 to 8 at 96; songs 1 to 4, begun as
+they are, played so to their ends; the format line "FLAC · 44.1 kHz · 16-bit" on song 4 and
+"MP3 · 96 kbps" on song 6; Wi-Fi back on during song 7: song 8, begun at 96 on mobile data,
+played at 96, and the next album (MP3s within either limit) as they are. No playback error, no
+crash. Not seen on the emulator: a late callback, a route that moves before the connection,
+an entry made ready again after its reads gave up, a kept copy cleared between choice and
+read (each held by a test in `MobileStreamTest` or `MobileRacesTest`, and each of those shown
+to fail without its fix).
+
 Not seen here: a real phone moving between a real Wi-Fi and a real mobile network (the
 emulator's two are both the host's), and a VPN over mobile data (held by a test of what
 the app makes of Android's report of one, `MobileStreamTest`).
