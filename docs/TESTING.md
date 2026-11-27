@@ -3125,8 +3125,17 @@ A step with no released number fails. The car's foreground is held to Android's 
 To measure again: a checkout of the released commit, this folder's tests copied in with the
 stub in place of `ComponentHolds.kt`, the suite run three times; keep the three `run.tsv`.
 
-**What it does not cover.** Two songs joining without a gap: Robolectric gives the service's
-own audio output nothing to play to; that is the emulator's (above, "Gapless playback").
+**Two songs joining without a gap, on the emulator** (P1, after its review): the debug build,
+Android 16 emulator, signed in over HTTPS through a loopback front whose `/nexus/` takes the
+request and never answers (the test certificate in the emulator's user store); the client's
+`hello` arrived and was held before the album was played. The FLAC sweep album, captured and
+cut at its 160 seconds: `sweepcheck` "no gaps and no jumps" at its seven joins, as the released
+app on Android 17 above. The client's one request ended at its own 10-second read limit, and it
+asked nothing more in the hour (the front's log, `reports/nexus-p1/gapless/` in the cache).
+Streamed songs with the next fetched ahead only; cached and downloaded joins were not recorded.
+
+**What it does not cover.** Two songs joining without a gap in the suite itself: Robolectric
+gives the service's own audio output nothing to play to (above, for the emulator's).
 "Continue here"; a downloaded list refreshed; the network lost with a downloaded song playing;
 a play decided by `PlayReporter` inside the playing service; a headset's button through the
 platform's own media session (Robolectric has none). A real proxy between the phone and the

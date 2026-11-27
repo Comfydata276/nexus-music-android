@@ -40,7 +40,7 @@ object Times {
 
     /**
      * How much slower than the released app's median a step may be: 300 ms. Every one of the
-     * released app's own samples (but the warm-up's) is within it, the slowest by 243 ms; and a
+     * released app's own samples (but the warm-up's) is within it, the farthest from its median by 184 ms; and a
      * step held up by 400 ms or more is over it (`aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught`,
      * and `TimesTest`). This is the second alarm: the proof that nothing waits on the backend is
      * the holds (see `ComponentHolds`).
