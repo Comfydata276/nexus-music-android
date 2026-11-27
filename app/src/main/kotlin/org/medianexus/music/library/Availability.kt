@@ -22,7 +22,7 @@ class Availability(
     private val keeping: () -> Boolean,
     /** Whether this phone is known not to play the song's file as it is (the player found
      *  so this session, or a download did and it was remembered): the player then opens only
-     *  conversions of it, and so is only a conversion counted here. Asked with two limits. */
+     *  conversions of it, and so is only a conversion counted here. */
     private val mustConvert: (Song) -> Boolean = { false },
 ) {
     /** Downloaded: also a download that needs a fresh copy (it failed once when played),
@@ -34,14 +34,14 @@ class Availability(
      *  the phone is on now). */
     fun keyOf(song: Song): String = quality.keyOf(song)
 
-    /** Kept whole in a form the player would open it in: with one limit, the form it would be
-     *  streamed in now (as always); with two, either limit's, as the player would work them
-     *  out (one fetched ahead on the Wi-Fi plays on mobile data as it was fetched, and the other
-     *  way about; a file this phone can't play is never counted: see
-     *  `StreamQuality.keptKeysOf`). */
+    /** Kept whole in a form the player would open it in, worked out as the player works it
+     *  out: either limit's form (one fetched ahead on the Wi-Fi plays on mobile data as it was
+     *  fetched, and the other way about), and a file this phone can't play never counted, a
+     *  conversion kept in its place counted instead. (By the song's kind alone, as it used to
+     *  be with one limit, it offered offline a file the player would then refuse, and missed
+     *  the conversion it would play.) See `StreamQuality.keptKeysOf`. */
     fun isKept(song: Song): Boolean {
         if (!keeping()) return false
-        if (!quality.twoLimits()) return kept.isWhole(keyOf(song))
         val suffix = song.suffix.lowercase()
         val native = (suffix.isEmpty() || suffix in NATIVE_SUFFIXES) && !mustConvert(song)
         return quality.keptKeysOf(song, native).any(kept::isWhole)

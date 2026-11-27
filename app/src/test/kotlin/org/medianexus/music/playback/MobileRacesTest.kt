@@ -132,6 +132,30 @@ class MobileRacesTest {
         assertTrue(availability.plays(aac))
     }
 
+    @Test
+    fun withOneLimitTooOfflineOffersExactlyWhatWillPlay() {
+        // One limit (Lossless, "Same as Wi-Fi"), and this phone found not to play the AAC as
+        // it is: the player opens only the server's conversion of it, at 320.
+        settings.value = Settings(bitrate = 0)
+        var mustConvert = true
+        val availability = Availability(catalogue, kept, quality, keeping = { true }, mustConvert = { mustConvert })
+        // The file as it is, kept whole: the player would not play it. Not offered (the
+        // released app offered it, and the player then passed it over).
+        kept.kept("song:a:0", aac)
+        assertFalse(availability.plays(aac))
+        // The conversion kept in its place: what the player plays. Offered (the released app
+        // missed it).
+        kept.kept("song:a:320", aac)
+        assertTrue(availability.plays(aac))
+        assertEquals(listOf("a"), availability.playable().map { it.id })
+        // A song the phone plays as it is: its file, as always.
+        mustConvert = false
+        kept.gone("song:a:320")
+        assertTrue(availability.plays(aac))
+        // And the network is still not looked at.
+        assertEquals(0, looks.get())
+    }
+
     private companion object {
         val WIFI = NetworkNow(connected = true, unmetered = true)
         val MOBILE = NetworkNow(connected = true, unmetered = false)

@@ -350,9 +350,11 @@ How it is built (M1a):
     another. What had arrived of a conversion let go is not kept; of a file as it is, it
     stays under its own key. (And the worker is no longer set going, again and again, for a
     list of nothing but songs that have failed, as it was before there were two limits.)
-  - **Offline, and what fetching ahead passes over** (`Availability.isKept`): with two
-    limits, either limit's form as the player would open it, a file this phone has been
-    found not to play left out.
+  - **Offline, and what fetching ahead passes over** (`Availability.isKept`): either limit's
+    form as the player would open it, a file this phone has been found not to play left out
+    and a conversion kept in its place counted. (With one limit too: the released app went by
+    the song's kind, offered such a file, which the player then passed over, and missed the
+    conversion.)
   - **Downloads are untouched**: a downloaded copy plays in place of a stream whatever either
     limit says, saved at Download quality, as before.
   - **The kept songs never serve one quality under the other's name**: a song is kept under
