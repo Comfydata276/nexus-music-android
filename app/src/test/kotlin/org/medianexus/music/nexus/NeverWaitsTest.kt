@@ -199,9 +199,14 @@ class NeverWaitsTest(private val broken: Broken) {
         val millis = (System.nanoTime() - began) / 1e6
         Times.record(test, broken.name, step, millis)
         if (broken != Broken.WARM_UP) {
-            Times.held(test, step)?.let { limit ->
-                assertTrue("$test, $step: ${"%.0f".format(millis)} ms; held to the released app's median and 300 ms more: ${"%.0f".format(limit)}", millis <= limit)
+            Times.heldOneCase(test, step)?.let { limit ->
+                assertTrue("$test, $step: ${"%.0f".format(millis)} ms; one case is held to the released app's median and a second more: ${"%.0f".format(limit)}", millis <= limit)
             }
+            val run = Times.thisRun(test, step)
+            assertTrue(
+                "$test, $step: this run's median over its cases, ${"%.0f".format(Times.middle(run))} ms, is over the released app's median and 300 ms: ${Times.held(test, step)?.let { "%.0f".format(it) }}",
+                !Times.overRun(test, step, run),
+            )
         }
         holds.stillStuck("$test, $step")
         return result
@@ -694,8 +699,8 @@ class NeverWaitsTest(private val broken: Broken) {
         holds.oldClientLetGo()
     }
 
-    /** The timings are an alarm a dependency of 400 ms trips: a step slowed by that much is
-     *  over its limit. */
+    /** The timings are an alarm a dependency of 400 ms trips: the car's folders, each time with
+     *  400 ms more, as three cases of a run would have them, are over the run's limit. */
     @Test
     fun aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught() {
         assumeTrue(Times.released != null && broken == Broken.STALLED)
@@ -703,14 +708,13 @@ class NeverWaitsTest(private val broken: Broken) {
         val service = service(Foreground())
         val inside = service.inside()
         until("settled") { settled(service) }
-        val caught = runCatching {
+        val slowed = List(3) {
             val began = System.nanoTime()
             answer(inside.callback.onGetLibraryRoot(inside.session, car, null))
             for (id in listOf("root", "home", "playlists", "library", "downloads", "album/al-1")) answer(inside.callback.onGetChildren(inside.session, car, id, 0, Int.MAX_VALUE, null))
             Thread.sleep(400)
-            val millis = (System.nanoTime() - began) / 1e6
-            assertTrue(millis <= Times.held("the_car_starts_the_service_cold", "children")!!)
+            (System.nanoTime() - began) / 1e6
         }
-        assertTrue("a step 400 ms slower was not caught", caught.isFailure)
+        assertTrue("a step 400 ms slower in every case was not caught: $slowed", Times.overRun("the_car_starts_the_service_cold", "children", slowed))
     }
 }

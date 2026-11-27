@@ -3118,10 +3118,15 @@ offline, in use, a failure in it).
 `app/build/nexus-times/run.tsv`. The suite was run on the app as released (E13a) three times,
 with `nexus/ComponentHolds.kt` replaced by a stub that does nothing (the released app has no
 client): the samples are kept in `app/src/test/resources/nexus/released-times.tsv`. Every later
-run holds each step to **the released app's median for it, plus 300 ms**, the warm-up left out
-(`nexus/Times.kt`): every released sample is within it, and a step slowed by 400 ms is not
-(`nexus/TimesTest`, and the suite's own `aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught`).
-A step with no released number fails. The car's foreground is held to Android's five seconds.
+run holds each step to two limits (`nexus/Times.kt`), the warm-up left out. **For the run:** the
+median of a step across its cases (once three are in) is within the released app's median for
+it and 300 ms. A dependency on the client would slow a step in every case in which the client is
+held, and a 400 ms one is over it (`nexus/TimesTest`, and the suite's own
+`aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught`); every released sample is within it.
+**For one case:** the released median and one second, a backstop: one case alone can be slowed
+by the shared machine (a 20 ms step has taken 444 ms once, with nothing of the client's in the
+way), and anything that waited on the client's own limits, eight seconds and more, is far over
+it. A step with no released number fails. The car's foreground is held to Android's five seconds.
 To measure again: a checkout of the released commit, this folder's tests copied in with the
 stub in place of `ComponentHolds.kt`, the suite run three times; keep the three `run.tsv`.
 
