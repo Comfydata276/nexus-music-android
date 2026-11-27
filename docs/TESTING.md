@@ -2117,6 +2117,14 @@ an entry made ready again after its reads gave up, a kept copy cleared between c
 read (each held by a test in `MobileStreamTest` or `MobileRacesTest`, and each of those shown
 to fail without its fix).
 
+**After the lead's rulings R1 to R4** (the machinery of the round before removed; same
+emulator, server and settings, kept songs cleared): the sweep album on the Wi-Fi, songs 1 to 4
+asked for as they are; Wi-Fi off 12 s in; songs 5 to 8 asked for at 96 as each was opened;
+1 to 4, already held, played to their ends and joined (AUTO_TRANSITION) with no error; the
+format line "FLAC · 44.1 kHz · 16-bit" on song 4. No crash. The "moved" recovery (a read
+that may not go on in its form) is held by `MobileStreamTest`'s r1_ and r2_ tests; on the
+emulator these short songs were held whole before the Wi-Fi went.
+
 Not seen here: a real phone moving between a real Wi-Fi and a real mobile network (the
 emulator's two are both the host's), and a VPN over mobile data (held by a test of what
 the app makes of Android's report of one, `MobileStreamTest`).
