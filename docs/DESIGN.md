@@ -4304,11 +4304,13 @@ design's section 15. **It asks the backend's `hello`, and shows one row under Se
 reads, sends and keeps nothing else: no sign-in, no plays, no file. All of it is
 `nexus/Nexus.kt`; the review of P1 set most of what follows.
 
-- **Not on the way the app starts.** Nothing of it is made, loaded or started while the app's
-  objects are made (`App.onCreate`, `Graph`): `Graph` launches, on its own scope and off the
-  main thread, a wait for the first account to be published, and only then makes the
-  `NexusLauncher`, catching anything that fails in the making. Nothing of the account's
-  (`AccountGraph`), and nothing `Accounts.restored` waits for, makes it or waits on it.
+- **Not on the way the app starts.** Nothing of it is allocated or dispatched while `Graph` is
+  being made, or before `App.graph` is assigned: `App.onCreate` then calls `Graph.started`,
+  which sets a flag. The launcher (`NexusLauncher`), with the state the row reads, is made by
+  the account watcher that `Graph` already has, off the main thread, once an account is
+  published and the app has started, catching anything that fails in the making. Nothing of
+  the account's (`AccountGraph`), and nothing `Accounts.restored` waits for, makes it or waits
+  on it.
 - **Its own workers, all of them.** The launcher's thread ("nexus-launcher"); for each account
   a client with its own worker ("nexus-worker", which also does the connect: OkHttp's fast
   fallback, which hands connects to a scheduler, is off), its own dispatcher's thread
@@ -4322,14 +4324,20 @@ reads, sends and keeps nothing else: no sign-in, no plays, no file. All of it is
   (`Core.isReady`, which takes no lock); otherwise it says "none found" and asks nothing. So it
   never takes the load's lock, which the next sign-in can need.
 - **Nothing it does can take the app down.** Every failure inside it is caught inside it (an
-  interrupt while connecting, when it is let go of, among them); its coroutines and threads
-  have handlers of their own besides, which the tests hold to never being reached.
-- **Bound to its account.** What it finds is kept with the account it was found for
-  (`NexusShown`, in `Graph.nexusFound`), and the row shows it only while that account is the
-  one published (`Graph.nexusShown`). A client whose account is no longer published drops what
-  it brings back and stops by itself, whether or not the launcher has got to it; the launcher
-  lets it go when it sees the change (cancelling its request, closing its idle connection,
-  interrupting its threads), without waiting for anything.
+  interrupt while connecting, when it is let go of, among them), but a cancellation, which is
+  let through so that its loop ends; its coroutines and threads have handlers of their own
+  besides, which the tests hold to never being reached. Every way out of its loop lets it go.
+- **Let go without anyone waiting.** `stop` returns at once; the rest (cancelling its request,
+  closing its idle connection, which takes its own scheduler's lock, and shutting down its
+  executors, its OkHttp scheduler's included) runs on a thread of its own, each step whatever
+  the one before it did. The new account's client is started before the old one is let go of.
+- **Bound to its account.** What it finds is kept with the account it was found for and the
+  generation of the client that found it (`NexusShown`, in `NexusLauncher.found`), published by
+  compare-and-set on the generation, so an earlier account's late worker never overwrites a
+  later one's. The row shows it only if its account is the one in the session's own signed-in
+  value, the same value the row's heading is drawn from (`Graph.nexusShown`). A client whose
+  account is no longer published drops what it brings back and stops by itself, whether or not
+  the launcher has got to it.
 - **One probe is one request on the wire.** No retry on a failed connection, no redirect
   followed, and no follow-up of OkHttp's own (a 503 with "Retry-After: 0", a 408, a 421, a
   401's authenticator): a network interceptor refuses any second attempt of one call before it
@@ -4353,6 +4361,15 @@ reads, sends and keeps nothing else: no sign-in, no plays, no file. All of it is
 - **The row:** Settings, Account, under the signed-in row: "Nexus server", with "Found at
   music.example.org" (the port too if it is not 443; an IPv6 address in brackets then) or
   "None found". Nothing to press.
+- **Limits, accepted (the lead, on the recheck of P1):**
+  - **Okio's timeout watchdog** is one thread for the whole process and cannot be given to the
+    client alone: its timeouts ride on it like every other request's. An unchecked failure
+    inside OkHttp's own timeout callback is OkHttp's, as it is for a stream today.
+  - **A worker already past its checks** when the account changes, or offline mode is switched
+    on, may still send its one `hello` (to the old origin, or just after offline mode): its
+    answer is thrown away (the generation and the owner, above).
+  - **Through a system HTTP forward proxy** a fresh connection sends the proxy a `CONNECT`
+    before the one `GET`: "one request" means one request to the origin.
 - **The proof that nothing waits for it** is the suite of the design's 5.3, `nexus/
   NeverWaitsTest`, run with the backend's side broken in each way and the client's own threads
   held (docs/TESTING.md, "What never waits for the Nexus server").

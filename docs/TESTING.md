@@ -3083,24 +3083,29 @@ could not have completed.
 The cold entry points are driven **before the account is published** as well: a new process's
 objects made over a saved sign-in whose reading is held (a password box that opens when the
 test says), the entry point driven (the car's choice and its resumption card, a Play button
-through the receiver, the downloads' job), the reading let go, the entry point carried to its
-outcome; in `WORKERS_HELD` with the client's launcher held from its first instruction, so that
-no client is ever made.
+through the receiver, the downloads' job: `before_publication`), the reading let go, and then,
+**once the client's state is acknowledged**, the entry point carried to its outcome and checked
+(`after_publication`), the holds checked after it. The client can only exist once the account
+is published (DESIGN.md), so its hold can only be acknowledged then: in `WORKERS_HELD` the
+launcher held at its first instruction, so that no client is ever made; otherwise the account's
+client held as in the warm tests. Every hold is tied to the test's own one request: the client
+has sent one, the stand-in (one per test) has had one under `/nexus/` and holds it now; in
+`HALF_CONNECTED`, the client has the head and is reading the body.
 
 | Test | Entered at | Steps timed |
 |---|---|---|
-| `coldStartPublishesTheSavedAccount` | A new graph over a saved sign-in, the launcher held from its start (`WORKERS_HELD`), until `Accounts.restored` returns | `restored` |
+| `coldStartPublishesTheSavedAccount` | A new graph over a saved sign-in, from its making until `Accounts.restored` returns, the launcher held from its start (`WORKERS_HELD`); then the client acknowledged | `restored` |
 | `coldStartPutsTheQueueBackAndPlays` | The service made cold over a saved queue (`restore`), then Play | `restore`, `play` |
 | `aDirectPlayStartsItCold` | `PlayButtonReceiver.onReceive` with Play; the start command it makes, to the service, in the foreground when it returns, playing the saved song | `receiver`, `media_button` |
 | `aDirectPlayByTheReceiversOldNameStartsItCold` | The same through Media3's own receiver, the name the first builds gave it | `old_receiver`, `old_media_button` |
-| `aPlayButtonBeforeTheAccountIsPublishedStartsItCold` | The same, before the account is published | `before_publication` |
-| `theCarStartsTheServiceCold` | The car's choice (in the foreground before the main thread moves, against Android's five seconds), the root and six folders, search and its results, a spoken request, an added song, the card that resumes, each answer checked | `foreground` (recorded), `chosen`, `children`, `search`, `voice`, `add`, `resumption_card` |
-| `theCarBeforeTheAccountIsPublishedStartsItCold` | The car's choice and the card, before the account is published | `before_publication` |
+| `aPlayButtonBeforeTheAccountIsPublishedStartsItCold` | The same, before the account is published | `before_publication`, `after_publication` |
+| `theCarStartsTheServiceCold` | The car's choice, timed until the callback returns (in the foreground inside it, against Android's five seconds), its answer; the root and six folders, search and its results, a spoken request, an added song, the card that resumes, each answer checked | `choice`, `foreground` (recorded), `chosen`, `children`, `search`, `voice`, `add`, `resumption_card` |
+| `theCarBeforeTheAccountIsPublishedStartsItCold` | The car's choice and the card, before the account is published | `before_publication`, `after_publication` |
 | `theNotificationsButtonsWork` | The like of the notification Media3 posted, to the music server; shuffle and repeat through the player-command callback | `like`, `shuffle_and_repeat` |
 | `theQueueIsChangedAndKept` | Added next, added last, moved, removed, until on the disk; the service made again; cleared | `changed`, `kept`, `cleared` |
 | `downloadsStartAndResume` | One by hand; `DownloadsJob.onStartJob` alone, no screen, to `jobFinished`; the foreground `DownloadsService`, to its stopping itself | `by_hand`, `job`, `service` |
 | `aDownloadCutOffIsResumed` | A stream cut after a third of its bytes, then the failed downloads tried again, until whole | `resumed` |
-| `theJobBeforeTheAccountIsPublishedCarriesDownloadsOn` | The downloads' job, before the account is published | `job_before_publication` |
+| `theJobBeforeTheAccountIsPublishedCarriesDownloadsOn` | The downloads' job, before the account is published | `job_before_publication`, `after_publication` |
 | `offlineByHandAndByLoss` | Offline mode on, the car's Downloads and Home; off; the network lost, Home, Play | `by_hand`, `back`, `by_loss` |
 | `aLikeAndAPlayReachTheMusicServer` | A like, and a counted play reported | `like`, `play` |
 | `aPlayNotToldIsToldAgain` | A report the server would not take, held; the server back (the watch's ask and a pass over what is held) | `play_again` |
@@ -3126,7 +3131,9 @@ held, and a 400 ms one is over it (`nexus/TimesTest`, and the suite's own
 **For one case:** the released median and one second, a backstop: one case alone can be slowed
 by the shared machine (a 20 ms step has taken 444 ms once, with nothing of the client's in the
 way), and anything that waited on the client's own limits, eight seconds and more, is far over
-it. A step with no released number fails. The car's foreground is held to Android's five seconds.
+it. `WORKERS_HELD` is proven by construction alone: its holds are never let go while a test
+runs, so an entry point that waited on them would not complete; a bounded wait under a second
+in that case alone is not something the timer sees. A step with no released number fails. The car's foreground is held to Android's five seconds.
 To measure again: a checkout of the released commit, this folder's tests copied in with the
 stub in place of `ComponentHolds.kt`, the suite run three times; keep the three `run.tsv`.
 

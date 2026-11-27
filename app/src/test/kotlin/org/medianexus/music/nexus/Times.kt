@@ -54,7 +54,7 @@ object Times {
      * a run (once three are in) is held to the released app's median and 300 ms. A wait of 400
      * ms in an entry point is over it (`TimesTest`, and the suite's own
      * `aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught`). Every one of the released app's
-     * own samples is within its median and 300 ms, the farthest by 184 ms.
+     * own samples is within its median and 300 ms, the farthest by 161 ms.
      */
     const val MORE_MILLIS = 300.0
 
