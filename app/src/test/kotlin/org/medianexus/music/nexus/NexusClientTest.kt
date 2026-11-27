@@ -42,6 +42,7 @@ class NexusClientTest {
         fun untrust() = BackendStandIn.untrust()
     }
 
+    private val generations = java.util.concurrent.atomic.AtomicLong(1_000)
     private val standIns = ArrayList<BackendStandIn>()
     private val clients = ArrayList<NexusClient>()
     private val cleanup = ArrayList<() -> Unit>()
@@ -57,6 +58,8 @@ class NexusClientTest {
         try {
             assertEquals("a failure got past the client's own catches", escapedBefore, NexusClient.escaped.get())
         } finally {
+            NexusClient.socketsForTests = null
+            NexusClient.beforePublish = null
             cleanup.asReversed().forEach { runCatching(it) }
             clients.forEach { it.stop() }
             standIns.forEach { it.stop() }
@@ -72,11 +75,10 @@ class NexusClientTest {
         val address: String? get() = shown.value?.takeIf { it.owner === owner }?.address
     }
 
-    private fun client(address: String, every: Long = NexusLauncher.HOURLY_MILLIS, may: Boolean = true): Made {
+    private fun client(address: String, every: Long = NexusLauncher.HOURLY_MILLIS, may: Boolean = true, shown: MutableStateFlow<NexusShown?> = MutableStateFlow(null), generation: Long = generations.incrementAndGet()): Made {
         val owner = Any()
-        val shown = MutableStateFlow<NexusShown?>(null)
         lateinit var made: Made
-        val client = NexusClient(owner, address, "NexusMusic/test (Android)", every, live = { made.live }, mayAsk = { made.may }, shown = shown)
+        val client = NexusClient(generation, owner, address, "NexusMusic/test (Android)", every, live = { made.live }, mayAsk = { made.may }, shown = shown)
         made = Made(client, shown, owner).also { it.may = may }
         clients += client
         client.start()
@@ -261,28 +263,75 @@ class NexusClientTest {
         assertTrue(runner !== TaskRunner.INSTANCE)
     }
 
-    /** Review P1, MUST CHANGE 1: let go while connecting (a loopback port whose queue is
-     *  full, so the connect never completes), and while in TLS's handshake with a peer that
-     *  says nothing: it returns, its threads end, and nothing escapes. */
+    /** Its own threads, the scheduler's included, still alive: none once it has gone. */
+    private fun threadsOf(client: NexusClient): List<String> =
+        Thread.getAllStackTraces().keys.filter { it.isAlive && it.name.endsWith("-${client.generation}") && it.name.startsWith("nexus-") }.map { it.name }
+
+    /**
+     * Ruling A: let go while its connect is blocked, **the block acknowledged first** (a socket
+     * whose connect waits until interrupted, then throws `InterruptedException`, which is not an
+     * I/O error): the client returns, nothing reaches its handlers of last resort, and every
+     * thread of its own ends. Without the catch in `ask` the interrupt reaches the coroutine's
+     * handler, and this fails.
+     */
     @Test
-    fun letGoWhileConnectingOrInTheHandshakeNothingEscapes() {
-        // A listener that accepts nothing, its queue filled.
-        val full = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
-        val fillers = List(8) { runCatching { Socket().apply { connect(java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), full.localPort), 200) } }.getOrNull() }
-        // A listener that accepts, and never says a word.
-        val silent = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
-        val taken = java.util.Collections.synchronizedList(ArrayList<Socket>())
-        Thread { while (true) taken += try { silent.accept() } catch (_: java.io.IOException) { break } }.apply { isDaemon = true }.start()
-        cleanup += { full.close(); silent.close(); fillers.forEach { runCatching { it?.close() } }; taken.forEach { runCatching { it.close() } } }
-        for (port in listOf(full.localPort, silent.localPort)) {
-            val made = client("https://localhost:$port")
-            until("under way") { made.client.calling }
-            Thread.sleep(200)
-            made.client.stop()
-            assertTrue(made.client.isStopped)
-            for (worker in made.client.workers) assertTrue("a thread of its own is still running", worker.awaitTermination(10, TimeUnit.SECONDS))
-            assertNull(made.address)
+    fun letGoWhileItsConnectIsBlockedNothingEscapesAndItsThreadsEnd() {
+        val blocked = CountDownLatch(1)
+        NexusClient.socketsForTests = object : javax.net.SocketFactory() {
+            override fun createSocket(): Socket = object : Socket() {
+                override fun connect(endpoint: java.net.SocketAddress?, timeout: Int) {
+                    blocked.countDown()
+                    Thread.sleep(Long.MAX_VALUE)
+                }
+            }
+            override fun createSocket(host: String?, port: Int) = throw UnsupportedOperationException()
+            override fun createSocket(host: String?, port: Int, local: InetAddress?, localPort: Int) = throw UnsupportedOperationException()
+            override fun createSocket(host: InetAddress?, port: Int) = throw UnsupportedOperationException()
+            override fun createSocket(address: InetAddress?, port: Int, local: InetAddress?, localPort: Int) = throw UnsupportedOperationException()
         }
+        val made = client("https://localhost:9")
+        assertTrue("the connect was never entered", blocked.await(10, TimeUnit.SECONDS))
+        made.client.stop()
+        until("every thread of its own ended") { threadsOf(made.client).isEmpty() && made.client.schedulerThreads == 0 }
+        for (executor in made.client.executors) assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
+        assertNull(made.address)
+    }
+
+    /** Ruling B: a client that found the backend has its own scheduler's thread (the pool's
+     *  upkeep); let go, its threads, that one included, are counted down to none. */
+    @Test
+    fun letGoEveryThreadOfItsOwnEndsTheSchedulersToo() {
+        val origin = standIn { BackendStandIn.hello() }
+        val made = client(origin.address)
+        until("found") { made.address == origin.shown }
+        until("its scheduler has a thread") { made.client.schedulerThreads > 0 }
+        made.client.stop()
+        until("no thread of its own left: ${threadsOf(made.client)}, scheduler ${made.client.schedulerThreads}") { threadsOf(made.client).isEmpty() && made.client.schedulerThreads == 0 }
+    }
+
+    /**
+     * Ruling C: an earlier account's client, past its checks with a found answer, held there; the
+     * later account's client finds and publishes; the earlier one let go on: what is published
+     * stays the later one's.
+     */
+    @Test
+    fun aLateWorkerOfAnEarlierAccountNeverOverwritesALaterOnes() {
+        val a = standIn { BackendStandIn.hello() }
+        val b = standIn { BackendStandIn.hello() }
+        val shown = MutableStateFlow<NexusShown?>(null)
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        cleanup += { resume.countDown() }
+        val first = generations.incrementAndGet()
+        NexusClient.beforePublish = { client -> if (client.generation == first) { paused.countDown(); resume.await() } }
+        val madeA = client(a.address, shown = shown, generation = first)
+        assertTrue(paused.await(10, TimeUnit.SECONDS))
+        val madeB = client(b.address, shown = shown)
+        until("B published") { shown.value?.owner != null && madeB.address == b.shown }
+        resume.countDown()
+        until("A done") { madeA.client.asked.get() > 0 }
+        assertEquals("B's overwritten by A's late word", b.shown, madeB.address)
+        assertEquals(madeB.client.generation, shown.value!!.generation)
     }
 
     /** Review P1, MUST CHANGE 3: its account no longer published, a late answer is dropped and

@@ -28,6 +28,9 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
 
     private val seen = HashSet<NexusClient>()
 
+    /** A cold WORKERS_HELD start's launcher hold has been acknowledged. */
+    private var coldHeld = false
+
     /** Each client's worker, held before it asks ([Broken.WORKERS_HELD]): its state as [held]'s. */
     private val workerHeld = java.util.concurrent.ConcurrentHashMap<NexusClient, java.util.concurrent.atomic.AtomicInteger>()
 
@@ -95,8 +98,9 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
                 holdLock("its OkHttp scheduler", client.runner)
                 holdTheLauncher(graph)
             }
-            keeps -> until("the backend's client is kept at the stand-in") { client.calling && standIn.nexusActive.get() > 0 }
-            broken == Broken.HALF_CONNECTED -> until("the backend's client is reading half a hello") { client.calling && client.sent.get() > 0 }
+            // (Its one request, and the stand-in's one: no other client's request is counted.)
+            keeps -> until("the backend's client is kept at the stand-in") { ownRequestHeld(client) }
+            broken == Broken.HALF_CONNECTED -> until("the backend's client is reading half a hello") { client.reading && client.sent.get() == 1 && standIn.nexusArrived.get() == 1 }
             else -> until("the backend's client has had its answer") { client.asked.get() > 0 && !client.calling }
         }
     }
@@ -104,13 +108,38 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     /** Checks that every hold taken is still in place, after `what` completed. */
     fun stillStuck(what: String) {
         for ((name, state) in held) assertTrue("$what: the hold of the client's $name had let go", state.get() != 2)
+        // (A cold WORKERS_HELD start, once acknowledged, is held, not merely not yet entered.)
+        if (coldHeld) assertEquals("$what: the launcher not held at its start", 1, held["launcher from its start"]?.get())
         val client = client ?: return
         if (broken == Broken.WORKERS_HELD) assertEquals("$what: the client's worker had let go", 1, workerHeld[client]?.get())
         when {
             broken == Broken.WORKERS_HELD -> assertEquals("$what: the held client sent something", 0, client.sent.get())
-            keeps -> assertTrue("$what: the stand-in no longer keeps the client's hello", client.calling && standIn.nexusActive.get() > 0)
-            broken == Broken.HALF_CONNECTED -> assertTrue("$what: the client is no longer reading", client.calling)
+            keeps -> assertTrue("$what: the stand-in no longer keeps the client's one hello", ownRequestHeld(client))
+            broken == Broken.HALF_CONNECTED -> assertTrue("$what: the client is no longer reading its one answer", client.reading && client.sent.get() == 1 && standIn.nexusArrived.get() == 1)
             else -> {}
+        }
+    }
+
+    /** This test's client's own request, and no other, held at the stand-in now: it has sent one
+     *  request, the stand-in has had one under `/nexus/`, and is holding it. */
+    private fun ownRequestHeld(client: NexusClient) =
+        client.calling && client.sent.get() == 1 && standIn.nexusArrived.get() == 1 && standIn.nexusActive.get() == 1
+
+    /** A graph made by a test, as `App.onCreate` does once `App.graph` is it. */
+    fun appStarted(graph: Graph) = graph.started()
+
+    /**
+     * A cold start, the account just published: the client's state acknowledged before the
+     * entry point's outcome is judged. With [Broken.WORKERS_HELD] the launcher is held at its
+     * first instruction (it can only be made once the account is published); otherwise the
+     * account's client is made and held as [stuck] holds it.
+     */
+    fun coldAcknowledged(graph: Graph) {
+        if (broken == Broken.WORKERS_HELD) {
+            until("the launcher held at its start") { held["launcher from its start"]?.get() == 1 }
+            coldHeld = true
+        } else {
+            stuck(graph)
         }
     }
 
@@ -132,7 +161,7 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     }
 
     /** What the row says for the account `graph` has published now: never a backend here. */
-    fun shown(graph: Graph): String? = graph.nexusShown(graph.accounts.state.value)
+    fun shown(graph: Graph): String? = graph.nexusShown(graph.session.state.value)
 
     /** Lets every hold go (a test that needs the launcher again). */
     fun release() = holding.countDown()

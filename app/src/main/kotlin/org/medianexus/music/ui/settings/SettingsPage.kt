@@ -247,13 +247,16 @@ private fun Account(graph: Graph) {
     }
     // The Nexus server beside the music server, if there is one (nexus/Nexus.kt): what was
     // found, and nothing to do yet.
-    // Shown only for the account it was found for: never one account's under another's.
-    val found by graph.nexusFound.collectAsStateWithLifecycle()
-    val account by graph.accounts.state.collectAsStateWithLifecycle()
-    val address = found.let { graph.nexusShown(account) }
+    // Shown only for the account it was found for, judged against `signedIn`, the one value the
+    // heading above is drawn from: never one account's under another's.
+    val address by androidx.compose.runtime.produceState<String?>(null, signedIn) {
+        // (The client exists once an account has been published: looked for until then.)
+        while (graph.nexus == null) kotlinx.coroutines.delay(250)
+        graph.nexus!!.found.collect { value = graph.nexusShown(signedIn) }
+    }
     SettingRow(
         stringResource(R.string.nexus_server),
-        if (address != null) stringResource(R.string.nexus_found_at, address) else stringResource(R.string.nexus_none_found),
+        address?.let { stringResource(R.string.nexus_found_at, it) } ?: stringResource(R.string.nexus_none_found),
     ) {}
     // Linking the person's devices: two rows, only in a build in which it exists (none
     // that is released: see link/LinkBuild.kt).

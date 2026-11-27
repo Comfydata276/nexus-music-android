@@ -65,10 +65,15 @@ import org.medianexus.music.core.Core
  *   music playing): at most once an hour.
  */
 data class NexusShown(
-    /** The account it was found for: its API client, the account's identity in `Accounts`. */
+    /** The generation of the client that found it: one more for each account taken on, so that
+     *  what a later account's client found is never overwritten by an earlier one's. */
+    val generation: Long,
+    /** The account it was found for: its API client, the account's identity in `Accounts` and
+     *  in the session's state. */
     val owner: Any,
-    /** How the backend's origin is shown: its host, and its port if not HTTPS's own. */
-    val address: String,
+    /** How the backend's origin is shown (its host, and its port if not HTTPS's own); null for
+     *  "none found". */
+    val address: String?,
 )
 
 /**
@@ -79,8 +84,6 @@ class NexusLauncher internal constructor(
     private val accounts: StateFlow<AccountGraph?>,
     /** The app's work: the launcher ends with it. */
     parent: CoroutineScope,
-    /** Where what was found is put, for the row (`Graph.nexusFound`). */
-    private val shown: MutableStateFlow<NexusShown?>,
     private val userAgent: String,
     /** Whether a `hello` may be asked now (see [NexusClient]). */
     private val mayAsk: () -> Boolean,
@@ -92,6 +95,12 @@ class NexusLauncher internal constructor(
     private val thread: ExecutorService = Executors.newSingleThreadExecutor(named("nexus-launcher"))
     private val scope = CoroutineScope(SupervisorJob(parent.coroutineContext[Job]) + thread.asCoroutineDispatcher() + quietly)
     private val lock = Any()
+
+    private val shown = MutableStateFlow<NexusShown?>(null)
+
+    /** What the client of the latest account found, with its generation and owner. The row
+     *  shows its address only if its owner is the account the row is drawn for. */
+    val found: StateFlow<NexusShown?> = shown
 
     /** The launcher's own thread, for a test to hold. */
     internal val workers: List<ExecutorService> get() = listOf(thread)
@@ -115,7 +124,7 @@ class NexusLauncher internal constructor(
     private fun taken(account: AccountGraph?) {
         val made = account?.let {
             try {
-                NexusClient(it.api, it.account.server, userAgent, every, live = { accounts.value?.api === it.api }, mayAsk = mayAsk, shown = shown)
+                NexusClient(generations.incrementAndGet(), it.api, it.account.server, userAgent, every, live = { accounts.value?.api === it.api }, mayAsk = mayAsk, shown = shown)
             } catch (e: Exception) {
                 null
             } catch (e: LinkageError) {
@@ -127,12 +136,17 @@ class NexusLauncher internal constructor(
             current = made
             before
         }
-        old?.stop()
+        // The new account's first: nothing of the old one's is waited for (its letting go
+        // returns at once, and its cleanup runs on a thread of its own).
         made?.start()
+        old?.stop()
     }
 
     internal companion object {
         const val HOURLY_MILLIS = 60 * 60 * 1000L
+
+        /** Each client's generation: one more for every account taken on, in the process. */
+        private val generations = java.util.concurrent.atomic.AtomicLong()
 
         /** How often a client asks `hello` again: an hour, but in tests. */
         @Volatile var period: Long = HOURLY_MILLIS
@@ -148,6 +162,8 @@ class NexusLauncher internal constructor(
  * and the threads end by themselves.
  */
 class NexusClient internal constructor(
+    /** Its generation (see [NexusShown.generation]); its threads are named with it. */
+    internal val generation: Long,
     /** The account's identity in `Accounts` (its API client). */
     private val owner: Any,
     /** The account's music server, as the person typed it. */
@@ -159,13 +175,17 @@ class NexusClient internal constructor(
     private val mayAsk: () -> Boolean,
     private val shown: MutableStateFlow<NexusShown?>,
 ) {
-    private val worker: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor(named("nexus-worker"))
-    private val calls: ExecutorService = Executors.newSingleThreadExecutor(named("nexus-calls"))
+    private val worker: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor(named("nexus-worker-$generation"))
+    private val calls: ExecutorService = Executors.newSingleThreadExecutor(named("nexus-calls-$generation"))
     private val scope = CoroutineScope(SupervisorJob() + worker.asCoroutineDispatcher() + quietly)
+
+    /** The backend of OkHttp's scheduler for this client alone: shut down with the client. */
+    @OptIn(okhttp3.internal.OkHttpInternalApi::class)
+    private val backend = TaskRunner.RealBackend(named("nexus-okhttp-$generation"))
 
     /** OkHttp's scheduler for this client alone (see the file's comment). */
     @OptIn(okhttp3.internal.OkHttpInternalApi::class)
-    internal val runner = TaskRunner(TaskRunner.RealBackend(named("nexus-okhttp")))
+    internal val runner = TaskRunner(backend)
 
     @Volatile private var http: OkHttpClient? = null
 
@@ -173,6 +193,7 @@ class NexusClient internal constructor(
     internal val transport: OkHttpClient? get() = http
     @Volatile private var call: Call? = null
     @Volatile private var stopped = false
+    private val closing = java.util.concurrent.atomic.AtomicBoolean()
 
     /** Its own threads (the task runner's are made only when it has work), for a test to
      *  hold and to see end. */
@@ -188,40 +209,53 @@ class NexusClient internal constructor(
     @Volatile internal var calling = false
         private set
 
+    /** Whether it is reading an answer's body now (its head has come). */
+    @Volatile internal var reading = false
+        private set
+
     val isStopped: Boolean get() = stopped
 
     internal fun start() {
-        scope.launch {
-            var last = 0L
-            while (isActive) {
-                if (!live()) {
-                    stop()
-                    break
-                }
-                val now = System.nanoTime()
-                if (last == 0L || now - last >= every * 1_000_000) {
-                    if (mayAsk()) {
-                        last = now
-                        beforeAsk?.invoke(this@NexusClient)
-                        val found = ask()
-                        // Only for the account it was asked for, and only while that account is
-                        // the one published.
-                        if (!stopped && live()) shown.update { if (found != null) NexusShown(owner, found) else it?.takeUnless { mine -> mine.owner === owner } }
+        try {
+            scope.launch {
+                try {
+                    var last = 0L
+                    while (isActive) {
+                        if (!live()) break
+                        val now = System.nanoTime()
+                        if (last == 0L || now - last >= every * 1_000_000) {
+                            if (mayAsk()) {
+                                last = now
+                                beforeAsk?.invoke(this@NexusClient)
+                                val found = ask()
+                                // Only for the account it was asked for, only while that account is
+                                // the one published, and never over a later account's client's word.
+                                if (!stopped && live()) {
+                                    beforePublish?.invoke(this@NexusClient)
+                                    shown.update { now -> if (now == null || now.generation <= generation) NexusShown(generation, owner, found) else now }
+                                }
+                            }
+                        }
+                        asked.incrementAndGet()
+                        delay(minOf(every, LOOK_MILLIS))
                     }
+                } finally {
+                    // Every way out (its account gone, let go of, a failure): its threads end.
+                    stop()
                 }
-                asked.incrementAndGet()
-                delay(minOf(every, LOOK_MILLIS))
             }
+        } catch (e: Exception) {
+            stop()
         }
     }
 
     /** Asks `hello` once, and reads what answers: the address it was found at, or null. Runs
      *  on this client's own thread, and may hold it for as long as its limits allow. */
     private fun ask(): String? {
-        val origin = origin(server) ?: return null
-        // Never the shared library's load: not loaded, there is no answer to be had.
-        if (!Core.isReady) return null
         return try {
+            val origin = origin(server) ?: return null
+            // Never the shared library's load: not loaded, there is no answer to be had.
+            if (!Core.isReady) return null
             val client = http ?: build().also { http = it }
             val request = Request.Builder().url(origin.newBuilder().encodedPath(HELLO).build())
                 .header("User-Agent", userAgent).tag(AtomicInteger::class.java, AtomicInteger()).get().build()
@@ -230,18 +264,24 @@ class NexusClient internal constructor(
             if (stopped) made.cancel()
             calling = true
             made.execute().use { response ->
+                reading = true
                 // (The core reads no body but a 200's: none is waited for.)
                 val (body, whole) = if (response.code == 200) read(response.body.source()) else ByteArray(0) to true
                 if (Core.nexusHelloIfReady(response.code, body, whole)?.backend == true) shown(origin) else null
             }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            // (Its coroutine is to end: not a "none found".)
+            throw e
         } catch (e: Exception) {
             // (Whatever it is: an I/O failure, a refusal of the library's, a thread interrupted
-            // by the client being let go of. The probe found nothing; the app carries on.)
+            // while connecting by the client being let go of. The probe found nothing; the app
+            // carries on.)
             null
         } catch (e: LinkageError) {
             null
         } finally {
             calling = false
+            reading = false
             call = null
         }
     }
@@ -253,17 +293,43 @@ class NexusClient internal constructor(
      */
     fun stop() {
         stopped = true
+        if (!closing.compareAndSet(false, true)) return
+        quiet { scope.cancel() }
+        // The rest on a thread of its own: closing a socket or the pool's upkeep (which takes
+        // its scheduler's lock) is never anyone else's wait.
+        val closer = { close() }
         try {
-            scope.cancel()
-            call?.cancel()
-            http?.dispatcher?.cancelAll()
-            http?.connectionPool?.evictAll()
-            worker.shutdownNow()
-            calls.shutdownNow()
+            named("nexus-closer-$generation").newThread(closer).start()
         } catch (e: Exception) {
-            // (Letting go is never a reason for anything else to fail.)
+            close()
+        } catch (e: Error) {
+            close()
         }
     }
+
+    /** What letting go does, every step whatever the one before it did; the executors shut
+     *  down whatever happens. */
+    @OptIn(okhttp3.internal.OkHttpInternalApi::class)
+    private fun close() {
+        try {
+            quiet { call?.cancel() }
+            quiet { http?.dispatcher?.cancelAll() }
+            quiet { http?.connectionPool?.evictAll() }
+        } finally {
+            quiet { worker.shutdownNow() }
+            quiet { calls.shutdownNow() }
+            quiet { backend.shutdown() }
+        }
+    }
+
+    /** How many threads its own OkHttp scheduler has now (OkHttp names them after the task they
+     *  run, so they are counted here, not by name). For the tests. */
+    @OptIn(okhttp3.internal.OkHttpInternalApi::class)
+    internal val schedulerThreads: Int get() = backend.executor.poolSize
+
+    /** Its threads, the scheduler's too, for a test to see end (and to count). */
+    @OptIn(okhttp3.internal.OkHttpInternalApi::class)
+    internal val executors: List<ExecutorService> get() = listOf(worker, calls, backend.executor)
 
     @OptIn(okhttp3.internal.OkHttpInternalApi::class)
     private fun build(): OkHttpClient {
@@ -294,6 +360,7 @@ class NexusClient internal constructor(
                 sent.incrementAndGet()
                 chain.proceed(chain.request())
             }
+        socketsForTests?.let { builder.socketFactory(it) }
         // (OkHttp keeps the setter of a client's task runner to itself: see proguard-rules.pro.)
         OkHttpClient.Builder::class.java.getMethod("taskRunner\$okhttp", TaskRunner::class.java).invoke(builder, runner)
         return builder.build()
@@ -329,6 +396,13 @@ class NexusClient internal constructor(
         /** For the tests only: run on the worker before each `hello`. */
         @Volatile var beforeAsk: ((NexusClient) -> Unit)? = null
 
+        /** For the tests only: run on the worker after its checks, before it publishes. */
+        @Volatile var beforePublish: ((NexusClient) -> Unit)? = null
+
+        /** For the tests only: the sockets a client is made with (one whose connect never
+         *  completes). */
+        @Volatile var socketsForTests: javax.net.SocketFactory? = null
+
         /** The origin of the account's music server, if it is HTTPS; otherwise there is no
          *  backend to ask (the backend's line is HTTPS only). */
         fun origin(server: String): HttpUrl? {
@@ -361,6 +435,15 @@ class NexusClient internal constructor(
             }
             return got.readByteArray() to whole
         }
+    }
+}
+
+/** Runs `step`, and whatever it throws ends there. */
+private inline fun quiet(step: () -> Unit) {
+    try {
+        step()
+    } catch (e: Exception) {
+    } catch (e: LinkageError) {
     }
 }
 

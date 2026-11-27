@@ -98,8 +98,8 @@ class NexusOwnerTest {
         val a = standIn { if (asks.incrementAndGet() >= 2) late.await(30, TimeUnit.SECONDS); BackendStandIn.hello() }
         val b = standIn { BackendStandIn.hello() }
         a.signIn(app, "ada")
-        val accountA = app.graph.accounts.state.value!!
-        until("A found") { app.graph.nexusShown(accountA) == a.shown }
+        val sessionA = app.graph.session.state.value
+        until("A found") { app.graph.nexusShown(sessionA) == a.shown }
         val clientA = app.graph.nexus!!.current!!
         until("A's next hello kept") { asks.get() >= 2 && clientA.calling }
         // The launcher held: nothing of its can help.
@@ -107,23 +107,54 @@ class NexusOwnerTest {
         app.graph.nexus!!.workers[0].execute { launcherHeld.countDown(); release.await() }
         assertTrue(launcherHeld.await(5, TimeUnit.SECONDS))
         app.graph.session.signOut()
-        b.signIn(app, "bob")
+        // B signs in. The row is judged against the session's own value, the one its heading is
+        // drawn from: the moment the session says B, nothing of A's is shown, whether or not
+        // the accounts have published B yet.
+        app.graph.session.signIn(b.address, "bob", "a password")
+        until("the session says B") { (app.graph.session.state.value as? org.medianexus.music.SessionState.SignedIn)?.account?.username == "bob" }
+        val sessionB = app.graph.session.state.value
+        assertNull("A's backend shown under B's heading", app.graph.nexusShown(sessionB))
+        until("B published") { app.graph.accounts.state.value?.account?.username == "bob" }
         val accountB = app.graph.accounts.state.value!!
-        // At once: nothing of A's is shown for B.
-        assertNull("A's backend shown under B", app.graph.nexusShown(accountB))
+        assertNull("A's backend shown under B", app.graph.nexusShown(sessionB))
         // A's late answer comes, and is dropped; A stops by itself, and asks nothing more.
         late.countDown()
         until("A stopped by itself, the launcher still held") { clientA.isStopped }
         for (worker in clientA.workers) assertTrue(worker.awaitTermination(10, TimeUnit.SECONDS))
-        assertNull("A's late answer shown under B", app.graph.nexusShown(accountB))
-        assertTrue("A's answer kept for B", app.graph.nexusFound.value?.owner !== accountB.api)
+        assertNull("A's late answer shown under B", app.graph.nexusShown(sessionB))
+        assertTrue("A's answer kept for B", app.graph.nexus!!.found.value?.owner !== accountB.api)
         Thread.sleep(500)
         assertEquals("A asked again after B was published", 2, asks.get())
         assertTrue(b.asked.none { "/nexus/" in it })
         // The launcher let go: B's own client, B's own backend.
         release.countDown()
-        until("B found") { app.graph.nexusShown(accountB) == b.shown }
+        until("B found") { app.graph.nexusShown(sessionB) == b.shown }
         assertTrue(app.graph.nexus!!.current !== clientA)
+    }
+
+    /**
+     * Ruling C: B's client starts without waiting for anything of A's. A found, so its pool
+     * holds a connection whose letting go takes A's own scheduler's lock: that lock held by
+     * another thread throughout, A is let go of and B signs in at another origin; B's client is
+     * made and finds B's backend all the same. Released, A's threads end.
+     */
+    @OptIn(okhttp3.internal.OkHttpInternalApi::class)
+    @Test
+    fun theNextAccountsClientWaitsForNothingOfTheLastOnes() {
+        val a = standIn { BackendStandIn.hello() }
+        val b = standIn { BackendStandIn.hello() }
+        a.signIn(app, "ada")
+        until("A found") { app.graph.nexusShown(app.graph.session.state.value) == a.shown }
+        val clientA = app.graph.nexus!!.current!!
+        val held = CountDownLatch(1)
+        Thread { synchronized(clientA.runner) { held.countDown(); release.await() } }.apply { isDaemon = true }.start()
+        assertTrue(held.await(5, TimeUnit.SECONDS))
+        app.graph.session.signOut()
+        b.signIn(app, "bob")
+        until("B found, A's letting go held") { app.graph.nexusShown(app.graph.session.state.value) == b.shown }
+        assertTrue(clientA.isStopped)
+        release.countDown()
+        for (executor in clientA.executors) assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
     }
 
     private class GatedBox : SecretBox {
@@ -161,9 +192,15 @@ class NexusOwnerTest {
         shadowOf(Looper.getMainLooper()).idle()
         assertNull("a launcher was made before the account was published", graph.nexus)
         box.open.countDown()
-        until("the launcher made, once published") { graph.nexus != null }
+        until("published") { graph.accounts.state.value != null }
+        Thread.sleep(300)
+        shadowOf(Looper.getMainLooper()).idle()
+        // (The app has not said it has started: App.graph is not these objects yet.)
+        assertNull("a launcher was made before the app had started", graph.nexus)
+        graph.started()
+        until("the launcher made, once published and started") { graph.nexus != null }
         assertTrue("made on the main thread", graph.nexus!!.madeOn !== Looper.getMainLooper().thread)
-        until("found") { graph.nexusShown(graph.accounts.state.value) == origin.shown }
+        until("found") { graph.nexusShown(graph.session.state.value) == origin.shown }
     }
 
     /** Review P1, MUST CHANGE 1: a failure in the launcher's own start ends there. The app goes
@@ -194,7 +231,7 @@ class NexusOwnerTest {
         until("looked several times") { client.asked.get() >= 5 }
         assertTrue("asked with offline mode on", origin.asked.none { "/nexus/" in it })
         app.graph.settings.update { it.copy(offline = false) }
-        until("found once offline mode is off") { app.graph.nexusShown(app.graph.accounts.state.value) == origin.shown }
+        until("found once offline mode is off") { app.graph.nexusShown(app.graph.session.state.value) == origin.shown }
         assertEquals(1, origin.asked.count { "/nexus/" in it })
     }
 
@@ -209,7 +246,7 @@ class NexusOwnerTest {
         until("looked several times") { client.asked.get() >= 5 }
         assertTrue("asked with the app not in use", origin.asked.none { "/nexus/" in it })
         app.graph.playing = true
-        until("found once music plays") { app.graph.nexusShown(app.graph.accounts.state.value) == origin.shown }
+        until("found once music plays") { app.graph.nexusShown(app.graph.session.state.value) == origin.shown }
         app.graph.playing = false
     }
 }

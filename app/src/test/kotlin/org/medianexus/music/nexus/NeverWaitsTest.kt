@@ -282,16 +282,24 @@ class NeverWaitsTest(private val broken: Broken) {
         val box = GatedBox()
         val graph = Graph(app, box).also { graphs += it }
         becomeTheApp(graph)
+        holds.appStarted(graph)
         holds.inUse(graph)
         assertTrue("the saved sign-in is not being read", box.opening.await(30, TimeUnit.SECONDS))
         assertNull("published before the test let it be", graph.accounts.state.value)
         return graph to box
     }
 
-    /** After the account is published, cold: the client, made for it, is stuck (or, held from
-     *  its launcher's start, was never made). */
-    private fun afterPublication(graph: Graph) {
-        if (broken != Broken.WORKERS_HELD) holds.stuck(graph)
+    /**
+     * A cold entry point, driven before the account was published, is carried to its outcome
+     * only once the client's state is acknowledged (ruling A puts the client after publication,
+     * so its hold cannot come before the entry point is driven): the vault opened, the account
+     * published, then the launcher acknowledged held at its start (WORKERS_HELD) or the account's
+     * client held as everywhere else, then the outcome, timed, with the hold checked after it.
+     */
+    private fun <T> afterPublication(graph: Graph, box: GatedBox, test: String, outcome: () -> T): T {
+        box.open.countDown()
+        holds.coldAcknowledged(graph)
+        return timed(test, "after_publication", outcome)
     }
 
     // ---- The tests ------------------------------------------------------------------------------
@@ -300,7 +308,6 @@ class NeverWaitsTest(private val broken: Broken) {
     fun coldStartPublishesTheSavedAccount() {
         // Someone signed in, with the password saved; the app is ended.
         val before = Graph(app, PlainBox).also { graphs += it }
-        holds.inUse(before)
         before.session.signIn(standIn.address, "tester", "a password")
         runBlocking { withTimeout(30_000) { before.accounts.state.first { it != null } } }
         runBlocking { before.settings.flush() }
@@ -308,14 +315,19 @@ class NeverWaitsTest(private val broken: Broken) {
         // The app starts again, the client's launcher held from its first instruction where the
         // case holds it: the saved sign-in is read and the account published.
         holds.holdTheLauncherFromItsStart()
-        val graph = Graph(app, PlainBox).also { graphs += it }
-        holds.inUse(graph)
+        // (Timed from the making of the app's objects.)
+        var made: Graph? = null
         val restored = timed("cold_start_publishes_the_saved_account", "restored") {
+            val graph = Graph(app, PlainBox).also { graphs += it; made = it }
+            holds.appStarted(graph)
+            holds.inUse(graph)
             runBlocking { withTimeout(30_000) { graph.accounts.restored() } }
         }
         assertNotNull("the saved account was not published", restored)
         assertEquals("tester", restored!!.account.username)
-        afterPublication(graph)
+        // Then the client, made for it, acknowledged in the case's state, and still so.
+        holds.coldAcknowledged(made!!)
+        holds.stillStuck("cold_start_publishes_the_saved_account, after publication")
     }
 
     @Test
@@ -388,10 +400,10 @@ class NeverWaitsTest(private val broken: Broken) {
             service.onStartCommand(started, 0, 1)
             assertTrue("not in the foreground when the start command returned", shadowOf(service).lastForegroundNotificationId != 0)
             assertNull(graph.accounts.state.value)
-            box.open.countDown()
-            until("playing what was saved") { inside.exo.playWhenReady && inside.player.queue.current()?.id == "s2" }
+            inside
+        }.let { inside ->
+            afterPublication(graph, box, test) { until("playing what was saved") { inside.exo.playWhenReady && inside.player.queue.current()?.id == "s2" } }
         }
-        afterPublication(graph)
     }
 
     @Test
@@ -402,7 +414,10 @@ class NeverWaitsTest(private val broken: Broken) {
         val inside = service.inside()
         val test = "the_car_starts_the_service_cold"
         val asked = System.nanoTime()
-        val chosen = inside.callback.onSetMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/0/s1/album/al-1").build()), C.INDEX_UNSET, C.TIME_UNSET)
+        // Timed from the call to its return (the foreground entered inside it).
+        val chosen = timed(test, "choice") {
+            inside.callback.onSetMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/0/s1/album/al-1").build()), C.INDEX_UNSET, C.TIME_UNSET)
+        }
         assertTrue("not in the foreground when the car's choice arrived", android.inIt)
         val foreground = (android.enteredAt - asked) / 1e6
         Times.record(test, broken.name, "foreground", foreground)
@@ -451,16 +466,17 @@ class NeverWaitsTest(private val broken: Broken) {
         val service = service(android)
         val inside = service.inside()
         val test = "the_car_starts_the_service_cold"
-        timed(test, "before_publication") {
+        val (chosen, resume) = timed(test, "before_publication") {
             val chosen = inside.callback.onSetMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/0/s1/album/al-1").build()), C.INDEX_UNSET, C.TIME_UNSET)
             assertTrue("not in the foreground when the car's choice arrived", android.inIt)
             val resume = inside.callback.onPlaybackResumption(inside.session, car, false)
             assertNull(graph.accounts.state.value)
-            box.open.countDown()
+            chosen to resume
+        }
+        afterPublication(graph, box, test) {
             assertChosen(answer(chosen))
             assertTrue(answer(resume).mediaItems.isNotEmpty())
         }
-        afterPublication(graph)
     }
 
     @Test
@@ -576,16 +592,15 @@ class NeverWaitsTest(private val broken: Broken) {
     fun theJobBeforeTheAccountIsPublishedCarriesDownloadsOn() {
         val (graph, box) = processStartedAgain()
         val test = "downloads_start_and_resume"
-        timed(test, "job_before_publication") {
+        val job = timed(test, "job_before_publication") {
             val job = Robolectric.buildService(DownloadsJob::class.java).create().get()
             services += job
             assertTrue(job.onStartJob(jobParameters()))
             assertNull(graph.accounts.state.value)
-            box.open.countDown()
-            // Nothing is waiting: the job looks, and ends.
-            until("the job ended") { shadowOf(job).isJobFinished }
+            job
         }
-        afterPublication(graph)
+        // Nothing is waiting: the job looks, and ends.
+        afterPublication(graph, box, test) { until("the job ended") { shadowOf(job).isJobFinished } }
     }
 
     /** What Android hands a job: built by its own constructor, as the scheduler does. */
@@ -700,7 +715,10 @@ class NeverWaitsTest(private val broken: Broken) {
     }
 
     /** The timings are an alarm a dependency of 400 ms trips: the car's folders, each time with
-     *  400 ms more, as three cases of a run would have them, are over the run's limit. */
+     *  400 ms more, as three cases of a run would have them, are over the run's limit.
+     *  (WORKERS_HELD is proven by construction alone: its holds are never let go while a test
+     *  runs, so an entry point that waited on them would not complete; a wait with a time limit
+     *  under a second, in that case alone, is not something the timer is meant to see.) */
     @Test
     fun aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught() {
         assumeTrue(Times.released != null && broken == Broken.STALLED)

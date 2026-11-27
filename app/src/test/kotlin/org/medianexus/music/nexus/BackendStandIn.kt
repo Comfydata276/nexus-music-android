@@ -97,6 +97,9 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
      *  as the stand-in is holding each (until the test ends, or SATURATED's eight seconds). */
     val nexusActive = java.util.concurrent.atomic.AtomicInteger()
 
+    /** The requests under `/nexus/` that have arrived, ever (at this stand-in, one per test). */
+    val nexusArrived = java.util.concurrent.atomic.AtomicInteger()
+
     /** Endpoints of the music server's answered by closing the connection, for as long as
      *  they are in here (a report that can't be made until the test lets it). */
     val failing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -123,6 +126,7 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
                 asked += "${request.method} $path"
                 return if (path.startsWith("/nexus/") || path == "/nexus") {
                     nexusConnections += request.connectionIndex
+                    nexusArrived.incrementAndGet()
                     nexus(request)
                 } else {
                     musicConnections += request.connectionIndex

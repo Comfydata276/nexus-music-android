@@ -7,7 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.medianexus.music.net.Http
@@ -264,18 +263,44 @@ class Graph(
         )
     }
 
-    /** What the Nexus server's client found, and for which account (`nexus/Nexus.kt`). The row
-     *  under Settings shows it only while that account is the one published ([nexusShown]). */
-    val nexusFound = kotlinx.coroutines.flow.MutableStateFlow<org.medianexus.music.nexus.NexusShown?>(null)
-
-    /** The Nexus server's client's launcher: null until the first account has been published
-     *  (it is made then, off the main thread: see `init`), or if it could not be made. */
+    /** The Nexus server's client's launcher (`nexus/Nexus.kt`): null until the app has started
+     *  ([started]) and an account has been published; it is made then, off the main thread,
+     *  with everything of the client's. Null too if it could not be made. */
     @Volatile var nexus: org.medianexus.music.nexus.NexusLauncher? = null
         private set
 
-    /** The address the row under Settings shows for `account`: where the backend was found
-     *  for that account, or null. */
-    fun nexusShown(account: AccountGraph?): String? = nexusFound.value?.takeIf { account != null && it.owner === account.api }?.address
+    /** Whether the app has started: `App.graph` is these objects ([started]). */
+    @Volatile private var appStarted = false
+
+    /**
+     * The app has started (`App.onCreate`, once `App.graph` is assigned): from now the Nexus
+     * server's client may be made, when an account is published. Nothing of it exists while
+     * these objects are being made. (Sets a flag; dispatches only if an account is already
+     * published.)
+     */
+    fun started() {
+        appStarted = true
+        if (accounts.state.value != null) scope.launch { makeNexus() }
+    }
+
+    private val nexusLock = Any()
+
+    /** Makes the launcher, once, if the app has started and an account is published. On the
+     *  account watcher's thread or [started]'s dispatch; never the main thread. */
+    private fun makeNexus() {
+        if (!appStarted || accounts.state.value == null) return
+        synchronized(nexusLock) { if (nexus == null) nexus = startNexus() }
+    }
+
+    /**
+     * The address the row under Settings shows, for the signed-in account of `session`: the one
+     * value the row's heading is drawn from. Shown only if what was found carries that account
+     * as its owner.
+     */
+    fun nexusShown(session: SessionState): String? {
+        val signedIn = session as? SessionState.SignedIn ?: return null
+        return nexus?.found?.value?.takeIf { it.owner === signedIn.api }?.address
+    }
 
     val toasts = Toasts()
 
@@ -347,7 +372,7 @@ class Graph(
 
     private fun startNexus(): org.medianexus.music.nexus.NexusLauncher? = try {
         org.medianexus.music.nexus.NexusLauncher(
-            accounts.state, scope, nexusFound,
+            accounts.state, scope,
             userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)",
             // Not with offline mode switched on by hand; not while the phone may not reach the
             // home network; and only while the app is in use (its screens in front, or music
@@ -509,6 +534,9 @@ class Graph(
         scope.launch {
             var had = false
             accounts.state.collect { account ->
+                // The Nexus server's client's launcher, once an account is published and the app
+                // has started (nexus/Nexus.kt): never a reason for anything here to fail.
+                if (account != null) makeNexus()
                 // Signed out (not "not yet read", at start-up, when the job may be what
                 // started the app): nothing of theirs is carried on, by job or service.
                 if (account == null && had) org.medianexus.music.downloads.DownloadKeeper.letGo(app)
@@ -547,13 +575,6 @@ class Graph(
                     }
                 }
             }
-        }
-        // The Nexus server's client: nothing of it on the way the app starts (nexus/Nexus.kt).
-        // Made off the main thread once an account has been published, and never a reason for
-        // the app to fail.
-        scope.launch(Dispatchers.Default + kotlinx.coroutines.CoroutineExceptionHandler { _, _ -> }) {
-            accounts.state.first { it != null }
-            nexus = startNexus()
         }
         // Jams and linked devices, when hosting is switched on: made now, so that the phone
         // can be among the person's devices while it has a reason to be (M6). Otherwise

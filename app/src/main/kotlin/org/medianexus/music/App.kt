@@ -19,6 +19,8 @@ class App : Application(), SingletonImageLoader.Factory {
         org.medianexus.music.requests.DebugRequests.atStart(this)
         org.medianexus.music.link.DebugLink.atStart(this)
         graph = Graph(this)
+        // (Only now may the Nexus server's client be made: see Graph.started.)
+        graph.started()
     }
 
     /** Coil's loader, made the first time a picture is shown: covers from the cover store. */
