@@ -127,6 +127,9 @@ class LinkWorkersTest {
 
     @Before
     fun start() {
+        // Linking off whatever the build (`-PlinkExists=true` makes a trial build with it): the
+        // service made here starts none of its own, as in every build without the property.
+        org.medianexus.music.link.LinkBuild.forTests = false
         kotlinx.coroutines.runBlocking { app.graph.session.restored() }
         service = Robolectric.buildService(PlaybackService::class.java).create().get()
         service.foreground = Android()
@@ -162,6 +165,7 @@ class LinkWorkersTest {
 
     @After
     fun stop() {
+        org.medianexus.music.link.LinkBuild.forTests = null
         held?.countDown()
         link.close()
         service.onDestroy()

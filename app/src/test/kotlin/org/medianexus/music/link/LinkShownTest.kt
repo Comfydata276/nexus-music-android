@@ -22,7 +22,9 @@ class LinkShownTest {
 
     @Test
     fun withoutLinkingEveryListIsAsItWas() {
-        // The build as it is: linking does not exist. Nothing is asked, nothing is left out.
+        // Linking does not exist (the build without the property, or switched off whatever the
+        // build). Nothing is asked, nothing is left out.
+        LinkBuild.forTests = false
         LinkShown.wanted = { throw AssertionError("asked whether linking is wanted in a build without it") }
         assertSame(lists, LinkShown.of(lists))
         // Existing, and not running or not wanted: the same.
