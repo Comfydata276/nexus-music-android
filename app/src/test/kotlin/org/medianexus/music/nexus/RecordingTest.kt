@@ -112,23 +112,30 @@ class RecordingTest {
     @Test fun fullCaptureQueueDropsOneForEveryFailedOfferAndFlushesThatCount() {
         val hold = CountDownLatch(1)
         val entered = CountDownLatch(1)
+        val durable = CountDownLatch(1)
         val service = recording { request ->
             if ("activate" in request) {
                 entered.countDown()
                 check(hold.await(8, TimeUnit.SECONDS))
             }
-            Core.nexusJournal(request)
+            Core.nexusJournal(request).also { reply ->
+                if (reply is JsonObject && reply["counted"] == JsonPrimitive(45)) durable.countDown()
+            }
         }
         val scope = publish(service, 1)
         assertTrue(entered.await(8, TimeUnit.SECONDS))
         try {
-            val refused = (1..300).count { service.capture(Listening.Search("fixture", 0, false)) == null }
-            assertEquals(45, refused) // One Open had already entered the fixed 256 slots.
+            // One Open is already queued. Position observations fill the remaining slots
+            // without requiring 255 fsyncs to prove what happens when the queue is full.
+            repeat(255) { assertNotNull(service.capture(Listening.Position(EventId(0, 2), it.toLong()))) }
+            val refused = (1..45).count { service.capture(Listening.Search("fixture", 0, false)) == null }
+            assertEquals(45, refused)
             assertEquals(45uL, service.losses().line)
         } finally {
             hold.countDown()
         }
-        waitForPending(scope, 256)
+        assertTrue(durable.await(8, TimeUnit.SECONDS))
+        waitForPending(scope, 1)
         assertEquals(45uL, service.losses().line)
         assertTrue(File(folder.root, "nexus-listening/state.json").readText().contains("\"line_full\":45"))
     }
@@ -307,6 +314,7 @@ class RecordingTest {
             put("has", buildJsonArray { add(JsonPrimitive("accounts")) })
         }
         val accepted = Core.nexusHello(200, body.toString().encodeToByteArray(), whole = true)
+        assertTrue(accepted.why, accepted.backend)
         assertEquals(backend, accepted.backendId)
         assertEquals(true, accepted.diagnosticsDefault)
         val disabled = JsonObject(body + ("diagnostics" to JsonPrimitive(false)))

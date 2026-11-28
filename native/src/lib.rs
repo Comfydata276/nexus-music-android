@@ -855,7 +855,6 @@ struct HelloIn {
 
 /// `backend`: whether it is the Nexus server. `why`: if not, in a word, for the tests.
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct HelloOut {
     backend: bool,
     why: &'static str,
