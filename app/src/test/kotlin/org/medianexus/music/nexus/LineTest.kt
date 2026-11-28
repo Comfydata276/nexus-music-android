@@ -67,6 +67,32 @@ class LineTest {
     }
 
     @Test
+    fun diagnosticsOffDropsAnUploadWaitingForTheMachineAtTheSend() {
+        val root = java.nio.file.Files.createTempDirectory("diagnostics-send").toFile()
+        val diagnostics = CleanDiagnostics(root, "test", System::currentTimeMillis, { JournalLoss() }) { }
+        try {
+            val upload = url.newBuilder().encodedPath("/nexus/api/diag/send").build()
+            server.enqueue(MockResponse.Builder().body("{}").build())
+            val got = exchange(
+                http, upload, post = true, authorization = "", body = "{}".toByteArray(),
+                userAgent = "test", withinMs = 10_000, most = 4096,
+                stillWanted = {
+                    // The tap lands after waits_for was queued but before it returns yes.
+                    diagnostics.choose(false)
+                    true
+                },
+                diagnosticsOff = { diagnostics.explicitlyOff },
+            )
+            assertEquals(Sent.Dropped, got)
+            assertEquals(0, server.requestCount)
+            assertTrue(ask() is Sent.Answer)
+            assertEquals(1, server.requestCount)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun aFollowUpOkHttpWouldSendIsNeverWrittenAndTheFirstAnswerIsGiven() {
         server.enqueue(MockResponse.Builder().code(503).setHeader("Retry-After", "0").body("""{"busy":true}""").build())
         server.enqueue(MockResponse.Builder().code(200).body("{}").build())

@@ -641,7 +641,11 @@ class Nexus internal constructor(
         calling.incrementAndGet()
         val key = id.content
         val sent = try {
-            exchange(client, url, post, authorization, body, userAgent, within, most, reading, stillWanted = { waitsFor(id) }) { call ->
+            exchange(
+                client, url, post, authorization, body, userAgent, within, most, reading,
+                stillWanted = { waitsFor(id) },
+                diagnosticsOff = { recording?.diagnostics?.explicitlyOff == true },
+            ) { call ->
                 inFlight[key] = call
                 if (stopped.get()) call.cancel()
             }

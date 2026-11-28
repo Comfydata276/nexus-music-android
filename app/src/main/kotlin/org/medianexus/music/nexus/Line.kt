@@ -128,8 +128,13 @@ sealed interface Sent {
  * whole, to `most` bytes (an answer longer is "cut": never cut to fit and read). `onCall` is
  * handed the call before it is sent, so that it can be cancelled from elsewhere.
  */
-internal fun exchange(http: OkHttpClient, url: HttpUrl, post: Boolean, authorization: String, body: ByteArray, userAgent: String, withinMs: Long, most: Long, reading: AtomicInteger? = null, stillWanted: () -> Boolean = { true }, onCall: (Call) -> Unit = {}): Sent {
-    val flight = Flight(most, reading, stillWanted)
+internal fun exchange(http: OkHttpClient, url: HttpUrl, post: Boolean, authorization: String, body: ByteArray, userAgent: String, withinMs: Long, most: Long, reading: AtomicInteger? = null, stillWanted: () -> Boolean = { true }, diagnosticsOff: () -> Boolean = { false }, onCall: (Call) -> Unit = {}): Sent {
+    val diagnostics = url.encodedPath == "/nexus/api/diag/send"
+    val flight = Flight(most, reading) {
+        // Check Off after the machine answers. The switch event may have queued behind
+        // waits_for, or the person may have switched Off while it was answering.
+        stillWanted() && (!diagnostics || !diagnosticsOff())
+    }
     val opened = java.util.concurrent.atomic.AtomicBoolean()
     val secure = java.util.concurrent.atomic.AtomicBoolean()
     val watching = http.newBuilder().eventListener(object : EventListener() {

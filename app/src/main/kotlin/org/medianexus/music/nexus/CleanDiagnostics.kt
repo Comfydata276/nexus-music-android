@@ -304,6 +304,9 @@ internal class CleanDiagnostics(
         return preferred.get()?.enabled
     }
 
+    /** Immediate send fence, including while the driver still has the switch event queued. */
+    val explicitlyOff: Boolean get() = preferred.get()?.enabled == false
+
     fun choose(value: Boolean) {
         startWorker()
         val choice = Choice(value)
