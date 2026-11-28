@@ -111,7 +111,9 @@ internal class NexusRecording(
     }
 }
 
-internal data class SearchObservation(val scope: JournalScope, val id: EventId, val words: String, val requests: Boolean, val at: Long)
+internal data class SearchObservation(val scope: JournalScope, val id: EventId, val words: String, val requests: Boolean, val at: Long) {
+    override fun toString() = "Search(${id.wire()})"
+}
 
 internal data class JournalScope(val backend: JsonPrimitive, val number: JsonPrimitive, val life: JsonPrimitive) {
     val person get() = Folders.personOf(KeptAccount("", backend.content, number.content))
@@ -151,7 +153,9 @@ internal data class EventId(private val high: Long, private val low: Long) {
     }
 }
 
-private data class Captured(val scope: JournalScope, val id: EventId, val at: Long, val data: Listening) {
+internal data class Captured(val scope: JournalScope, val id: EventId, val at: Long, val data: Listening) {
+    override fun toString() = "${data.javaClass.simpleName}(${id.wire()})"
+
     fun wire(): JsonObject = buildJsonObject {
         put("scope", scope.wire())
         put("id", id.wire())
@@ -179,14 +183,16 @@ internal data class JournalLoss(val line: ULong = 0u, val files: ULong = 0u, val
  * Control messages are independent of that budget. A single writer is the only caller
  * allowed to change the journal. The reader uses a separate thread and committed sequence.
  */
-private class ListeningJournal(
+internal class ListeningJournal(
     private val root: File,
     private val wall: () -> Long,
     private val port: (JsonObject) -> JsonElement,
     private val lossChanged: () -> Unit,
 ) {
-    private sealed interface Job {
-        data class Event(val captured: Captured) : Job
+    internal sealed interface Job {
+        data class Event(val captured: Captured) : Job {
+            override fun toString() = captured.toString()
+        }
         data class Publish(val scope: JournalScope?, val emit: RecordingEvent) : Job
         data class Change(val effect: JsonObject, val complete: (Boolean) -> Unit) : Job
         data class ReaderMiss(val scope: JournalScope) : Job

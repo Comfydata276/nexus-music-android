@@ -20,6 +20,8 @@ internal enum class StopReason(val wire: String) {
 
 @ConsistentCopyVisibility
 internal data class PlayOrigin private constructor(val kind: String, val id: String? = null) {
+    override fun toString() = "PlayOrigin($kind)"
+
     fun wire() = buildJsonObject {
         put("kind", kind)
         id?.let { if (kind == "search") put("words", it.displayPrefix()) else put("id", it) }
@@ -54,12 +56,16 @@ internal sealed interface Listening {
     ) : Listening {
         constructor(song: Song, origin: PlayOrigin, began: PlayBegan, sound: PlaySound, position: Long) :
             this(song.id, song.title, song.artistLabel, song.album, origin, began, sound, position)
+
+        override fun toString() = "Start"
     }
     data class Stop(val start: EventId, val position: Long, val duration: Long?, val heard: Long, val reason: StopReason, val fault: DiagnosticFault? = null) : Listening
     data class Pause(val start: EventId, val position: Long) : Listening
     data class Resume(val start: EventId, val position: Long) : Listening
     data class Seek(val start: EventId, val from: Long, val to: Long) : Listening
-    data class Search(val words: String, val found: Int, val requests: Boolean) : Listening
+    data class Search(val words: String, val found: Int, val requests: Boolean) : Listening {
+        override fun toString() = "Search"
+    }
     data class Fault(val fault: DiagnosticFault) : Listening
     data class Position(val start: EventId, val position: Long) : Listening
 

@@ -99,6 +99,24 @@ class RecordingTest {
         }
     }
 
+    @Test fun privateListeningTextIsAbsentFromEveryIntakeDebugString() {
+        val title = "private song title"
+        val artist = "private artist"
+        val album = "private album"
+        val words = "private search words"
+        val start = Listening.Start(Song(id = "media", title = title, artist = artist, album = album),
+            PlayOrigin.from("search:$words"), PlayBegan.HERE, PlaySound.STREAM, 0)
+        val search = Listening.Search(words, 2, false)
+        val scope = JournalScope.saved(saved(1))!!
+        val id = EventId(0, 42)
+        val captured = Captured(scope, id, now.get(), start)
+        val observation = SearchObservation(scope, id, words, false, now.get())
+        val text = listOf(start, start.origin, search, observation, captured, ListeningJournal.Job.Event(captured))
+            .joinToString("\n")
+        for (secret in listOf(title, artist, album, words)) assertFalse(secret in text)
+        assertTrue(id.wire() in text)
+    }
+
     @Test fun anAudioFaultBurstIsKeptAsOneCountedJournalEvent() {
         val service = recording()
         val scope = publish(service, 1)
