@@ -18,7 +18,7 @@ crate-type = ["cdylib"]
 # Cargo.lock records it; the build is `--locked`, so it cannot drift. To move to a later
 # release, change `rev` here, run `scripts/dx native/build --relock`, and commit both.
 # (To work on the core and the phone at once: NEXUS_CORE_LOCAL, see native/build.)
-nexus-core = { git = "https://github.com/Comfydata276/nexus-music", rev = "e6ba05159d2478b6ec3aeceac4af52d902d0cd42" }
+nexus-core = { git = "https://github.com/Comfydata276/nexus-music", rev = "f5358403b24e88819ca7ab0b570eae3e210be981" }
 # The Java side of the boundary: finding the call's arguments and handing back its answer.
 # No default features: it never starts a JVM of its own.
 jni = { version = "0.21", default-features = false }
