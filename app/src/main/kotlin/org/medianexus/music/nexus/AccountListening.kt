@@ -36,7 +36,7 @@ internal data class ListeningStats(
 
 internal sealed interface ListeningResult<out T> {
     data class Done<T>(val value: T) : ListeningResult<T>
-    data class Error(val words: String) : ListeningResult<Nothing>
+    data class Error(val words: String, val owner: AppScope? = null) : ListeningResult<Nothing>
 }
 
 /** The last fetched page is for this session and life, including when Offline. */
@@ -71,8 +71,17 @@ internal class AccountListening(private val nexus: Nexus) {
     }
 
     suspend fun delete(scope: AppScope, password: String): ListeningResult<AppScope> = inBackground {
+        val stats = try {
+            fetchStats(scope)
+        } catch (error: ListeningFailure) {
+            val now = nexus.appSession.value?.scope
+            if (now != null && now.sameSession(scope) && now != scope) {
+                return@inBackground ListeningResult.Error("Your listening history was already deleted.", now)
+            }
+            throw error
+        }
         val plan = buildJsonObject {
-            put("stats", fetchStats(scope))
+            put("stats", stats)
             put("action", random.nextLong().ushr(1).coerceAtLeast(1))
         }
         val grant = step(scope, "grant") { put("delete", plan); put("password", password) }

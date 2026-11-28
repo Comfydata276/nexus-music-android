@@ -129,6 +129,10 @@ private fun ListeningDialog(nexus: Nexus, close: () -> Unit) {
                                 result = Reading(outcome.value, resources.getString(R.string.nexus_history_deleted))
                                 deleteOpen = null
                             }
+                            outcome is ListeningResult.Error && now != null && now == outcome.owner -> {
+                                result = Reading(now, outcome.words)
+                                deleteOpen = null
+                            }
                             outcome is ListeningResult.Error && now == deletion -> result = Reading(deletion, outcome.words)
                             else -> deleteOpen = null
                         }
