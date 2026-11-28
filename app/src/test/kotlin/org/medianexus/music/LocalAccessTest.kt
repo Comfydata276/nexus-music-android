@@ -47,6 +47,34 @@ class LocalAccessTest {
     }
 
     @Test
+    @org.robolectric.annotation.Config(sdk = [37])
+    fun aVpnAllowsPrivateDnsWithoutTheLocalNetworkPermission() = kotlinx.coroutines.runBlocking {
+        val (access, _) = made()
+        val context = RuntimeEnvironment.getApplication()
+        val manager = context.getSystemService(android.net.ConnectivityManager::class.java)!!
+        val shadow = org.robolectric.Shadows.shadowOf(manager)
+        val caps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance()
+        val capabilities = org.robolectric.Shadows.shadowOf(caps)
+        capabilities.addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+        shadow.setNetworkCapabilities(manager.activeNetwork, caps)
+        val privateAddress = java.net.InetAddress.getByAddress(byteArrayOf(10, 0, 0, 2))
+        val dns = org.medianexus.music.net.LocalDns(
+            held = { LocalAccess.grantedIn(context) },
+            system = okhttp3.Dns { listOf(privateAddress) },
+        )
+        val address = "https://10.0.0.2"
+        assertTrue(access.neededStrictlyFor(address))
+        assertTrue(runCatching { dns.lookup("music.example.org") }.exceptionOrNull() is org.medianexus.music.net.LocalNetworkBlocked)
+
+        capabilities.addTransportType(android.net.NetworkCapabilities.TRANSPORT_VPN)
+        shadow.setNetworkCapabilities(manager.activeNetwork, caps)
+        assertFalse(access.neededStrictlyFor(address))
+        assertFalse(access.mayBeWhyStrictly(address))
+        assertEquals(true, access.permissionNow)
+        assertEquals(listOf(privateAddress), dns.lookup("music.example.org"))
+    }
+
+    @Test
     fun onlyOneQuestionIsOpenAtATimeAndItsAnswerIsHeardOnce() {
         val (access, _) = made()
         val heard = mutableListOf<Boolean>()

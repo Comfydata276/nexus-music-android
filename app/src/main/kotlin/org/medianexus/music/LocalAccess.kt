@@ -2,17 +2,21 @@ package org.medianexus.music
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import androidx.core.content.ContextCompat
 import java.net.InetAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -41,10 +45,16 @@ import org.medianexus.music.store.SettingsStore
  * app's page in the phone's settings is the only place left to allow it, and that is
  * remembered in the settings so a later "Allow" goes straight there.
  *
- * Nothing here stops a connection being tried: if the address turns out to be reachable
- * after all (through a VPN, say), so much the better.
+ * The active VPN is exempt from Android's local-network permission. Both preflight and
+ * the clients' DNS gate check the active network when they decide.
  */
-class LocalAccess(private val context: Context, private val session: Session, private val settings: SettingsStore, scope: CoroutineScope) {
+class LocalAccess(
+    private val context: Context,
+    private val session: Session,
+    private val settings: SettingsStore,
+    scope: CoroutineScope,
+    vpn: Flow<Boolean> = flowOf(false),
+) {
     /** Where the question stands. */
     enum class Ask { NOT_ASKED, ASKING, GRANTED, REFUSED, CANNOT_ASK }
 
@@ -59,8 +69,8 @@ class LocalAccess(private val context: Context, private val session: Session, pr
 
     /** Signed in to a server the app may not be allowed to reach: certainly on the home
      *  network, or possibly, and it can't be reached. */
-    val blocked: StateFlow<Boolean> = combine(nearness, granted, unreachable) { near, ok, down ->
-        APPLIES && !ok && (near == Nearness.LOCAL || (near == Nearness.MAYBE && down))
+    val blocked: StateFlow<Boolean> = combine(nearness, granted, unreachable, vpn) { near, ok, down, tunneled ->
+        APPLIES && !ok && !tunneled && (near == Nearness.LOCAL || (near == Nearness.MAYBE && down))
     }.stateIn(scope, SharingStarted.Eagerly, false)
 
     /** As [blocked], and the server is certainly on the home network (not only possibly):
@@ -151,7 +161,7 @@ class LocalAccess(private val context: Context, private val session: Session, pr
 
     /** Whether signing in to `address` needs the permission asked for first: it is certainly
      *  on the home network, and the permission isn't held. */
-    suspend fun neededFor(address: String): Boolean = APPLIES && !isGranted() && nearnessOf(address) == Nearness.LOCAL
+    suspend fun neededFor(address: String): Boolean = APPLIES && !held && nearnessOf(address) == Nearness.LOCAL
 
     /**
      * **For the Nexus server's address, and the music server's the backend hands back** (the
@@ -162,12 +172,12 @@ class LocalAccess(private val context: Context, private val session: Session, pr
      * three releases.
      */
     suspend fun neededStrictlyFor(address: String): Boolean =
-        APPLIES && !isGranted() && LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork()) == Nearness.LOCAL
+        APPLIES && !held && LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork()) == Nearness.LOCAL
 
     /** As [neededStrictlyFor], after a failure in which no connection was opened: whether the
      *  permission may be why (the address is, or may be, inside). */
     suspend fun mayBeWhyStrictly(address: String): Boolean =
-        APPLIES && !isGranted() && LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork()).let { it != null && it != Nearness.NOT }
+        APPLIES && !held && LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork()).let { it != null && it != Nearness.NOT }
 
     /** Where the address leads on this network now (inside the house, or not; null if it
      *  couldn't be judged) and whether the permission is held (null before Android 17): the
@@ -179,18 +189,18 @@ class LocalAccess(private val context: Context, private val session: Session, pr
      *  judged. Blocks for a look-up of a few seconds at most: never on the main thread. */
     fun insideNow(host: String): Boolean? = kotlinx.coroutines.runBlocking { LocalGate.nearnessOf(host, homeNetwork()) }?.let { it == Nearness.LOCAL }
 
-    /** Whether the permission is held, where the phone has one (Android 17 on); null before. */
-    val permissionNow: Boolean? get() = if (APPLIES) isGranted() else null
+    /** Whether the active network can be reached under Android 17's permission rules. */
+    val permissionNow: Boolean? get() = if (APPLIES) held else null
 
     private fun homeNetwork(): Boolean = transportNow(context).let { it == "Wi-Fi" || it == "Ethernet" }
 
     /** Whether a failure to reach `address` may be for want of the permission: it is or may
      *  be on the home network, and the permission isn't held. */
-    suspend fun mayBeWhy(address: String): Boolean = APPLIES && !isGranted() && nearnessOf(address) != Nearness.NOT
+    suspend fun mayBeWhy(address: String): Boolean = APPLIES && !held && nearnessOf(address) != Nearness.NOT
 
     /** Whether the app may reach the home network now (always, before Android 17). For
      *  requests (`requests/LocalGate`), which ask about Lidarr's address, not the server's. */
-    val held: Boolean get() = isGranted()
+    val held: Boolean get() = grantedIn(context)
 
     private fun isGranted(): Boolean =
         !APPLIES || ContextCompat.checkSelfPermission(context, PERMISSION) == PackageManager.PERMISSION_GRANTED
@@ -215,7 +225,15 @@ class LocalAccess(private val context: Context, private val session: Session, pr
         /** Whether the app may reach the home network now (always, before Android 17), asked of
          *  the system at once: for the HTTP client's look at each address (`LocalDns`). */
         fun grantedIn(context: Context): Boolean =
-            !APPLIES || ContextCompat.checkSelfPermission(context, PERMISSION) == PackageManager.PERMISSION_GRANTED
+            !APPLIES || ContextCompat.checkSelfPermission(context, PERMISSION) == PackageManager.PERMISSION_GRANTED || usingVpn(context)
+
+        private fun usingVpn(context: Context): Boolean = try {
+            val manager = context.getSystemService(ConnectivityManager::class.java)
+            val caps = manager?.activeNetwork?.let(manager::getNetworkCapabilities)
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        } catch (_: RuntimeException) {
+            false
+        }
 
         private const val LOOKUP_MILLIS = 3_000L
     }

@@ -385,7 +385,7 @@ class Graph(
     val sleep = org.medianexus.music.playback.SleepTimer(scope)
 
     /** Whether a server on the home network can be reached (Android 17's permission). */
-    val localAccess: LocalAccess = LocalAccess(context.applicationContext, session, settings, scope)
+    val localAccess: LocalAccess = LocalAccess(context.applicationContext, session, settings, scope, network.state.map { it.vpn })
 
     private val reconnectCount = kotlinx.coroutines.flow.MutableStateFlow(0)
 

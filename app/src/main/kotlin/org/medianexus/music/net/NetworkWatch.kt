@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * is one, and whether Android counts it as unmetered (Wi-Fi that isn't marked as metered,
  * Ethernet; not mobile data).
  */
-data class NetworkNow(val connected: Boolean = true, val unmetered: Boolean = true)
+data class NetworkNow(val connected: Boolean = true, val unmetered: Boolean = true, val vpn: Boolean = false)
 
 /**
  * Follows the phone's network as Android reports it, at every change: a network coming or
@@ -83,6 +83,10 @@ class NetworkWatch(context: Context) {
         /** What a network's capabilities come to. Nothing here looks at
          *  `NET_CAPABILITY_VALIDATED` (see the class). */
         fun of(capabilities: NetworkCapabilities): NetworkNow =
-            NetworkNow(connected = true, unmetered = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+            NetworkNow(
+                connected = true,
+                unmetered = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+                vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+            )
     }
 }
