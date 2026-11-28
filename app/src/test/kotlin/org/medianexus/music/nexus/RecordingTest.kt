@@ -165,6 +165,17 @@ class RecordingTest {
             stackTrace = arrayOf(StackTraceElement(org.medianexus.music.downloads.DownloadsJob::class.java.name, "renamed", "SourceFile", 13))
         }
         assertEquals(DiagnosticFault(DiagnosticPlace.DOWNLOADS, DiagnosticShape.TIMEOUT, 13), DiagnosticFault.crash(crash))
+        // A frame of another app class (named in debug, renamed out of the package in release)
+        // above a placed one is passed over in both builds; with no placed frame it is the app.
+        for (helper in listOf("org.medianexus.music.ui.Helper", "y5")) {
+            val nested = IllegalStateException().apply {
+                stackTrace = arrayOf(StackTraceElement(helper, "a", "SourceFile", 5),
+                    StackTraceElement(org.medianexus.music.playback.PlaybackService::class.java.name + "\$Watcher", "b", "SourceFile", 40))
+            }
+            assertEquals(DiagnosticFault(DiagnosticPlace.PLAYBACK, DiagnosticShape.PANIC, 40), DiagnosticFault.crash(nested))
+            val elsewhere = IllegalStateException().apply { stackTrace = arrayOf(StackTraceElement(helper, "a", "SourceFile", 5)) }
+            assertEquals(DiagnosticFault(DiagnosticPlace.APP, DiagnosticShape.PANIC, null), DiagnosticFault.crash(elsewhere))
+        }
     }
 
     @Test fun unsignedAndOutstandingNoticeRecordNothing() {

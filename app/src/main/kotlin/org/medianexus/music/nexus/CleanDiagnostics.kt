@@ -64,14 +64,19 @@ internal data class DiagnosticFault(val place: DiagnosticPlace, val shape: Diagn
                 is AssertionError -> DiagnosticShape.ASSERTION
                 else -> DiagnosticShape.PANIC
             }
-            // Compare against the closed app classes, with their nested classes kept by R8.
-            // The exception type above is checked by class hierarchy.
-            val frame = error.stackTrace.firstOrNull { it.className.startsWith("org.medianexus.music.") }
-            val place = when (frame?.className?.substringBefore('$')) {
-                PlaybackService::class.java.name, QueuePlayer::class.java.name -> DiagnosticPlace.PLAYBACK
-                DownloadsJob::class.java.name -> DiagnosticPlace.DOWNLOADS
-                Nexus::class.java.name -> DiagnosticPlace.NEXUS_SERVER
-                else -> DiagnosticPlace.APP
+            // The place is the first frame in one of the closed app classes (their nested
+            // classes kept by name by R8, proguard-rules.pro). The release build renames the
+            // other app classes out of the app's package, so they are never looked at: debug
+            // and release builds pick the same frame. The exception type above is checked by
+            // class hierarchy.
+            var place = DiagnosticPlace.APP
+            val frame = error.stackTrace.firstOrNull { frame ->
+                when (frame.className.substringBefore('$')) {
+                    PlaybackService::class.java.name, QueuePlayer::class.java.name -> DiagnosticPlace.PLAYBACK
+                    DownloadsJob::class.java.name -> DiagnosticPlace.DOWNLOADS
+                    Nexus::class.java.name -> DiagnosticPlace.NEXUS_SERVER
+                    else -> null
+                }?.also { place = it } != null
             }
             return DiagnosticFault(place, shape, frame?.lineNumber?.takeIf { it > 0 })
         }
