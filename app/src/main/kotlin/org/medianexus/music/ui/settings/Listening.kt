@@ -84,7 +84,8 @@ private fun ListeningDialog(nexus: Nexus, close: () -> Unit) {
     val work = rememberCoroutineScope()
     val resources = LocalResources.current
     val scope = session?.scope
-    val stats = nexus.listening.cached(scope)
+    val page by nexus.listening.page.collectAsStateWithLifecycle()
+    val stats = page?.takeIf { it.scope == scope }?.stats
     var reading by remember { mutableStateOf<Reading?>(null) }
     var result by remember { mutableStateOf<Reading?>(null) }
     var busy by remember { mutableStateOf(false) }

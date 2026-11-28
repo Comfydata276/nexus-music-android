@@ -4,6 +4,8 @@ import java.security.SecureRandom
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -39,22 +41,22 @@ internal sealed interface ListeningResult<out T> {
 
 /** The last fetched page is for this session and life, including when Offline. */
 internal class AccountListening(private val nexus: Nexus) {
-    private data class Kept(val scope: AppScope, val stats: ListeningStats)
+    data class Page(val scope: AppScope, val stats: ListeningStats)
 
-    private var kept: Kept? = null
+    private val kept = MutableStateFlow<Page?>(null)
+    val page: StateFlow<Page?> = kept
     private val random by lazy { SecureRandom() }
 
-    @Synchronized
-    fun cached(scope: AppScope?): ListeningStats? = kept?.takeIf { it.scope == scope }?.stats
+    fun cached(scope: AppScope?): ListeningStats? = kept.value?.takeIf { it.scope == scope }?.stats
 
     @Synchronized
     fun sessionChanged(scope: AppScope?) {
-        if (kept?.scope != scope) kept = null
+        if (kept.value?.scope != scope) kept.value = null
     }
 
     @Synchronized
     private fun save(scope: AppScope, stats: ListeningStats): ListeningStats {
-        if (nexus.appSession.value?.scope == scope) kept = Kept(scope, stats)
+        if (nexus.appSession.value?.scope == scope) kept.value = Page(scope, stats)
         return stats
     }
 
