@@ -97,11 +97,7 @@ data class OutsideArtist(
     /** What to say instead, when there is nothing to show, or why it couldn't be had. */
     val empty: String = "",
     val failed: Boolean = false,
-    /** In server mode only rows with the server's removal bit can be acted on. */
-    val removable: Set<String>? = null,
-) {
-    fun canRemove(row: Pending): Boolean = removable?.contains("${row.id}/${row.album}") ?: true
-}
+)
 
 /** The songs an artist is most played for, for the top of their page (`requests::Popular`).
  *  With no `songs` there is nothing to show. */
@@ -180,7 +176,11 @@ data class Waiting(
     /** What to say when nothing is on its way, or why Lidarr couldn't say. */
     val empty: String = "",
     val failed: Boolean = false,
-)
+    /** In server mode only rows with the server's removal bit can be acted on. */
+    val removable: Set<String>? = null,
+) {
+    fun canRemove(row: Pending): Boolean = removable?.contains("${row.id}/${row.album}") ?: true
+}
 
 /** An artist worth a look (`discover::Suggestion`): `like` is the favourite they are like. */
 @Serializable
