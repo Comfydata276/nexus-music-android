@@ -102,18 +102,23 @@ class NexusKept(
     private val json = Json { ignoreUnknownKeys = true }
     private val lock = Any()
 
-    /** What is kept; [Parts.NONE] if nothing is. **A file there that can't be opened or read**
-     *  (sealed with a key since lost, or damaged) **is retired as absent**: removed, so that its
-     *  old bytes are not taken up again later; the person signs in again. */
-    fun load(): Parts = synchronized(lock) {
-        if (!file.exists()) return Parts.NONE
-        val plain = openFrom(file, box)
+    /** What is kept. Null means the file could not be read or unsealed, so leave it
+     *  in place for the next start. Bytes that open but do not parse are removed. */
+    fun load(): Parts? = synchronized(lock) {
+        val sealed = try {
+            java.nio.file.Files.readAllBytes(file.toPath())
+        } catch (_: java.nio.file.NoSuchFileException) {
+            return Parts.NONE
+        } catch (_: IOException) {
+            return null
+        }
+        val plain = open(sealed, box) ?: return null
         val parts = try {
-            plain?.let { Parts.of(json.parseToJsonElement(String(it, Charsets.UTF_8)).jsonObject) }
+            Parts.of(json.parseToJsonElement(String(plain, Charsets.UTF_8)).jsonObject)
         } catch (_: IllegalArgumentException) {
             null
         } finally {
-            plain?.fill(0)
+            plain.fill(0)
         }
         if (parts == null) removeDurably(file)
         parts ?: Parts.NONE
@@ -328,5 +333,15 @@ private fun openFrom(file: File, box: SecretBox): ByteArray? {
     } catch (_: IOException) {
         return null
     }
-    return box.open(sealed)
+    return open(sealed, box)
+}
+
+private fun open(sealed: ByteArray, box: SecretBox): ByteArray? = try {
+    box.open(sealed)
+} catch (_: IOException) {
+    null
+} catch (_: GeneralSecurityException) {
+    null
+} catch (_: ProviderException) {
+    null
 }

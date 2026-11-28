@@ -82,7 +82,7 @@ class SignInTest {
         assertEquals(64, now.api.login.now.salt.length)
         assertEquals("1", now.api.login.now.count)
         // Kept, as one thing: the session, the music login, the account; never the password.
-        val parts = app.graph.nexusKept.load()
+        val parts = app.graph.nexusKept.load()!!
         assertTrue(parts.session)
         assertEquals("tester", parts.music?.name)
         assertEquals("7", parts.account?.account)
@@ -106,7 +106,7 @@ class SignInTest {
         val said = shown(nexus) { it.signIn.state == "wrong_login" }
         assertTrue("the machine's words for it", said.signIn.words.isNotEmpty())
         assertEquals(SessionState.SignedOut, app.graph.session.state.value)
-        assertFalse(app.graph.nexusKept.load().session)
+        assertFalse(app.graph.nexusKept.load()!!.session)
     }
 
     /** **The journal and Diagnostics hear who is signed in from the driver** (the ten cautions,
@@ -143,11 +143,11 @@ class SignInTest {
         File(schedule, "occupied").writeText("test")
         val graph = plainGraph()
         standIn.signIn(app)
-        assertTrue(graph.nexusKept.load().session)
+        assertTrue(graph.nexusKept.load()!!.session)
         val nexus = graph.nexus!!
         nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
         shown(nexus) { it.screen == "sign_in" }
-        assertFalse(graph.nexusKept.load().session)
+        assertFalse(graph.nexusKept.load()!!.session)
     }
 
     @Test
@@ -174,7 +174,7 @@ class SignInTest {
         press(nexus)
         shown(nexus) { it.signIn.state == "not_kept" }
         assertEquals(SessionState.SignedOut, graph.session.state.value)
-        assertFalse(graph.nexusKept.load().session)
+        assertFalse(graph.nexusKept.load()!!.session)
         nexus.network(true)
         nexus.workers.first().submit { }.get(10, java.util.concurrent.TimeUnit.SECONDS)
         assertEquals("not_kept", nexus.shown.value?.signIn?.state)

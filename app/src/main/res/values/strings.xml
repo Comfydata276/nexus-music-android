@@ -134,6 +134,7 @@
     <string name="notice_settings_reset">Your settings file couldn\'t be read and there was no copy to fall back on. It has been kept as %1$s, and the app has started with its default settings.</string>
     <string name="notice_settings_reset_lost">Your settings file couldn\'t be read and there was no copy to fall back on, and it couldn\'t be kept aside either. The app has started with its default settings.</string>
     <string name="notice_settings_not_saved">Couldn\'t save your settings. They\'ll be tried again at your next change.</string>
+    <string name="sign_in_could_not_open">Couldn’t open your saved sign-in. You’re signed out for now. Close and reopen Nexus Music to try it again.</string>
     <string name="sign_in_storage_failed">Couldn’t save your sign-in on this phone. Close and reopen Nexus Music to try again.</string>
     <string name="notice_sign_in_not_kept">Couldn\'t keep your sign-in on this phone; you\'ll need to sign in next time.</string>
 

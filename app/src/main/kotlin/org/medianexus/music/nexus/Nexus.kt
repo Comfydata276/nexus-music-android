@@ -207,12 +207,19 @@ class Nexus internal constructor(
     }
 
     private fun begin() {
+        toldOffline = offlineNow()
+        parts = kept.load() ?: run {
+            // Nothing can be kept on the strength of an empty start while the original
+            // session and sign-out notes are still sealed on disk.
+            val blank = NexusShown.of(JsonObject(emptyMap()))
+            showing.value = blank.copy(screen = "sign_in", signIn = blank.signIn.copy(state = "not_opened"))
+            publish()
+            return
+        }
         // (Waits for the shared library's load if another thread has begun it: only this
         // thread waits.)
         Core.warm()
         machine = Core.nexusMachine()
-        parts = kept.load()
-        toldOffline = offlineNow()
         val keptJson = buildJsonObject {
             put("device_secret", kept.deviceSecret() ?: JsonNull)
             put("saved", parts.saved ?: JsonNull)

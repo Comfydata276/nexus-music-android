@@ -825,7 +825,7 @@ class NeverWaitsTest(private val broken: Broken) {
         runBlocking { runCatching { account().api.ping() } }
         nudging("signed out, told by the backend") { app.graph.session.state.value == SessionState.SignedOut }
         assertTrue("the person's folder went with the session", folder.isDirectory)
-        assertTrue("the kept sign-in was not forgotten", app.graph.nexusKept.load().music == null)
+        assertTrue("the kept sign-in was not forgotten", app.graph.nexusKept.load()!!.music == null)
     }
 
     /** **The session ended, and the music login's number risen, while the phone was offline**

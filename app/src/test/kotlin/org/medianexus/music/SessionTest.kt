@@ -80,14 +80,14 @@ class SessionTest {
 
     private class Made(val session: Session, val settings: SettingsStore, val kept: NexusKept, val folders: Folders, val dir: File)
 
-    private fun made(dir: File = folder.newFolder(), before: Pair<String, String>? = null, takeOn: suspend (String) -> Boolean = { true }): Made {
+    private fun made(dir: File = folder.newFolder(), before: Pair<String, String>? = null, box: SecretBox = PlainBox, takeOn: suspend (String) -> Boolean = { true }): Made {
         val folders = Folders(carried(dir))
         val settings = SettingsStore.open(File(dir, "settings.json"), scope, Dispatchers.IO, folders::test1ClearedLegacySignIn)
         if (before != null) {
             settings.update { it.copy(server = before.first, username = before.second) }
             runBlocking { settings.flush() }
         }
-        val kept = NexusKept(File(dir, "nexus-signin.sealed"), File(dir, "nexus-device.sealed"), PlainBox)
+        val kept = NexusKept(File(dir, "nexus-signin.sealed"), File(dir, "nexus-device.sealed"), box)
         val session = Session(settings, kept, folders, OkHttpClient(), OfflineSwitch(), { key -> accountDirs(File(dir, "files"), File(dir, "cache"), key) }, Notices(), scope, Dispatchers.IO, takeOn = takeOn, carriesOver = { address, user, music -> music.carriesOver(address, user) })
         return Made(session, settings, kept, folders, dir)
     }
@@ -175,8 +175,8 @@ class SessionTest {
         val again = made(dir)
         machine(again)
         assertEquals(SessionState.SignedOut, settled(again.session))
-        withTimeout(10_000) { while (again.kept.load().saved != null) kotlinx.coroutines.delay(10) }
-        assertEquals("the note is kept", 1, again.kept.load().notes.size)
+        withTimeout(10_000) { while (again.kept.load()!!.saved != null) kotlinx.coroutines.delay(10) }
+        assertEquals("the note is kept", 1, again.kept.load()!!.notes.size)
     }
 
     @Test
@@ -187,6 +187,29 @@ class SessionTest {
         machine(again)
         assertEquals(SessionState.SignedOut, settled(again.session))
         assertFalse("its old bytes were left to be taken up later", File(dir, "nexus-signin.sealed").exists())
+    }
+
+    @Test
+    fun aSignInThatCannotBeOpenedStaysSealedAndIsRetriedAtTheNextStart() = runBlocking<Unit> {
+        val dir = folder.newFolder()
+        keep(made(dir).kept, music(at = secure), who())
+        val file = File(dir, "nexus-signin.sealed")
+        val original = file.readBytes()
+        val failed = made(dir, box = object : SecretBox {
+            override fun seal(plain: ByteArray): ByteArray = error("must not write during this start")
+            override fun open(sealed: ByteArray): ByteArray? {
+                throw java.security.ProviderException("test keystore failure")
+            }
+        })
+        val driver = machine(failed)
+        assertEquals(SessionState.SignedOut, settled(failed.session))
+        assertEquals("not_opened", driver.shown.value?.signIn?.state)
+        assertTrue(file.readBytes().contentEquals(original))
+        assertEquals(0, driver.sent.get())
+
+        val recovered = made(dir)
+        machine(recovered)
+        assertTrue(settled(recovered.session) is SessionState.SignedIn)
     }
 
     @Test
