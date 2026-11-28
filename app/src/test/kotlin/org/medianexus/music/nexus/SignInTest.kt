@@ -1,6 +1,9 @@
 package org.medianexus.music.nexus
 
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -19,6 +22,10 @@ import org.junit.runner.RunWith
 import org.medianexus.music.App
 import org.medianexus.music.Graph
 import org.medianexus.music.SessionState
+import org.medianexus.music.core.Core
+import org.medianexus.music.core.CoreHttp
+import org.medianexus.music.core.Outcome
+import org.medianexus.music.core.StandIn
 import org.medianexus.music.graph
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -240,6 +247,49 @@ class SignInTest {
         graph.settings.update { it.copy(offline = true) }
         runBlocking { withTimeout(30_000) { nexus.appSession.first { it?.offline == true } } }
         assertNull(router.directEndpoint())
+    }
+
+    @Test
+    fun directLidarrReadRecoversWhenAKeptConnectionCloses() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        until { graph.nexus!!.appSession.value?.takeIf { it.verified } }
+        standIn.answer = { request ->
+            if (request.url.encodedPath == "/nexus/api/requests") standIn.feature("requests_unconfigured")
+            else standIn.there(request)
+        }
+        graph.requestsRouter.refresh()
+        assertTrue(until { graph.requestsRouter.directEndpoint() }.active())
+        val drop = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        val attempts = AtomicInteger()
+        StandIn { request, reply ->
+            if (request.target == "/warm") {
+                reply.raw("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                if (drop.await(5, TimeUnit.SECONDS)) reply.out.close()
+                closed.countDown()
+            } else reply.json("{}")
+        }.use { lidarr ->
+            CoreHttp.dress = { builder ->
+                builder.addNetworkInterceptor { chain ->
+                    if (chain.request().url.encodedPath == "/requests-list" && attempts.incrementAndGet() == 1) {
+                        drop.countDown()
+                        check(closed.await(5, TimeUnit.SECONDS))
+                    }
+                    chain.proceed(chain.request())
+                }
+            }
+            try {
+                runBlocking {
+                    assertTrue(Core.wireProbe(Core.Probe(url = "${lidarr.address}/warm"), false) is Outcome.Got)
+                    assertTrue(Core.wireProbe(Core.Probe(url = "${lidarr.address}/requests-list"), false) is Outcome.Got)
+                }
+                assertEquals(2, attempts.get())
+            } finally {
+                drop.countDown()
+                CoreHttp.dress = {}
+            }
+        }
     }
 
     @Test

@@ -453,10 +453,7 @@ internal object CoreHttp {
 
     /** Each service's connections: kept as long as the Windows app keeps them, and no longer
      *  (MusicBrainz closes one that has been idle for fifteen seconds). */
-    private class RequestFence(val once: Boolean = false, val stillSelected: () -> Boolean) {
-        private val attempted = java.util.concurrent.atomic.AtomicBoolean()
-        fun permits(): Boolean = (!once || attempted.compareAndSet(false, true)) && stillSelected()
-    }
+    private class RequestFence(val permits: () -> Boolean)
 
     private class Lines(dress: (OkHttpClient.Builder) -> Unit) {
         private val base: OkHttpClient = OkHttpClient.Builder()
@@ -971,7 +968,7 @@ internal object CoreHttp {
         } else if (select != null) {
             val started = if (doing == null) select() else doing.directAtStart
             if (started == null || select() !== started || asked.direct_epoch?.let { it != started.identity } == true) return stopped
-            RequestFence(once = true) { select() === started && doing?.isStopped != true && unsent() == null }
+            RequestFence { select() === started && doing?.isStopped != true && unsent() == null }
         } else null
         when (doing?.allowance()) {
             Doing.REFUSED -> return stopped
