@@ -322,12 +322,14 @@ internal class ListeningJournal(
             val through = visible.through
             val found = if (target == null || current != target) null else
                 safe { call("read", JsonObject(request + ("through" to through))) as? JsonArray }
-            emit(recordingEvent("events_read", buildJsonObject {
-                put("read", request.getValue("read"))
-                put("account", request.getValue("account"))
-                put("life", request.getValue("life"))
-                put("events", if (current == target) found ?: EMPTY else EMPTY)
-            }))
+            safe {
+                emit(recordingEvent("events_read", buildJsonObject {
+                    put("read", request["read"] ?: JsonNull)
+                    put("account", request["account"] ?: JsonNull)
+                    put("life", request["life"] ?: JsonNull)
+                    put("events", if (current == target) found ?: EMPTY else EMPTY)
+                }))
+            }
             if (found == null && target != null && current == target && alive) {
                 jobs.offer(Job.ReaderMiss(target))
                 LockSupport.unpark(writer)

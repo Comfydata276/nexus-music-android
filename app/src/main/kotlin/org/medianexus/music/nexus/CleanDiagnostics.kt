@@ -156,7 +156,10 @@ internal class CleanDiagnostics(
 ) {
     private val work = ConcurrentLinkedQueue<() -> Unit>()
     private val started = AtomicBoolean()
-    private val worker = Thread(::run, "nexus-diagnostics").apply { isDaemon = true }
+    private val worker = Thread(::run, "nexus-diagnostics").apply {
+        isDaemon = true
+        uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> }
+    }
     private val changes = ConcurrentLinkedQueue<Observation>()
     private val queued = AtomicInteger()
     private val checkpointQueued = AtomicBoolean()
