@@ -197,12 +197,20 @@ private class ListeningJournal(
     private val lost = AtomicLong()
     private val jobs = ConcurrentLinkedQueue<Job>()
     private val reader = Executors.newSingleThreadExecutor { task -> Thread(task, "nexus-journal-reader").apply { isDaemon = true } }
-    private val writer = Thread(::run, "nexus-journal-writer").apply { isDaemon = true }
+    private val writer = Thread(::run, "nexus-journal-writer").apply {
+        isDaemon = true
+        // A failed writer stops accepting records and counts the losses in run's finally.
+        uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> }
+    }
     private val started = AtomicBoolean()
     @Volatile private var alive = true
     @Volatile private var visible = Visibility()
 
-    private data class Visibility(val through: JsonElement = JsonPrimitive(0), val loss: JournalLoss = JournalLoss())
+    private data class Visibility(
+        val through: JsonElement = JsonPrimitive(0),
+        val loss: JournalLoss = JournalLoss(),
+        val durableOffers: Long = 0,
+    )
 
     // Writer's own fields. None is read by the player or the separate reader.
     private var active: JournalScope? = null
@@ -212,6 +220,7 @@ private class ListeningJournal(
     private var lastSent: JsonObject? = null
     private var lastSentAt = 0L
     private var readLossAtStart = false
+    private var durableOffers = 0L
     private var retryWrites = false
     private var retryActivation = false
 
@@ -289,8 +298,9 @@ private class ListeningJournal(
     }
 
     fun losses(): JournalLoss {
-        val loss = visible.loss
-        val extra = lost.get().coerceAtLeast(0).toULong()
+        val snapshot = visible
+        val loss = snapshot.loss
+        val extra = (lost.get() - snapshot.durableOffers).coerceAtLeast(0).toULong()
         return loss.copy(line = loss.line + extra.coerceAtMost(ULong.MAX_VALUE - loss.line))
     }
 
@@ -319,6 +329,7 @@ private class ListeningJournal(
         while (true) {
             val job = jobs.poll()
             val now = wall()
+            val monotonic = System.nanoTime()
             when (job) {
                 is Job.Publish -> {
                     active = job.scope
@@ -332,7 +343,7 @@ private class ListeningJournal(
                         safe { accept(call("inspect", buildJsonObject {})) }
                     }
                     activate(now)
-                    retryAt = now + LOSS_RETRY_MILLIS
+                    retryAt = monotonic + LOSS_RETRY_NANOS
                 }
                 is Job.ReaderMiss -> {
                     if (job.scope == active && waiting != retriedRead) {
@@ -368,17 +379,17 @@ private class ListeningJournal(
                     job.complete(done)
                     if (done) lastSent = null
                 }
-                null -> if ((retryWrites || retryActivation || lost.get() != 0L) && now >= retryAt) {
+                null -> if ((retryWrites || retryActivation || lost.get() != durableOffers) && monotonic - retryAt >= 0) {
                     if (retryActivation) activate(now)
                     flush(emptyList(), now)
-                    retryAt = now + LOSS_RETRY_MILLIS
+                    retryAt = monotonic + LOSS_RETRY_NANOS
                 }
             }
             publishWaiting()
             if (job == null && jobs.isEmpty()) {
                 val hasWaiting = waiting != null && waiting != lastSent && active == current
                 val notifyIn = if (hasWaiting) (REPORT_NANOS - (System.nanoTime() - lastSentAt)).coerceAtLeast(1) else Long.MAX_VALUE
-                val retryIn = if (retryWrites || retryActivation || lost.get() != 0L) (retryAt - wall()).coerceAtLeast(1) * 1_000_000 else Long.MAX_VALUE
+                val retryIn = if (retryWrites || retryActivation || lost.get() != durableOffers) (retryAt - System.nanoTime()).coerceAtLeast(1) else Long.MAX_VALUE
                 val wait = minOf(notifyIn, retryIn)
                 if (wait == Long.MAX_VALUE) LockSupport.park() else LockSupport.parkNanos(wait)
             }
@@ -393,7 +404,7 @@ private class ListeningJournal(
     }
 
     private fun flush(records: List<Captured>, now: Long) {
-        val drops = lost.get()
+        val drops = (lost.get() - durableOffers).coerceAtLeast(0)
         val answer = safe {
             call("append", buildJsonObject {
                 put("active", active?.wire() ?: JsonNull)
@@ -408,7 +419,7 @@ private class ListeningJournal(
         } else {
             val objectAnswer = answer as JsonObject
             val counted = (objectAnswer["counted"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0
-            if (counted > 0) lost.addAndGet(-counted)
+            durableOffers += counted
             accept(answer)
         }
     }
@@ -417,7 +428,7 @@ private class ListeningJournal(
         val answer = value as JsonObject
         val loss = JournalLoss.read(answer.getValue("loss") as JsonObject)
         val changed = loss != visible.loss
-        visible = Visibility(answer.getValue("through"), loss)
+        visible = Visibility(answer.getValue("through"), loss, durableOffers)
         if (changed) lossChanged()
         waiting = answer["waiting"] as? JsonObject
         retryWrites = (answer["retry"] as? JsonPrimitive)?.booleanOrNull == true
@@ -441,7 +452,7 @@ private class ListeningJournal(
     companion object {
         private const val CAPACITY = 256
         private const val REPORT_NANOS = 1_000_000_000L
-        private const val LOSS_RETRY_MILLIS = 5_000L
+        private const val LOSS_RETRY_NANOS = 5_000_000_000L
         private val EMPTY = JsonArray(emptyList())
     }
 }
