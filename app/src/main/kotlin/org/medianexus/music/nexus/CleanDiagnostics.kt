@@ -174,9 +174,8 @@ internal class CleanDiagnostics(
     @Volatile private var send: RecordingEvent? = null
     private data class Choice(val enabled: Boolean?)
     private val preferred = AtomicReference<Choice?>()
-    @Volatile private var serverDefault: Boolean? = null
-    @Volatile private var signedIn = false
-    @Volatile private var offline = false
+    private data class Mode(val signedIn: Boolean, val offline: Boolean, val default: Boolean?)
+    @Volatile private var mode = Mode(signedIn = false, offline = false, default = null)
     private var crashLoaded = false
     private var previousCrash: kotlinx.serialization.json.JsonElement? = null
     private var clearPending = false
@@ -248,15 +247,18 @@ internal class CleanDiagnostics(
     }
 
     fun about(value: PhoneDiagnostics) {
-        about = value
-        refresh()
+        if (about != value) {
+            about = value
+            refresh()
+        }
     }
 
     fun state(signedIn: Boolean, offline: Boolean, serverDefault: Boolean?) {
-        this.signedIn = signedIn
-        this.offline = offline
-        this.serverDefault = serverDefault
-        refresh()
+        val next = Mode(signedIn, offline, serverDefault)
+        if (mode != next) {
+            mode = next
+            refresh()
+        }
     }
 
     /** Called on the driver thread before start, which restores the same explicit choice. */
@@ -400,7 +402,8 @@ internal class CleanDiagnostics(
 
     private fun updateState() {
         val choice = choice()
-        val default = serverDefault
+        val current = mode
+        val default = current.default
         val on = safe {
             (Core.nexusDiagnostics(buildJsonObject {
                 put("root", root.path)
@@ -410,7 +413,7 @@ internal class CleanDiagnostics(
                 })
             }) as JsonPrimitive).booleanOrNull
         } ?: state.value.switchedOn
-        state.value = DiagnosticsState(on, signedIn, offline, default != null)
+        state.value = DiagnosticsState(on, current.signedIn, current.offline, default != null)
     }
 
     private fun checkpoint(): String? = safe {
@@ -430,15 +433,16 @@ internal class CleanDiagnostics(
         }
         if (pending.size > MAX_QUEUE) pending.subList(0, pending.size - MAX_QUEUE).clear()
         val phone = about
+        val current = mode
         val result = Core.nexusDiagnostics(buildJsonObject {
             put("root", root.path)
             put("checkpoint", buildJsonObject {
                 put("about", buildJsonObject {
                     put("version", version)
                     put("android_major", phone.androidMajor)
-                    put("signed_in", signedIn)
+                    put("signed_in", current.signedIn)
                     put("https", phone.https)
-                    put("offline", offline)
+                    put("offline", current.offline)
                     put("local_permission", phone.localPermission?.let(::JsonPrimitive) ?: JsonNull)
                     put("android_auto", phone.auto?.let(::JsonPrimitive) ?: JsonNull)
                     put("loss", loss().wire())

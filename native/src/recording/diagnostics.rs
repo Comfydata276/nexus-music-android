@@ -148,7 +148,10 @@ pub(super) fn call(request: Request) -> io::Result<Value> {
         Action::Enabled { choice, server_default } => Ok(json!(diag::enabled(choice, server_default))),
         Action::Read => Ok(json!(kept(&path)?.text().map_err(invalid)?)),
         Action::Checkpoint { about, observations, clear } => {
-            let mut record = if clear { Record::default() } else { kept(&path).map(|r| r.record).unwrap_or_default() };
+            let before = kept(&path).ok();
+            let mut record = if clear { Record::default() } else {
+                before.as_ref().map(|report| report.record.clone()).unwrap_or_default()
+            };
             for observation in observations {
                 match observation.line {
                     ObservationKind::Attempt { reach, local, permission, network, failed } => record.note_attempt(observation.at, diag::Trace {
@@ -158,8 +161,10 @@ pub(super) fn call(request: Request) -> io::Result<Value> {
                 }
             }
             let text = Report { about: about.into(), record }.text().map_err(invalid)?;
-            private_directory(&request.root)?;
-            replace(&path, text.as_bytes())?;
+            if before.and_then(|report| report.text().ok()).as_deref() != Some(&text) {
+                private_directory(&request.root)?;
+                replace(&path, text.as_bytes())?;
+            }
             Ok(json!(text))
         }
     }
