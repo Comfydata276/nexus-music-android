@@ -43,6 +43,10 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
 
     private var escapedBefore = 0
 
+    /** What had arrived under `/nexus/` before the app held here was started: a cold start's
+     *  earlier process signed in at the same stand-in. */
+    private var arrivedBefore = 0
+
     private val nexusFiles get() = File(filesDir, "nexus")
 
     /** The modes in which the stand-in takes the request and keeps it. */
@@ -51,6 +55,8 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     /** Before the app's objects are made (each test's start, and a test's own cold start). */
     fun beforeAppStarts() {
         escapedBefore = Nexus.escaped.get()
+        // (A request the stand-in holds stays held for the whole test, not the machine's 15 s.)
+        Nexus.withinForTests = 600_000
         when (broken) {
             Broken.DISK_BLOCKED -> if (!nexusFiles.exists()) check(ProcessBuilder("mkfifo", nexusFiles.path).start().waitFor() == 0) { "no pipe made" }
             Broken.DISK_FULL -> if (!nexusFiles.exists()) nexusFiles.writeBytes(ByteArray(0))
@@ -127,10 +133,10 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     /** The part's own request, and no other, held at the stand-in now: everything it has sent
      *  has arrived there, and one of them is being held. */
     private fun ownRequestHeld(client: Nexus) =
-        client.calling.get() >= 1 && client.sent.get() >= 1 && standIn.nexusArrived.get() == client.sent.get() && standIn.nexusActive.get() >= 1
+        client.calling.get() >= 1 && client.sent.get() >= 1 && standIn.nexusArrived.get() - arrivedBefore == client.sent.get() && standIn.nexusActive.get() >= 1
 
     private fun ownAnswerHalfRead(client: Nexus) =
-        client.reading.get() >= 1 && client.sent.get() >= 1 && standIn.nexusArrived.get() == client.sent.get()
+        client.reading.get() >= 1 && client.sent.get() >= 1 && standIn.nexusArrived.get() - arrivedBefore == client.sent.get()
 
     /** Before a timed step: the hold acknowledged again. A saturated backend answers its check
      *  "busy" after eight seconds: the network is said to be back, and the check asked again is
@@ -149,7 +155,10 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     }
 
     /** A graph made by a test, as `App.onCreate` does once `App.graph` is it. */
-    fun appStarted(graph: Graph) = graph.started()
+    fun appStarted(graph: Graph) {
+        arrivedBefore = standIn.nexusArrived.get()
+        graph.started()
+    }
 
     /**
      * A cold start, the account just published: the part's state acknowledged before the entry
@@ -177,6 +186,7 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
         } finally {
             Nexus.gate = null
             Nexus.beforeAsk = null
+            Nexus.withinForTests = null
             holding.countDown()
         }
     }

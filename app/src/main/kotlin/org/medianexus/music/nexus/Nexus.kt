@@ -354,7 +354,7 @@ class Nexus internal constructor(
         val post = (ask["method"] as? JsonPrimitive)?.contentOrNull == "POST"
         val authorization = (ask["authorization"] as? JsonPrimitive)?.contentOrNull.orEmpty()
         val body = (ask["body"] as? JsonPrimitive)?.contentOrNull.orEmpty().toByteArray(Charsets.UTF_8)
-        val within = (ask["within_ms"] as? JsonPrimitive)?.longOrNull ?: 15_000L
+        val within = withinForTests ?: (ask["within_ms"] as? JsonPrimitive)?.longOrNull ?: 15_000L
         val most = (ask["max_body"] as? JsonPrimitive)?.longOrNull ?: 4096L
         val client = http ?: synchronized(this) { http ?: nexusHttp(calls, runner, sent, socketsForTests).also { http = it } }
         calling.incrementAndGet()
@@ -427,6 +427,10 @@ class Nexus internal constructor(
 
         /** For the tests only: run on a request's thread before each request. */
         @Volatile var beforeAsk: ((Nexus) -> Unit)? = null
+
+        /** For the tests only: how long an ask may take, in place of the machine's limit (a
+         *  request the stand-in holds is then held for the whole test). */
+        @Volatile var withinForTests: Long? = null
 
         /** For the tests only: the sockets its requests are made with. */
         @Volatile var socketsForTests: javax.net.SocketFactory? = null

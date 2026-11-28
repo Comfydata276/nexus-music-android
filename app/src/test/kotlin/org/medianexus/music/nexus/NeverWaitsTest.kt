@@ -163,6 +163,8 @@ class NeverWaitsTest(private val broken: Broken) {
             for (service in services.asReversed()) runCatching { service.onDestroy() }
             runCatching { settle() }
             (graphs + app.graph).forEach { runCatching { it.nexus?.stop() } }
+            // (What one test's music server refused is not the next test's.)
+            org.medianexus.music.net.MusicLogin.Gate.forgetForTests()
             graphs.forEach { it.scope.cancel() }
             (graphs + app.graph).forEach { runCatching { it.http.connectionPool.evictAll() } }
             standIn.stop()
@@ -754,14 +756,17 @@ class NeverWaitsTest(private val broken: Broken) {
         until("settled") { settled(service) }
         // The person's music login changed at the backend (a device of theirs forced out).
         standIn.musicCount = 2
-        val refusedBefore = standIn.refusedLogins.get()
         runBlocking { runCatching { account().api.ping() } }
         until("the login set aside") { account().api.login.isRefused }
-        // Every way to the music server after it: nothing sent with the refused login.
+        // (Requests already on their way when the refusal came are answered as they come; no
+        // new one is begun with it, from anywhere, from the moment it was set aside.)
+        settle()
+        Thread.sleep(200)
+        val refusedBefore = standIn.refusedLogins.get()
         runBlocking { repeat(3) { runCatching { account().api.ping() } } }
         assertEquals(SessionResult.RESULT_SUCCESS, answer(inside.callback.onGetChildren(inside.session, car, "downloads", 0, Int.MAX_VALUE, null)).resultCode)
         answer(inside.callback.onGetChildren(inside.session, car, "home", 0, Int.MAX_VALUE, null))
-        assertEquals("the refused login was sent again", refusedBefore + 1, standIn.refusedLogins.get())
+        assertEquals("the refused login was sent again", refusedBefore, standIn.refusedLogins.get())
         // The backend asked for the current login once, whatever became of the asking.
         until("the renewal asked for") { standIn.asked.count { it == "POST /nexus/api/music-login" } >= 1 || broken == Broken.WORKERS_HELD }
         assertTrue("asked more than once", standIn.asked.count { it == "POST /nexus/api/music-login" } <= 1)

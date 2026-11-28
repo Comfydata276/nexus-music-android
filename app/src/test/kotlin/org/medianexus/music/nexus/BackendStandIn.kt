@@ -151,6 +151,10 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
 
     private var signedInAs = "tester"
 
+    /** This stand-in's own salts (a backend makes a fresh one for each login it hands out): one
+     *  test's refused login is never another's. */
+    private val saltBase = java.util.UUID.randomUUID().toString().replace("-", "").repeat(2)
+
     /** Songs, by id, that the server has; and the album they are all on. */
     val songs = listOf("s1", "s2", "s3")
 
@@ -246,7 +250,7 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
             put("device", 1)
             put("count", musicCount)
         }
-        val salt = musicCount.toString().padStart(64, '0')
+        val salt = saltBase.dropLast(musicCount.toString().length) + musicCount
         val music = buildJsonObject {
             put("address", address)
             put("name", signedInAs)

@@ -78,7 +78,7 @@ class SignInTest {
         standIn.signIn(app)
         val now = app.graph.session.state.value as SessionState.SignedIn
         // The client for the music server is made from the salt and token handed over.
-        assertEquals("1".padStart(64, '0'), now.api.login.now.salt)
+        assertEquals(64, now.api.login.now.salt.length)
         assertEquals("1", now.api.login.now.count)
         // Kept, as one thing: the session, the music login, the account; never the password.
         val parts = app.graph.nexusKept.load()
