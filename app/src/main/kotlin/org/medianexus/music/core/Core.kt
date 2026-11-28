@@ -396,6 +396,10 @@ object Core {
      *  `client/json.rs` in the core): gives what the core wrote, `{"generation", "do"}`. */
     fun nexusCall(input: JsonObject): JsonObject = acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusCall)
 
+    /** Typed stats and the shared one-action history deletion. */
+    internal fun nexusListening(input: JsonObject): JsonObject =
+        acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusListening)
+
     /** The phone's storage adapter for the core's journal format and retention rules. */
     internal fun nexusJournal(input: JsonObject): JsonElement =
         acrossPrivately(input, JsonObject.serializer(), JsonElement.serializer(), ::nexusJournal)
@@ -1072,6 +1076,7 @@ object Core {
     @JvmStatic private external fun nexusHello(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusMachine(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusCall(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusListening(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusJournal(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusDiagnostics(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusStandIn(input: ByteArray): ByteArray?

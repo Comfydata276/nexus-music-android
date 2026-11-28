@@ -1,6 +1,9 @@
 package org.medianexus.music.nexus
 
 import java.security.SecureRandom
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.TimeZone
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -19,6 +22,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -132,6 +136,15 @@ class Nexus internal constructor(
     private val stopped = AtomicBoolean()
     private val inFlight = java.util.concurrent.ConcurrentHashMap<String, Call>()
     private val random = SecureRandom()
+
+    private val featureSession = MutableStateFlow<AppSession?>(null)
+    internal val appSession: StateFlow<AppSession?> = featureSession
+    internal val listening = AccountListening(this)
+    private var liveApp: AppSession? = null
+    private var failedLifeMove: AppScope? = null
+    private val features = mutableMapOf<Long, FeatureFlight>()
+    private val featureResults = mutableMapOf<Long, String>()
+    private val featureNumbers = java.util.concurrent.atomic.AtomicLong()
 
     private val showing = MutableStateFlow<NexusShown?>(null)
 
@@ -310,8 +323,72 @@ class Nexus internal constructor(
     })
 
     private fun happened(event: JsonElement) = onWorker {
-        if (machine == 0L) return@onWorker
+        if (machine != 0L) tell(event)
+    }
+
+    private fun tell(event: JsonElement) {
         call(buildJsonObject { put("happened", buildJsonObject { put("event", event); put("given", given()) }) })
+    }
+
+    internal suspend fun postFeature(scope: AppScope, post: FeaturePost): FeatureResult =
+        withTimeoutOrNull(FEATURE_WITHIN_MS) {
+            suspendCancellableCoroutine { continuation ->
+                val request = featureNumbers.incrementAndGet()
+                continuation.invokeOnCancellation { onWorker { cancelFeature(request) } }
+                onWorker {
+                    if (!continuation.isActive) return@onWorker
+                    if (machine == 0L || !canUseFeature(scope)) {
+                        continuation.resume(FeatureResult.Stopped)
+                        return@onWorker
+                    }
+                    features[request] = FeatureFlight(scope, post.deletesHistory, continuation)
+                    tell(buildJsonObject {
+                        put("app_post", buildJsonObject {
+                            put("request", request)
+                            put("scope", scope.wire)
+                            put("path", post.path)
+                            put("body", post.body)
+                        })
+                    })
+                }
+            }
+        } ?: FeatureResult.Unreachable
+
+    private fun canUseFeature(scope: AppScope): Boolean =
+        !stopped.get() && !criticalKeepFailed && !offlineNow() && liveApp?.scope == scope &&
+            liveApp?.offline == false && featureSession.value?.scope == scope
+
+    private fun cancelFeature(request: Long) {
+        val flight = features.remove(request) ?: return
+        featureResults.remove(request)
+        flight.ask?.let { inFlight[it.content]?.cancel() }
+        flight.continuation.resume(FeatureResult.Stopped)
+        tell(buildJsonObject { put("app_cancelled", buildJsonObject { put("request", request) }) })
+    }
+
+    /** A feature scope is usable only once the kept session and the journal agree with core. */
+    private fun publishFeatures() {
+        val app = liveApp?.takeIf { !criticalKeepFailed && it.scope.matchesKept(parts.saved) && it.scope != failedLifeMove }
+        featureSession.value = app
+        listening.sessionChanged(app?.scope)
+        val results = featureResults.toMap()
+        featureResults.clear()
+        for ((request, result) in results) {
+            val flight = features.remove(request) ?: continue
+            val same = app != null && app.scope.sameSession(flight.scope) &&
+                (app.scope == flight.scope || flight.deletesHistory)
+            val answer = when {
+                !same || app?.offline != false || offlineNow() -> FeatureResult.Stopped
+                result == "checked" -> flight.answer ?: FeatureResult.Invalid
+                result == "unreachable" -> FeatureResult.Unreachable
+                result == "invalid" -> FeatureResult.Invalid
+                else -> FeatureResult.Stopped
+            }
+            flight.continuation.resume(answer)
+        }
+        // Core can retire flights when a different session or life becomes current.
+        val abandoned = features.filterValues { app?.scope != it.scope || app.offline }.keys.toList()
+        for (request in abandoned) cancelFeature(request)
     }
 
     /**
@@ -324,6 +401,10 @@ class Nexus internal constructor(
         val closer = {
             quiet {
                 worker.submit {
+                    featureSession.value = null
+                    features.values.forEach { it.continuation.resume(FeatureResult.Stopped) }
+                    features.clear()
+                    featureResults.clear()
                     val number = machine
                     if (number != 0L) {
                         quiet { Core.nexusCall(buildJsonObject { put("machine", number); put("call", buildJsonObject { put("stop", buildJsonObject {}) }) }) }
@@ -383,6 +464,8 @@ class Nexus internal constructor(
             lastFailure = IllegalStateException("the machine said ${out.toString().take(120)} to ${envelope.keys}")
             return
         }
+        liveApp = (out["app_session"] as? JsonObject)?.let(AppSession::read)
+        if (featureSession.value?.scope != liveApp?.scope) featureSession.value = null
         ready.addLast(Effects(does, atStart, signOut))
         drain()
     }
@@ -392,6 +475,7 @@ class Nexus internal constructor(
             val batch = ready.removeFirst()
             if (!criticalKeepFailed || batch.signOut) doAll(batch)
         }
+        if (awaiting == null) publishFeatures()
     }
 
     /** The journal's writer has made a change, or could not: what waited behind it is done now,
@@ -402,6 +486,9 @@ class Nexus internal constructor(
         if (awaiting !== waited) return
         awaiting = null
         if (!made) lastFailure = IllegalStateException("the journal did not make ${waited.change.keys}")
+        if ("life_moved" in waited.change) {
+            failedLifeMove = if (made) null else liveApp?.scope?.takeIf { it.matchesKept(parts.saved) }
+        }
         // (A life moved: the journal has the new one already, published at its Keep; told again,
         // which is nothing if it is the same.)
         publish()
@@ -413,11 +500,15 @@ class Nexus internal constructor(
      *  at the send itself (the request's connection made, nothing written yet), and the ask
      *  dropped unsent if not (C10's contract). Offline switched on or off and not yet told is
      *  told first, so the answer is never one from before it. */
-    private fun waitsFor(id: JsonPrimitive): Boolean = try {
+    private fun waitsFor(id: JsonPrimitive, request: Long?): Boolean = try {
         worker.submit<Boolean> {
             if (machine == 0L || stopped.get()) return@submit false
             val offlineNow = offlineNow()
             if (offlineNow != toldOffline) tellOffline(offlineNow)
+            if (request != null) {
+                val flight = features[request] ?: return@submit false
+                if (!flight.continuation.isActive || !canUseFeature(flight.scope)) return@submit false
+            }
             (Core.nexusCall(buildJsonObject { put("machine", machine); put("call", buildJsonObject { put("waits_for", buildJsonObject { put("ask", id) }) }) })["waits"] as? JsonPrimitive)?.booleanOrNull == true
         }.get()
     } catch (e: Exception) {
@@ -538,6 +629,11 @@ class Nexus internal constructor(
                     if (journal(change, batch.copy(items = does.subList(index + 1, does.size)))) return
                 }
                 "ask" -> (value as? JsonObject)?.let(::send)
+                "app_result" -> (value as? JsonObject)?.let {
+                    val request = (it["request"] as? JsonPrimitive)?.longOrNull
+                    val result = (it["result"] as? JsonPrimitive)?.contentOrNull
+                    if (request != null && result != null && request in features) featureResults[request] = result
+                }
             }
         }
         flush()
@@ -607,25 +703,46 @@ class Nexus internal constructor(
      *  is dropped unsent, and nothing is told. */
     private fun send(ask: JsonObject) {
         val id = ask["id"] as? JsonPrimitive ?: return
+        val request = (ask["app_request"] as? JsonPrimitive)?.longOrNull
+        if (request != null) {
+            val flight = features[request] ?: return
+            flight.ask = id
+        }
         try {
             calls.execute {
                 val result: JsonElement? = try {
                     beforeAsk?.invoke(this)
                     // (Asked here too, before a connection is made for one not waited for.)
-                    if (!waitsFor(id)) return@execute
-                    outcome(id, ask)
+                    if (waitsFor(id, request)) outcome(id, ask, request) else null
                 } catch (e: Exception) {
                     failed(id, "connect", null)
                 } catch (e: LinkageError) {
                     failed(id, "connect", null)
                 }
-                if (result != null) happened(result)
+                if (request == null) {
+                    if (result != null) happened(result)
+                } else {
+                    onWorker { featureAnswered(request, result) }
+                }
             }
         } catch (e: java.util.concurrent.RejectedExecutionException) {
         }
     }
 
-    private fun outcome(id: JsonPrimitive, ask: JsonObject): JsonElement? {
+    private fun featureAnswered(request: Long, event: JsonElement?) {
+        val flight = features[request] ?: return
+        if (event == null || !flight.continuation.isActive || !canUseFeature(flight.scope)) {
+            cancelFeature(request)
+            return
+        }
+        val answered = (event as? JsonObject)?.get("answered") as? JsonObject
+        val status = (answered?.get("status") as? JsonPrimitive)?.intOrNull
+        val body = (answered?.get("body") as? JsonPrimitive)?.contentOrNull
+        if (status != null && body != null) flight.answer = FeatureResult.Checked(status, body)
+        tell(event)
+    }
+
+    private fun outcome(id: JsonPrimitive, ask: JsonObject, request: Long?): JsonElement? {
         val url = (ask["url"] as? JsonPrimitive)?.contentOrNull?.toHttpUrlOrNull()
         // (The machine only ever asks over HTTPS, at the address the person typed: anything else
         // is not sent.)
@@ -643,7 +760,7 @@ class Nexus internal constructor(
         val sent = try {
             exchange(
                 client, url, post, authorization, body, userAgent, within, most, reading,
-                stillWanted = { waitsFor(id) },
+                stillWanted = { waitsFor(id, request) },
                 diagnosticsOff = { recording?.diagnostics?.explicitlyOff == true },
             ) { call ->
                 inFlight[key] = call
@@ -746,6 +863,8 @@ class Nexus internal constructor(
 
         /** How long a stop waits for the machine's own thread to let it go. */
         const val STOP_SECONDS = 2L
+
+        private const val FEATURE_WITHIN_MS = 57_000L
 
         const val CONNECT_SECONDS = 8L
         const val READ_SECONDS = 10L

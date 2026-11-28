@@ -77,6 +77,8 @@ internal fun NexusAccount(graph: Graph) {
         TextButton(stringResource(R.string.allow), onClick = { ask(null) })
     }
 
+    ListeningSetting(nexus)
+
     // ---- Your devices -------------------------------------------------------------------
     SettingHeading(stringResource(R.string.your_devices))
     val devices = shown.devices

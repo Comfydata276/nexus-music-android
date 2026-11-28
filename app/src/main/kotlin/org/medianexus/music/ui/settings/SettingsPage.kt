@@ -283,15 +283,7 @@ private fun About(graph: Graph, onDiagnostics: () -> Unit, onLicences: () -> Uni
     SettingRow(stringResource(R.string.diagnostics), "", stacked = true) {
         TextButton(stringResource(R.string.diagnostics_what_sent), onClick = onDiagnostics)
     }
-    if (state.signedIn) {
-        var open by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
-        val notice by produceState<String?>(null, open) {
-            value = if (open) withContext(Dispatchers.IO) { diagnostics.recordingNotice() } else null
-        }
-        SettingRow(stringResource(R.string.diagnostics_recording_notice), notice?.substringAfter("\n\n").orEmpty(), stacked = true) {
-            TextButton(stringResource(if (open) R.string.diagnostics_hide_notice else R.string.diagnostics_read_notice), onClick = { open = !open })
-        }
-    }
+    RecordingSetting()
     SettingRow(stringResource(R.string.licences), stringResource(R.string.licences_detail), stacked = true) {
         TextButton(stringResource(R.string.show_licences), onClick = onLicences)
     }
