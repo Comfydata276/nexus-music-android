@@ -54,12 +54,16 @@ fn private_directory(path: &Path) -> io::Result<()> {
 }
 
 fn replace(path: &Path, data: &[u8]) -> io::Result<()> {
+    replace_file(path, data)?;
+    File::open(path.parent().ok_or_else(|| invalid(()))?)?.sync_all()
+}
+
+fn replace_file(path: &Path, data: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("next");
     let mut file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
     file.write_all(data)?;
     file.sync_all()?;
-    fs::rename(tmp, path)?;
-    File::open(path.parent().ok_or_else(|| invalid(()))?)?.sync_all()
+    fs::rename(tmp, path)
 }
 
 fn to_value(value: impl serde::Serialize) -> io::Result<Value> {

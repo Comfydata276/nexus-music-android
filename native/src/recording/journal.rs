@@ -1,4 +1,4 @@
-use super::{invalid, private_directory, read, replace, to_value, version};
+use super::{invalid, private_directory, read, replace, replace_file, to_value, version};
 use nexus_core::nexus::{
     account::DeviceKind,
     events::{self, EventId, Kind, Loss, LossCounts, Outcome, Placed, Record},
@@ -128,7 +128,8 @@ struct State {
 struct AccountState {
     life: u64,
     settled: BTreeMap<u64, Settled>,
-    position: Option<(String, u32)>,
+    #[serde(rename = "position", skip_serializing)]
+    old_position: Option<(String, u32)>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -144,6 +145,8 @@ struct Repair {
     remove: bool,
     #[serde(default)]
     scratch: bool,
+    #[serde(default)]
+    position: bool,
 }
 
 #[derive(Default)]
@@ -160,6 +163,10 @@ impl Scope {
     fn folder(&self, root: &Path) -> io::Result<PathBuf> {
         Ok(root.join(self.account.key()?).join(self.life.to_string()))
     }
+    fn position(&self, root: &Path) -> io::Result<PathBuf> {
+        Ok(self.folder(root)?.join("position.json"))
+    }
+
     fn segment(&self, root: &Path, first: u64) -> io::Result<PathBuf> {
         Ok(self.folder(root)?.join(format!("{first}.events")))
     }
@@ -241,7 +248,8 @@ impl Writer {
             return Ok(());
         }
         for repair in &self.state.repairs {
-            let path = repair.scope.segment(&self.root, repair.first)?;
+            let path = if repair.position { repair.scope.position(&self.root)? }
+                else { repair.scope.segment(&self.root, repair.first)? };
             if repair.remove {
                 if !repair.scratch { remove(&path)?; }
                 remove(&path.with_extension("next"))?;
@@ -278,9 +286,13 @@ impl Writer {
                     let Some(life) = dir.file_name().to_str().and_then(|name| name.parse().ok()) else { continue };
                     if life == scope.life { continue; }
                     let older = Scope { account: scope.account.clone(), life };
+                    let position = older.position(&self.root)?;
+                    if position.exists() || position.with_extension("next").exists() {
+                        state.repairs.push(Repair { scope: older.clone(), first: 0, remove: true, scratch: false, position: true });
+                    }
                     for extension in ["events", "next"] {
                         for first in segment_numbers(&dir.path(), extension)? {
-                            state.repairs.push(Repair { scope: older.clone(), first, remove: true, scratch: extension == "next" });
+                            state.repairs.push(Repair { scope: older.clone(), first, remove: true, scratch: extension == "next", position: false });
                         }
                     }
                 }
@@ -305,7 +317,7 @@ impl Writer {
             if !scope.segment(&self.root, first)?.exists() {
                 state.loss.add(Loss::LineFull, 1);
             }
-            state.repairs.push(Repair { scope: scope.clone(), first, remove: true, scratch: true });
+            state.repairs.push(Repair { scope: scope.clone(), first, remove: true, scratch: true, position: false });
         }
         for first in segment_numbers(&folder, "events")? {
             let path = scope.segment(&self.root, first)?;
@@ -317,7 +329,7 @@ impl Writer {
                 Ok((file, bytes)) if file.life == scope.life => {
                     if file.skipped_lines != 0 {
                         state.loss.add(Loss::LineFull, file.skipped_lines as u64);
-                        state.repairs.push(Repair { scope: scope.clone(), first, remove: false, scratch: false });
+                        state.repairs.push(Repair { scope: scope.clone(), first, remove: false, scratch: false, position: false });
                     }
                     catalog.segments.insert(first, Segment { bytes, events: file.events });
                 }
@@ -325,7 +337,7 @@ impl Writer {
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                     // A crash before the first header's newline left no committed line.
                     state.loss.add(Loss::LineFull, 1);
-                    state.repairs.push(Repair { scope: scope.clone(), first, remove: true, scratch: false });
+                    state.repairs.push(Repair { scope: scope.clone(), first, remove: true, scratch: false, position: false });
                 }
                 Err(error) => return Err(error),
             }
@@ -393,7 +405,10 @@ impl Writer {
         if self.recovered.contains(scope) { return Ok(true); }
         let open = events::open_starts(self.catalogs[scope].segments.values().flat_map(|s| &s.events));
         let key = scope.account.key()?;
-        let position = self.state.accounts[&key].position.as_ref().and_then(|(start, ms)| Some((id(start).ok()?, *ms)));
+        let checkpoint: Option<(String, u32)> = read(&scope.position(&self.root)?, 128).ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .or_else(|| self.state.accounts[&key].old_position.clone());
+        let position = checkpoint.and_then(|(start, ms)| Some((id(&start).ok()?, ms)));
         // Recovery runs once per process/scope. New IDs are made on the writer thread.
         for start in open {
             let new_id = random_id().ok_or_else(|| invalid(()))?;
@@ -430,7 +445,7 @@ impl Writer {
                 }
                 if !self.activate(&scope, now)? { return Ok(()); }
                 if let Observation::Position { start, position_ms } = capture.data {
-                    positions.insert(key, (start, position_ms));
+                    positions.insert(scope.clone(), (start, position_ms));
                     return Ok(());
                 }
                 let record = Record::new(id(&capture.id)?, capture.at, capture.data.kind()?).map_err(invalid)?;
@@ -445,20 +460,28 @@ impl Writer {
         for scope in dirty {
             let _ = self.prune(&scope, now);
         }
-        let mut state = self.state.clone();
+        for (scope, position) in positions {
+            // A checkpoint is best effort. It may lag after power loss, but an atomic
+            // replacement guarantees any usable checkpoint still names its exact Start.
+            let _ = self.keep_position(&scope, position);
+        }
         let counted = self.unwritten.saturating_add(lost);
-        state.loss.add(Loss::LineFull, counted);
-        let has_positions = !positions.is_empty();
-        for (key, position) in positions {
-            if let Some(account) = state.accounts.get_mut(&key) {
-                account.position = Some(position);
+        if counted != 0 {
+            let mut state = self.state.clone();
+            state.loss.add(Loss::LineFull, counted);
+            if self.commit(state).is_ok() {
+                self.unwritten = 0;
+                return lost;
             }
         }
-        if (has_positions || counted != 0) && self.commit(state).is_ok() {
-            self.unwritten = 0;
-            return lost;
-        }
         0
+    }
+
+    fn keep_position(&self, scope: &Scope, position: (String, u32)) -> io::Result<()> {
+        id(&position.0)?;
+        let path = scope.position(&self.root)?;
+        private_directory(path.parent().ok_or_else(|| invalid(()))?)?;
+        replace_file(&path, &serde_json::to_vec(&position).map_err(invalid)?)
     }
 
     fn prune(&mut self, scope: &Scope, now: u64) -> io::Result<()> {
@@ -480,7 +503,7 @@ impl Writer {
             for event in &segment.events {
                 account.settled.remove(&event.sequence());
             }
-            state.repairs.push(Repair { scope: scope.clone(), first: *first, remove: true, scratch: false });
+            state.repairs.push(Repair { scope: scope.clone(), first: *first, remove: true, scratch: false, position: false });
         }
         state.loss.add(Loss::FilesFull, plan.dropped);
         self.commit(state)?;
@@ -575,7 +598,7 @@ fn read_events(root: &Path, scope: &Scope, from: u64, limit: usize, bytes: usize
     let mut used = 0;
     let numbers = segment_numbers(&scope.folder(root)?, "events")?;
     for (index, &first) in numbers.iter().enumerate() {
-        if state.repairs.iter().any(|repair| repair.remove && !repair.scratch && repair.scope == *scope && repair.first == first) { continue; }
+        if state.repairs.iter().any(|repair| repair.remove && !repair.scratch && !repair.position && repair.scope == *scope && repair.first == first) { continue; }
         if numbers.get(index + 1).is_some_and(|&next| next <= from) { continue; }
         let (file, _) = match event_file(&scope.segment(root, first)?) {
             Ok(file) => file,
@@ -691,6 +714,51 @@ mod tests {
     }
 
     #[test]
+    fn periodic_position_write_budget() {
+        use std::os::unix::fs::MetadataExt;
+        let root = TestRoot::new();
+        let scope = scope();
+        let mut writer = Writer::open(root.0.clone()).unwrap();
+        writer.activate(&scope, NOW).unwrap();
+        let mut state = writer.state.clone();
+        state.reserved = 8_000;
+        state.accounts.get_mut(&scope.account.key().unwrap()).unwrap().settled =
+            (1..=8_000).map(|seq| (seq, Settled { outcome: Outcome::Taken, at: NOW })).collect();
+        writer.commit(state).unwrap();
+        let state_file = root.0.join("state.json");
+        let position_file = scope.folder(&root.0).unwrap().join("position.json");
+        let measure = |path: &Path| fs::metadata(path).ok().map(|info| (info.ino(), info.len()));
+        // The writer at 0f1db80 committed the whole state, with the position in it, at every
+        // checkpoint: 720 rewrites of this file are what one hour of playback cost before.
+        let old_writer_bytes = 720 * (fs::metadata(&state_file).unwrap().len() + 48);
+        let mut previous_state = measure(&state_file);
+        let mut previous_position = measure(&position_file);
+        let mut state_bytes = 0;
+        let mut position_bytes = 0;
+        for tick in 1..=720 {
+            writer.append_batch(vec![Capture {
+                scope: scope.clone(), id: START.to_owned(), at: NOW + tick * 5_000,
+                data: Observation::Position { start: START.to_owned(), position_ms: (tick * 5_000) as u32 },
+            }], 0, NOW + tick * 5_000);
+            for (path, previous, total) in [
+                (&state_file, &mut previous_state, &mut state_bytes),
+                (&position_file, &mut previous_position, &mut position_bytes),
+            ] {
+                let next = measure(path);
+                if next != *previous {
+                    if let Some((_, size)) = next { *total += size; }
+                    *previous = next;
+                }
+            }
+        }
+        println!("720 position checkpoints: before at least {old_writer_bytes} state bytes; now {state_bytes} state bytes, {position_bytes} checkpoint bytes");
+        assert!(old_writer_bytes > 200_000_000);
+        assert_eq!(state_bytes, 0);
+        assert!(position_bytes > 0 && position_bytes <= 720 * 48);
+        assert_eq!(serde_json::from_slice::<(String, u32)>(&fs::read(position_file).unwrap()).unwrap(), (START.to_owned(), 3_600_000));
+    }
+
+    #[test]
     fn cut_child() {
         let Some(path) = std::env::var_os("NEXUS_RECORDING_CUT_FIXTURE") else { return; };
         let path = std::path::PathBuf::from(path);
@@ -701,6 +769,49 @@ mod tests {
         fs::write(path.join("cut-ready"), []).unwrap();
         // The parent kills this process with the interrupted event's file still open.
         std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[test]
+    fn checkpoint_child() {
+        let Some(path) = std::env::var_os("NEXUS_RECORDING_CHECKPOINT_FIXTURE") else { return; };
+        let path = std::path::PathBuf::from(path);
+        let writer = Writer::open(path.clone()).unwrap();
+        for tick in 1..=1_000_000u32 {
+            writer.keep_position(&scope(), (START.to_owned(), tick * 1_000)).unwrap();
+            if tick == 20 { fs::write(path.join("checkpoint-ready"), []).unwrap(); }
+        }
+    }
+
+    #[test]
+    fn killed_while_checkpointing_keeps_a_whole_recent_position_and_never_touches_state() {
+        let root = TestRoot::new();
+        let scope = scope();
+        append_start(&root, &scope);
+        drop(WRITERS.with_borrow_mut(|writers| writers.remove(&root.0)));
+        let state = fs::read(root.0.join("state.json")).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "recording::journal::tests::checkpoint_child"])
+            .env("NEXUS_RECORDING_CHECKPOINT_FIXTURE", &root.0)
+            .stdout(Stdio::null())
+            .spawn().unwrap();
+        let ready = root.0.join("checkpoint-ready");
+        let until = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Killed while it goes on replacing the checkpoint, at no chosen point in a replace.
+        std::thread::sleep(Duration::from_millis(37));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(ready.exists());
+        assert_eq!(fs::read(root.0.join("state.json")).unwrap(), state);
+        let recovered = request(&root, json!({ "activate": { "scope": scope, "now": NOW } }));
+        assert_eq!(recovered["loss"]["line_full"], 0);
+        let found = read_events(&root.0, &scope, 1, 500, events::BATCH_BYTES, u64::MAX).unwrap();
+        assert_eq!(found[1]["event"]["why"]["kind"], "unknown");
+        let position = found[1]["event"]["position_ms"].as_u64().unwrap();
+        // A whole value the child wrote, no older than the moment it said it was ready.
+        assert!(position >= 20_000 && position % 1_000 == 0, "{position}");
     }
 
     #[test]

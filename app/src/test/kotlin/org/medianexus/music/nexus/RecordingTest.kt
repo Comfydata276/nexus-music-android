@@ -268,6 +268,7 @@ class RecordingTest {
         assertFalse("torn" in segment.readText())
         assertTrue(apply(reopened, "life_moved", a.copy(life = JsonPrimitive(2)).wire()))
         assertFalse(segment.exists())
+        assertFalse(File(segment.parentFile, "position.json").exists())
         assertEquals(1uL, reopened.losses().line)
         assertEquals(0uL, reopened.losses().files)
         publish(reopened, 1, 2)
