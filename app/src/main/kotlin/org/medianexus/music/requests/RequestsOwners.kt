@@ -259,7 +259,6 @@ class RequestsOwners internal constructor(
         // order and a sign-in is over before the next begins, so this is never so; with
         // no seat at all, they were switched off, or the sign-in ended before its turn.)
         if (owner.seat != null && owner.seat !== seat) return
-        val server = owner.requests.serverMode
         owner.seat = null
         owner.present(null)
         // (Whatever is thrown on the way, the account leaves: and the line moves on, see
@@ -267,7 +266,8 @@ class RequestsOwners internal constructor(
         try {
             owner.pages.settled()
         } finally {
-            if (!server) owner.requests.leave() else owner.requests.select(null)
+            owner.requests.select(null)
+            owner.requests.leave()
         }
     }
 

@@ -27,6 +27,9 @@ import org.medianexus.music.core.CoreHttp
 import org.medianexus.music.core.Outcome
 import org.medianexus.music.core.StandIn
 import org.medianexus.music.graph
+import org.medianexus.music.requests.RequestsNow
+import org.medianexus.music.requests.RequestsSecrets
+import org.medianexus.music.store.SecretBox
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
@@ -290,6 +293,31 @@ class SignInTest {
                 CoreHttp.dress = {}
             }
         }
+    }
+
+    @Test
+    fun signingOutOnTheServerRouteForgetsTheReleasedLidarrSecrets() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        val nexus = graph.nexus!!
+        until { nexus.appSession.value?.takeIf { it.verified } }
+        val account = until { graph.accounts.state.value }
+        val dir = File(app.noBackupFilesDir, "requests/${account.account.key}")
+        val secrets = RequestsSecrets(dir, object : SecretBox {
+            override fun seal(plain: ByteArray) = plain
+            override fun open(sealed: ByteArray) = sealed
+        }, account.account.server, account.account.username)
+        assertTrue(secrets.keepKey("http://127.0.0.1:9130", "a test key"))
+        assertTrue(secrets.keepToken("http://127.0.0.1:9131", "a test token"))
+        standIn.answer = { request ->
+            if (request.url.encodedPath == "/nexus/api/requests") standIn.feature("requests_ready")
+            else standIn.there(request)
+        }
+        graph.requestsRouter.refresh()
+        until { (account.requestsNow.value as? RequestsNow.On)?.takeIf { it.server } }
+        assertTrue(secrets.exist())
+        nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
+        until { Unit.takeUnless { secrets.exist() } }
     }
 
     @Test
