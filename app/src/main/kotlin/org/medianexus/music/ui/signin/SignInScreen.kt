@@ -93,7 +93,7 @@ fun SignInScreen(graph: Graph) {
 
 @Composable
 private fun rememberShown(graph: Graph): NexusShown? {
-    val shown by produceState<NexusShown?>(graph.nexus?.shown?.value, graph) {
+    val shown by produceState<NexusShown?>(null, graph) {
         while (graph.nexus == null) kotlinx.coroutines.delay(100)
         graph.nexus!!.shown.collect { value = it }
     }

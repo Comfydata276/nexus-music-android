@@ -42,7 +42,7 @@ import org.medianexus.music.ui.theme.Theme
 /** What the Nexus server's machine shows now; null until it has started. */
 @Composable
 internal fun nexusShown(graph: Graph): NexusShown? {
-    val shown by produceState<NexusShown?>(graph.nexus?.shown?.value, graph) {
+    val shown by produceState<NexusShown?>(null, graph) {
         // (It is made once the app has started, off the main thread: looked for until then.)
         while (graph.nexus == null) kotlinx.coroutines.delay(250)
         graph.nexus!!.shown.collect { value = it }
