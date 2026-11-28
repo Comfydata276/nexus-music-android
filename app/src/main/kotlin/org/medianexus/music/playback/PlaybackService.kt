@@ -116,6 +116,8 @@ class PlaybackService : MediaLibraryService() {
                 unsure = { !graph.watch.state.value.sure },
                 settle = { graph.watch.state.first { it.sure } },
                 liked = { account.likes.isLiked(it) },
+                refused = { account.api.login.isRefused },
+                line = { graph.nexus?.shown?.value?.car },
             ),
             mixes = { account.mixes.state.value },
         )
@@ -185,6 +187,9 @@ class PlaybackService : MediaLibraryService() {
     /** The try at the server that has been put off (see [Recovery.Retry]); null when the
      *  player isn't waiting for the server. */
     private var waitingFor: Recovery.Retry? = null
+    /** The entry that stopped for want of a music login, waiting for the renewal (on the main
+     *  thread). */
+    private var heldForRenewal: Recovery.Retry? = null
     private var retry: Job? = null
 
     /** How long the server has been out of reach for the song that is stuck (see
@@ -859,6 +864,19 @@ class PlaybackService : MediaLibraryService() {
         reload()
         // The like button follows the likes, wherever they're changed.
         next.scope.launch { now.likes.liked.collect { updateButtons() } }
+        // The music login set aside, or renewed: the car's tabs show something else now (what
+        // is online is out of reach meanwhile, with the machine's line at their head).
+        next.scope.launch { now.api.login.setAside.drop(1).collect { if (era === next) reload() } }
+        // **What waited for the music login's renewal is tried once more under it** (6.3): the
+        // entry that stopped for it, made ready again from where it stopped, if it is still the
+        // one playing in this account's turn.
+        next.scope.launch {
+            now.api.login.renewals.drop(1).collect {
+                val held = heldForRenewal ?: return@collect
+                heldForRenewal = null
+                if (era === next && held.generation == next.number && player.queue.currentUid() == held.uid && exo.playerError != null) exo.prepare()
+            }
+        }
         // The list the queue came from changed (a fresh copy from the server, a song unliked
         // from Liked songs): the queue follows it. And a list the car has open, perhaps as
         // numbered ranges: every one of those folders is told to load again (see
@@ -1654,6 +1672,12 @@ class PlaybackService : MediaLibraryService() {
                     player.queue.currentUid()?.let(reading::remove)
                     publishExtras()
                     exo.prepare()
+                }
+                // **The music login is set aside** (6.3): this entry waits where it is, and is
+                // made ready again once, under the login the Nexus server hands next (see the
+                // era's `renewals`). Nothing is passed over, nothing tried on a timer.
+                (error.cause as? StreamFailure)?.signIn == true -> {
+                    heldForRenewal = era?.let { held -> player.queue.currentUid()?.let { Recovery.Retry(held.number, it) } }
                 }
                 // Offline mode, and this one isn't on the phone: the next that is.
                 offline(error) -> passOverToThePhone()

@@ -624,6 +624,12 @@ class SongFetch(
         if (gone) return RouteGone()
         if (e is DownloadFailure || e is Cancelled || e is RouteGone) return e
         val chain = generateSequence<Throwable>(e) { it.cause }.take(8).toList()
+        // **The music login set aside** (refused by the music server, here or anywhere): held,
+        // as a song that could not reach the server is, and tried once more when the Nexus
+        // server hands a new one (`Graph`, on the login's renewal).
+        if (chain.any { it is org.medianexus.music.net.RefusedLogin }) return DownloadFailure(SIGN_IN_RENEWING, network = true)
+        // Held for the login's first answer, too long: never sent; tried again with the rest.
+        if (chain.any { it is org.medianexus.music.net.NotSentYet }) return DownloadFailure(CANT_REACH, network = true)
         val full = chain.any { (it.message.orEmpty()).contains("ENOSPC") || it.message.orEmpty().contains("No space left", ignoreCase = true) }
         return when {
             full -> DownloadFailure("The phone is out of space.")
@@ -638,6 +644,9 @@ class SongFetch(
     private class OutOfRoom : IOException()
 
     companion object {
+        /** A download held for the music login's renewal. */
+        const val SIGN_IN_RENEWING = "Waiting for your music sign-in to be renewed."
+
         const val CANT_REACH = "Can't reach the server."
         const val NOT_A_SONG = "What the server sent isn't a song the phone can play."
         const val NO_DECODER = "This phone has no way to play that kind of file."

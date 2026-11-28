@@ -18,7 +18,7 @@ fun Subsonic(
     offline: OfflineSwitch = OfflineSwitch(),
     salt: String = "abcdefghijklmnop",
     io: CoroutineDispatcher = Dispatchers.IO,
-): Subsonic = Subsonic(server, username, MusicLogin(Handed(salt, md5Hex(password + salt), "1")), http, offline, io)
+): Subsonic = Subsonic(server, username, MusicLogin(Handed(salt, md5Hex(password + salt), "1"), proven = true), http, offline, io)
 
 /** The token for a password and a salt, as Navidrome checks it. */
 fun md5Hex(text: String): String = MessageDigest.getInstance("MD5").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

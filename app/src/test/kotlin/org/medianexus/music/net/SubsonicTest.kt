@@ -99,7 +99,7 @@ class SubsonicTest {
         failed(40, "Wrong username or password")
         val api = client()
         val told = java.util.concurrent.CopyOnWriteArrayList<String>()
-        api.login.onRefused = { told += it.count }
+        api.login.onRefused = { told += it.handed.count }
         expect<ApiError.Server> { api.ping() }
         val sentBefore = server.requestCount
         expect<ApiError.Server> { api.ping() }
@@ -336,9 +336,9 @@ class SubsonicTest {
     }
 
     /** A long answer that arrives a little at a time: reading it all would take a minute. */
-    private fun slowAnswer(start: String = "") = server.enqueue(
+    private fun slowAnswer(start: String = "", type: String = "application/json") = server.enqueue(
         MockResponse.Builder()
-            .setHeader("Content-Type", "application/json")
+            .setHeader("Content-Type", type)
             .body(Buffer().writeUtf8(start).writeUtf8("x".repeat(1_000_000)))
             .throttleBody(1024, 60, TimeUnit.MILLISECONDS)
             .build(),
@@ -368,7 +368,7 @@ class SubsonicTest {
         val api = Subsonic(server.url("/").toString(), "ada", "sesame", http)
         slowAnswer("{\"subsonic-response\":{\"status\":\"ok\",\"padding\":\"")
         cancelsMidBody(http) { api.ping() }
-        slowAnswer()
+        slowAnswer(type = "image/jpeg")
         cancelsMidBody(http) { api.fetchBytes(api.coverUrl("c1", 300), 10_000_000) }
     }
 

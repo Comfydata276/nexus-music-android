@@ -273,7 +273,17 @@ class Subsonic(
 
     /** A request that failed on its way: said to whoever follows whether the server answers
      *  (a secure connection it turned down means it did), and made the error to throw. */
-    private fun failed(e: IOException): ApiError.Network {
+    private fun failed(e: IOException): ApiError {
+        // Set aside at the send, or refused in the answer: the music server's "wrong name or
+        // password", as it would have said it (the core has been told).
+        if (e is RefusedLogin) return ApiError.Server(40L, "")
+        // Held for the login's first answer, too long: never left.
+        if (e is NotSentYet) return ApiError.Network("The music server hasn't answered yet.", unsent = true)
+        // Inside the house, without the permission: never connected (the screens ask for it).
+        if (e is LocalNetworkBlocked) {
+            onReached?.invoke(false)
+            return ApiError.Network("Nexus Music isn't allowed to reach devices on your home network.", unsent = true)
+        }
         val answered = answeredOverTls(e)
         onReached?.invoke(answered)
         return ApiError.Network(networkHint(e), answered, unsent = neverLeft(e))
@@ -540,6 +550,11 @@ class Subsonic(
         return try {
             call.fetch(io) {
                 if (!it.isSuccessful) throw ApiError.Network("HTTP status ${it.code}.")
+                // A page in place of the picture (the server's own error, a proxy's page): not
+                // a picture, and never kept as one. (A refused login is seen before this, at
+                // the send: `MusicLogin.Gate`.)
+                val type = it.body.contentType()
+                if (type != null && (type.type == "text" || "json" in type.subtype || "xml" in type.subtype)) throw ApiError.NotSubsonic("(No picture was sent.)")
                 val source = it.body.source()
                 if (source.request(limit + 1)) throw ApiError.Network("(The answer was larger than $limit bytes.)")
                 source.buffer.readByteArray()

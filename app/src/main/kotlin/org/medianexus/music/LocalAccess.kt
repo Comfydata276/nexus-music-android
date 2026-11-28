@@ -212,6 +212,11 @@ class LocalAccess(private val context: Context, private val session: Session, pr
         /** Only Android 17 and later have (and enforce) it. */
         val APPLIES: Boolean = Build.VERSION.SDK_INT >= 37
 
+        /** Whether the app may reach the home network now (always, before Android 17), asked of
+         *  the system at once: for the HTTP client's look at each address (`LocalDns`). */
+        fun grantedIn(context: Context): Boolean =
+            !APPLIES || ContextCompat.checkSelfPermission(context, PERMISSION) == PackageManager.PERMISSION_GRANTED
+
         private const val LOOKUP_MILLIS = 3_000L
     }
 }

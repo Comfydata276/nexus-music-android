@@ -25,7 +25,10 @@ object Http {
     /** Longest an API call may take from start to finish. Audio has no such limit. */
     const val API_TIMEOUT_SECONDS = 45L
 
-    fun client(userAgent: String): OkHttpClient = OkHttpClient.Builder()
+    fun client(userAgent: String, dns: okhttp3.Dns = okhttp3.Dns.SYSTEM): OkHttpClient = OkHttpClient.Builder()
+        // (Android 17's local-network permission, judged at the address before connecting:
+        // `LocalDns`.)
+        .dns(dns)
         .connectTimeout(8, TimeUnit.SECONDS)
         // Between one piece of an answer and the next. Nothing overall here: a stream runs as
         // long as the song does. API calls set their own overall limit (see `Subsonic`).
@@ -36,13 +39,15 @@ object Http {
         // load many at a time without opening new ones.
         .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 24 })
-        // A music login the music server has refused is never sent again, from anywhere: a
-        // stream, a cover, a download included (see `MusicLogin`).
-        .addInterceptor(MusicLogin.Gate)
         .addNetworkInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("User-Agent", userAgent).build())
         }
         .addNetworkInterceptor(NoDowngrade)
+        // **The music login's one check, at the send itself** (each attempt, a redirect or a
+        // retry included; a stream, a range reopened, a cover, a download included): a login set
+        // aside is never sent, an unproven one has one request on the wire at a time, and a
+        // refusal in any answer is seen before the caller gets it (see `MusicLogin`).
+        .addNetworkInterceptor(MusicLogin.Gate)
         .build()
 
     /**

@@ -68,7 +68,7 @@ object LocalNetwork {
     fun judgeFound(addresses: List<InetAddress>): Nearness =
         if (addresses.any { judgeAddress(it) != Nearness.NOT }) Nearness.MAYBE else Nearness.NOT
 
-    private fun judgeAddress(address: InetAddress): Nearness = when (address) {
+    fun judgeAddress(address: InetAddress): Nearness = when (address) {
         is Inet4Address -> v4(address.address.map { it.toInt() and 0xff }.toIntArray())
         is Inet6Address -> {
             val bytes = address.address
@@ -100,3 +100,28 @@ object LocalNetwork {
         }
     }
 }
+
+/**
+ * **Android 17's local-network permission, judged at the address actually connected to, before
+ * any socket is opened** (the backend design's 6.4): OkHttp asks this for a name's addresses at
+ * each new connection, whatever asked (the music server, the Nexus server, the first request or
+ * a renewal). Without the permission, an address inside the house is never tried: a connection to
+ * it would be dropped by the system in silence, a timeout later. A name that leads both inside and
+ * out is connected to only outside; one that leads only inside fails at once, as never connected
+ * ([LocalNetworkBlocked]), and `blocked` is told the name. With the permission held (always,
+ * before Android 17) the system's answer is used as it is.
+ */
+class LocalDns(private val held: () -> Boolean, private val blocked: (String) -> Unit = {}, private val system: okhttp3.Dns = okhttp3.Dns.SYSTEM) : okhttp3.Dns {
+    override fun lookup(hostname: String): List<InetAddress> {
+        val all = system.lookup(hostname)
+        if (held()) return all
+        val outside = all.filter { LocalNetwork.judgeAddress(it) != LocalNetwork.Nearness.LOCAL }
+        if (outside.isNotEmpty()) return outside
+        blocked(hostname)
+        throw LocalNetworkBlocked()
+    }
+}
+
+/** An address inside the house, and the local-network permission not held: not connected to.
+ *  Its message names nothing. */
+class LocalNetworkBlocked : java.io.IOException("The app may not reach devices on the home network, so this wasn't sent.")

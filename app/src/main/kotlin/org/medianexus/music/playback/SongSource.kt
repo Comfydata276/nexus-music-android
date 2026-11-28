@@ -556,7 +556,7 @@ class SongDataSource(
             if (Thread.currentThread().isInterrupted) return false
             if (generateSequence<Throwable>(error) { it.cause }.take(8).any { it is java.io.InterruptedIOException && it !is java.net.SocketTimeoutException }) return false
             val kind = StreamFailure.of(error)
-            return !kind.refused && !kind.offline && !kind.moved
+            return !kind.refused && !kind.offline && !kind.moved && !kind.signIn
         }
     }
 
@@ -608,11 +608,16 @@ class StreamFailure private constructor(message: String, reason: Int, val status
      *  with the server. */
     val local: Boolean get() = status == LOCAL
 
+    /** The music login is set aside (the music server refused it, here or anywhere): nothing is
+     *  sent with it, and the entry waits, where it is, for the Nexus server's renewal. */
+    val signIn: Boolean get() = status == SIGN_IN
+
     companion object {
         /** Stands in the status for "offline mode, and not kept": no server sends it. */
         private const val OFFLINE = -1
         private const val MOVED = -2
         private const val LOCAL = -3
+        private const val SIGN_IN = -4
 
         fun moved() = StreamFailure("The copy of the song being played has changed", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, MOVED)
 
@@ -630,6 +635,7 @@ class StreamFailure private constructor(message: String, reason: Int, val status
             val spent = chain.any { it is GaveUp }
             return when {
                 chain.any { it is NotKeptOffline } -> StreamFailure("Offline mode is on, and the song isn't kept on the phone", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, OFFLINE)
+                chain.any { it is org.medianexus.music.net.RefusedLogin } -> StreamFailure("The music sign-in needs renewing", PlaybackException.ERROR_CODE_IO_UNSPECIFIED, SIGN_IN)
                 status != 0 -> StreamFailure("The server answered with status $status", PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, status, spent)
                 chain.any { it is java.net.SocketTimeoutException } ->
                     StreamFailure("The server took too long to answer", PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT, 0, spent)
@@ -654,7 +660,7 @@ class RideOut : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolic
         val error = loadErrorInfo.exception
         // A station: the service's rejoin is the one thing that tries it again.
         if (songIdOf(loadErrorInfo.loadEventInfo.dataSpec.uri) == null) return C.TIME_UNSET
-        if (error is StreamFailure && (error.refused || error.offline || error.spent || error.moved || error.local)) return C.TIME_UNSET
+        if (error is StreamFailure && (error.refused || error.offline || error.spent || error.moved || error.local || error.signIn)) return C.TIME_UNSET
         // A file that can't be read as audio (a damaged download, say) reads the same the
         // next time: not a connection to ride out. (Media3's own policy doesn't retry these;
         // as an IOException it was being asked for four more times, 15 seconds of silence.)

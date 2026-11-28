@@ -6,6 +6,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -40,7 +42,21 @@ class Graph(
     /** Work that outlives any screen. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    val http = Http.client(userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)")
+    val http = Http.client(
+        userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)",
+        // Android 17's local-network permission, judged at the address before any socket opens;
+        // the music server's address found inside without it is told to the machine (6.4).
+        dns = org.medianexus.music.net.LocalDns(held = { LocalAccess.grantedIn(app) }, blocked = { host -> musicBlocked(host) }),
+    )
+
+    /** The music server's name led only inside the house and the permission is not held: said
+     *  to the machine for the login in use (`MusicLooked`), so its words and its question show. */
+    private fun musicBlocked(host: String) {
+        val now = session.state.value as? SessionState.SignedIn ?: return
+        if (!host.equals(now.api.server.toHttpUrlOrNull()?.host, ignoreCase = true)) return
+        val pass = now.api.login.pass
+        nexus?.musicLooked(true, false, pass.handed.count, pass.generation)
+    }
 
     val notices = Notices()
 
@@ -297,8 +313,11 @@ class Graph(
                 makeNexus()
             } catch (e: Exception) {
                 diagnostics.note("the Nexus server's part of the app couldn't be started: ${e.javaClass.simpleName}")
+                // (Nobody is published without it: the car and downloads are not left waiting.)
+                session.started()
             } catch (e: LinkageError) {
                 diagnostics.note("the Nexus server's part of the app couldn't be started: ${e.javaClass.simpleName}")
+                session.started()
             }
         }
     }
@@ -310,10 +329,18 @@ class Graph(
             kept = nexusKept,
             side = object : org.medianexus.music.nexus.Nexus.Side {
                 override fun handLogin(music: org.medianexus.music.nexus.KeptMusic, account: org.medianexus.music.nexus.KeptAccount?, generation: String) = session.handed(music, account, generation)
+                override fun restored(music: org.medianexus.music.nexus.KeptMusic, account: org.medianexus.music.nexus.KeptAccount, generation: String) = session.restoredFrom(music, account, generation)
+                override fun started() = session.started()
+                override fun signedInAs(account: org.medianexus.music.nexus.KeptAccount, music: org.medianexus.music.nexus.KeptMusic?) {
+                    session.signedInAs(account, music)
+                }
                 override fun notKept() = session.notKept()
-                override fun refused(count: String) = session.refused(count)
+                override fun refused(count: String, generation: String) = session.refused(count, generation)
                 override fun musicForgotten() {
                     session.forgotten()
+                }
+                override fun noLogin() {
+                    session.noLogin()
                 }
                 override fun inside(host: String): Boolean? = localForTests?.inside ?: localAccess.insideNow(host)
                 override val permission: Boolean? get() = localForTests?.permission ?: localAccess.permissionNow
@@ -325,6 +352,20 @@ class Graph(
         )
         nexus = made
         made.start()
+        // **While a sign-in is under way the app keeps its standing** (6.4): out of sight behind
+        // another app (a password manager, the system's settings), Android freezes it within a
+        // minute, and the answer would wait unread. The same short foreground hold as Lidarr's
+        // sign-in, let go of the moment the try has ended.
+        scope.launch {
+            var held: org.medianexus.music.requests.Requests.Hold? = null
+            made.shown.map { it?.signIn?.state == "working" }.distinctUntilChanged().collect { working ->
+                if (working && held == null) held = org.medianexus.music.requests.SignInService.hold(app)
+                if (!working) {
+                    held?.release?.invoke()
+                    held = null
+                }
+            }
+        }
     }
 
     val toasts = Toasts()
@@ -475,8 +516,9 @@ class Graph(
             // **What earlier versions kept and nothing reads now is removed when this one first
             // runs** (the backend design's section 11): the saved music-server password, and
             // the jam relay's key that went with it. Nothing falls back to either.
-            File(context.noBackupFilesDir, "password.sealed").delete()
-            File(context.noBackupFilesDir, "relay-key.sealed").delete()
+            // Their interrupted writes too (`.password.sealed.<run>-<n>.tmp`), unopened; a
+            // deletion that fails is said, and tried again at the next start.
+            if (!org.medianexus.music.store.sweepLegacySecrets(context.noBackupFilesDir)) diagnostics.note("an earlier version's saved password couldn't be removed yet: tried again at the next start")
             try {
                 org.medianexus.music.core.Core.warm()
             } catch (e: org.medianexus.music.core.CoreException) {
@@ -539,6 +581,17 @@ class Graph(
                         downloads.state.collect { state ->
                             if (busy && !state.busy && state.settled && state.batchTotal > 0) batchEnded(context, state)
                             busy = state.busy
+                        }
+                    }
+                }
+                // **The music login renewed after a refusal** (6.3): what waited for it is tried
+                // once more under it: pages and covers that failed ask again, and downloads held
+                // for it go on. (Playback's own entry: the service's era.)
+                if (account != null) account.scope.launch {
+                    account.api.login.renewals.drop(1).collect {
+                        reconnected()
+                        account.downloads?.let { downloads ->
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { downloads.retryFailed(onlyNetwork = true) }
                         }
                     }
                 }

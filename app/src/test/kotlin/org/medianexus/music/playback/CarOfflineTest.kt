@@ -118,6 +118,26 @@ class CarOfflineTest {
         assertEquals(5, tree.children(CarNode.Album("al-1"))!!.size)
     }
 
+    /** **The music login set aside** (refused, its renewal awaited): the online tabs show only
+     *  what plays here, headed by the machine's line; Downloads as ever; renewed, all of it. */
+    @Test
+    fun aLoginSetAsideShowsOnlyWhatPlaysWithTheMachinesLine() = runBlocking {
+        offline = false
+        var refused = true
+        val availability = Availability(catalogue, kept, quality = org.medianexus.music.playback.StreamQuality(kotlinx.coroutines.flow.MutableStateFlow(org.medianexus.music.store.Settings())), keeping = { true })
+        val state = { DownloadsState(downloaded = catalogue.state.value.songs, collections = catalogue.state.value.collections) }
+        val line = "Online music is unavailable until your sign-in is renewed"
+        val tree = CarTree(library, CarWords(), CarOffline(now = { offline }, availability = availability, downloads = state, refused = { refused }, line = { line }))
+        val playlists = tree.children(CarNode.Playlists)!!
+        assertEquals(listOf(line, "Mix"), playlists.map { it.title })
+        assertTrue("the line is neither played nor opened", !playlists[0].playable && !playlists[0].browsable)
+        assertEquals(listOf("Shuffle", "Song 2", "Song 3", "Song 4"), tree.children(CarNode.Album("al-1"))!!.map { it.title })
+        assertTrue(tree.children(CarNode.Downloads)!!.none { it.title == line })
+        refused = false
+        assertEquals(5, tree.children(CarNode.Album("al-1"))!!.size)
+        assertTrue(tree.children(CarNode.Playlists)!!.none { it.title == line })
+    }
+
     @Test
     fun offlineSearchAndSpokenRequestsLookInWhatIsHere() = runBlocking {
         val tree = tree()

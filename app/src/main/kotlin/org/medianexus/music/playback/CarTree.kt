@@ -102,6 +102,12 @@ class CarOffline(
     /** Whether a song is liked now: a liked song comes ahead of others that match a search on
      *  the phone as well, as it does in the phone's copy of the library. */
     val liked: (String) -> Boolean = { false },
+    /** **The music login is set aside** (refused, waiting for its renewal): what is online is as
+     *  out of reach as with the server gone; what is on the phone plays as ever. */
+    val refused: () -> Boolean = { false },
+    /** The machine's line for the car while the login is set aside (`Shown.car`: "Online music
+     *  is unavailable until your sign-in is renewed"), shown at the top of the online tabs. */
+    val line: () -> String? = { null },
 )
 
 /**
@@ -142,7 +148,15 @@ class CarTree(
 
     // ---- Offline ----------------------------------------------------------------------------
 
-    private val isOffline: Boolean get() = offline?.now?.invoke() == true
+    private val isOffline: Boolean get() = offline?.now?.invoke() == true || offline?.refused?.invoke() == true
+
+    /** The machine's line, heading the online tabs while the login is set aside. */
+    private fun lineFor(node: CarNode): List<CarEntry> {
+        if (node != CarNode.Home && node != CarNode.Playlists && node != CarNode.Library) return emptyList()
+        if (offline?.refused?.invoke() != true) return emptyList()
+        val line = offline.line().takeIf { !it.isNullOrEmpty() } ?: return emptyList()
+        return listOf(CarEntry("$NOTICE_ID${node.javaClass.simpleName.lowercase()}", line))
+    }
 
     private fun plays(song: Song): Boolean = offline?.availability?.plays(song) ?: true
 
@@ -333,7 +347,7 @@ class CarTree(
         }
         val whole = listing(node, changed, part = false) ?: return null
         // What heads the folder ("Shuffle") travels with it, and counts towards what fits.
-        return whole.head + cut(whole, node, 0, whole.body.size, whole.head)
+        return lineFor(node) + whole.head + cut(whole, node, 0, whole.body.size, whole.head)
     }
 
     /** The last list of songs laid out, and the kept list it was made from: opening the
@@ -1019,6 +1033,8 @@ class CarTree(
     }
 
     companion object {
+        /** The id of the machine's line at the head of a tab: neither played nor opened. */
+        const val NOTICE_ID = "notice:"
         /** A list longer than this is split into letters. */
         const val MOST_IN_A_LIST = 120
         const val HOME_ROW = 12
