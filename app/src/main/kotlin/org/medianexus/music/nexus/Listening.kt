@@ -18,6 +18,7 @@ internal enum class StopReason(val wire: String) {
     FINISHED("finished"), NEXT("next"), PREVIOUS("previous"), CHOICE("another_choice"), STOPPED("stopped"), ERROR("error"),
 }
 
+@ConsistentCopyVisibility
 internal data class PlayOrigin private constructor(val kind: String, val id: String? = null) {
     fun wire() = buildJsonObject {
         put("kind", kind)

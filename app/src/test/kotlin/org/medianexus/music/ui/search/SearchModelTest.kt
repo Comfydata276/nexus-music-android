@@ -42,6 +42,30 @@ class SearchModelTest {
     }
 
     @Test
+    fun aLibraryRefreshUpdatesTheResultWithoutRecordingAnotherSubmission() = runTest {
+        val observations = mutableListOf<Pair<String, Int>>()
+        var count = 1
+        val model = SearchModel(
+            backgroundScope,
+            search = { query -> Found(songs = List(count) { Song(id = "$query-$it") }) },
+            observe = { query -> { resultCount -> observations.add(query to resultCount); Unit } },
+        )
+        runCurrent()
+        model.type("lantern")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        runCurrent()
+        assertEquals(listOf("lantern" to 1), observations)
+        count = 2
+        model.libraryChanged()
+        runCurrent()
+        assertEquals(2, model.state.value.found?.songs?.size)
+        assertEquals(listOf("lantern" to 1), observations)
+        model.retry()
+        runCurrent()
+        assertEquals(listOf("lantern" to 1, "lantern" to 2), observations)
+    }
+
+    @Test
     fun theLatestWordsWinOverASlowerEarlierSearch() = runTest {
         val slow = CompletableDeferred<Found>()
         val model = SearchModel(backgroundScope, search = { if (it == "old") slow.await() else found(it) })
