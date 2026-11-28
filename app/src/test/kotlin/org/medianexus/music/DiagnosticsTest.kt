@@ -1,6 +1,9 @@
 package org.medianexus.music
 
 import java.io.File
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -38,6 +41,26 @@ class DiagnosticsTest {
     /** Lets everything that was asked for be done: the file read, and whatever is waiting
      *  to be written, its delay included. */
     private fun settle() = scheduler.advanceUntilIdle()
+
+    @Test
+    fun itCanReadAnExistingRecordBeforeTheConstructorReturns() {
+        val file = File(folder.root, "diagnostics.txt")
+        file.writeText("1000\t2000\t2\tplayer started by a media button\n")
+        val immediate = object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) = block.run()
+        }
+        val exceptions = mutableListOf<Throwable>()
+        val immediateScope = CoroutineScope(SupervisorJob() + immediate + CoroutineExceptionHandler { _, error ->
+            exceptions.add(error)
+        })
+        try {
+            val log = Diagnostics(file, immediateScope, immediate)
+            assertEquals(emptyList<Throwable>(), exceptions)
+            assertEquals(listOf(Diagnostics.Entry(1000, 2000, 2, "player started by a media button")), log.entries())
+        } finally {
+            immediateScope.cancel()
+        }
+    }
 
     @Test
     fun theSameThingAgainIsCountedNotWrittenAgain() {

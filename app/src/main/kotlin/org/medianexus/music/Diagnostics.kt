@@ -48,10 +48,6 @@ class Diagnostics(
     /** Moves on whenever something is noted, for a screen that is showing it. */
     val changes: StateFlow<Int> get() = changed
 
-    init {
-        scope.launch(io) { load() }
-    }
-
     /**
      * Notes that something happened. The same words again add to the count of the line
      * already there. `now` writes it to the phone at once rather than in a moment: for what
@@ -92,6 +88,11 @@ class Diagnostics(
     /** What [replacing] has replaced in this run: one of those read back from the phone
      *  afterwards is older still, and is not put back. */
     private val replaced = HashSet<String>()
+
+    // Keep this after all instance properties: load and its writer can run before the constructor returns.
+    init {
+        scope.launch(io) { load() }
+    }
 
     /** What has been noted, the most lately seen last. */
     fun entries(): List<Entry> = synchronized(entries) { entries.toList() }
