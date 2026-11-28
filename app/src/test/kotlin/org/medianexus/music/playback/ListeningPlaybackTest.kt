@@ -67,7 +67,7 @@ class ListeningPlaybackTest {
         assertEquals(StopReason.STOPPED, (events[1].second as Listening.Stop).reason)
         assertEquals(PlayBegan.CAR, (events[2].second as Listening.Start).began)
         assertEquals(fault, (events[3].second as Listening.Stop).fault)
-        assertFalse(events.any { it.first == two && it.second is Listening.Start && it.second.song.id == "first" })
+        assertFalse(events.any { it.first == two && (it.second as? Listening.Start)?.songId == "first" })
     }
 
     @Test fun aPreviousThatRewindsIsASeekAndAChangedEntryCanStopAsNextOrPrevious() {

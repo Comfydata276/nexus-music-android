@@ -7,10 +7,10 @@ import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.LockSupport
 import javax.net.ssl.SSLException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -100,6 +100,31 @@ internal enum class DiagnosticNote(val label: String) {
     LIBRARY_UNAVAILABLE("Shared library could not be loaded"),
 }
 
+internal enum class DiagnosticReach(val wire: String) {
+    NONE("none"), NAME("name"), CONNECTION("connection"), SECURE("secure"), ANSWERED("answered"),
+}
+
+internal enum class DiagnosticNetwork(val wire: String) {
+    WIFI("wifi"), MOBILE("mobile"), ETHERNET("ethernet"), VPN("vpn"), OTHER("other"), UNKNOWN("unknown");
+
+    companion object {
+        fun fromTransport(transport: String): DiagnosticNetwork = when {
+            transport.startsWith("VPN") -> VPN
+            transport == "Wi-Fi" -> WIFI
+            transport == "mobile data" -> MOBILE
+            transport == "Ethernet" -> ETHERNET
+            transport == "other" -> OTHER
+            else -> UNKNOWN
+        }
+    }
+}
+
+internal enum class DiagnosticSessionEnd(val wire: String) {
+    SIGNED_OUT("signed_out"), FORCED_OUT("forced_out"), EXPIRED("expired"),
+    PASSWORD_CHANGED("password_changed"), PASSWORD_RESET("password_reset"), DATA_PUT_BACK("data_put_back"),
+    SWITCHED_OFF("account_switched_off"), DELETED("account_deleted"), OTHER("other"),
+}
+
 internal data class DiagnosticsState(
     val switchedOn: Boolean = true,
     val signedIn: Boolean = false,
@@ -129,13 +154,14 @@ internal class CleanDiagnostics(
     private val loss: () -> JournalLoss,
     private val journalFault: (DiagnosticFault) -> Unit,
 ) {
-    private val worker = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "nexus-diagnostics").apply { isDaemon = true }
-    }
+    private val work = ConcurrentLinkedQueue<() -> Unit>()
+    private val started = AtomicBoolean()
+    private val worker = Thread(::run, "nexus-diagnostics").apply { isDaemon = true }
     private val changes = ConcurrentLinkedQueue<Observation>()
     private val queued = AtomicInteger()
     private val checkpointQueued = AtomicBoolean()
     private val use = AtomicInteger()
+    private var reportedUse: Boolean? = null
     private val earliestFault = java.util.concurrent.atomic.AtomicLong()
     private val choiceFile = File(root, "choice")
     private val crashFile = File(root, "crash")
@@ -161,6 +187,14 @@ internal class CleanDiagnostics(
         data class Fault(val fault: DiagnosticFault) : Line
         data class Foreground(val millis: Long) : Line
         data class JobStop(val reason: Int) : Line
+        data class SessionEnd(val reason: DiagnosticSessionEnd) : Line
+        data class Attempt(
+            val reach: DiagnosticReach,
+            val local: Boolean?,
+            val permission: Boolean?,
+            val network: DiagnosticNetwork,
+            val failed: Boolean,
+        ) : Line
     }
 
     private data class Observation(val at: Long, val line: Line) {
@@ -171,6 +205,14 @@ internal class CleanDiagnostics(
                 is Line.Fault -> value.fault.reportWire()
                 is Line.Foreground -> recordingEvent("foreground", buildJsonObject { put("after_ms", value.millis.coerceIn(0, 3_600_000)) })
                 is Line.JobStop -> recordingEvent("download_job_stopped", buildJsonObject { put("reason", value.reason.coerceIn(0, 255)) })
+                is Line.SessionEnd -> recordingEvent("session_end", JsonPrimitive(value.reason.wire))
+                is Line.Attempt -> recordingEvent("attempt", buildJsonObject {
+                    put("reach", value.reach.wire)
+                    put("local", value.local?.let(::JsonPrimitive) ?: JsonNull)
+                    put("permission", value.permission?.let(::JsonPrimitive) ?: JsonNull)
+                    put("network", value.network.wire)
+                    put("failed", value.failed)
+                })
             })
         }
     }
@@ -178,8 +220,24 @@ internal class CleanDiagnostics(
     fun attach(emit: RecordingEvent) {
         if (send != null) return
         send = emit
-        if (use.get() != 0) emit(recordingEvent("in_use", JsonPrimitive(true)))
-        flushFault()
+        refresh()
+    }
+
+    private fun startWorker() {
+        if (started.compareAndSet(false, true)) worker.start()
+    }
+
+    private fun enqueue(task: () -> Unit) {
+        work.offer(task)
+        LockSupport.unpark(worker)
+    }
+
+    private fun run() {
+        while (true) {
+            val task = work.poll()
+            if (task == null) LockSupport.park()
+            else safe(task)
+        }
     }
 
     fun about(value: PhoneDiagnostics) {
@@ -212,18 +270,20 @@ internal class CleanDiagnostics(
     }
 
     fun choose(value: Boolean) {
+        startWorker()
         preferred.set(Choice(value))
         state.value = state.value.copy(switchedOn = value)
         send?.invoke(recordingEvent("diagnostics_switch", JsonPrimitive(value)))
-        worker.execute {
+        enqueue {
             safe { writeAtomically(choiceFile, byteArrayOf(if (value) '1'.code.toByte() else '0'.code.toByte()), durable = true) }
             updateState()
         }
     }
 
     fun forgetChoice() {
+        startWorker()
         preferred.set(Choice(null))
-        worker.execute {
+        enqueue {
             choiceFile.delete()
             updateState()
         }
@@ -232,13 +292,15 @@ internal class CleanDiagnostics(
     fun note(value: DiagnosticNote) = offer(Line.Note(value))
     fun foreground(millis: Long) = offer(Line.Foreground(millis))
     fun downloadStopped(reason: Int) = offer(Line.JobStop(reason))
+    fun sessionEnded(reason: DiagnosticSessionEnd) = offer(Line.SessionEnd(reason))
+    fun attempt(reach: DiagnosticReach, local: Boolean?, permission: Boolean?, network: DiagnosticNetwork, failed: Boolean) =
+        offer(Line.Attempt(reach, local, permission, network, failed))
 
     fun fault(value: DiagnosticFault) {
         val at = wall()
         journalFault(value)
-        offer(Line.Fault(value), at)
         earliestFault.getAndUpdate { old -> if (old == 0L) at else minOf(old, at) }
-        flushFault()
+        offer(Line.Fault(value), at)
     }
 
     private fun flushFault() {
@@ -252,29 +314,39 @@ internal class CleanDiagnostics(
 
     private fun used(bit: Int, value: Boolean) {
         val previous = use.getAndUpdate { old -> if (value) old or bit else old and bit.inv() }
-        if ((previous == 0) != (use.get() == 0)) {
-            send?.invoke(recordingEvent("in_use", JsonPrimitive(use.get() != 0)))
-        }
+        if ((previous == 0) != (use.get() == 0)) queueCheckpoint()
     }
 
     private fun offer(line: Line, at: Long = wall()) {
         if (queued.getAndIncrement() < MAX_QUEUE) changes.add(Observation(at, line))
         else queued.decrementAndGet()
-        refresh()
+        queueCheckpoint()
     }
 
     fun refresh() {
+        startWorker()
+        queueCheckpoint()
+    }
+
+    private fun queueCheckpoint() {
         if (!checkpointQueued.compareAndSet(false, true)) return
-        worker.execute {
+        enqueue {
             checkpointQueued.set(false)
+            val emit = send
+            val inUse = use.get() != 0
+            if (emit != null && reportedUse != inUse) {
+                reportedUse = inUse
+                emit(recordingEvent("in_use", JsonPrimitive(inUse)))
+            }
+            flushFault()
             updateState()
-            if (checkpoint() != null) preview.value = readText()
-            else if (preview.value == null) preview.value = readText()
+            if (checkpoint() != null || preview.value == null) preview.value = readText()
         }
     }
 
     fun clear() {
-        worker.execute {
+        startWorker()
+        enqueue {
             pending.clear()
             clearPending = true
             if (checkpoint() != null) preview.value = readText()
@@ -284,14 +356,16 @@ internal class CleanDiagnostics(
 
     /** Page, export and machine start from the same canonical record via their own paths. */
     fun export(open: () -> OutputStream?) {
-        worker.execute {
-            val text = readText() ?: return@execute
+        startWorker()
+        enqueue {
+            val text = readText() ?: return@enqueue
             safe { open()?.use { it.write(text.encodeToByteArray()) } }
         }
     }
 
     fun readForMachine(scheduleKept: Boolean, answer: (String?) -> Unit) {
-        worker.execute {
+        startWorker()
+        enqueue {
             val text = if (scheduleKept && checkpoint() != null) readText() else null
             answer(text)
         }

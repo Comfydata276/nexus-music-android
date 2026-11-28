@@ -269,11 +269,14 @@ class RecordingTest {
         diag.fault(DiagnosticFault.crash(crash))
         diag.foreground(850)
         diag.downloadStopped(7)
+        diag.attempt(DiagnosticReach.CONNECTION, local = true, permission = false,
+            network = DiagnosticNetwork.fromTransport(payload), failed = true)
+        diag.sessionEnded(DiagnosticSessionEnd.DATA_PUT_BACK)
         val a = publish(service, 1)
         service.capture(Listening.Search(payload, 0, false))
         waitForPending(a, 2)
         val preview = runBlocking {
-            withTimeout(8_000) { diag.page.first { it?.contains("reason 7") == true }!! }
+            withTimeout(8_000) { diag.page.first { it?.contains("Nexus session ended: data put back") == true }!! }
         }
         val written = LinkedBlockingQueue<ByteArray>()
         diag.export {
@@ -287,6 +290,8 @@ class RecordingTest {
         assertArrayEquals(preview.encodeToByteArray(), export)
         assertArrayEquals(export, sent.encodeToByteArray())
         assertTrue("Fault in playback: missing value at other:72" in sent)
+        assertTrue("Nexus last failure: connection opened, local address yes, local permission no, network unknown" in sent)
+        assertTrue("Nexus session ended: data put back" in sent)
         for (word in listOf("private@example.org", "host.invalid", "secret", "folder", "player–title", "SSID-X")) {
             assertFalse(word in sent)
         }

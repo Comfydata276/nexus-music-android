@@ -21,7 +21,7 @@ internal enum class StopReason(val wire: String) {
 internal data class PlayOrigin private constructor(val kind: String, val id: String? = null) {
     fun wire() = buildJsonObject {
         put("kind", kind)
-        id?.let { put(if (kind == "search") "words" else "id", it) }
+        id?.let { if (kind == "search") put("words", it.displayPrefix()) else put("id", it) }
     }
 
     companion object {
@@ -41,7 +41,19 @@ internal data class PlayOrigin private constructor(val kind: String, val id: Str
 
 internal sealed interface Listening {
     data class Open(val version: String) : Listening
-    data class Start(val song: Song, val origin: PlayOrigin, val began: PlayBegan, val sound: PlaySound, val position: Long) : Listening
+    data class Start(
+        val songId: String,
+        val title: String,
+        val artist: String,
+        val album: String,
+        val origin: PlayOrigin,
+        val began: PlayBegan,
+        val sound: PlaySound,
+        val position: Long,
+    ) : Listening {
+        constructor(song: Song, origin: PlayOrigin, began: PlayBegan, sound: PlaySound, position: Long) :
+            this(song.id, song.title, song.artistLabel, song.album, origin, began, sound, position)
+    }
     data class Stop(val start: EventId, val position: Long, val duration: Long?, val heard: Long, val reason: StopReason, val fault: DiagnosticFault? = null) : Listening
     data class Pause(val start: EventId, val position: Long) : Listening
     data class Resume(val start: EventId, val position: Long) : Listening
@@ -53,10 +65,10 @@ internal sealed interface Listening {
     fun wire() = when (this) {
         is Open -> recordingEvent("open", buildJsonObject { put("version", version) })
         is Start -> recordingEvent("start", buildJsonObject {
-            put("song_id", song.id)
-            put("title", song.title)
-            put("artist", song.artistLabel)
-            put("album", song.album)
+            put("song_id", songId)
+            put("title", title.displayPrefix())
+            put("artist", artist.displayPrefix())
+            put("album", album.displayPrefix())
             put("from", origin.wire())
             put("began", began.wire)
             put("sound", sound.wire)
@@ -81,7 +93,7 @@ internal sealed interface Listening {
             put("to_ms", ms(to))
         })
         is Search -> recordingEvent("search", buildJsonObject {
-            put("words", words)
+            put("words", words.displayPrefix())
             put("found", found.coerceAtLeast(0))
             put("requests", requests)
         })
@@ -97,3 +109,7 @@ internal sealed interface Listening {
         })
     }
 }
+
+// The core keeps at most the first 200 Unicode scalars of each display string. Those
+// cannot exceed 400 UTF-16 units. Bound the JNI envelope without changing that prefix.
+private fun String.displayPrefix(): String = take(400)

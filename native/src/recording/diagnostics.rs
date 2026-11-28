@@ -62,6 +62,29 @@ struct Observation {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case", remote = "diag::Reach")]
+enum Reach {
+    None,
+    #[serde(rename = "name")]
+    NameLookedUp,
+    #[serde(rename = "connection")]
+    ConnectionOpened,
+    #[serde(rename = "secure")]
+    MadeSecure,
+    Answered,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", remote = "diag::Network")]
+enum Network { Wifi, Mobile, Ethernet, Vpn, Other, Unknown }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", remote = "diag::SessionEnded")]
+enum SessionEnded {
+    SignedOut, ForcedOut, Expired, PasswordChanged, PasswordReset, DataPutBack, AccountSwitchedOff, AccountDeleted, Other,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ObservationKind {
     /// Only the shared report's canonical vocabulary can pass this boundary.
@@ -69,13 +92,23 @@ enum ObservationKind {
     Fault { place: events::FaultPlace, shape: FaultShape, source_line: Option<u32> },
     Foreground { after_ms: u32 },
     DownloadJobStopped { reason: u8 },
+    SessionEnd(#[serde(with = "SessionEnded")] diag::SessionEnded),
+    Attempt {
+        #[serde(with = "Reach")]
+        reach: diag::Reach,
+        local: Option<bool>,
+        permission: Option<bool>,
+        #[serde(with = "Network")]
+        network: diag::Network,
+        failed: bool,
+    },
 }
 
 impl ObservationKind {
     fn line(self) -> Option<Line> {
         Some(match self {
             Self::Note { label } => match diag::clean_line(&label) {
-                Some(line @ (Line::Note(_) | Line::SessionEnded(_) | Line::LastAttempt(_) | Line::LastFailure(_))) => line,
+                Some(line @ (Line::Note(_))) => line,
                 _ => return None,
             },
             Self::Fault { place, shape, source_line } => Line::Fault(Fault {
@@ -95,6 +128,8 @@ impl ObservationKind {
             }),
             Self::Foreground { after_ms } => Line::ForegroundAfterMs(after_ms.min(diag::MAX_FOREGROUND_MS)),
             Self::DownloadJobStopped { reason } => Line::DownloadJobStopped(reason),
+            Self::SessionEnd(reason) => Line::SessionEnded(reason),
+            Self::Attempt { .. } => return None,
         })
     }
 }
@@ -113,7 +148,12 @@ pub(super) fn call(request: Request) -> io::Result<Value> {
         Action::Checkpoint { about, observations, clear } => {
             let mut record = if clear { Record::default() } else { kept(&path).map(|r| r.record).unwrap_or_default() };
             for observation in observations {
-                if let Some(line) = observation.line.line() { record.note(observation.at, line); }
+                match observation.line {
+                    ObservationKind::Attempt { reach, local, permission, network, failed } => record.note_attempt(observation.at, diag::Trace {
+                        reach, local_address: local, local_permission: permission, network,
+                    }, failed),
+                    kind => if let Some(line) = kind.line() { record.note(observation.at, line); },
+                }
             }
             let text = Report { about: about.into(), record }.text().map_err(invalid)?;
             private_directory(&request.root)?;
