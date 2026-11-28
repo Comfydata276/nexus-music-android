@@ -78,24 +78,20 @@ fun SearchPage() {
     val graph = ui.graph
     val model = remember(account) {
         SearchModel(null, search = { query ->
-            val observation = account?.let { graph.recording.search(query, it.account.key) }
-            var count = 0
-            try {
-                val found = if (graph.watch.offline && account != null) {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                        // Stopped part-way when more typing replaces it, as online.
-                        val job = coroutineContext[kotlinx.coroutines.Job]
-                        org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS, { account.likes.isLiked(it) }) { job?.isActive == false }
-                    }
-                } else {
-                    account?.library?.search?.find(query, LIMITS) ?: Found()
+            if (graph.watch.offline && account != null) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    // Stopped part-way when more typing replaces it, as online.
+                    val job = coroutineContext[kotlinx.coroutines.Job]
+                    org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS, { account.likes.isLiked(it) }) { job?.isActive == false }
                 }
-                count = found.songs.size + found.albums.size + found.artists.size
-                found
-            } finally {
-                graph.recording.found(observation, count)
+            } else {
+                account?.library?.search?.find(query, LIMITS) ?: Found()
             }
-        }, instant = { graph.watch.offline || account?.library?.search?.instant == true })
+        }, instant = { graph.watch.offline || account?.library?.search?.instant == true }, observe = { query ->
+            account?.let { graph.recording.search(query, it.account.key) }?.let { observation ->
+                { count -> graph.recording.found(observation, count) }
+            }
+        })
     }
     val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
     val offline by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.offline } }
@@ -107,7 +103,7 @@ fun SearchPage() {
         account?.copy?.state?.map { it?.takeIf { copy -> copy.complete } }?.distinctUntilChanged() ?: kotlinx.coroutines.flow.flowOf(null)
     }.collectAsStateWithLifecycle(null)
     val likedNow = likedSongs()
-    LaunchedEffect(model, offline, whole, likedNow) { model.retry() }
+    LaunchedEffect(model, offline, whole, likedNow) { model.libraryChanged() }
     // It searches only while the app is in front, as the pages' feeds fetch.
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { model.run() } }

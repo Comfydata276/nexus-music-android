@@ -94,10 +94,12 @@ internal class NexusRecording(
     }
 
     fun search(words: String, accountFolder: String, requests: Boolean = false): SearchObservation? =
-        scopeFor(accountFolder)?.let { SearchObservation(it, words, requests, wall()) }
+        scopeFor(accountFolder)?.let { SearchObservation(it, EventId.make(), words, requests, wall()) }
 
     fun found(search: SearchObservation?, count: Int) {
-        if (search != null) capture(Listening.Search(search.words, count, search.requests), search.scope, search.at)
+        if (search != null) {
+            journal.offer(Captured(search.scope, search.id, search.at, Listening.Search(search.words, count, search.requests)))
+        }
     }
 
     private fun journalLossChanged() {
@@ -109,7 +111,7 @@ internal class NexusRecording(
     }
 }
 
-internal data class SearchObservation(val scope: JournalScope, val words: String, val requests: Boolean, val at: Long)
+internal data class SearchObservation(val scope: JournalScope, val id: EventId, val words: String, val requests: Boolean, val at: Long)
 
 internal data class JournalScope(val backend: JsonPrimitive, val number: JsonPrimitive, val life: JsonPrimitive) {
     val person get() = Folders.personOf(KeptAccount("", backend.content, number.content))
