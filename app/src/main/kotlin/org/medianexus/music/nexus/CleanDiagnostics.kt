@@ -20,6 +20,9 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import org.medianexus.music.downloads.DownloadsJob
+import org.medianexus.music.playback.PlaybackService
+import org.medianexus.music.playback.QueuePlayer
 import org.medianexus.music.core.Core
 import org.medianexus.music.store.writeAtomically
 
@@ -61,15 +64,13 @@ internal data class DiagnosticFault(val place: DiagnosticPlace, val shape: Diagn
                 is AssertionError -> DiagnosticShape.ASSERTION
                 else -> DiagnosticShape.PANIC
             }
-            // Stack frames are used only to select a place. Their text and file names are
-            // never handed to the report. Until the core adds its Android list it prints Other.
-            val frame = error.stackTrace.firstOrNull {
-                it.className.startsWith("org.medianexus.music.")
-            }
-            val place = when (frame?.fileName) {
-                "PlaybackService.kt", "QueuePlayer.kt" -> DiagnosticPlace.PLAYBACK
-                "DownloadsJob.kt" -> DiagnosticPlace.DOWNLOADS
-                "Nexus.kt" -> DiagnosticPlace.NEXUS_SERVER
+            // Compare against the closed app classes, with their nested classes kept by R8.
+            // The exception type above is checked by class hierarchy.
+            val frame = error.stackTrace.firstOrNull { it.className.startsWith("org.medianexus.music.") }
+            val place = when (frame?.className?.substringBefore('$')) {
+                PlaybackService::class.java.name, QueuePlayer::class.java.name -> DiagnosticPlace.PLAYBACK
+                DownloadsJob::class.java.name -> DiagnosticPlace.DOWNLOADS
+                Nexus::class.java.name -> DiagnosticPlace.NEXUS_SERVER
                 else -> DiagnosticPlace.APP
             }
             return DiagnosticFault(place, shape, frame?.lineNumber?.takeIf { it > 0 })

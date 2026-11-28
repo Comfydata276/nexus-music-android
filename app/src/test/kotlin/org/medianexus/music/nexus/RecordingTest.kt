@@ -159,6 +159,14 @@ class RecordingTest {
         assertEquals(JsonPrimitive(12), faults.single()["count"])
     }
 
+    @Test fun crashClassificationUsesTheExceptionHierarchyAndClosedFrameClasses() {
+        class PrivateSocketError : java.net.SocketTimeoutException("private payload")
+        val crash = PrivateSocketError().apply {
+            stackTrace = arrayOf(StackTraceElement(org.medianexus.music.downloads.DownloadsJob::class.java.name, "renamed", "SourceFile", 13))
+        }
+        assertEquals(DiagnosticFault(DiagnosticPlace.DOWNLOADS, DiagnosticShape.TIMEOUT, 13), DiagnosticFault.crash(crash))
+    }
+
     @Test fun unsignedAndOutstandingNoticeRecordNothing() {
         val service = recording()
         service.publish(saved(1), true, events::add)
@@ -329,7 +337,7 @@ class RecordingTest {
         val diag = service.diagnostics
         val payload = "private@example.org https://host.invalid/secret \\local\\folder player–title\nSSID-X"
         val crash = NullPointerException(payload).apply {
-            stackTrace = arrayOf(StackTraceElement("org.medianexus.music.$payload", "method-$payload", "PlaybackService.kt", 72))
+            stackTrace = arrayOf(StackTraceElement(org.medianexus.music.playback.PlaybackService::class.java.name, "method-$payload", payload, 72))
         }
         diag.about(PhoneDiagnostics(androidMajor = 17, https = true, localPermission = true, auto = true))
         diag.state(signedIn = true, offline = false, serverDefault = true)
