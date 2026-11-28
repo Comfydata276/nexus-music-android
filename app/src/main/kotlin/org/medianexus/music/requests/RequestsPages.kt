@@ -583,7 +583,14 @@ class RequestsPages internal constructor(
     private suspend fun <T> page(shown: (T) -> Unit = {}, ask: suspend (LidarrAt, Long) -> Outcome<T>): Found<T> = withContext(io) {
         val (at, place, why) = connected()
         if (at == null) return@withContext Found.Not(why)
-        val outcome = ask(at, place)
+        val outcome = try {
+            ask(at, place)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (at.feature == null) throw e
+            Outcome.Failed("Couldn't reach the Nexus server.")
+        }
         if (at.feature != null && !requests.current(at)) throw CancellationException("stopped")
         when (outcome) {
             is Outcome.Got -> {
@@ -741,6 +748,9 @@ class RequestsPages internal constructor(
     } catch (e: CancellationException) {
         begun.stop()
         throw e
+    } catch (_: Exception) {
+        if (!requests.current(at)) throw CancellationException("stopped")
+        Said(false, "Couldn't complete the request through the Nexus server.")
     }
 
     /** What to say while an artist is being added ("Adding …"). */

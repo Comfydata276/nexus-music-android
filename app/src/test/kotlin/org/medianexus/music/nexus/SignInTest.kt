@@ -23,6 +23,7 @@ import org.medianexus.music.App
 import org.medianexus.music.Graph
 import org.medianexus.music.SessionState
 import org.medianexus.music.core.Core
+import org.medianexus.music.core.CoreException
 import org.medianexus.music.core.CoreHttp
 import org.medianexus.music.core.Outcome
 import org.medianexus.music.core.StandIn
@@ -318,6 +319,25 @@ class SignInTest {
         assertTrue(secrets.exist())
         nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
         until { Unit.takeUnless { secrets.exist() } }
+    }
+
+    @Test
+    fun aNativeListeningFailureIsShownWithoutEndingTheSession() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        val nexus = graph.nexus!!
+        val scope = until { nexus.appSession.value?.takeIf { it.verified }?.scope }
+        val malformed = AppScope(buildJsonObject {})
+        org.junit.Assert.assertThrows(CoreException::class.java) {
+            Core.nexusListening(buildJsonObject { put("scope", malformed.wire); put("step", "stats") })
+        }
+        val error = ListeningResult.Error("Your Nexus server couldn't complete this action. Try again.")
+        runBlocking {
+            assertEquals(error, nexus.listening.read(malformed))
+            assertEquals(error, nexus.listening.delete(malformed, PASSWORD))
+        }
+        assertEquals(scope, nexus.appSession.value?.scope)
+        assertTrue(graph.session.state.value is SessionState.SignedIn)
     }
 
     @Test

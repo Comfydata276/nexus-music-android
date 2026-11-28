@@ -3,6 +3,7 @@ package org.medianexus.music.nexus
 import java.security.SecureRandom
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -126,11 +127,9 @@ internal class AccountListening(private val nexus: Nexus) {
                 work()
             } catch (e: ListeningFailure) {
                 ListeningResult.Error(e.words)
-            } catch (e: IllegalArgumentException) {
-                ListeningResult.Error(INVALID)
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (e: CancellationException) {
                 throw e
-            } catch (e: IllegalStateException) {
+            } catch (_: Exception) {
                 ListeningResult.Error(INVALID)
             }
         }

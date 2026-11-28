@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import org.medianexus.music.core.Core
-import org.medianexus.music.core.CoreHttp
 import org.medianexus.music.nexus.FeatureEndpoint
 import org.medianexus.music.nexus.Folders
 import org.medianexus.music.nexus.KeptAccount
@@ -57,9 +56,9 @@ internal class RequestsRouter {
             val endpoint = FeatureEndpoint(nexus, session.scope)
             val reply = try {
                 Core.nexusRequestsStatus(endpoint)
-            } catch (_: CoreHttp.Busy) {
-                null
-            } catch (_: org.medianexus.music.core.CoreException) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
                 null
             }
             if (!endpoint.active()) return@collectLatest

@@ -27,7 +27,6 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import org.medianexus.music.core.Core
-import org.medianexus.music.core.CoreException
 import org.medianexus.music.core.CoreHttp
 import org.medianexus.music.nexus.AppScope
 import org.medianexus.music.nexus.FeatureEndpoint
@@ -78,12 +77,10 @@ internal class ServerBatch(private val dir: File) {
             e.words
         } catch (e: IOException) {
             "Couldn't keep the batch on this phone."
-        } catch (_: IllegalArgumentException) {
-            "Couldn't read the request batch."
-        } catch (_: CoreException) {
-            "Couldn't read the request batch."
         } catch (_: CoreHttp.Busy) {
             "Couldn't reach the Nexus server."
+        } catch (_: Exception) {
+            "Couldn't read the request batch."
         } finally {
             deviceTurn.unlock()
             if (shown.value.scope == endpoint.scope) shown.value = shown.value.copy(working = false)
