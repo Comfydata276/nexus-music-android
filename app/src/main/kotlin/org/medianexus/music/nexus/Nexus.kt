@@ -151,6 +151,9 @@ class Nexus internal constructor(
             put("saved", parts.saved ?: JsonNull)
             put("notes", JsonArray(parts.notes))
             put("offline", offlineNow())
+            // (The phone has no Diagnostics switch yet: no choice made.)
+            put("diagnostics", JsonNull)
+            put("diag_schedule", kept.diagSchedule() ?: JsonNull)
         }
         call(buildJsonObject {
             put("start", buildJsonObject {
@@ -275,6 +278,7 @@ class Nexus internal constructor(
         var changed = false
         val asks = ArrayList<JsonObject>()
         val hands = ArrayList<JsonObject>()
+        val journal = ArrayList<JsonObject>()
         var forgot = false
         for (one in does) {
             val thing = one as? JsonObject ?: continue
@@ -287,6 +291,7 @@ class Nexus internal constructor(
                         "device_secret" -> this.kept.keepDeviceSecret(kept)
                         "saved" -> (kept as? JsonObject)?.let { parts = parts.withSaved(it); changed = true }
                         "note" -> (kept as? JsonObject)?.let { parts = parts.withNote(it); changed = true }
+                        "diag_schedule" -> if (!this.kept.keepDiagSchedule(kept)) side.notKept()
                     }
                 }
                 "forget" -> when {
@@ -296,6 +301,9 @@ class Nexus internal constructor(
                         forgot = true
                     }
                     value is JsonPrimitive && value.contentOrNull == "device_secret" -> this.kept.forgetDeviceSecret()
+                    value is JsonPrimitive && value.contentOrNull == "diag_schedule" -> this.kept.forgetDiagSchedule()
+                    // (No Diagnostics choice is kept on the phone yet: nothing to forget.)
+                    value is JsonPrimitive && value.contentOrNull == "diagnostics" -> Unit
                     value is JsonObject && value["note"] is JsonObject -> (value["note"] as JsonObject).let { note ->
                         val backend = (note["backend_id"] as? JsonPrimitive)?.content
                         val session = (note["session"] as? JsonPrimitive)?.content
@@ -312,6 +320,7 @@ class Nexus internal constructor(
                 }
                 "show" -> (value as? JsonObject)?.let { showing.value = NexusShown.of(it) }
                 "hand" -> (value as? JsonObject)?.let(hands::add)
+                "journal" -> (value as? JsonObject)?.let(journal::add)
             }
         }
         // (Kept in memory as told, whether or not the disk took it: the machine goes on from what
@@ -335,7 +344,34 @@ class Nexus internal constructor(
                 "no_login" -> side.musicForgotten()
             }
         }
+        for (one in journal) journal(one)
         for (ask in asks) send(ask)
+    }
+
+    /**
+     * **The sending half's things to do** (`Do::Journal`). The phone has no journal yet (that is
+     * its own slice): **every read is answered, with nothing waiting** (the machine's contract:
+     * a read not answered stops that kind of sending until the next start), and what would
+     * change the journal has nothing to change.
+     */
+    private fun journal(thing: JsonObject) {
+        val (kind, value) = thing.entries.singleOrNull() ?: return
+        val body = value as? JsonObject ?: return
+        val read = body["read"] as? JsonPrimitive
+        when (kind) {
+            "read_events" -> if (read != null) happened(buildJsonObject {
+                put("events_read", buildJsonObject {
+                    put("read", read)
+                    put("account", body["account"] ?: return)
+                    put("life", body["life"] ?: return)
+                    put("events", JsonArray(emptyList()))
+                })
+            })
+            "read_diagnostics" -> if (read != null) happened(buildJsonObject {
+                put("diagnostics_read", buildJsonObject { put("read", read); put("text", JsonNull) })
+            })
+            // taken, refused, life_moved, resend_all: no journal on the phone yet.
+        }
     }
 
     /** Sends one ask, once, on the requests' threads, and tells the machine what came of it. */

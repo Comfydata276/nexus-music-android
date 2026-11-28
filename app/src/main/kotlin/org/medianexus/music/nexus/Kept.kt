@@ -31,7 +31,14 @@ import org.medianexus.music.store.writeAtomically
  *   one before whole.
  * - **The device's own secret, beside it** (8.6), kept through signing out.
  */
-class NexusKept(private val file: File, private val secretFile: File, private val box: SecretBox) {
+class NexusKept(
+    private val file: File,
+    private val secretFile: File,
+    private val box: SecretBox,
+    /** The Diagnostics schedule (`client::DiagSchedule`), kept per DEVICE, not per account: it
+     *  outlives signing out. Not a secret (times only). */
+    private val scheduleFile: File = File(secretFile.parentFile, "nexus-diag-schedule.json"),
+) {
     /** What is kept: `saved` (the machine's `Saved`, or none) and `notes`. */
     class Parts(val saved: JsonObject?, val notes: List<JsonObject>) {
         /** The music login, if one is kept. */
@@ -118,6 +125,29 @@ class NexusKept(private val file: File, private val secretFile: File, private va
     fun keepDeviceSecret(key: JsonElement): Boolean = sealTo(secretFile, key.toString().toByteArray(Charsets.UTF_8), box)
 
     fun forgetDeviceSecret(): Boolean = secretFile.delete() || !secretFile.exists()
+
+    /** The Diagnostics schedule exactly as the machine wrote it (`Keep::DiagSchedule`); null
+     *  if none is kept. One that does not read is handed back as it is: the machine says to
+     *  forget it (`Forget::DiagSchedule`) and makes another. */
+    fun diagSchedule(): JsonElement? = try {
+        if (!scheduleFile.isFile) null else json.parseToJsonElement(scheduleFile.readText(Charsets.UTF_8))
+    } catch (_: IOException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        // (Bytes that are not JSON at all: handed over as a string, which the machine does not
+        // read, so it says to forget it.)
+        JsonPrimitive("unreadable")
+    }
+
+    fun keepDiagSchedule(schedule: JsonElement): Boolean = try {
+        scheduleFile.parentFile?.mkdirs()
+        writeAtomically(scheduleFile, schedule.toString().toByteArray(Charsets.UTF_8))
+        true
+    } catch (_: IOException) {
+        false
+    }
+
+    fun forgetDiagSchedule(): Boolean = scheduleFile.delete() || !scheduleFile.exists()
 }
 
 /** A kept music login: what the player needs, and its number as the machine wrote it. */
