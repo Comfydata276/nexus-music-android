@@ -944,10 +944,14 @@ How it is built (M1a):
 - **Library copy** (`LibraryCopy`, `SongTable`): every artist, album and song, kept compactly
   for instant search and the Songs page; the search and its ranking are a port of
   `src/search.rs` so both apps find the same things. See "The library on the phone" below.
-- **Covers**: one store. Each cover is fetched once at 640 px (Windows' largest) and cut
-  down locally, 300 MB at most per account; Now Playing alone asks for a second, 1200 px
-  copy, as its cover is nearly the phone's width, and shows the 640 px one until it
-  arrives. Coil and the car's content provider
+- **Covers**: one store, 300 MB at most per account. A screen asks for the smallest cover
+  tier that fits its drawn size (160, 320, 512 or 640 px, capped at 640). Round artist art
+  requests one tier higher within that cap to allow for cropping. A larger copy already on
+  the phone can serve a smaller screen. While a new tier loads, the screen can show its
+  largest smaller file already on the phone. This preview is only drawn. It is kept under
+  its own file name. Now Playing asks for 1200 px and shows a 640 px preview until it
+  arrives. The car, system media controls and downloads ask for 640 px.
+  Coil and the car's content provider
   (`content://org.medianexus.music.covers/<the account's artwork id>/<cover id>`: an
   identifier made at random for each account the first time it is wanted and kept with its
   data, `artwork-id`, used in cover addresses and nowhere else; never the account's storage

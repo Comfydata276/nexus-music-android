@@ -18,14 +18,16 @@ import okio.Path.Companion.toOkioPath
 import org.medianexus.music.Accounts
 import org.medianexus.music.store.CoverStore
 
-/** What a screen asks Coil for: one cover by its id, at the usual size or, for Now Playing
- *  only, the large one. */
+/** What a screen asks Coil for: one cover by its id and requested size. */
 data class CoverArt(
     val id: String,
     val large: Boolean = false,
     /** Which retry this is (see [CoverRetry]): a new number is a new request to Coil, which
      *  doesn't ask again for what has failed. Not part of the picture's key. */
     val attempt: Int = 0,
+    val size: Int = if (large) CoverStore.LARGE else CoverStore.SIZE,
+    /** Display a smaller kept file while [size] is loading. Never goes to the server. */
+    val preview: Boolean = false,
 )
 
 /**
@@ -113,9 +115,9 @@ object CoverRetry {
     }
 }
 
-private class CoverFetcher(private val art: CoverArt, private val covers: CoverStore) : Fetcher {
+internal class CoverFetcher(private val art: CoverArt, private val covers: CoverStore) : Fetcher {
     override suspend fun fetch(): FetchResult {
-        val file = covers.file(art.id, if (art.large) CoverStore.LARGE else CoverStore.SIZE)
+        val file = (if (art.preview) covers.screenPreview(art.id, art.size) else covers.forScreen(art.id, art.size))
             // Coil shows nothing for a failure, and the cover's stand-in stays.
             ?: throw IOException("No cover")
         return SourceFetchResult(ImageSource(file.toOkioPath(), FileSystem.SYSTEM), null, DataSource.DISK)
@@ -139,8 +141,11 @@ private class CoverFetcher(private val art: CoverArt, private val covers: CoverS
  */
 private class CoverKeyer(private val accounts: Accounts) : Keyer<CoverArt> {
     override fun key(data: CoverArt, options: Options): String? {
+        // A preview's file can change as larger tiers arrive. It belongs only to the screen
+        // showing it and must never populate the memory key of the requested tier.
+        if (data.preview) return null
         val account = accounts.state.value?.account?.key ?: return null
         val width = (options.size.width as? coil3.size.Dimension.Pixels)?.px ?: 0
-        return "$account/${data.id}/${if (data.large) CoverStore.LARGE else CoverStore.SIZE}/$width"
+        return "$account/${data.id}/${data.size}/$width"
     }
 }
