@@ -98,6 +98,34 @@ class SignInTest {
     }
 
     @Test
+    fun aDefiniteOpenFailureRemovesTheOldFileAndAllowsSignIn() {
+        val sealed = byteArrayOf(1, 2, 3)
+        val graph = plainGraph { if (it.contentEquals(sealed)) null else it }
+        val file = Graph.signInFile(app).apply { writeBytes(sealed) }
+        val driver = nexus(graph)
+        shown(driver) { it.screen == "sign_in" && it.signIn.state == "idle" }
+        assertFalse(file.exists())
+        standIn.signIn(app)
+        assertTrue(graph.nexusKept.load()!!.session)
+    }
+
+    @Test
+    fun aPassingOpenFailureKeepsTheFileUntilAFreshSignInSucceeds() {
+        val sealed = byteArrayOf(1, 2, 3)
+        val graph = plainGraph {
+            if (it.contentEquals(sealed)) throw java.security.ProviderException("test keystore failure")
+            it
+        }
+        val file = Graph.signInFile(app).apply { writeBytes(sealed) }
+        val driver = nexus(graph)
+        shown(driver) { it.screen == "sign_in" && it.signIn.state == "not_opened" }
+        assertTrue(file.readBytes().contentEquals(sealed))
+        standIn.signIn(app)
+        assertFalse(file.readBytes().contentEquals(sealed))
+        assertTrue(graph.nexusKept.load()!!.session)
+    }
+
+    @Test
     fun aWrongPasswordIsSaidAndNobodyIsSignedIn() {
         standIn.backendThere = true
         standIn.refuseSignIn = true
@@ -250,7 +278,7 @@ class SignInTest {
 
     /** The app's objects made again, sealing with a box the test runner can open (it has no
      *  Keystore), and made the app's own. */
-    private fun plainGraph(): Graph {
+    private fun plainGraph(openSealed: (ByteArray) -> ByteArray? = { it }): Graph {
         runCatching { app.graph.nexus?.stop() }
         return Graph(app, object : org.medianexus.music.store.SecretBox {
             override fun seal(plain: ByteArray): ByteArray {
@@ -259,7 +287,7 @@ class SignInTest {
                 }
                 return plain
             }
-            override fun open(sealed: ByteArray) = sealed
+            override fun open(sealed: ByteArray) = openSealed(sealed)
         }).also { graph ->
             App::class.java.getDeclaredField("graph").apply { isAccessible = true }.set(app, graph)
         }

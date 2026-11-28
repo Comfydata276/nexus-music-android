@@ -200,6 +200,7 @@ class SessionTest {
         keep(made(dir).kept, music(at = secure), who())
         val file = File(dir, "nexus-signin.sealed")
         val original = file.readBytes()
+        val device = File(dir, "nexus-device.sealed").apply { writeText("kept device") }
         val failed = made(dir, box = object : SecretBox {
             override fun seal(plain: ByteArray): ByteArray = error("must not write during this start")
             override fun open(sealed: ByteArray): ByteArray? {
@@ -210,6 +211,7 @@ class SessionTest {
         assertEquals(SessionState.SignedOut, settled(failed.session))
         assertEquals("not_opened", driver.shown.value?.signIn?.state)
         assertTrue(file.readBytes().contentEquals(original))
+        assertEquals("kept device", device.readText())
         assertEquals(0, driver.sent.get())
 
         val recovered = made(dir)

@@ -83,6 +83,6 @@ fun accountDirs(filesRoot: File, cacheRoot: File, key: String) =
 interface SecretBox {
     fun seal(plain: ByteArray): ByteArray
 
-    /** Null if the bytes can't be opened: tampered with, or sealed with a key since lost. */
+    /** Null if opening can never succeed. A temporary I/O, security or provider failure throws. */
     fun open(sealed: ByteArray): ByteArray?
 }

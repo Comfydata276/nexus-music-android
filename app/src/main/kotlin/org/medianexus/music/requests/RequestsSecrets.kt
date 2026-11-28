@@ -79,12 +79,15 @@ class RequestsSecrets(dir: File, private val box: SecretBox, server: String, use
 
     @Synchronized
     private fun open(file: File): Bound? {
-        val sealed = try {
-            file.readBytes()
+        val plain = try {
+            box.open(file.readBytes())
         } catch (_: IOException) {
-            return null
-        }
-        val plain = box.open(sealed) ?: return null
+            null
+        } catch (_: java.security.GeneralSecurityException) {
+            null
+        } catch (_: java.security.ProviderException) {
+            null
+        } ?: return null
         try {
             // The account, the place, the secret: a line each, and the secret is the rest.
             val parts = String(plain, Charsets.UTF_8).split('\n', limit = 3)
