@@ -78,27 +78,27 @@ internal data class DiagnosticFault(val place: DiagnosticPlace, val shape: Diagn
     }
 }
 
-internal enum class DiagnosticNote(val label: String) {
-    PLAYER_STARTED("Player started"),
-    FOREGROUND_ENTERED("Foreground entered"),
-    SOUND_MOVED("Audio output is moving"),
-    AUTO_ADMITTED("Android Auto connected"),
-    AUTO_REFUSED("Android Auto connection refused"),
-    CONTROLLER_ADMITTED("Other controller connected"),
-    CONTROLLER_REFUSED("Other controller connection refused"),
-    SIGN_IN_DONE("Nexus sign-in done"),
-    SIGN_IN_REFUSED("Nexus sign-in refused"),
-    SIGN_IN_BUSY("Nexus sign-in had too many tries"),
-    MUSIC_LOGIN_AGAIN("Music login asked for again"),
-    START_AGAIN("Nexus asked to start again"),
-    EVENTS_SENT("Events sent"),
-    EVENTS_REFUSED("Events refused"),
-    APP_MESSAGE("App message shown"),
-    DOWNLOADS_FOLDER_CHANGED("Downloads folder changed"),
-    MEDIA_BUTTON_STARTED("Media button started the player"),
-    MEDIA_BUTTON_EMPTY("Media button had nothing to resume"),
-    MEDIA_BUTTON_REFUSED("Android refused to start the player from a media button"),
-    LIBRARY_UNAVAILABLE("Shared library could not be loaded"),
+internal enum class DiagnosticNote(val wire: String) {
+    PLAYER_STARTED("player_started"),
+    FOREGROUND_ENTERED("foreground_entered"),
+    SOUND_MOVED("sound_moved"),
+    AUTO_ADMITTED("android_auto_admitted"),
+    AUTO_REFUSED("android_auto_refused"),
+    CONTROLLER_ADMITTED("other_controller_admitted"),
+    CONTROLLER_REFUSED("other_controller_refused"),
+    SIGN_IN_DONE("sign_in_done"),
+    SIGN_IN_REFUSED("sign_in_refused"),
+    SIGN_IN_BUSY("sign_in_too_many_tries"),
+    MUSIC_LOGIN_AGAIN("music_login_asked_again"),
+    START_AGAIN("start_again"),
+    EVENTS_SENT("events_sent"),
+    EVENTS_REFUSED("events_refused"),
+    APP_MESSAGE("app_message"),
+    DOWNLOADS_FOLDER_CHANGED("downloads_folder_changed"),
+    MEDIA_BUTTON_STARTED("media_button_started"),
+    MEDIA_BUTTON_EMPTY("media_button_nothing_to_resume"),
+    MEDIA_BUTTON_REFUSED("media_button_start_refused"),
+    LIBRARY_UNAVAILABLE("shared_library_unavailable"),
 }
 
 internal enum class DiagnosticReach(val wire: String) {
@@ -209,7 +209,7 @@ internal class CleanDiagnostics(
         fun wire() = buildJsonObject {
             put("at", at)
             put("line", when (val value = line) {
-                is Line.Note -> recordingEvent("note", buildJsonObject { put("label", value.note.label) })
+                is Line.Note -> recordingEvent("note", JsonPrimitive(value.note.wire))
                 is Line.Fault -> value.fault.reportWire()
                 is Line.Foreground -> recordingEvent("foreground", buildJsonObject { put("after_ms", value.millis.coerceIn(0, 3_600_000)) })
                 is Line.JobStop -> recordingEvent("download_job_stopped", buildJsonObject { put("reason", value.reason.coerceIn(0, 255)) })

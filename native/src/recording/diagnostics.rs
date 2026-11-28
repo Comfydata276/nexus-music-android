@@ -86,10 +86,18 @@ enum SessionEnded {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case", remote = "diag::Note")]
+enum Note {
+    PlayerStarted, ForegroundEntered, SoundMoved, AndroidAutoAdmitted, AndroidAutoRefused,
+    OtherControllerAdmitted, OtherControllerRefused, SignInDone, SignInRefused, SignInTooManyTries,
+    MusicLoginAskedAgain, StartAgain, EventsSent, EventsRefused, AppMessage, DownloadsFolderChanged,
+    MediaButtonStarted, MediaButtonNothingToResume, MediaButtonStartRefused, SharedLibraryUnavailable,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ObservationKind {
-    /// Only the shared report's canonical vocabulary can pass this boundary.
-    Note { label: String },
+    Note(#[serde(with = "Note")] diag::Note),
     Fault { place: events::FaultPlace, shape: FaultShape, source_line: Option<u32> },
     Foreground { after_ms: u32 },
     DownloadJobStopped { reason: u8 },
@@ -108,10 +116,7 @@ enum ObservationKind {
 impl ObservationKind {
     fn line(self) -> Option<Line> {
         Some(match self {
-            Self::Note { label } => match diag::clean_line(&label) {
-                Some(line @ Line::Note(_)) => line,
-                _ => return None,
-            },
+            Self::Note(note) => Line::Note(note),
             Self::Fault { place, shape, source_line } => Line::Fault(Fault {
                 place: match place {
                     events::FaultPlace::Playback => FaultPlace::Playback,
@@ -179,6 +184,7 @@ mod tests {
     fn the_record_accepts_closed_attempts_and_rejects_free_text() {
         let root = TestRoot::new();
         let secret = "a song 𐐀 private@example.invalid /hidden";
+        assert!(serde_json::from_value::<Observation>(json!({ "at": 1, "line": { "note": secret } })).is_err());
         let action = json!({ "root": root.0, "checkpoint": {
             "about": {
                 "version": "0.6.3", "android_major": 17, "signed_in": true, "offline": false,
@@ -187,7 +193,7 @@ mod tests {
             },
             "clear": false,
             "observations": [
-                { "at": 1_800_000_000_001u64, "line": { "note": { "label": secret } } },
+                { "at": 1_800_000_000_001u64, "line": { "note": "app_message" } },
                 { "at": 1_800_000_000_001u64, "line": { "attempt": {
                     "reach": "secure", "local": true, "permission": false, "network": "wifi", "failed": true,
                 } } },
@@ -200,6 +206,7 @@ mod tests {
         let text = reopened.as_str().unwrap();
         assert!(text.contains("Nexus last failure: made secure, local address yes, local permission no, network Wi-Fi"));
         assert!(text.contains("Nexus session ended: expired"));
+        assert!(text.contains("App message shown"));
         assert!(!text.contains(secret));
         assert!(!text.contains("example.invalid"));
     }

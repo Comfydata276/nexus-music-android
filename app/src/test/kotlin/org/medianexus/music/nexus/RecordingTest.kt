@@ -332,6 +332,24 @@ class RecordingTest {
         assertTrue(read(reopened, a).isEmpty())
     }
 
+    @Test fun everyPhoneNoteIsAcceptedByCoreAndReachesTheReport() {
+        // Core's words at the pin. A wire name core does not know would refuse the whole batch.
+        val words = listOf("Player started", "Foreground entered", "Audio output is moving", "Android Auto connected",
+            "Android Auto connection refused", "Other controller connected", "Other controller connection refused",
+            "Nexus sign-in done", "Nexus sign-in refused", "Nexus sign-in had too many tries", "Music login asked for again",
+            "Nexus asked to start again", "Events sent", "Events refused", "App message shown", "Downloads folder changed",
+            "Media button started the player", "Media button had nothing to resume",
+            "Android refused to start the player from a media button", "Shared library could not be loaded")
+        assertEquals(words.size, DiagnosticNote.entries.size)
+        val diag = recording().diagnostics
+        diag.state(signedIn = true, offline = false, serverDefault = true)
+        DiagnosticNote.entries.forEach(diag::note)
+        val page = runBlocking {
+            withTimeout(8_000) { diag.page.first { it?.contains(words.last()) == true }!! }
+        }
+        for (word in words) assertTrue(word, word in page)
+    }
+
     @Test fun canonicalPageAndExportAndMachineHaveIndependentlyProducedIdenticalBytes() {
         val service = recording()
         val diag = service.diagnostics
