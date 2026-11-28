@@ -3,7 +3,8 @@ package org.medianexus.music.nexus
 import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
-import java.util.concurrent.ThreadLocalRandom
+import java.nio.ByteBuffer
+import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -89,12 +90,15 @@ internal class NexusRecording(
 
     fun capture(data: Listening, scope: JournalScope? = scope(), at: Long = wall()): EventId? {
         if (scope == null) return null
-        val id = EventId.make()
+        val id = journal.takeId(positionOnly = data is Listening.Position) ?: return null
         return id.takeIf { journal.offer(Captured(scope, id, at, data)) }
     }
 
-    fun search(words: String, accountFolder: String, requests: Boolean = false): SearchObservation? =
-        scopeFor(accountFolder)?.let { SearchObservation(it, EventId.make(), words, requests, wall()) }
+    fun search(words: String, accountFolder: String, requests: Boolean = false): SearchObservation? {
+        val scope = scopeFor(accountFolder) ?: return null
+        val id = journal.takeId() ?: return null
+        return SearchObservation(scope, id, words, requests, wall())
+    }
 
     fun found(search: SearchObservation?, count: Int) {
         if (search != null) {
@@ -144,13 +148,10 @@ internal data class JournalScope(val backend: JsonPrimitive, val number: JsonPri
     }
 }
 
-/** Two random words captured at the observation, encoded by the writer. */
+/** A 16-byte random ID assigned when the event is observed and encoded by the writer. */
 internal data class EventId(private val high: Long, private val low: Long) {
     fun wire() = high.toULong().toString(16).padStart(16, '0') + low.toULong().toString(16).padStart(16, '0')
 
-    companion object {
-        fun make(): EventId = ThreadLocalRandom.current().let { EventId(it.nextLong(), it.nextLong()) }
-    }
 }
 
 internal data class Captured(val scope: JournalScope, val id: EventId, val at: Long, val data: Listening) {
@@ -204,7 +205,14 @@ internal class ListeningJournal(
     private val queued = AtomicInteger()
     private val lost = AtomicLong()
     private val jobs = ConcurrentLinkedQueue<Job>()
-    private val reader = Executors.newSingleThreadExecutor { task -> Thread(task, "nexus-journal-reader").apply { isDaemon = true } }
+    private val ids = ConcurrentLinkedQueue<EventId>()
+    private val random by lazy { SecureRandom() }
+    private val reader = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "nexus-journal-reader").apply {
+            isDaemon = true
+            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> }
+        }
+    }
     private val writer = Thread(::run, "nexus-journal-writer").apply {
         isDaemon = true
         // A failed writer stops accepting records and counts the losses in run's finally.
@@ -233,10 +241,30 @@ internal class ListeningJournal(
     private var retryWrites = false
     private var retryActivation = false
 
+    // Only the driver at first publication and then the writer call this. Capture
+    // takes a pre-generated token from the queue and never touches the random provider.
+    private fun replenishIds() {
+        val needed = CAPACITY * 2 - ids.size
+        if (needed < CAPACITY) return
+        val bytes = ByteArray(needed * 16)
+        random.nextBytes(bytes)
+        val values = ByteBuffer.wrap(bytes)
+        repeat(needed) { ids.offer(EventId(values.long, values.long)) }
+    }
+
+    fun takeId(positionOnly: Boolean = false): EventId? {
+        if (positionOnly) return EventId(0, 0) // A checkpoint is not a wire event.
+        val id = if (alive) ids.poll() else null
+        if (id == null) lost.incrementAndGet()
+        LockSupport.unpark(writer)
+        return id
+    }
+
     /** Called by the driver, before publishing eligibility to any producer. */
     private fun startWriter() {
         if (started.compareAndSet(false, true)) {
             try {
+                replenishIds()
                 writer.start()
             } catch (_: RuntimeException) {
                 alive = false
@@ -337,6 +365,7 @@ internal class ListeningJournal(
     private fun loop() {
         var retryAt = 0L
         while (true) {
+            replenishIds()
             val job = jobs.poll()
             val now = wall()
             val monotonic = System.nanoTime()
