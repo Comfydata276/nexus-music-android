@@ -1,6 +1,6 @@
 use super::{invalid, private_directory, read, replace, version};
 use nexus_core::nexus::{
-    account::DeviceKind,
+    account::{DeviceKind, Notice},
     diag::{self, About, Fault, FaultPlace, Line, Record, Report, Source, SourceFile},
     events::{self, FaultShape, LossCounts},
     proto::Version,
@@ -19,6 +19,7 @@ pub(super) struct Request {
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Action {
+    Notice {},
     Checkpoint { about: Phone, observations: Vec<Observation>, clear: bool },
     Read,
     Enabled { choice: Option<bool>, server_default: Option<bool> },
@@ -143,6 +144,7 @@ fn kept(path: &Path) -> io::Result<Report> {
 pub(super) fn call(request: Request) -> io::Result<Value> {
     let path = request.root.join("report.txt");
     match request.action {
+        Action::Notice {} => Ok(json!(Notice::recording().as_str())),
         Action::Enabled { choice, server_default } => Ok(json!(diag::enabled(choice, server_default))),
         Action::Read => Ok(json!(kept(&path)?.text().map_err(invalid)?)),
         Action::Checkpoint { about, observations, clear } => {

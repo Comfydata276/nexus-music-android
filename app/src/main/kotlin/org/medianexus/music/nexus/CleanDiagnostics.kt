@@ -240,6 +240,13 @@ internal class CleanDiagnostics(
         }
     }
 
+    fun recordingNotice(): String? = safe {
+        (Core.nexusDiagnostics(buildJsonObject {
+            put("root", root.path)
+            put("notice", buildJsonObject {})
+        }) as JsonPrimitive).contentOrNull
+    }
+
     fun about(value: PhoneDiagnostics) {
         about = value
         refresh()

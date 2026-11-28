@@ -140,6 +140,8 @@ struct Repair {
     scope: Scope,
     first: u64,
     remove: bool,
+    #[serde(default)]
+    scratch: bool,
 }
 
 #[derive(Default)]
@@ -170,7 +172,7 @@ fn load(root: &Path) -> io::Result<State> {
     }
 }
 
-fn segment_numbers(folder: &Path) -> io::Result<Vec<u64>> {
+fn segment_numbers(folder: &Path, extension: &str) -> io::Result<Vec<u64>> {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -179,7 +181,7 @@ fn segment_numbers(folder: &Path) -> io::Result<Vec<u64>> {
     let mut numbers = Vec::new();
     for entry in entries {
         let path = entry?.path();
-        if path.extension().is_some_and(|ext| ext == "events")
+        if path.extension().is_some_and(|ext| ext == extension)
             && let Some(number) = path.file_stem().and_then(|n| n.to_str()).and_then(|n| n.parse().ok())
         {
             numbers.push(number);
@@ -187,6 +189,14 @@ fn segment_numbers(folder: &Path) -> io::Result<Vec<u64>> {
     }
     numbers.sort_unstable();
     Ok(numbers)
+}
+
+fn remove(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => File::open(path.parent().ok_or_else(|| invalid(()))?)?.sync_all(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn event_file(path: &Path) -> io::Result<(events::JournalFile, usize)> {
@@ -231,11 +241,8 @@ impl Writer {
         for repair in &self.state.repairs {
             let path = repair.scope.segment(&self.root, repair.first)?;
             if repair.remove {
-                match fs::remove_file(&path) {
-                    Ok(()) => File::open(path.parent().ok_or_else(|| invalid(()))?)?.sync_all()?,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-                    Err(e) => return Err(e),
-                }
+                if !repair.scratch { remove(&path)?; }
+                remove(&path.with_extension("next"))?;
             } else {
                 let (file, _) = event_file(&path)?;
                 if file.skipped_lines > 0 {
@@ -269,8 +276,10 @@ impl Writer {
                     let Some(life) = dir.file_name().to_str().and_then(|name| name.parse().ok()) else { continue };
                     if life == scope.life { continue; }
                     let older = Scope { account: scope.account.clone(), life };
-                    for first in segment_numbers(&dir.path())? {
-                        state.repairs.push(Repair { scope: older.clone(), first, remove: true });
+                    for extension in ["events", "next"] {
+                        for first in segment_numbers(&dir.path(), extension)? {
+                            state.repairs.push(Repair { scope: older.clone(), first, remove: true, scratch: extension == "next" });
+                        }
                     }
                 }
             }
@@ -287,7 +296,16 @@ impl Writer {
         }
         let mut catalog = Catalog::default();
         let mut state = self.state.clone();
-        for first in segment_numbers(&scope.folder(&self.root)?)? {
+        let folder = scope.folder(&self.root)?;
+        for first in segment_numbers(&folder, "next")? {
+            // An interrupted first rename has no sibling. Replacement scratch for an
+            // existing file adds no new event and must not count the file again.
+            if !scope.segment(&self.root, first)?.exists() {
+                state.loss.add(Loss::LineFull, 1);
+            }
+            state.repairs.push(Repair { scope: scope.clone(), first, remove: true, scratch: true });
+        }
+        for first in segment_numbers(&folder, "events")? {
             let path = scope.segment(&self.root, first)?;
             if self.uncertain.contains(&path) {
                 File::open(&path)?.sync_all()?;
@@ -297,7 +315,7 @@ impl Writer {
                 Ok((file, bytes)) if file.life == scope.life => {
                     if file.skipped_lines != 0 {
                         state.loss.add(Loss::LineFull, file.skipped_lines as u64);
-                        state.repairs.push(Repair { scope: scope.clone(), first, remove: false });
+                        state.repairs.push(Repair { scope: scope.clone(), first, remove: false, scratch: false });
                     }
                     catalog.segments.insert(first, Segment { bytes, events: file.events });
                 }
@@ -305,7 +323,7 @@ impl Writer {
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                     // A crash before the first header's newline left no committed line.
                     state.loss.add(Loss::LineFull, 1);
-                    state.repairs.push(Repair { scope: scope.clone(), first, remove: true });
+                    state.repairs.push(Repair { scope: scope.clone(), first, remove: true, scratch: false });
                 }
                 Err(error) => return Err(error),
             }
@@ -354,6 +372,10 @@ impl Writer {
                 self.catalogs.remove(scope);
                 self.uncertain.insert(path);
                 return Ok(());
+            }
+            if append.new_file && path.with_extension("next").exists() {
+                self.catalogs.remove(scope);
+                return Ok(()); // The scan records the orphaned first append exactly once.
             }
             return Err(error);
         }
@@ -445,7 +467,7 @@ impl Writer {
             for event in &segment.events {
                 account.settled.remove(&event.sequence());
             }
-            state.repairs.push(Repair { scope: scope.clone(), first: *first, remove: true });
+            state.repairs.push(Repair { scope: scope.clone(), first: *first, remove: true, scratch: false });
         }
         state.loss.add(Loss::FilesFull, plan.dropped);
         self.commit(state)?;
@@ -537,9 +559,9 @@ fn read_events(root: &Path, scope: &Scope, from: u64, limit: usize, bytes: usize
     };
     let mut batch = Vec::new();
     let mut used = 0;
-    let numbers = segment_numbers(&scope.folder(root)?)?;
+    let numbers = segment_numbers(&scope.folder(root)?, "events")?;
     for (index, &first) in numbers.iter().enumerate() {
-        if state.repairs.iter().any(|repair| repair.remove && repair.scope == *scope && repair.first == first) { continue; }
+        if state.repairs.iter().any(|repair| repair.remove && !repair.scratch && repair.scope == *scope && repair.first == first) { continue; }
         if numbers.get(index + 1).is_some_and(|&next| next <= from) { continue; }
         let (file, _) = match event_file(&scope.segment(root, first)?) {
             Ok(file) => file,

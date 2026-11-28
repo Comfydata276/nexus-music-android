@@ -31,8 +31,8 @@ internal class NexusRecording(
     private val folderFor: (String) -> String = { it },
     port: (JsonObject) -> JsonElement = Core::nexusJournal,
 ) {
-    private val journal = ListeningJournal(File(root, "nexus-listening"), wall, port)
-    val diagnostics = CleanDiagnostics(File(root, "nexus-diagnostics"), version, wall, journal::losses, ::fault)
+    private val journal: ListeningJournal = ListeningJournal(File(root, "nexus-listening"), wall, port, ::journalLossChanged)
+    val diagnostics: CleanDiagnostics = CleanDiagnostics(File(root, "nexus-diagnostics"), version, wall, journal::losses, ::fault)
     private var opened = false
     @Volatile private var folder: Pair<JournalScope, String>? = null
 
@@ -98,6 +98,10 @@ internal class NexusRecording(
 
     fun found(search: SearchObservation?, count: Int) {
         if (search != null) capture(Listening.Search(search.words, count, search.requests), search.scope, search.at)
+    }
+
+    private fun journalLossChanged() {
+        diagnostics.refresh()
     }
 
     private fun fault(fault: DiagnosticFault) {
@@ -177,11 +181,13 @@ private class ListeningJournal(
     private val root: File,
     private val wall: () -> Long,
     private val port: (JsonObject) -> JsonElement,
+    private val lossChanged: () -> Unit,
 ) {
     private sealed interface Job {
         data class Event(val captured: Captured) : Job
         data class Publish(val scope: JournalScope?, val emit: RecordingEvent) : Job
         data class Change(val effect: JsonObject, val complete: (Boolean) -> Unit) : Job
+        data class ReaderMiss(val scope: JournalScope) : Job
     }
 
     @Volatile var current: JournalScope? = null
@@ -202,6 +208,7 @@ private class ListeningJournal(
     private var active: JournalScope? = null
     private var emit: RecordingEvent? = null
     private var waiting: JsonObject? = null
+    private var retriedRead: JsonObject? = null
     private var lastSent: JsonObject? = null
     private var lastSentAt = 0L
     private var readLossAtStart = false
@@ -274,6 +281,10 @@ private class ListeningJournal(
                 put("life", request.getValue("life"))
                 put("events", if (current == target) found ?: EMPTY else EMPTY)
             }))
+            if (found == null && target != null && current == target) {
+                jobs.offer(Job.ReaderMiss(target))
+                LockSupport.unpark(writer)
+            }
         }
     }
 
@@ -290,7 +301,7 @@ private class ListeningJournal(
                 queued.decrementAndGet()
                 if (job.captured.data !is Listening.Position) lost.incrementAndGet()
             }
-            is Job.Publish -> Unit
+            is Job.Publish, is Job.ReaderMiss -> Unit
         }
     }
 
@@ -313,6 +324,7 @@ private class ListeningJournal(
                     active = job.scope
                     emit = job.emit
                     waiting = null
+                    retriedRead = null
                     lastSent = null
                     lastSentAt = 0
                     if (!readLossAtStart) {
@@ -321,6 +333,12 @@ private class ListeningJournal(
                     }
                     activate(now)
                     retryAt = now + LOSS_RETRY_MILLIS
+                }
+                is Job.ReaderMiss -> {
+                    if (job.scope == active && waiting != retriedRead) {
+                        retriedRead = waiting
+                        lastSent = null
+                    }
                 }
                 is Job.Event -> {
                     // Collect already queued records, preserving every control boundary.
@@ -397,7 +415,10 @@ private class ListeningJournal(
 
     private fun accept(value: JsonElement) {
         val answer = value as JsonObject
-        visible = Visibility(answer.getValue("through"), JournalLoss.read(answer.getValue("loss") as JsonObject))
+        val loss = JournalLoss.read(answer.getValue("loss") as JsonObject)
+        val changed = loss != visible.loss
+        visible = Visibility(answer.getValue("through"), loss)
+        if (changed) lossChanged()
         waiting = answer["waiting"] as? JsonObject
         retryWrites = (answer["retry"] as? JsonPrimitive)?.booleanOrNull == true
     }
