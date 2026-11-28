@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import org.medianexus.music.net.Handed
+import org.medianexus.music.net.normalizeServerUrl
 import org.medianexus.music.store.SecretBox
 import org.medianexus.music.store.accountKey
 import org.medianexus.music.store.writeAtomically
@@ -278,9 +279,10 @@ class Folders(private val carried: File) {
     }
 
     private val Carried.claimedFolder: String? get() = folder?.takeUnless { undecided }
+    private val Carried.test1NoOwner: Boolean get() = !undecided && folder == null
 
     /** Test1 cleared the main settings' server and user after a login that did not match. */
-    fun test1ClearedLegacySignIn(): Boolean = readOrNull()?.let { !it.undecided && it.folder == null } == true
+    fun test1ClearedLegacySignIn(): Boolean = readOrNull()?.test1NoOwner == true
 
     fun of(person: String): String = readOrNull()?.takeIf { it.person == person }?.claimedFolder ?: person
 
@@ -291,14 +293,19 @@ class Folders(private val carried: File) {
     /** Called for a handed login, in Session's ordered steps. An unreadable assignment
      *  is left alone so that a transient read failure cannot hand the folder to someone else. */
     fun settle(person: String, music: KeptMusic, beforeServer: String, beforeUser: String, carriesOver: (String, String, KeptMusic) -> Boolean): Settled {
-        if (carried.exists()) {
-            val record = readOrNull() ?: return Settled.OPEN
-            if (record.claimedFolder != null) return Settled.CLAIMED
-        }
-        if (beforeServer.isEmpty() || beforeUser.isEmpty() || !carriesOver(beforeServer, beforeUser, music)) {
-            return Settled.OPEN
-        }
-        return if (carry(person, accountKey(beforeServer, beforeUser))) Settled.CLAIMED else Settled.NOT_KEPT
+        val record = if (carried.exists()) readOrNull() ?: return Settled.OPEN else null
+        if (record?.claimedFolder != null) return Settled.CLAIMED
+        val folder = when {
+            beforeServer.isNotEmpty() && beforeUser.isNotEmpty() && carriesOver(beforeServer, beforeUser, music) ->
+                accountKey(beforeServer, beforeUser)
+            // Test1 cleared the identity, and a later start rotated the settings backup.
+            // The handed login must name an existing directory exactly as 0.6.3 named it.
+            beforeServer.isEmpty() && beforeUser.isEmpty() && record?.test1NoOwner == true ->
+                accountKey(normalizeServerUrl(music.address), music.name)
+                    .takeIf { File(carried.parentFile, it).isDirectory }
+            else -> null
+        } ?: return Settled.OPEN
+        return if (carry(person, folder)) Settled.CLAIMED else Settled.NOT_KEPT
     }
 
     /** Gives `folder` to `person`, for good. True once it is on the disk. */

@@ -357,6 +357,32 @@ class SessionTest {
     }
 
     @Test
+    fun test1NobodyRecordWithBlankSettingsClaimsOnlyAnExactExistingFolder() = runBlocking<Unit> {
+        val dir = folder.newFolder()
+        val first = Folders.personOf(who("8"))
+        val file = File(dir, "settings.json")
+        val cleared = org.medianexus.music.store.Settings(folder = first)
+        assertTrue(SettingsStore.save(file, cleared))
+        assertTrue(SettingsStore.save(SettingsStore.backupOf(file), cleared))
+        val record = carried(dir).apply { parentFile!!.mkdirs(); writeText("""{"person":"$first"}""") }
+        val legacy = accountKey(secure, "ada")
+        val data = File(record.parentFile, legacy).apply { mkdirs() }
+        File(data, "queue.json").writeText("{}")
+
+        val m = made(dir)
+        m.session.handed(music("grace", at = secure), who("8"))
+        assertEquals(first, signedIn(m.session).account.key)
+        assertEquals("""{"person":"$first"}""", record.readText())
+        m.session.forgotten().await()
+
+        m.session.handed(music(at = "$secure/"), who("7"))
+        val owner = signedIn(m.session).account
+        assertEquals(legacy, owner.key)
+        assertEquals("{}", File(owner.dirs.data, "queue.json").readText())
+        assertEquals(legacy, Folders(record).of(Folders.personOf(who("7"))))
+    }
+
+    @Test
     fun anotherPersonHandedTheSameMusicUserIsAnotherAccountAndTheFirstLoginIsLetGo() = runBlocking<Unit> {
         val m = made()
         m.session.handed(music(), who("7"))
