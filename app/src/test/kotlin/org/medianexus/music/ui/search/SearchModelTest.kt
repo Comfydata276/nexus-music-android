@@ -66,6 +66,44 @@ class SearchModelTest {
     }
 
     @Test
+    fun automaticReplacementsFinishTheOriginalObservationWithTheFinalCount() = runTest {
+        val searches = List(2) { CompletableDeferred<Found>() }
+        val observed = mutableListOf<String>()
+        val finished = mutableListOf<Pair<Int, Int>>()
+        var asks = 0
+        val model = SearchModel(
+            backgroundScope,
+            search = {
+                val ask = asks++
+                if (ask < searches.size) searches[ask].await()
+                else Found(songs = listOf(Song(id = "a"), Song(id = "b")), albums = listOf(Album(id = "c")))
+            },
+            observe = { query ->
+                observed += query
+                val id = observed.size
+                val finish: (Int) -> Unit = { count -> finished += id to count }
+                finish
+            },
+        )
+        runCurrent()
+        model.type("lantern")
+        advanceTimeBy(SearchModel.WAIT_MILLIS + 1)
+        assertEquals(1, asks)
+        model.libraryChanged()
+        runCurrent()
+        assertEquals(2, asks)
+        assertEquals(listOf("lantern"), observed)
+        assertTrue(finished.isEmpty())
+        model.libraryChanged()
+        runCurrent()
+        assertEquals(listOf("lantern"), observed)
+        assertEquals(listOf(1 to 3), finished)
+        model.retry()
+        runCurrent()
+        assertEquals(listOf(1 to 3, 2 to 3), finished)
+    }
+
+    @Test
     fun theLatestWordsWinOverASlowerEarlierSearch() = runTest {
         val slow = CompletableDeferred<Found>()
         val model = SearchModel(backgroundScope, search = { if (it == "old") slow.await() else found(it) })

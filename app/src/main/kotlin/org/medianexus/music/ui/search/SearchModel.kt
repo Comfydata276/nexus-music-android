@@ -67,8 +67,30 @@ class SearchModel(
     /** A submitted search's observation, given its count when the request finishes. */
     private val observe: (String) -> ((Int) -> Unit)? = { null },
 ) {
-    /** The words, which change of them this is, and whether it is to go at once. */
-    private data class Ask(val query: String, val serial: Long, val now: Boolean = false, val report: Boolean = true)
+    /** Automatic replacements keep the submission and its single observation. */
+    private class Submission {
+        private var began = false
+        private var observation: ((Int) -> Unit)? = null
+
+        fun begin(query: String, observe: (String) -> ((Int) -> Unit)?) {
+            if (began) return
+            began = true
+            observation = observe(query)
+        }
+
+        fun finish(count: Int) {
+            val complete = observation
+            observation = null
+            complete?.invoke(count)
+        }
+    }
+
+    private data class Ask(
+        val query: String,
+        val serial: Long,
+        val now: Boolean = false,
+        val submission: Submission = Submission(),
+    )
 
     private var serials = 0L
     private val typed = MutableStateFlow(Ask("", 0))
@@ -108,15 +130,16 @@ class SearchModel(
     }
 
     /** Asks again for the words shown, after a failure. */
-    fun retry() = askAgain(report = true)
+    fun retry() = askAgain(newSubmission = true)
 
     /** The library changed under the same submitted search. Keep its displayed result current. */
-    fun libraryChanged() = askAgain(report = false)
+    fun libraryChanged() = askAgain(newSubmission = false)
 
-    private fun askAgain(report: Boolean) {
+    private fun askAgain(newSubmission: Boolean) {
         val ask = typed.value
         if (ask.query.isBlank()) return
-        typed.value = Ask(ask.query, ++serials, now = true, report = report || ask.report && ask.serial != done)
+        val submission = if (newSubmission) Submission() else ask.submission
+        typed.value = Ask(ask.query, ++serials, now = true, submission = submission)
         now.update { if (it.query == ask.query) it.copy(searching = true, failed = null) else it }
     }
 
@@ -128,21 +151,29 @@ class SearchModel(
             return
         }
         now.update { if (it.query == query) it.copy(searching = true, failed = null) else it }
-        val observation = if (ask.report) observe(query) else null
-        var resultCount = 0
+        ask.submission.begin(query, observe)
         val found = try {
-            search(query).also { resultCount = it.songs.size + it.albums.size + it.artists.size }
+            search(query)
         } catch (e: ApiError) {
-            // What was found before for these same words stays, with the error beside it;
-            // under other words (typed since, still within the pause) it isn't said at all.
-            now.update { if (it.query == query) it.copy(searching = false, failed = Failure(query, e)) else it }
             done = ask.serial
+            if (typed.value.serial == ask.serial) {
+                now.update { it.copy(searching = false, failed = Failure(query, e)) }
+            }
+            finish(ask, 0)
             return
-        } finally {
-            observation?.invoke(resultCount)
         }
-        now.update { if (it.query == query) SearchState(query, Results(query, found)) else it }
         done = ask.serial
+        if (typed.value.serial == ask.serial) now.value = SearchState(query, Results(query, found))
+        finish(ask, found.songs.size + found.albums.size + found.artists.size)
+    }
+
+    private fun finish(ask: Ask, count: Int) {
+        val latest = typed.value
+        // An automatic replacement has already been requested. It owns the final count
+        // even if the previous search returned before cancellation reached it.
+        if (latest.serial == ask.serial || latest.submission !== ask.submission) {
+            ask.submission.finish(count)
+        }
     }
 
     companion object {
