@@ -26,7 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -82,7 +82,7 @@ private data class Reading(val scope: AppScope, val word: String)
 private fun ListeningDialog(nexus: Nexus, close: () -> Unit) {
     val session by nexus.appSession.collectAsStateWithLifecycle()
     val work = rememberCoroutineScope()
-    val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = session?.scope
     val stats = nexus.listening.cached(scope)
     var reading by remember { mutableStateOf<Reading?>(null) }
@@ -99,11 +99,11 @@ private fun ListeningDialog(nexus: Nexus, close: () -> Unit) {
             return@LaunchedEffect
         }
         busy = true
-        reading = Reading(scope, context.getString(R.string.nexus_stats_getting))
+        reading = Reading(scope, resources.getString(R.string.nexus_stats_getting))
         val outcome = nexus.listening.read(scope)
         if (nexus.appSession.value == session) {
             reading = Reading(scope, when (outcome) {
-                is ListeningResult.Done -> if (outcome.value.recent.isEmpty()) context.getString(R.string.nexus_stats_empty) else ""
+                is ListeningResult.Done -> if (outcome.value.recent.isEmpty()) resources.getString(R.string.nexus_stats_empty) else ""
                 is ListeningResult.Error -> outcome.words
             })
         }
@@ -125,7 +125,7 @@ private fun ListeningDialog(nexus: Nexus, close: () -> Unit) {
                         val now = nexus.appSession.value?.scope
                         when {
                             outcome is ListeningResult.Done && now == outcome.value -> {
-                                result = Reading(outcome.value, context.getString(R.string.nexus_history_deleted))
+                                result = Reading(outcome.value, resources.getString(R.string.nexus_history_deleted))
                                 deleteOpen = null
                             }
                             outcome is ListeningResult.Error && now == deletion -> result = Reading(deletion, outcome.words)
