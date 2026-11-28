@@ -363,7 +363,7 @@ class Graph(
         scope.launch {
             var held: org.medianexus.music.requests.Requests.Hold? = null
             made.shown.map { it?.signIn?.state == "working" }.distinctUntilChanged().collect { working ->
-                if (working && held == null) held = org.medianexus.music.requests.SignInService.hold(app)
+                if (working && held == null) held = org.medianexus.music.requests.SignInService.hold(app, org.medianexus.music.requests.SignInService.For.NEXUS)
                 if (!working) {
                     held?.release?.invoke()
                     held = null

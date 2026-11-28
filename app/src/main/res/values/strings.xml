@@ -107,6 +107,9 @@
     <!-- The notification shown while a sign-in for requests waits for the browser (requests/SignInService). -->
     <string name="requests_sign_in_channel">Signing in for requests</string>
     <string name="requests_sign_in_waiting">Waiting for you to sign in in your browser</string>
+    <!-- The same, while the app signs in to the Nexus server (nexus/Nexus.kt's sign-in under way). -->
+    <string name="nexus_sign_in_channel">Signing in</string>
+    <string name="nexus_sign_in_waiting">Signing in to your Nexus server</string>
     <string name="control_apps">Apps that can control playback</string>
     <!-- The page's own bar holds one line: on a narrow screen with large type the whole name doesn't fit it. -->
     <string name="control_apps_bar">Playback apps</string>

@@ -38,7 +38,7 @@ class SignInService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            ServiceCompat.startForeground(this, ID, notification(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            ServiceCompat.startForeground(this, ID, notification(this, For.entries.getOrElse(intent?.getIntExtra(FOR, 0) ?: 0) { For.REQUESTS }), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } catch (_: RuntimeException) {
             // Android wouldn't have it: the sign-in goes on as it did before, and is
             // answered only while the app is in front.
@@ -72,9 +72,16 @@ class SignInService : Service() {
 
     private var latest = 0
 
+    /** Whose sign-in is held, and so the notification's words and channel: Lidarr's in the
+     *  browser for requests, or the Nexus server's in the app. */
+    enum class For(val channel: String, val channelName: Int, val words: Int) {
+        REQUESTS("sign-in", R.string.requests_sign_in_channel, R.string.requests_sign_in_waiting),
+        NEXUS("nexus-sign-in", R.string.nexus_sign_in_channel, R.string.nexus_sign_in_waiting),
+    }
+
     companion object {
         private const val ID = 0x7369676e
-        private const val CHANNEL = "sign-in"
+        private const val FOR = "for"
 
         private val lock = Any()
 
@@ -93,11 +100,11 @@ class SignInService : Service() {
          * to keep the promise, which 0.6.0 could not do; this way the worst is a sign-in
          * that goes on as it did in 0.6.0.
          */
-        fun hold(context: Context): Requests.Hold {
+        fun hold(context: Context, holding: For = For.REQUESTS): Requests.Hold {
             val app = context.applicationContext
             synchronized(lock) { held++ }
             try {
-                app.startService(Intent(app, SignInService::class.java))
+                app.startService(Intent(app, SignInService::class.java).putExtra(FOR, holding.ordinal))
             } catch (_: RuntimeException) {
                 // (Started from the background after all: Android's rule. The sign-in goes on
                 // without it.)
@@ -113,11 +120,11 @@ class SignInService : Service() {
             }
         }
 
-        private fun notification(context: Context): Notification {
+        private fun notification(context: Context, holding: For): Notification {
             val manager = context.getSystemService(NotificationManager::class.java)
-            if (manager.getNotificationChannel(CHANNEL) == null) {
+            if (manager.getNotificationChannel(holding.channel) == null) {
                 manager.createNotificationChannel(
-                    NotificationChannel(CHANNEL, context.getString(R.string.requests_sign_in_channel), NotificationManager.IMPORTANCE_LOW).apply {
+                    NotificationChannel(holding.channel, context.getString(holding.channelName), NotificationManager.IMPORTANCE_LOW).apply {
                         setShowBadge(false)
                     },
                 )
@@ -129,9 +136,9 @@ class SignInService : Service() {
                 Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            return NotificationCompat.Builder(context, CHANNEL)
+            return NotificationCompat.Builder(context, holding.channel)
                 .setSmallIcon(R.drawable.ic_bars)
-                .setContentTitle(context.getString(R.string.requests_sign_in_waiting))
+                .setContentTitle(context.getString(holding.words))
                 .setContentIntent(open)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
