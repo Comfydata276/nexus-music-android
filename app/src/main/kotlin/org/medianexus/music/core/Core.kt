@@ -386,17 +386,24 @@ object Core {
     /** A new machine: its number, for [nexusCall]. */
     fun nexusMachine(): Long = acrossPrivately(JsonObject(emptyMap()), JsonObject.serializer(), Long.serializer(), ::nexusMachine)
 
-    /** One of the machine's calls: `start`, `happened`, `stop`, `waits_for`, `close` (see
-     *  `native/src/client.rs`). Gives `{does, generation, waits}`. */
+    /** One of the machine's calls, `{"machine": n, "call": <the core's envelope>}` (see
+     *  `client/json.rs` in the core): gives what the core wrote, `{"generation", "do"}`. */
     fun nexusCall(input: JsonObject): JsonObject = acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusCall)
 
+    /** `client::carries_over`: whether the folder this phone had goes to the person `music`
+     *  (a music login as the machine handed it) was handed to. */
+    fun nexusCarriesOver(beforeAddress: String, beforeUser: String, music: JsonObject): Boolean =
+        acrossPrivately(JsonObject(mapOf("before_address" to kotlinx.serialization.json.JsonPrimitive(beforeAddress), "before_user" to kotlinx.serialization.json.JsonPrimitive(beforeUser), "music" to music)), JsonObject.serializer(), Boolean.serializer(), ::nexusCarriesOver)
+
     @Serializable
-    private class StandInOut(val body: List<Int>)
+    internal class StandInOut(val status: Int, val body: List<Int>) {
+        val bytes: ByteArray get() = ByteArray(body.size) { body[it].toByte() }
+    }
 
     /** **For the tests' stand-in for the Nexus server only** (`native/src/standin.rs`): a body
-     *  the backend answers with, written by the core's own encoder. Nothing in the app calls it. */
-    internal fun nexusStandIn(input: JsonObject): ByteArray =
-        acrossPrivately(input, JsonObject.serializer(), StandInOut.serializer(), ::nexusStandIn).body.let { body -> ByteArray(body.size) { body[it].toByte() } }
+     *  the backend answers with, and its status, written by the core's own encoder. Nothing in
+     *  the app calls it. */
+    internal fun nexusStandIn(input: JsonObject): StandInOut = acrossPrivately(input, JsonObject.serializer(), StandInOut.serializer(), ::nexusStandIn)
 
     // ---- Requests: what waits on the network (the core's `gate.rs`, `lidarr.rs`, `musicbrainz.rs`) ----
     //
@@ -1052,5 +1059,6 @@ object Core {
     @JvmStatic private external fun nexusMachine(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusCall(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusStandIn(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusCarriesOver(input: ByteArray): ByteArray?
     @JvmStatic private external fun stop(input: ByteArray): ByteArray?
 }

@@ -17,16 +17,19 @@ import org.medianexus.music.nexus.NexusKept
  * go through the machine and a stand-in backend (`nexus/NeverWaitsTest`, `nexus/SignInTest`).
  */
 fun Session.signIn(address: String, username: String, password: String) {
-    val salt = "abcdefghijklmnop"
-    val handed = Handed(salt, md5Hex(password + salt), 1)
+    val salt = TEST_SALT
+    val handed = Handed(salt, md5Hex(password + salt), "1")
     val email = "${username.lowercase().filter { it.isLetterOrDigit() }.ifEmpty { "someone" }}@example.org"
-    val who = KeptAccount(TEST_NEXUS, TEST_BACKEND, email)
-    val music: JsonObject = buildJsonObject { put("address", address); put("name", username); put("salt", salt); put("token", handed.token); put("count", 1) }
-    val account: JsonObject = buildJsonObject {
-        put("backend", TEST_NEXUS); put("backend_id", TEST_BACKEND); put("email", email); put("name", username)
-        put("device", 1); put("restore", 1); put("life", 1); put("change", 1); put("music_count", 1); put("password_setup", false)
+    // (The account's number: one for each name, as a backend gives every account its own.)
+    val number = (username.hashCode().toLong() and 0xffffff) + 1
+    val who = KeptAccount(TEST_NEXUS, TEST_BACKEND, number.toString())
+    val music: JsonObject = buildJsonObject { put("address", address.trimEnd('/')); put("name", username); put("salt", salt); put("token", handed.token); put("count", 1) }
+    // What the machine keeps at a sign-in (`client::Saved`), in its own shape.
+    val saved: JsonObject = buildJsonObject {
+        put("nexus", TEST_NEXUS); put("backend_id", TEST_BACKEND); put("account", number); put("email", email); put("name", username)
+        put("device", 1); put("restore", 1); put("life", 1); put("change", 1); put("session", "ab".repeat(32)); put("music", music)
     }
-    keptForTests.save(NexusKept.Parts(JsonObject(mapOf("session" to kotlinx.serialization.json.JsonPrimitive("ab".repeat(32)), "music" to music, "account" to account))))
+    keptForTests.save(NexusKept.Parts(saved, emptyList()))
     handed(KeptMusic(address, username, handed), who)
 }
 
@@ -38,4 +41,7 @@ fun Session.signOut(): Deferred<Unit> {
 }
 
 const val TEST_NEXUS = "https://nexus.example.org"
+
+/** A salt as the backend makes one: 32 bytes, as 64 lower-case hex. */
+const val TEST_SALT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 const val TEST_BACKEND = "0123456789abcdef0123456789abcdef"

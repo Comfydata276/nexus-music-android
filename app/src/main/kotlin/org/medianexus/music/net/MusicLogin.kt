@@ -13,7 +13,13 @@ import okhttp3.Response
  *
  * It holds secrets: it says nothing of them as text.
  */
-class Handed(val salt: String, val token: String, /** The number of the login it was made from (9.4). */ val count: Long = 0) {
+class Handed(
+    val salt: String,
+    val token: String,
+    /** The number of the login it was made from (9.4), exactly as the shared core wrote it: a
+     *  number of 64 bits without a sign, never turned into a Kotlin one. */
+    val count: String = "0",
+) {
     override fun equals(other: Any?): Boolean = other is Handed && other.salt == salt && other.token == token && other.count == count
     override fun hashCode(): Int = token.hashCode()
     override fun toString(): String = "Handed(..)"
@@ -37,8 +43,13 @@ class Handed(val salt: String, val token: String, /** The number of the login it
  * so: waiting for the core's answer would let a request begun meanwhile on another thread carry
  * it. The core's `Hand::Refused` then confirms it.)
  */
-class MusicLogin(first: Handed) {
+class MusicLogin(first: Handed, generation: String = "0") {
     @Volatile private var current: Handed = first
+
+    /** The generation of the Nexus server's machine it was handed under (`Hand::Login`), as the
+     *  core wrote it: what a report about it carries back (`MusicRefused`, `MusicLooked`). */
+    @Volatile var generation: String = generation
+        private set
 
     /** What every request sends now. */
     val now: Handed get() = current
@@ -63,14 +74,15 @@ class MusicLogin(first: Handed) {
 
     /** The core says the login of this number is set aside (`Hand::Refused`): if it is the one
      *  in use, nothing more is sent with it. */
-    fun refuseCount(count: Long) {
+    fun refuseCount(count: String) {
         val now = current
         if (now.count == count) Gate.refuse(now.token)
     }
 
     /** A new pair from the Nexus server: sent from now on. A pair already refused is not taken
      *  back into use (it is refused for good). False if it was. */
-    fun renew(next: Handed): Boolean {
+    fun renew(next: Handed, generation: String = this.generation): Boolean {
+        this.generation = generation
         if (Gate.refused(next.token)) return false
         current = next
         return true

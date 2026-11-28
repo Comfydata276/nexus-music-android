@@ -66,15 +66,16 @@ class Nexus internal constructor(
 ) {
     /** What the app does for the machine, beside the I/O. Called on the machine's thread. */
     interface Side {
-        /** The player is to use this music login: a sign-in has completed, or a login was
-         *  renewed. `account` is who it is for, as kept. */
-        fun handLogin(music: KeptMusic, account: KeptAccount?)
+        /** The player is to use this music login, in place of any other: a sign-in has completed,
+         *  a start has read it, or it was renewed. `account` is who it is for, as kept;
+         *  `generation` what a report about it carries back. */
+        fun handLogin(music: KeptMusic, account: KeptAccount?, generation: String)
 
         /** What the machine said to keep could not be written to the disk. */
         fun notKept()
 
         /** The login of this number is set aside: nothing more is sent with it. */
-        fun refused(count: Long)
+        fun refused(count: String)
 
         /** The music login is forgotten (signed out, here or by the backend): the account goes,
          *  what is on the phone stays. */
@@ -111,7 +112,7 @@ class Nexus internal constructor(
     private var parts = NexusKept.Parts.NONE
 
     private val stopped = AtomicBoolean()
-    private val inFlight = java.util.concurrent.ConcurrentHashMap<Long, Call>()
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, Call>()
     private val random = SecureRandom()
 
     private val showing = MutableStateFlow<NexusShown?>(null)
@@ -146,23 +147,24 @@ class Nexus internal constructor(
         machine = Core.nexusMachine()
         parts = kept.load()
         val keptJson = buildJsonObject {
-            kept.deviceSecret()?.let { put("device_secret", it) }
-            parts.all["session"]?.let { put("session", it) }
-            parts.all["music"]?.let { put("music", it) }
-            parts.all["account"]?.let { put("account", it) }
-            parts.all["to_tell"]?.let { put("to_tell", it) }
+            put("device_secret", kept.deviceSecret()?.let(::JsonPrimitive) ?: JsonNull)
+            put("saved", parts.saved ?: JsonNull)
+            put("notes", JsonArray(parts.notes))
             put("offline", offlineNow())
         }
         call(buildJsonObject {
-            put("call", "start")
-            put("app", buildJsonObject { put("version", appVersion); put("device_name", deviceName) })
-            put("kept", keptJson)
+            put("start", buildJsonObject {
+                put("app", buildJsonObject { put("version", appVersion); put("kind", "phone"); put("device_name", deviceName) })
+                put("kept", keptJson)
+                put("given", given())
+            })
         })
         started = true
-        worker.scheduleWithFixedDelay({ happened(JsonPrimitive("tick")) }, TICK_MILLIS, TICK_MILLIS, TimeUnit.MILLISECONDS)
+        worker.scheduleWithFixedDelay({ happened(buildJsonObject { put("tick", buildJsonObject {}) }) }, TICK_MILLIS, TICK_MILLIS, TimeUnit.MILLISECONDS)
     }
 
-    /** The person pressed something: `press` as the machine reads it (`client::Press`). */
+    /** The person pressed something: `press` as the machine reads it (`client::Press`, as
+     *  `{"sign_out":{}}` and the rest). */
     fun press(press: JsonElement) = happened(buildJsonObject { put("pressed", press) })
 
     /** The phone's network went away or came back. */
@@ -171,12 +173,25 @@ class Nexus internal constructor(
     /** Offline mode was switched on or off. */
     fun offline(on: Boolean) = happened(buildJsonObject { put("offline", on) })
 
-    /** The music server refused the login of this number (Subsonic's error 40). */
-    fun musicRefused(count: Long) = happened(buildJsonObject { put("music_refused", buildJsonObject { put("count", count) }) })
+    /** The music server refused the login of this number, handed under this generation
+     *  (Subsonic's error 40). Both as the machine wrote them. */
+    fun musicRefused(count: String, generation: String) = happened(buildJsonObject {
+        put("music_refused", buildJsonObject { put("count", number(count)); put("generation", number(generation)) })
+    })
+
+    /** Where the music server's address handed over leads, and whether the permission is held
+     *  (6.4), for the login of this number and generation. */
+    fun musicLooked(inside: Boolean?, permission: Boolean?, count: String, generation: String) = happened(buildJsonObject {
+        put("music_looked", buildJsonObject {
+            put("look", look(inside, permission))
+            put("count", number(count))
+            put("generation", number(generation))
+        })
+    })
 
     private fun happened(event: JsonElement) = onWorker {
         if (machine == 0L) return@onWorker
-        call(buildJsonObject { put("call", "happened"); put("event", event) })
+        call(buildJsonObject { put("happened", buildJsonObject { put("event", event); put("given", given()) }) })
     }
 
     /**
@@ -222,11 +237,21 @@ class Nexus internal constructor(
     }
 
     /** One call to the machine, and everything it gives back done. On [worker]. */
-    private fun call(input: JsonObject) {
-        val full = JsonObject(input + ("machine" to JsonPrimitive(machine)) + ("given" to given()))
-        val out = Core.nexusCall(full)
-        val does = out["does"] as? JsonArray ?: return
+    private fun call(envelope: JsonObject) {
+        val out = Core.nexusCall(buildJsonObject { put("machine", machine); put("call", envelope) })
+        val does = out["do"] as? JsonArray ?: return
         doAll(does)
+    }
+
+    /** **Whether the machine still waits for the answer to this ask**: asked on its own thread,
+     *  immediately before the ask is sent, and the ask dropped unsent if not (C10's contract). */
+    private fun waitsFor(id: JsonPrimitive): Boolean = try {
+        worker.submit<Boolean> {
+            if (machine == 0L || stopped.get()) return@submit false
+            (Core.nexusCall(buildJsonObject { put("machine", machine); put("call", buildJsonObject { put("waits_for", buildJsonObject { put("ask", id) }) }) })["waits"] as? JsonPrimitive)?.booleanOrNull == true
+        }.get()
+    } catch (e: Exception) {
+        false
     }
 
     private fun given(): JsonObject {
@@ -235,7 +260,7 @@ class Nexus internal constructor(
         return buildJsonObject {
             put("now_ms", now)
             put("local_offset_minutes", TimeZone.getDefault().getOffset(now) / 60_000)
-            put("random", buildJsonArray { bytes.forEach { add(JsonPrimitive(it.toInt() and 0xFF)) } })
+            put("random", bytes.joinToString("") { "%02x".format(it) })
         }.also { bytes.fill(0) }
     }
 
@@ -250,7 +275,7 @@ class Nexus internal constructor(
         var changed = false
         val asks = ArrayList<JsonObject>()
         val hands = ArrayList<JsonObject>()
-        var forgotMusic = false
+        var forgot = false
         for (one in does) {
             val thing = one as? JsonObject ?: continue
             val (kind, value) = thing.entries.singleOrNull() ?: continue
@@ -258,18 +283,22 @@ class Nexus internal constructor(
                 "ask" -> (value as? JsonObject)?.let(asks::add)
                 "keep" -> {
                     val (part, kept) = (value as? JsonObject)?.entries?.singleOrNull() ?: continue
-                    if (part == "device_secret") {
-                        (kept as? JsonPrimitive)?.contentOrNull?.let { this.kept.keepDeviceSecret(it) }
-                    } else {
-                        parts = parts.with(part, kept)
-                        changed = true
+                    when (part) {
+                        "device_secret" -> (kept as? JsonPrimitive)?.contentOrNull?.let { this.kept.keepDeviceSecret(it) }
+                        "saved" -> (kept as? JsonObject)?.let { parts = parts.withSaved(it); changed = true }
+                        "note" -> (kept as? JsonObject)?.let { parts = parts.withNote(it); changed = true }
                     }
                 }
-                "forget" -> {
-                    val part = (value as? JsonPrimitive)?.contentOrNull ?: continue
-                    parts = parts.without(part)
-                    changed = true
-                    if (part == "music") forgotMusic = true
+                "forget" -> when {
+                    value is JsonPrimitive && value.contentOrNull == "saved" -> {
+                        parts = parts.withSaved(null)
+                        changed = true
+                        forgot = true
+                    }
+                    value is JsonObject -> ((value["note"] as? JsonObject)?.get("session") as? JsonPrimitive)?.content?.let {
+                        parts = parts.withoutNote(it)
+                        changed = true
+                    }
                 }
                 "show" -> (value as? JsonObject)?.let { showing.value = NexusShown.of(it) }
                 "hand" -> (value as? JsonObject)?.let(hands::add)
@@ -282,12 +311,15 @@ class Nexus internal constructor(
             this.parts = parts
             if (!kept.save(parts)) side.notKept()
         }
-        if (forgotMusic) side.musicForgotten()
+        // Forgotten: the music login goes from the player too (downloads stay).
+        if (forgot) side.musicForgotten()
         for (hand in hands) {
             val (kind, value) = hand.entries.singleOrNull() ?: continue
+            val body = value as? JsonObject ?: continue
+            val generation = (body["generation"] as? JsonPrimitive)?.content ?: continue
             when (kind) {
-                "login" -> (value as? JsonObject)?.let(KeptMusic::of)?.let { side.handLogin(it, parts.account) }
-                "refused" -> ((value as? JsonObject)?.get("count") as? JsonPrimitive)?.longOrNull?.let(side::refused)
+                "login" -> (body["login"] as? JsonObject)?.let(KeptMusic::of)?.let { side.handLogin(it, parts.account, generation) }
+                "refused" -> (body["count"] as? JsonPrimitive)?.content?.let(side::refused)
             }
         }
         for (ask in asks) send(ask)
@@ -295,11 +327,13 @@ class Nexus internal constructor(
 
     /** Sends one ask, once, on the requests' threads, and tells the machine what came of it. */
     private fun send(ask: JsonObject) {
-        val id = (ask["id"] as? JsonPrimitive)?.longOrNull ?: return
+        val id = ask["id"] as? JsonPrimitive ?: return
         try {
             calls.execute {
                 val result: JsonElement = try {
                     beforeAsk?.invoke(this)
+                    // Immediately before it is sent: is it still waited for? If not, not sent.
+                    if (!waitsFor(id)) return@execute
                     outcome(id, ask)
                 } catch (e: Exception) {
                     failed(id, "connect", null)
@@ -312,7 +346,7 @@ class Nexus internal constructor(
         }
     }
 
-    private fun outcome(id: Long, ask: JsonObject): JsonElement {
+    private fun outcome(id: JsonPrimitive, ask: JsonObject): JsonElement {
         val url = (ask["url"] as? JsonPrimitive)?.contentOrNull?.toHttpUrlOrNull()
         // (The machine only ever asks over HTTPS, at the address the person typed: anything else
         // is not sent.)
@@ -324,13 +358,14 @@ class Nexus internal constructor(
         val most = (ask["max_body"] as? JsonPrimitive)?.longOrNull ?: 4096L
         val client = http ?: synchronized(this) { http ?: nexusHttp(calls, runner, sent, socketsForTests).also { http = it } }
         calling.incrementAndGet()
+        val key = id.content
         val sent = try {
             exchange(client, url, post, authorization, body, userAgent, within, most, reading) { call ->
-                inFlight[id] = call
+                inFlight[key] = call
                 if (stopped.get()) call.cancel()
             }
         } finally {
-            inFlight.remove(id)
+            inFlight.remove(key)
             calling.decrementAndGet()
             body.fill(0)
         }
@@ -339,7 +374,9 @@ class Nexus internal constructor(
                 put("answered", buildJsonObject {
                     put("ask", id)
                     put("status", sent.status)
-                    put("body", buildJsonArray { sent.body.forEach { add(JsonPrimitive(it.toInt() and 0xFF)) } })
+                    // As text when it is UTF-8, as the core reads it; otherwise its bytes.
+                    val text = utf8(sent.body)
+                    if (text != null) put("body", text) else put("body_bytes", buildJsonArray { sent.body.forEach { add(JsonPrimitive(it.toInt() and 0xFF)) } })
                 })
             }
             // **Where no connection was ever opened, where the address leads and whether the
@@ -348,7 +385,7 @@ class Nexus internal constructor(
         }
     }
 
-    private fun failed(id: Long, how: String, host: String?): JsonElement = buildJsonObject {
+    private fun failed(id: JsonPrimitive, how: String, host: String?): JsonElement = buildJsonObject {
         put("failed", buildJsonObject {
             put("ask", id)
             put("failure", buildJsonObject {
@@ -359,7 +396,22 @@ class Nexus internal constructor(
         })
     }
 
+    private fun utf8(bytes: ByteArray): String? = try {
+        Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+    } catch (_: java.nio.charset.CharacterCodingException) {
+        null
+    }
+
     internal companion object {
+        /** A number the machine wrote, handed back to it as a number. */
+        fun number(text: String): JsonPrimitive = JsonPrimitive(text.toBigDecimal())
+
+        /** Where an address leads, and whether the local-network permission is held (`Look`). */
+        fun look(inside: Boolean?, permission: Boolean?): JsonObject = buildJsonObject {
+            put("inside", inside?.let(::JsonPrimitive) ?: JsonNull)
+            put("permission", permission?.let(::JsonPrimitive) ?: JsonNull)
+        }
+
         /** How often the machine is told a minute has passed (`client::TICK_MS`). */
         const val TICK_MILLIS = 60_000L
 
@@ -386,7 +438,7 @@ class Nexus internal constructor(
 
 /** Everything the machine shows (`client::Shown`), as the screens read it. */
 data class NexusShown(
-    /** "sign_in", "choose_password" or "signed_in". */
+    /** "sign_in" or "signed_in". */
     val screen: String,
     val signIn: SignInShown,
     /** The one row under Settings: "Nexus server: connected", and the rest. */
@@ -401,10 +453,21 @@ data class NexusShown(
     val password: Said,
     /** Whether a music login is held. */
     val plays: Boolean,
+    /** The backend's address may be out of reach for want of the local-network permission
+     *  (any ask that never connected, whatever asked): the app offers to ask. */
+    val askPermission: Boolean = false,
+    /** The same for the music server's address handed over. */
+    val musicAskPermission: Boolean = false,
+    /** The short line for the car about what is not on the phone, when there is one. */
+    val car: String? = null,
 ) {
-    data class SignInShown(val state: String, val words: String, val address: String, val email: String, val askPermission: Boolean)
+    /** `waitS`: "come back in so many seconds", exactly: the form counts it down, its button
+     *  disabled, and the person presses again. */
+    data class SignInShown(val state: String, val words: String, val address: String, val email: String, val askPermission: Boolean, val waitS: Long? = null)
     data class DevicesShown(val state: String, val rows: List<DeviceRow>, val words: String)
-    data class DeviceRow(val id: Long, val name: String, val kind: String, val thisOne: Boolean, val seen: String, val canForceOut: Boolean, val working: Boolean)
+
+    /** `id` is the device's number as the machine wrote it, handed back as it is. */
+    data class DeviceRow(val id: JsonPrimitive, val name: String, val kind: String, val thisOne: Boolean, val seen: String, val canForceOut: Boolean, val working: Boolean)
     data class Said(val state: String, val words: String)
 
     companion object {
@@ -414,7 +477,7 @@ data class NexusShown(
             val password = shown["password"] as? JsonObject ?: JsonObject(emptyMap())
             return NexusShown(
                 screen = shown.text("screen").orEmpty(),
-                signIn = SignInShown(signIn.text("state").orEmpty(), signIn.text("words").orEmpty(), signIn.text("address").orEmpty(), signIn.text("email").orEmpty(), signIn.flag("ask_permission")),
+                signIn = SignInShown(signIn.text("state").orEmpty(), signIn.text("words").orEmpty(), signIn.text("address").orEmpty(), signIn.text("email").orEmpty(), signIn.flag("ask_permission"), (signIn["wait_s"] as? JsonPrimitive)?.longOrNull),
                 row = shown.text("row").orEmpty(),
                 who = shown.text("who"),
                 music = shown.text("music"),
@@ -423,12 +486,15 @@ data class NexusShown(
                     devices.text("state").orEmpty(),
                     (devices["rows"] as? JsonArray).orEmpty().mapNotNull { row ->
                         val one = row as? JsonObject ?: return@mapNotNull null
-                        DeviceRow((one["id"] as? JsonPrimitive)?.longOrNull ?: return@mapNotNull null, one.text("name").orEmpty(), one.text("kind").orEmpty(), one.flag("this_one"), one.text("seen").orEmpty(), one.flag("can_force_out"), one.flag("working"))
+                        DeviceRow((one["id"] as? JsonPrimitive) ?: return@mapNotNull null, one.text("name").orEmpty(), one.text("kind").orEmpty(), one.flag("this_one"), one.text("seen").orEmpty(), one.flag("can_force_out"), one.flag("working"))
                     },
                     devices.text("words").orEmpty(),
                 ),
                 password = Said(password.text("state").orEmpty(), password.text("words").orEmpty()),
                 plays = shown.flag("plays"),
+                askPermission = shown.flag("ask_permission"),
+                musicAskPermission = shown.flag("music_ask_permission"),
+                car = shown.text("car"),
             )
         }
 

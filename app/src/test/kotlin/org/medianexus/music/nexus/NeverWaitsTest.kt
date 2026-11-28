@@ -732,7 +732,7 @@ class NeverWaitsTest(private val broken: Broken) {
         signedIn()
         val test = "an_account_change_is_not_held_up"
         timed(test, "next_account") {
-            app.graph.nexus!!.press(kotlinx.serialization.json.JsonPrimitive("sign_out"))
+            app.graph.nexus!!.press(kotlinx.serialization.json.buildJsonObject { put("sign_out", kotlinx.serialization.json.buildJsonObject {}) })
             until("signed out") { app.graph.session.state.value == SessionState.SignedOut }
             standIn.signIn(app, username = "another")
             assertEquals("another", account().account.username)
@@ -772,7 +772,7 @@ class NeverWaitsTest(private val broken: Broken) {
         if (broken != Broken.WORKERS_HELD) {
             holds.release()
             standIn.backendThere = true
-            nudging("the new login put in place") { account().api.login.now.count == 2L && !account().api.login.isRefused }
+            nudging("the new login put in place") { account().api.login.now.count == "2" && !account().api.login.isRefused }
             runBlocking { account().api.ping() }
             assertTrue(standIn.asked.count { it == "POST /nexus/api/music-login" } <= 2)
         }
@@ -832,7 +832,7 @@ class NeverWaitsTest(private val broken: Broken) {
         standIn.backendThere = true
         app.graph.settings.update { it.copy(offline = false) }
         app.graph.checkIfDown()
-        nudging("the new login put in place") { account().api.login.now.count == 2L }
+        nudging("the new login put in place") { account().api.login.now.count == "2" }
         assertTrue(app.graph.session.state.value is SessionState.SignedIn)
     }
 

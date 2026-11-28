@@ -64,7 +64,7 @@ internal fun NexusAccount(graph: Graph) {
     val nexus = graph.nexus ?: return
     val colors = Theme.colors
     SettingRow(shown.who.orEmpty(), shown.row) {
-        TextButton(stringResource(R.string.sign_out), onClick = { nexus.press(JsonPrimitive("sign_out")) })
+        TextButton(stringResource(R.string.sign_out), onClick = { nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) }) })
     }
     shown.music?.let { said ->
         BasicText(said, Modifier.padding(vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.rowDetail.copy(color = colors.warm))
@@ -75,7 +75,7 @@ internal fun NexusAccount(graph: Graph) {
     val devices = shown.devices
     if (devices.state == "not_asked") {
         SettingRow(stringResource(R.string.your_devices), stringResource(R.string.your_devices_detail)) {
-            TextButton(stringResource(R.string.show), onClick = { nexus.press(JsonPrimitive("open_devices")) })
+            TextButton(stringResource(R.string.show), onClick = { nexus.press(buildJsonObject { put("open_devices", buildJsonObject {}) }) })
         }
     } else {
         for (row in devices.rows) {
@@ -94,7 +94,7 @@ internal fun NexusAccount(graph: Graph) {
             BasicText(devices.words, Modifier.padding(vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.rowDetail.copy(color = colors.muted))
         }
         if (devices.state != "working") {
-            TextButton(stringResource(R.string.refresh), onClick = { nexus.press(JsonPrimitive("open_devices")) })
+            TextButton(stringResource(R.string.refresh), onClick = { nexus.press(buildJsonObject { put("open_devices", buildJsonObject {}) }) })
         }
     }
 

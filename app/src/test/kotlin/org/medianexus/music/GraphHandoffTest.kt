@@ -58,7 +58,7 @@ class GraphHandoffTest {
 
     /** The person's folder, as a sign-in leaves it (`SignedInForTests`): who they are to the
      *  Nexus server. */
-    private fun key(username: String) = org.medianexus.music.nexus.Folders.personOf(org.medianexus.music.nexus.KeptAccount(TEST_NEXUS, TEST_BACKEND, "$username@example.org"))
+    private fun key(username: String) = org.medianexus.music.nexus.Folders.personOf(org.medianexus.music.nexus.KeptAccount(TEST_NEXUS, TEST_BACKEND, ((username.hashCode().toLong() and 0xffffff) + 1).toString()))
     private fun dataOf(key: String) = accountDirs(app.filesDir, app.cacheDir, key).data
 
     /** Signs in, and returns once the account's objects are there (or not within `millis`). */

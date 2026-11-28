@@ -88,13 +88,17 @@ class SessionTest {
         }
         val kept = NexusKept(File(dir, "nexus-signin.sealed"), File(dir, "nexus-device.sealed"), PlainBox)
         val folders = Folders(File(dir, "files/accounts/carried.json"))
-        val session = Session(settings, kept, folders, OkHttpClient(), OfflineSwitch(), { key -> accountDirs(File(dir, "files"), File(dir, "cache"), key) }, Notices(), scope, Dispatchers.IO, takeOn = takeOn)
+        val session = Session(settings, kept, folders, OkHttpClient(), OfflineSwitch(), { key -> accountDirs(File(dir, "files"), File(dir, "cache"), key) }, Notices(), scope, Dispatchers.IO, takeOn = takeOn, carriesOver = { address, user, music -> music.carriesOver(address, user) })
         return Made(session, settings, kept, folders, dir)
     }
 
-    private fun music(name: String = "ada", count: Long = 1, salt: String = "abcdefghijklmnop") = KeptMusic(address, name, Handed(salt, md5Hex("sesame$salt"), count))
+    private fun music(name: String = "ada", count: Long = 1, salt: String = TEST_SALT, at: String = address) = KeptMusic(at, name, Handed(salt, md5Hex("sesame$salt"), count.toString()))
 
-    private fun who(email: String = "ada@example.org") = KeptAccount("https://nexus.example.org", "0123456789abcdef0123456789abcdef", email)
+    /** A music server's address over HTTPS (the backend hands no other), where nothing answers. */
+    private val secure = "https://127.0.0.1:9"
+
+    /** Who a login is for: the backend's number for the account. */
+    private fun who(account: String = "7") = KeptAccount("https://nexus.example.org", "0123456789abcdef0123456789abcdef", account)
 
     private fun signedIn(session: Session): SessionState.SignedIn = runBlocking {
         withTimeout(10_000) { session.state.first { it is SessionState.SignedIn } as SessionState.SignedIn }
@@ -104,13 +108,12 @@ class SessionTest {
     private fun keep(kept: NexusKept, music: KeptMusic, who: KeptAccount) {
         kept.save(
             NexusKept.Parts(
-                JsonObject(
-                    mapOf(
-                        "session" to JsonPrimitive("ab".repeat(32)),
-                        "music" to buildJsonObject { put("address", music.address); put("name", music.name); put("salt", music.handed.salt); put("token", music.handed.token); put("count", music.handed.count) },
-                        "account" to buildJsonObject { put("backend", who.backend); put("backend_id", who.backendId); put("email", who.email); put("name", "Ada"); put("device", 1); put("restore", 1); put("life", 1); put("change", 1); put("music_count", 1); put("password_setup", false) },
-                    ),
-                ),
+                buildJsonObject {
+                    put("nexus", who.backend); put("backend_id", who.backendId); put("account", who.account.toLong()); put("email", "ada@example.org"); put("name", "Ada")
+                    put("device", 1); put("restore", 1); put("life", 1); put("change", 1); put("session", "ab".repeat(32))
+                    put("music", buildJsonObject { put("address", music.address); put("name", music.name); put("salt", music.handed.salt); put("token", music.handed.token); put("count", music.handed.count.toLong()) })
+                },
+                emptyList(),
             ),
         )
     }
@@ -124,8 +127,8 @@ class SessionTest {
         val again = made(dir)
         val now = signedIn(again.session)
         assertEquals("ada", now.account.username)
-        assertEquals("abcdefghijklmnop", now.api.login.now.salt)
-        assertEquals(md5Hex("sesameabcdefghijklmnop"), now.api.login.now.token)
+        assertEquals(TEST_SALT, now.api.login.now.salt)
+        assertEquals(md5Hex("sesame$TEST_SALT"), now.api.login.now.token)
         // The person's folder is who they are to the backend, not the music server and user.
         assertEquals(Folders.personOf(who()), now.account.key)
         assertNotEquals(accountKey(now.api.server, "ada"), now.account.key)
@@ -137,41 +140,42 @@ class SessionTest {
         val m = made()
         m.session.handed(music(), who())
         val first = signedIn(m.session)
-        m.session.handed(music(count = 2, salt = "zyxwvutsrqponmlk"), who())
-        withTimeout(10_000) { while (first.api.login.now.count != 2L) kotlinx.coroutines.delay(5) }
+        val other = "f".repeat(64)
+        m.session.handed(music(count = 2, salt = other), who())
+        withTimeout(10_000) { while (first.api.login.now.count != "2") kotlinx.coroutines.delay(5) }
         assertSame("the account was made again for a renewal", first, m.session.state.value)
-        assertEquals("zyxwvutsrqponmlk", first.api.login.now.salt)
+        assertEquals(other, first.api.login.now.salt)
     }
 
     @Test
     fun theFolderThisPhoneHadIsCarriedOverOnceToTheFirstPersonHandedTheSameLogin() = runBlocking<Unit> {
-        val m = made(before = address to "ada")
-        m.session.handed(music("ada"), who("ada@example.org"))
+        val m = made(before = secure to "ada")
+        m.session.handed(music("ada", at = secure), who("7"))
         val ada = signedIn(m.session)
-        assertEquals("the folder this phone had", accountKey(address, "ada"), ada.account.key)
+        assertEquals("the folder this phone had", accountKey(secure, "ada"), ada.account.key)
         assertEquals("", m.settings.value.server)
         assertEquals("", m.settings.value.username)
         // Signed out; someone else later handed the same music user does not get it.
         m.session.forgotten().await()
-        m.session.handed(music("ada"), who("grace@example.org"))
+        m.session.handed(music("ada", at = secure), who("8"))
         withTimeout(10_000) { m.session.state.first { it is SessionState.SignedIn && (it as SessionState.SignedIn).account.key != ada.account.key } }
         // And Ada, signing in again, still has it.
         m.session.forgotten().await()
-        m.session.handed(music("ada"), who("ada@example.org"))
+        m.session.handed(music("ada", at = secure), who("7"))
         withTimeout(10_000) { m.session.state.first { it is SessionState.SignedIn && (it as SessionState.SignedIn).account.key == ada.account.key } }
     }
 
     @Test
     fun aFirstPersonHandedAnotherLoginDoesNotGetTheFolderAndNobodyLaterDoes() = runBlocking<Unit> {
-        val m = made(before = address to "ada")
-        m.session.handed(music("grace"), who("grace@example.org"))
+        val m = made(before = secure to "ada")
+        m.session.handed(music("grace", at = secure), who("8"))
         val grace = signedIn(m.session)
-        assertNotEquals(accountKey(address, "ada"), grace.account.key)
+        assertNotEquals(accountKey(secure, "ada"), grace.account.key)
         assertEquals("", m.settings.value.server)
         m.session.forgotten().await()
-        m.session.handed(music("ada"), who("ada@example.org"))
+        m.session.handed(music("ada", at = secure), who("7"))
         val ada = withTimeout(10_000) { m.session.state.first { it is SessionState.SignedIn && (it as SessionState.SignedIn).account.username == "ada" } } as SessionState.SignedIn
-        assertEquals(Folders.personOf(who("ada@example.org")), ada.account.key)
+        assertEquals(Folders.personOf(who("7")), ada.account.key)
     }
 
     @Test

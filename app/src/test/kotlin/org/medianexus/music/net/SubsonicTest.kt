@@ -98,17 +98,17 @@ class SubsonicTest {
         MusicLogin.Gate.forgetForTests()
         failed(40, "Wrong username or password")
         val api = client()
-        val told = java.util.concurrent.CopyOnWriteArrayList<Long>()
+        val told = java.util.concurrent.CopyOnWriteArrayList<String>()
         api.login.onRefused = { told += it.count }
         expect<ApiError.Server> { api.ping() }
         val sentBefore = server.requestCount
         expect<ApiError.Server> { api.ping() }
         expect<ApiError.Server> { api.ping() }
         assertEquals("sent again with the refused login", sentBefore, server.requestCount)
-        assertEquals(listOf(1L), told.toList())
+        assertEquals(listOf("1"), told.toList())
         assertTrue(MusicLogin.Gate.refused(api.login.now.token))
         // A new pair: sent from now on, by the same client.
-        assertTrue(api.login.renew(Handed("zyxwvutsrqponmlk", md5Hex("sesame" + "zyxwvutsrqponmlk"), 2)))
+        assertTrue(api.login.renew(Handed("zyxwvutsrqponmlk", md5Hex("sesame" + "zyxwvutsrqponmlk"), "2")))
         assertTrue(!api.login.isRefused)
         MusicLogin.Gate.forgetForTests()
     }

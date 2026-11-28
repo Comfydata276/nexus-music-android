@@ -71,8 +71,7 @@ private fun pool(runner: TaskRunner): ConnectionPool {
 
 /** What came back from one ask of the backend. */
 sealed interface Sent {
-    /** An answer: its status and its body, read whole. Only a 200's body is read: no other
-     *  status is an answer of the backend's, whatever it carries. */
+    /** An answer: its status and its body, read whole (what it means is the core's). */
     class Answer(val status: Int, val body: ByteArray) : Sent
 
     /** No answer, and how far it got, in the machine's own words (`client::How`): "name" (the
@@ -112,7 +111,8 @@ internal fun exchange(http: OkHttpClient, url: HttpUrl, post: Boolean, authoriza
         val call = watching.newCall(request)
         onCall(call)
         call.execute().use { response ->
-            if (response.code != 200) return Sent.Answer(response.code, ByteArray(0))
+            // (Every status's body, bounded: a refusal is a status of its own with a small body
+            // the core reads, and a redirect's is passed over by it.)
             reading?.incrementAndGet()
             try {
                 val source = response.body.source()
@@ -120,7 +120,7 @@ internal fun exchange(http: OkHttpClient, url: HttpUrl, post: Boolean, authoriza
                 while (got.size <= most) {
                     if (source.read(got, most + 1 - got.size) == -1L) break
                 }
-                if (got.size > most) Sent.Failed("cut") else Sent.Answer(200, got.readByteArray())
+                if (got.size > most) Sent.Failed("cut") else Sent.Answer(response.code, got.readByteArray())
             } finally {
                 reading?.decrementAndGet()
             }

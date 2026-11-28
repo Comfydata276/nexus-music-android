@@ -246,7 +246,7 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
             put("device", 1)
             put("count", musicCount)
         }
-        val salt = "s${musicCount}".padEnd(16, 'x')
+        val salt = musicCount.toString().padStart(64, '0')
         val music = buildJsonObject {
             put("address", address)
             put("name", signedInAs)
@@ -256,9 +256,10 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
         }
         val kind = when {
             path == "/nexus/api/hello" -> return answered(org.medianexus.music.core.Core.nexusStandIn(JsonObject(base + ("kind" to JsonPrimitive("hello")))))
+            path == "/nexus/api/signout-note" || path == "/nexus/api/signout" && request.headers["Authorization"] == null -> "signed_out"
             path == "/nexus/api/signin" && refuseSignIn -> "wrong_login"
             path == "/nexus/api/signin" -> "signed_in"
-            sessionEnded -> "not_signed_in"
+            sessionEnded -> "session_ended"
             path == "/nexus/api/devices" -> "devices"
             path == "/nexus/api/music-login" -> "music_login"
             path == "/nexus/api/signout" -> "signed_out"
@@ -266,15 +267,11 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
             path == "/nexus/api/change-password" -> "password_changed"
             else -> return MockResponse.Builder().code(404).build()
         }
-        val asked = if (kind == "not_signed_in" || kind == "wrong_login") {
-            JsonObject(base + ("kind" to JsonPrimitive("refused")) + ("reason" to JsonPrimitive(kind)))
-        } else {
-            JsonObject(base + ("kind" to JsonPrimitive(kind)) + ("session" to JsonPrimitive("cd".repeat(32))) + ("music" to music))
-        }
+        val asked = JsonObject(base + ("kind" to JsonPrimitive(kind)) + ("session" to JsonPrimitive("cd".repeat(32))) + ("music" to music))
         return answered(org.medianexus.music.core.Core.nexusStandIn(asked))
     }
 
-    private fun answered(body: ByteArray) = MockResponse.Builder().code(200).setHeader("Content-Type", "application/json").body(Buffer().write(body)).build()
+    private fun answered(out: org.medianexus.music.core.Core.StandInOut) = MockResponse.Builder().code(out.status).setHeader("Content-Type", "application/json").body(Buffer().write(out.bytes)).build()
 
     private fun music(request: RecordedRequest): MockResponse {
         val endpoint = request.url.encodedPath.substringAfterLast('/').removeSuffix(".view")

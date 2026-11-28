@@ -78,13 +78,13 @@ class SignInTest {
         standIn.signIn(app)
         val now = app.graph.session.state.value as SessionState.SignedIn
         // The client for the music server is made from the salt and token handed over.
-        assertEquals("s1".padEnd(16, 'x'), now.api.login.now.salt)
-        assertEquals(1L, now.api.login.now.count)
+        assertEquals("1".padStart(64, '0'), now.api.login.now.salt)
+        assertEquals("1", now.api.login.now.count)
         // Kept, as one thing: the session, the music login, the account; never the password.
         val parts = app.graph.nexusKept.load()
         assertTrue(parts.session)
         assertEquals("tester", parts.music?.name)
-        assertEquals("tester@example.org", parts.account?.email)
+        assertEquals("7", parts.account?.account)
         val onDisk = Graph.signInFile(app).readBytes().toString(Charsets.UTF_8)
         assertFalse("the password typed was kept", PASSWORD in onDisk)
         for (file in app.filesDir.walkTopDown().filter { it.isFile } + app.noBackupFilesDir.walkTopDown().filter { it.isFile }) {
@@ -93,7 +93,7 @@ class SignInTest {
         // Asked: hello, then the sign-in, to the address typed, and nothing else of it.
         assertEquals(listOf("/nexus/api/hello", "/nexus/api/signin"), standIn.backendAnswered.toList().take(2))
         // And the folder is who the person is to the backend.
-        assertEquals(Folders.personOf(KeptAccount(standIn.address, BackendStandIn.BACKEND_ID, "tester@example.org")), now.account.key)
+        assertEquals(Folders.personOf(KeptAccount(standIn.address, BackendStandIn.BACKEND_ID, "7")), now.account.key)
     }
 
     @Test
@@ -118,7 +118,7 @@ class SignInTest {
         Nexus.socketsForTests = NeverConnects
         press(nexus)
         val said = shown(nexus) { it.signIn.state == "needs_permission" }
-        assertTrue(said.signIn.askPermission)
+        assertTrue(said.signIn.askPermission || said.askPermission)
     }
 
     /** The other way round: the address is public from here. Nothing about the permission. */
@@ -129,7 +129,7 @@ class SignInTest {
         Nexus.socketsForTests = NeverConnects
         press(nexus)
         val said = shown(nexus) { it.signIn.state == "cant_reach" }
-        assertFalse(said.signIn.askPermission)
+        assertFalse(said.signIn.askPermission || said.askPermission)
     }
 
     /** The app's objects, with where an address leads and the permission as the test says

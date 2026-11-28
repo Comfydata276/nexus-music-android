@@ -23,7 +23,7 @@ nexus-core = { git = "https://github.com/Comfydata276/nexus-music", rev = "a0bf4
 # No default features: it never starts a JVM of its own.
 jni = { version = "0.21", default-features = false }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 
 # Built for size (Android keeps a native library uncompressed in the APK, so its size is
 # what the APK gains), and able to catch a panic: one is thrown to Kotlin as an exception

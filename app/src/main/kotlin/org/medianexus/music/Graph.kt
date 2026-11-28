@@ -118,11 +118,14 @@ class Graph(
         scope = scope,
         io = Dispatchers.IO,
         takeOn = { key -> takeOn(key) },
-        // 6.4, for the music server the backend hands over: judged as its own address.
-        needsPermission = { address -> localAccess.neededStrictlyFor(address) },
+        // 6.4, for the music server the backend hands over: judged as its own address, and told
+        // to the shared core's machine.
+        look = { address -> localForTests?.let { it.inside to it.permission } ?: localAccess.lookAt(address) },
+        looked = { inside, permission, count, generation -> nexus?.musicLooked(inside, permission, count, generation) },
         mayBeWhy = { address -> localAccess.mayBeWhyStrictly(address) },
         // The shared core's rule for a refused music login (nexus::client): told the number.
-        refusedLogin = { count -> nexus?.musicRefused(count) },
+        refusedLogin = { count, generation -> nexus?.musicRefused(count, generation) },
+        carriesOver = { address, user, music -> music.carriesOver(address, user) },
     )
 
     /** The one writer of saved queues: it outlives the playback service and any account,
@@ -306,9 +309,9 @@ class Graph(
         val made = org.medianexus.music.nexus.Nexus(
             kept = nexusKept,
             side = object : org.medianexus.music.nexus.Nexus.Side {
-                override fun handLogin(music: org.medianexus.music.nexus.KeptMusic, account: org.medianexus.music.nexus.KeptAccount?) = session.handed(music, account)
+                override fun handLogin(music: org.medianexus.music.nexus.KeptMusic, account: org.medianexus.music.nexus.KeptAccount?, generation: String) = session.handed(music, account, generation)
                 override fun notKept() = session.notKept()
-                override fun refused(count: Long) = session.refused(count)
+                override fun refused(count: String) = session.refused(count)
                 override fun musicForgotten() {
                     session.forgotten()
                 }

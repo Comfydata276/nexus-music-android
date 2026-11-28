@@ -169,6 +169,12 @@ class LocalAccess(private val context: Context, private val session: Session, pr
     suspend fun mayBeWhyStrictly(address: String): Boolean =
         APPLIES && !isGranted() && LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork()).let { it != null && it != Nearness.NOT }
 
+    /** Where the address leads on this network now (inside the house, or not; null if it
+     *  couldn't be judged) and whether the permission is held (null before Android 17): the
+     *  look the shared core's machine is told of (`client::Look`). */
+    suspend fun lookAt(address: String): Pair<Boolean?, Boolean?> =
+        LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork())?.let { it == Nearness.LOCAL } to permissionNow
+
     /** Whether `host` leads inside the house on this network now; null if it couldn't be
      *  judged. Blocks for a look-up of a few seconds at most: never on the main thread. */
     fun insideNow(host: String): Boolean? = kotlinx.coroutines.runBlocking { LocalGate.nearnessOf(host, homeNetwork()) }?.let { it == Nearness.LOCAL }

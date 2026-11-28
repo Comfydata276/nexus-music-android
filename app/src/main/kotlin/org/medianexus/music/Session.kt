@@ -92,13 +92,20 @@ class Session(
      *  its key, before it is said to be signed in: the account before's are put away first
      *  (`sync/Belongs.kt`). False if that couldn't be done: then nobody is signed in. */
     private val takeOn: suspend (key: String) -> Boolean = { true },
-    /** Whether the music server at an address leads inside the house on this network and the
-     *  local-network permission is not held (6.4): asked before it is first connected to. */
-    private val needsPermission: suspend (address: String) -> Boolean = { false },
+    /** Where the music server's address leads on this network (inside the house, or not; null
+     *  if it couldn't be judged) and whether the local-network permission is held (null where
+     *  the phone has none): looked at before it is first connected to (6.4). */
+    private val look: suspend (address: String) -> Pair<Boolean?, Boolean?> = { null to null },
+    /** Told what [look] found, for the login of this number and generation (`MusicLooked`). */
+    private val looked: (inside: Boolean?, permission: Boolean?, count: String, generation: String) -> Unit = { _, _, _, _ -> },
     /** Whether a failure to reach an address may be for want of that permission. */
     private val mayBeWhy: suspend (address: String) -> Boolean = { false },
-    /** Told the number of a music login the music server refused (the shared core's rule). */
-    private val refusedLogin: (count: Long) -> Unit = {},
+    /** Told the number of a music login the music server refused, and the generation it was
+     *  handed under (the shared core's rule). */
+    private val refusedLogin: (count: String, generation: String) -> Unit = { _, _ -> },
+    /** The shared core's `carries_over`: whether the folder this phone had goes to the person a
+     *  music login was handed to. */
+    private val carriesOver: (beforeAddress: String, beforeUser: String, music: KeptMusic) -> Boolean = { _, _, _ -> false },
 ) {
     private val current = MutableStateFlow<SessionState>(SessionState.Restoring)
     val state: StateFlow<SessionState> = current.asStateFlow()
@@ -114,7 +121,7 @@ class Session(
 
     /** A login handed over and waiting for the person to answer a question about its music
      *  server (see [SignInState]): in memory only. */
-    private var waiting: Pair<KeptMusic, KeptAccount>? = null
+    private var waiting: Triple<KeptMusic, KeptAccount, String>? = null
 
     init {
         scope.launch(io) { for (step in steps) step() }
@@ -124,7 +131,7 @@ class Session(
             val parts = kept.load()
             val music = parts.music
             val account = parts.account
-            val restored = if (music != null && account != null) signedIn(music, account) else null
+            val restored = if (music != null && account != null) signedIn(music, account, "0") else null
             // **Through the same door as a sign-in**: the account is taken on before it is said
             // to be signed in. If the choices in the settings are another account's and can't
             // be put away, nobody is signed in, and the sign-in screen says why.
@@ -156,8 +163,9 @@ class Session(
 
     /** The account for a music login and who it is for: its folder, and a client made from the
      *  salt and token handed over. */
-    private fun signedIn(music: KeptMusic, who: KeptAccount): SessionState.SignedIn {
-        val login = MusicLogin(music.handed).also { login -> login.onRefused = { refusedLogin(it.count) } }
+    private fun signedIn(music: KeptMusic, who: KeptAccount, generation: String): SessionState.SignedIn {
+        val login = MusicLogin(music.handed, generation)
+        login.onRefused = { refusedLogin(it.count, login.generation) }
         val api = Subsonic(music.address, music.name, login, http, offline)
         val key = folders.of(Folders.personOf(who))
         return SessionState.SignedIn(Account(api.server, api.username, key, dirsFor(key)), api)
@@ -167,24 +175,27 @@ class Session(
      * The Nexus server's machine handed the player this music login (`Hand::Login`), for `who`.
      * On the machine's thread: queued, never waited for there.
      */
-    fun handed(music: KeptMusic, who: KeptAccount?) {
+    fun handed(music: KeptMusic, who: KeptAccount?, generation: String = "0") {
         inOrder {
             val now = current.value as? SessionState.SignedIn
             if (now != null && normalizeServerUrl(music.address) == now.api.server && music.name == now.api.username) {
                 // A renewal: the same music server and user, a new salt and token (or the same
                 // one, at a start). Put in place in the client every request uses, at once.
-                now.api.login.renew(music.handed)
+                now.api.login.renew(music.handed, generation)
                 return@inOrder
             }
             if (who == null) return@inOrder
             // **6.4, for the music server's address as the backend handed it**: judged before
-            // it is first connected to. The screen explains and asks, then [continueSignIn].
-            if (needsPermission(music.address)) {
-                waiting = music to who
+            // it is first connected to, and told to the machine. Inside, without the
+            // permission: the screen explains and asks, then [continueSignIn].
+            val (inside, permission) = look(music.address)
+            looked(inside, permission, music.handed.count, generation)
+            if (inside == true && permission == false) {
+                waiting = Triple(music, who, generation)
                 signingIn.value = SignInState(musicNeedsPermission = true)
                 return@inOrder
             }
-            adopt(music, who, judged = false)
+            adopt(music, who, generation, judged = false)
         }
     }
 
@@ -192,14 +203,14 @@ class Session(
      *  to carry on: the sign-in that waited on it goes on. */
     fun continueSignIn() {
         inOrder {
-            val (music, who) = waiting ?: return@inOrder
+            val (music, who, generation) = waiting ?: return@inOrder
             waiting = null
-            adopt(music, who, judged = true)
+            adopt(music, who, generation, judged = true)
         }
     }
 
     /** Takes on the account a music login is for, and publishes it. In a step. */
-    private suspend fun adopt(music: KeptMusic, who: KeptAccount, judged: Boolean) {
+    private suspend fun adopt(music: KeptMusic, who: KeptAccount, generation: String, judged: Boolean) {
         val person = Folders.personOf(who)
         // **Section 11's carry-over, once:** the first sign-in on this version, if the login
         // names the same music server and user as the sign-in this phone had before, is given
@@ -207,12 +218,12 @@ class Session(
         // whatever happens, so that nobody later is given it.
         val before = settings.value
         if (before.server.isNotEmpty() || before.username.isNotEmpty()) {
-            if (normalizeServerUrl(music.address) == before.server && music.name == before.username && folders.of(person) == person) {
+            if (folders.of(person) == person && carriesOver(before.server, before.username, music)) {
                 folders.carry(person, accountKey(before.server, before.username))
             }
             settings.update { it.copy(server = "", username = "") }
         }
-        val account = signedIn(music, who)
+        val account = signedIn(music, who, generation)
         // **And again after a failure in which no connection was opened** (6.4): one look at
         // the music server before the account is published, a few seconds at most. Reached,
         // refused, or not the permission's fault: on it goes.
@@ -230,7 +241,7 @@ class Session(
                 }
             }
             if (failed != null && !failed.answered && mayBeWhy(music.address)) {
-                waiting = music to who
+                waiting = Triple(music, who, generation)
                 signingIn.value = SignInState(musicMayBeWhy = true)
                 return
             }
@@ -245,7 +256,7 @@ class Session(
     }
 
     /** The machine set the login of this number aside (`Hand::Refused`). */
-    fun refused(count: Long) {
+    fun refused(count: String) {
         (current.value as? SessionState.SignedIn)?.api?.login?.refuseCount(count)
     }
 

@@ -12,7 +12,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.longOrNull
 import org.medianexus.music.net.Handed
 import org.medianexus.music.store.SecretBox
 import org.medianexus.music.store.writeAtomically
@@ -22,34 +21,52 @@ import org.medianexus.music.store.writeAtomically
  * design's section 11): sealed by the Keystore, in a folder left out of backups, as the saved
  * sign-in was before. Never the Nexus password; never a music server's password.
  *
- * - **One file, put in place in one step:** the session, the music login with its number, the
- *   account (which backend, as whom, and the numbers last seen), and a sign-out the backend is
- *   still to be told of. Each part is kept **exactly as the shared core's machine wrote it** when
- *   it said to keep it (`client::Keep`), and handed back to it as it was at the next start: the
- *   phone reads nothing of them but what a cold start needs to play ([Parts.music],
- *   [Parts.account]). All the changes the machine asks for at once are written together, so a
- *   write cut short leaves the one before whole.
- * - **The device's own secret, beside it** (8.6): made once, never forgotten, so that signing in
- *   again from this phone is the same device to the backend.
+ * - **One file, put in place in one step:** what signing in left (`client::Saved`: the Nexus
+ *   origin and the backend's id, who the person is to it, the session, the music login with its
+ *   number), and the sign-out notes still to be told (`client::Note`, each by its session). Each
+ *   is kept **exactly as the shared core's machine wrote it** when it said to keep it
+ *   (`client::Keep`), and handed back to it as it was at the next start: the phone reads nothing
+ *   of them but what a cold start needs to play ([Parts.music], [Parts.account]). All the
+ *   changes the machine asks for at once are written together, so a write cut short leaves the
+ *   one before whole.
+ * - **The device's own secret, beside it** (8.6), kept through signing out.
  */
 class NexusKept(private val file: File, private val secretFile: File, private val box: SecretBox) {
-    /** What is kept, part by part, as the machine wrote each. */
-    class Parts(val all: JsonObject) {
-        /** The music login, if one is kept (`client::Keep::Music`). */
-        val music: KeptMusic? get() = (all["music"] as? JsonObject)?.let(KeptMusic::of)
+    /** What is kept: `saved` (the machine's `Saved`, or none) and `notes`. */
+    class Parts(val saved: JsonObject?, val notes: List<JsonObject>) {
+        /** The music login, if one is kept. */
+        val music: KeptMusic? get() = (saved?.get("music") as? JsonObject)?.let(KeptMusic::of)
 
-        /** Which backend and as whom (`client::AccountFile`), if kept. */
-        val account: KeptAccount? get() = (all["account"] as? JsonObject)?.let(KeptAccount::of)
+        /** Which backend and as whom, if a sign-in is kept. */
+        val account: KeptAccount? get() = saved?.let(KeptAccount::of)
 
-        val session: Boolean get() = all["session"] != null
+        /** Whether a session is kept (not after "start again"). */
+        val session: Boolean get() = saved?.get("session").let { it != null && it !is kotlinx.serialization.json.JsonNull }
 
-        fun with(part: String, value: JsonElement) = Parts(JsonObject(all + (part to value)))
-        fun without(part: String) = Parts(JsonObject(all - part))
+        fun withSaved(next: JsonObject?) = Parts(next, notes)
 
-        override fun toString(): String = "Parts(${all.keys})"
+        /** A note kept by the session it ends: in place of one for the same session. */
+        fun withNote(note: JsonObject) = Parts(saved, notes.filter { sessionOf(it) != sessionOf(note) } + note)
+
+        fun withoutNote(session: String) = Parts(saved, notes.filter { sessionOf(it) != session })
+
+        fun toJson(): JsonObject = JsonObject(buildMap {
+            saved?.let { put("saved", it) }
+            put("notes", kotlinx.serialization.json.JsonArray(notes))
+        })
+
+        override fun toString(): String = "Parts(saved: ${saved != null}, notes: ${notes.size})"
 
         companion object {
-            val NONE = Parts(JsonObject(emptyMap()))
+            val NONE = Parts(null, emptyList())
+
+            /** The session a note ends (`revoke.session`), as the machine wrote it. */
+            fun sessionOf(note: JsonObject): String? = ((note["revoke"] as? JsonObject)?.get("session") as? JsonPrimitive)?.content
+
+            fun of(all: JsonObject) = Parts(
+                all["saved"] as? JsonObject,
+                (all["notes"] as? kotlinx.serialization.json.JsonArray).orEmpty().mapNotNull { it as? JsonObject },
+            )
         }
     }
 
@@ -61,7 +78,7 @@ class NexusKept(private val file: File, private val secretFile: File, private va
     fun load(): Parts = synchronized(lock) {
         val plain = openFrom(file, box) ?: return Parts.NONE
         try {
-            Parts(json.parseToJsonElement(String(plain, Charsets.UTF_8)).jsonObject)
+            Parts.of(json.parseToJsonElement(String(plain, Charsets.UTF_8)).jsonObject)
         } catch (_: IllegalArgumentException) {
             Parts.NONE
         } finally {
@@ -72,8 +89,8 @@ class NexusKept(private val file: File, private val secretFile: File, private va
     /** Puts `parts` in place of what was kept, in one step. True once it is on the disk. With
      *  nothing in it, the file goes. */
     fun save(parts: Parts): Boolean = synchronized(lock) {
-        if (parts.all.isEmpty()) return file.delete() || !file.exists()
-        sealTo(file, parts.all.toString().toByteArray(Charsets.UTF_8), box)
+        if (parts.saved == null && parts.notes.isEmpty()) return file.delete() || !file.exists()
+        sealTo(file, parts.toJson().toString().toByteArray(Charsets.UTF_8), box)
     }
 
     /** Whether anything is kept: looked for, not opened (the Play button's receiver asks). */
@@ -92,9 +109,22 @@ class NexusKept(private val file: File, private val secretFile: File, private va
     fun keepDeviceSecret(hex: String): Boolean = sealTo(secretFile, hex.toByteArray(Charsets.UTF_8), box)
 }
 
-/** A kept music login: what the player needs, and its number. */
+/** A kept music login: what the player needs, and its number as the machine wrote it. */
 class KeptMusic(val address: String, val name: String, val handed: Handed) {
     override fun toString(): String = "KeptMusic(..)"
+
+    /** As the machine writes a music login, to hand back to the core. */
+    fun toJson(): JsonObject = JsonObject(mapOf(
+        "address" to JsonPrimitive(address), "name" to JsonPrimitive(name), "salt" to JsonPrimitive(handed.salt),
+        "token" to JsonPrimitive(handed.token), "count" to Nexus.number(handed.count),
+    ))
+
+    /** The shared core's `carries_over`, for this login (false if the core can't say). */
+    fun carriesOver(beforeAddress: String, beforeUser: String): Boolean = try {
+        org.medianexus.music.core.Core.nexusCarriesOver(beforeAddress, beforeUser, toJson())
+    } catch (e: org.medianexus.music.core.CoreException) {
+        false
+    }
 
     companion object {
         fun of(music: JsonObject): KeptMusic? {
@@ -102,19 +132,20 @@ class KeptMusic(val address: String, val name: String, val handed: Handed) {
             val name = music.text("name") ?: return null
             val salt = music.text("salt") ?: return null
             val token = music.text("token") ?: return null
-            val count = (music["count"] as? JsonPrimitive)?.longOrNull ?: return null
+            val count = (music["count"] as? JsonPrimitive)?.takeIf { !it.isString }?.content ?: return null
             return KeptMusic(address, name, Handed(salt, token, count))
         }
     }
 }
 
-/** The kept account's who and where: enough to find the person's folder. */
-class KeptAccount(val backend: String, val backendId: String, val email: String) {
+/** Who a kept sign-in is for: enough to find the person's folder. `account` is the backend's
+ *  number for them, as the machine wrote it (never turned into a number here). */
+class KeptAccount(val backend: String, val backendId: String, val account: String) {
     companion object {
-        fun of(account: JsonObject): KeptAccount? = KeptAccount(
-            account.text("backend") ?: return null,
-            account.text("backend_id") ?: return null,
-            account.text("email") ?: return null,
+        fun of(saved: JsonObject): KeptAccount? = KeptAccount(
+            saved.text("nexus") ?: return null,
+            saved.text("backend_id") ?: return null,
+            (saved["account"] as? JsonPrimitive)?.takeIf { !it.isString }?.content ?: return null,
         )
     }
 }
@@ -161,12 +192,11 @@ class Folders(private val carried: File) {
     companion object {
         /**
          * A person's own folder name: the first half of a SHA-256 of the backend's id and who
-         * they are to it, in hex. It gives away neither, and is the same for them on this phone.
-         * (Keyed by the email the backend stamps its answers with until the machine's account
-         * file carries the account's own number: see the report of P7.)
+         * they are to it (the account's number), in hex. It gives away neither, and is the same for
+         * them on this phone.
          */
         fun personOf(account: KeptAccount): String =
-            MessageDigest.getInstance("SHA-256").digest("nexus\n${account.backendId}\n${account.email}".toByteArray(Charsets.UTF_8)).take(16).joinToString("") { "%02x".format(it) }
+            MessageDigest.getInstance("SHA-256").digest("nexus\n${account.backendId}\n${account.account}".toByteArray(Charsets.UTF_8)).take(16).joinToString("") { "%02x".format(it) }
     }
 }
 
