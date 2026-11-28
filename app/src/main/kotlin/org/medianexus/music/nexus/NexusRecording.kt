@@ -204,6 +204,7 @@ private class ListeningJournal(
     private var waiting: JsonObject? = null
     private var lastSent: JsonObject? = null
     private var lastSentAt = 0L
+    private var readLossAtStart = false
     private var retryWrites = false
     private var retryActivation = false
 
@@ -245,7 +246,7 @@ private class ListeningJournal(
     }
 
     fun publish(next: JournalScope?, emit: RecordingEvent) {
-        if (current == next) return
+        if (started.get() && current == next) return
         startWriter()
         // Publish job precedes all captures that can observe the new scope.
         jobs.offer(Job.Publish(next, emit))
@@ -314,6 +315,10 @@ private class ListeningJournal(
                     waiting = null
                     lastSent = null
                     lastSentAt = 0
+                    if (!readLossAtStart) {
+                        readLossAtStart = true
+                        safe { accept(call("inspect", buildJsonObject {})) }
+                    }
                     activate(now)
                     retryAt = now + LOSS_RETRY_MILLIS
                 }

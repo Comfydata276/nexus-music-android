@@ -210,6 +210,26 @@ class RecordingTest {
         assertEquals(1, read(service, a, maximum = 1).size)
     }
 
+    @Test fun refusalSurvivesReplayAndItsLossIsCountedExactlyOnce() {
+        val service = recording()
+        val a = publish(service, 1)
+        val refused = service.capture(Listening.Search("refused line", 0, false))!!
+        val taken = service.capture(Listening.Search("taken line", 0, false))!!
+        val long = "🎶".repeat(600)
+        assertNotNull(service.capture(Listening.Start(Song("id", long, long, long), PlayOrigin.from(""), PlayBegan.HERE, PlaySound.STREAM, 0)))
+        waitForPending(a, 4)
+        assertTrue(apply(service, "refused", change(a, refused)))
+        assertTrue(apply(service, "refused", change(a, refused)))
+        assertTrue(apply(service, "taken", change(a, taken)))
+        assertEquals(1uL, service.losses().refused)
+        assertTrue(apply(service, "resend_all", buildJsonObject { put("backend_id", backend) }))
+        val replay = read(service, a).toString()
+        assertTrue("taken line" in replay)
+        assertFalse("refused line" in replay)
+        assertTrue(""kind":"start"" in replay)
+        assertEquals(1uL, service.losses().refused)
+    }
+
     @Test fun tornTailAndOpenStartRecoverOnceAndLifeMoveRetiresWithoutLoss() {
         val first = recording()
         val a = publish(first, 1)
@@ -283,7 +303,9 @@ class RecordingTest {
         diag.state(signedIn = true, offline = false, serverDefault = false)
         waitForSetting(diag) { it.signedIn && it.status == "Sending is off." }
         diag.choose(true)
-        assertEquals(JsonPrimitive(true), events.poll(1, TimeUnit.SECONDS)?.get("diagnostics_switch"))
+        assertEquals(JsonPrimitive(true), generateSequence { events.poll(1, TimeUnit.SECONDS) }
+            .firstOrNull { "diagnostics_switch" in it }
+            ?.get("diagnostics_switch"))
         assertTrue(diag.settings.value.switchedOn)
         waitForSetting(diag) { it.signedIn && it.switchedOn && it.status == null }
         diag.state(signedIn = true, offline = true, serverDefault = false)

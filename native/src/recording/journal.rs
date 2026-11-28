@@ -1,4 +1,4 @@
-use super::{invalid, read, replace, to_value, version};
+use super::{invalid, private_directory, read, replace, to_value, version};
 use nexus_core::nexus::{
     account::DeviceKind,
     events::{self, EventId, Kind, Loss, LossCounts, Outcome, Placed, Record},
@@ -45,6 +45,7 @@ pub(super) struct Request {
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Action {
+    Inspect {},
     Activate { scope: Scope, now: u64 },
     Append { records: Vec<Capture>, lost: u64, active: Option<Scope>, now: u64 },
     Change { effect: Change, active: Option<Scope>, now: u64 },
@@ -205,7 +206,7 @@ struct Writer {
 
 impl Writer {
     fn open(root: PathBuf) -> io::Result<Self> {
-        fs::create_dir_all(&root)?;
+        private_directory(&root)?;
         let state = load(&root)?;
         let through = state.reserved;
         let mut writer = Self { root, state, through, catalogs: HashMap::new(), uncertain: HashSet::new(), recovered: HashSet::new(), unwritten: 0 };
@@ -337,7 +338,7 @@ impl Writer {
         let old_len = if append.new_file { 0 } else { last.unwrap().1.bytes };
         let result = (|| {
             if append.new_file {
-                fs::create_dir_all(path.parent().ok_or_else(|| invalid(()))?)?;
+                private_directory(path.parent().ok_or_else(|| invalid(()))?)?;
                 // Publish a first segment atomically so a failed header never looks like an event.
                 replace(&path, &append.bytes)
             } else {
@@ -562,6 +563,10 @@ thread_local! { static WRITERS: RefCell<HashMap<PathBuf, Writer>> = RefCell::new
 
 pub(super) fn call(request: Request) -> io::Result<Value> {
     let Request { root, action } = request;
+    if let Action::Inspect {} = action {
+        let state = load(&root)?;
+        return Ok(json!({ "loss": state.loss, "through": 0, "waiting": null }));
+    }
     if let Action::Read { account, life, from_sequence, max_events, max_bytes, through } = action {
         return read_events(&root, &Scope { account, life }, from_sequence, max_events, max_bytes, through);
     }
@@ -583,7 +588,7 @@ pub(super) fn call(request: Request) -> io::Result<Value> {
                 writer.change(effect, now)?;
                 Ok(writer.summary(active, 0))
             }
-            Action::Read { .. } => unreachable!(),
+            Action::Read { .. } | Action::Inspect {} => unreachable!(),
         }
     })
 }

@@ -1,4 +1,4 @@
-use super::{invalid, read, replace, version};
+use super::{invalid, private_directory, read, replace, version};
 use nexus_core::nexus::{
     account::DeviceKind,
     diag::{self, About, Fault, FaultPlace, Line, Record, Report, Source, SourceFile},
@@ -7,7 +7,7 @@ use nexus_core::nexus::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{fs, io, path::{Path, PathBuf}};
+use std::{io, path::{Path, PathBuf}};
 
 #[derive(Deserialize)]
 pub(super) struct Request {
@@ -116,7 +116,7 @@ pub(super) fn call(request: Request) -> io::Result<Value> {
                 if let Some(line) = observation.line.line() { record.note(observation.at, line); }
             }
             let text = Report { about: about.into(), record }.text().map_err(invalid)?;
-            fs::create_dir_all(request.root)?;
+            private_directory(&request.root)?;
             replace(&path, text.as_bytes())?;
             Ok(json!(text))
         }

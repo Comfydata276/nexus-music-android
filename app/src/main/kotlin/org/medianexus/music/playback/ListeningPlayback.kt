@@ -41,10 +41,7 @@ internal class ListeningPlayback(
         val existing = play
         if (existing?.entry == entry && existing.scope == scope) {
             running(true)
-            if (existing.paused) {
-                existing.paused = false
-                record(Listening.Resume(existing.id, position), existing.scope)
-            }
+            resume(entry, position)
             return
         }
         if (existing != null) return // The old entry must be ended with its own position first.
@@ -62,6 +59,12 @@ internal class ListeningPlayback(
             current.runningSince?.let { current.played += (at - it).coerceAtLeast(0) }
             current.runningSince = null
         }
+    }
+
+    fun resume(entry: Long?, position: Long) {
+        val current = play?.takeIf { it.entry == entry && it.paused } ?: return
+        current.paused = false
+        record(Listening.Resume(current.id, position), current.scope)
     }
 
     fun pause(entry: Long?, position: Long) {

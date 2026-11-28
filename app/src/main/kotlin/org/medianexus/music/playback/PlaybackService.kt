@@ -1549,7 +1549,7 @@ class PlaybackService : MediaLibraryService() {
             null -> PlaySound.STREAM
         }
         val duration = exo.duration.takeIf { it > 0 } ?: (song.duration * 1000L).takeIf { it > 0 }
-        listening.sounding(scope, entry, song, PlayOrigin.from(source, if (fromRadio) queue.songs.firstOrNull()?.id else null), began, sound, exo.currentPosition, duration)
+        listening.sounding(scope, entry, song, PlayOrigin.from(source, if (fromRadio) queue.songs.takeIf { it.isNotEmpty() }?.id(0) else null), began, sound, exo.currentPosition, duration)
         journalBegan = PlayBegan.HERE
         journalCarEntry = null
     }
@@ -1558,6 +1558,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             listening.running(isPlaying)
             if (isPlaying) {
+                listening.resume(entryOf(exo.currentMediaItem), exo.currentPosition)
                 journalFault = null
                 heardUid = player.queue.currentUid()
                 failures = 0
@@ -1894,6 +1895,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onAudioUnderrun(eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, bufferSize: Int, bufferSizeMs: Long, elapsedSinceLastFeedMs: Long) {
+            graph.recording.diagnostics.fault(DiagnosticFault(DiagnosticPlace.AUDIO_OUTPUT, DiagnosticShape.NO_SOUND))
             graph.diagnostics.note("sound: the audio track ran dry for a moment")
         }
     }

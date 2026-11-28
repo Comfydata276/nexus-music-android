@@ -42,6 +42,17 @@ fn read(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     Ok(data)
 }
 
+fn private_directory(path: &Path) -> io::Result<()> {
+    if path.is_dir() { return Ok(()); }
+    let parent = path.parent().ok_or_else(|| invalid(()))?;
+    private_directory(parent)?;
+    match fs::create_dir(path) {
+        Ok(()) => File::open(parent)?.sync_all(),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn replace(path: &Path, data: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("next");
     let mut file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
