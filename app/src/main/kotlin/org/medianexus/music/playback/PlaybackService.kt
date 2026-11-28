@@ -857,6 +857,36 @@ class PlaybackService : MediaLibraryService() {
         era = next
         current = next
         reload()
+        // The like button follows the likes, wherever they're changed.
+        next.scope.launch { now.likes.liked.collect { updateButtons() } }
+        // The list the queue came from changed (a fresh copy from the server, a song unliked
+        // from Liked songs): the queue follows it. And a list the car has open, perhaps as
+        // numbered ranges: every one of those folders is told to load again (see
+        // CarTree.stale).
+        next.scope.launch {
+            var following: kotlinx.coroutines.Job? = null
+            now.pages.changes.collect { (key, value) ->
+                if (key == player.queue.source) songsIn(value)?.let { songs ->
+                    // Nothing to do when the list's songs are the ones the queue last saw (most
+                    // refreshes of a page): no dates, no sort. Otherwise the list's order (its
+                    // dates added, a sort of thousands) is worked out off the main thread, and
+                    // only the queue's own change made on it; a newer copy of the list
+                    // overtakes one still being worked out.
+                    if (sameSongs(player.queue.sourceList, songs)) return@let
+                    val filter = player.queue.filter
+                    following?.cancel()
+                    following = next.scope.launch {
+                        val order = withContext(Dispatchers.Default) { orderOf(key, songs, filter) }
+                        // (Offline, what doesn't play doesn't join, as on Windows.)
+                        // (The list changed, perhaps on another device: not a change to the
+                        // queue made here.)
+                        if (player.queue.source == key) quietly { player.follow(key, songs, order, playsOffline() ?: { true }) }
+                    }
+                }
+                for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
+            }
+        }
+        next.scope.launch { restore(next) }
         // The person's other devices: this is the player whose queue is shared with them.
         queueStamp = 0
         queueTaken = null
