@@ -2314,8 +2314,11 @@ class PlaybackService : MediaLibraryService() {
                 LibraryResult.ofError(signedOut())
             }) { era ->
                 era.searchedBy.made(browser, query)
+                val search = graph.recording.search(query, era.account.account.key)
+                var count = 0
                 try {
                     val found = fromTree(era) { it.search(query) }
+                    count = found.size
                     era.searches.put(query, found)
                     session.notifySearchResultChanged(browser, query, found.size, params)
                     LibraryResult.ofVoid()
@@ -2340,7 +2343,18 @@ class PlaybackService : MediaLibraryService() {
         override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 try {
-                    val found = era.searches.get(query) ?: fromTree(era) { it.search(query) }.also { era.searches.put(query, it) }
+                    val found = era.searches.get(query) ?: run {
+                        val search = graph.recording.search(query, era.account.account.key)
+                        var count = 0
+                        try {
+                            fromTree(era) { it.search(query) }.also { result ->
+                                count = result.size
+                                era.searches.put(query, result)
+                            }
+                        } finally {
+                            graph.recording.found(search, count)
+                        }
+                    }
                     LibraryResult.ofItemList(ImmutableList.copyOf(slice(found, page, pageSize).map { carItem(it, era) }), params)
                 } catch (e: ApiError) {
                     if (CarTree.unreachable(e) && !graph.localAccess.blocked.value) {
