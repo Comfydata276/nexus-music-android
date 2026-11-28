@@ -408,3 +408,32 @@ pub fn keep(session: u64, token: &str) {
         });
     }
 }
+
+pub(crate) fn nexus_post(
+    operation: u64, body: &[u8],
+) -> Result<nexus_core::nexus::requests::TransportReply, nexus_core::nexus::requests::TransportError> {
+    use nexus_core::nexus::requests::{TransportError, TransportReply};
+    let bytes = door().and_then(|door| door.up(|env, wire| {
+        let body = env.byte_array_from_slice(body)?;
+        let result = env.call_method(wire, "nexusPost", "(J[B)[B", &[JValue::Long(operation as i64), JValue::Object(&body)])?.l()?;
+        env.convert_byte_array(JByteArray::from(result))
+    })).ok_or(TransportError::Unreachable)?;
+    match bytes.as_slice() {
+        [FINE, hi, lo, body @ ..] => Ok(TransportReply { status: u16::from_be_bytes([*hi, *lo]), body: body.to_vec() }),
+        [STOPPED] => Err(TransportError::Stopped),
+        _ => Err(TransportError::Unreachable),
+    }
+}
+
+pub(crate) fn nexus_id(operation: u64) -> Result<u64, nexus_core::nexus::requests::TransportError> {
+    let number = door().and_then(|door| door.up(|env, wire| {
+        env.call_method(wire, "nexusId", "(J)J", &[JValue::Long(operation as i64)])?.j()
+    }));
+    number.filter(|number| *number > 0).map(|number| number as u64)
+        .ok_or(nexus_core::nexus::requests::TransportError::Stopped)
+}
+
+pub(crate) fn nexus_pause(operation: u64, wait: Duration) -> Result<(), nexus_core::nexus::requests::TransportError> {
+    Host::new(Whose::Operation(operation), Line::Lidarr).pause(wait)
+        .map_err(|_| nexus_core::nexus::requests::TransportError::Stopped)
+}

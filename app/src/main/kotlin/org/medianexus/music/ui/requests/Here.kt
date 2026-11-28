@@ -47,15 +47,16 @@ class RequestsHere(
     val settings: RequestsSettings,
     /** Offline mode is on (switched on by hand): nothing of requests is asked. */
     val offline: Boolean,
+    val server: Boolean = false,
 ) {
     /** Which account and connection: see the class. */
-    val key: Any = Connection(account, settings.on, settings.address.trim(), settings.service, settings.signedIn)
+    val key: Any = Connection(account, settings.on, settings.address.trim(), settings.service, settings.signedIn, server)
 
     /** Connected, and allowed to ask: what search's part, Home's row and Library's row
      *  wait for. */
     val connected: Boolean get() = state is RequestsState.Connected && !offline
 
-    private data class Connection(val account: AccountGraph, val on: Boolean, val address: String, val service: String, val signedIn: String)
+    private data class Connection(val account: AccountGraph, val on: Boolean, val address: String, val service: String, val signedIn: String, val server: Boolean)
 }
 
 /**
@@ -76,7 +77,9 @@ fun requestsHere(): RequestsHere? {
     val state by requests.state.collectAsStateWithLifecycle()
     val settings by requests.settings.collectAsStateWithLifecycle()
     val reach by ui.graph.watch.state.collectAsStateWithLifecycle()
-    return remember(account, state, settings, reach.manual) { RequestsHere(account, requests, pages, state, settings, reach.manual) }
+    return remember(account, state, settings, reach.manual, on.server) {
+        RequestsHere(account, requests, pages, state, if (on.server) settings.copy(on = true) else settings, reach.manual, on.server)
+    }
 }
 
 /**

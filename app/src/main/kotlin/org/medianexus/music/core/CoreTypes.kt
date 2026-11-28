@@ -261,8 +261,19 @@ class LidarrAt(
      *  address): nothing of requests is sent there, but Lidarr's own API if this very
      *  address is on it. Null where there is none to speak of (a test). */
     val home: String? = null,
+    private val nexus: kotlinx.serialization.json.JsonObject? = null,
 ) {
+    @kotlinx.serialization.Transient
+    internal var feature: org.medianexus.music.nexus.FeatureEndpoint? = null
+
     override fun toString(): String = "LidarrAt"
+
+    internal companion object {
+        fun server(endpoint: org.medianexus.music.nexus.FeatureEndpoint, connection: Long, home: String?) =
+            LidarrAt("", "", origin = null, connection = connection, home = home, nexus = endpoint.scope.wire).also {
+                it.feature = endpoint
+            }
+    }
 }
 
 /** Where the sign-in service in front of Lidarr is, and the name it knows that sign-in by

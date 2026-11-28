@@ -118,7 +118,10 @@ fun Shell(graph: Graph) {
     val song by graph.player.song.collectAsStateWithLifecycle()
     val reported by graph.player.reported.collectAsStateWithLifecycle()
     LaunchedEffect(song == null, reported) { if (song == null && reported) ui.nowPlaying = false }
-    if (org.medianexus.music.requests.RequestsBuild.on) RequestsNews(ui)
+    if (org.medianexus.music.requests.RequestsBuild.on) {
+        LaunchedEffect(graph, account) { if (account != null) graph.requestsRouter.refresh() }
+        RequestsNews(ui)
+    }
 
     androidx.compose.runtime.CompositionLocalProvider(
         LocalUi provides ui,

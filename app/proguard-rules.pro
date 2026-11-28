@@ -14,6 +14,8 @@
 # (native/src/wire.rs), which nothing in Kotlin calls.
 -keep class org.medianexus.music.core.CoreHttp {
     byte[] send(byte[]);
+    byte[] nexusPost(long, byte[]);
+    long nexusId(long);
     byte[] text(long);
     byte[] read(long, int);
     void close(long);

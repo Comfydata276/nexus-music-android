@@ -58,12 +58,23 @@ import org.medianexus.music.ui.theme.Theme
 fun RequestsPage() {
     val ui = LocalUi.current
     val res = LocalResources.current
-    val here = requestsHere() ?: return
+    LaunchedEffect(ui.graph) { ui.graph.requestsRouter.refresh() }
+    val here = requestsHere()
+    if (here == null) {
+        val route by ui.graph.requestsRouter.route.collectAsStateWithLifecycle()
+        val unavailable = route as? org.medianexus.music.requests.RequestsRoute.Unavailable
+        Column(Modifier.fillMaxSize()) {
+            TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)
+            Said(unavailable?.words ?: stringResource(R.string.nexus_requests_setup), onRetry = ui.graph.requestsRouter::refresh)
+        }
+        return
+    }
     val pages = here.pages
     val model = remember(here.key) { PageLoad { pages.onTheirWay() } }
     Running(here, model, model::run, model::again)
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(model, lifecycle) {
+    LaunchedEffect(model, lifecycle, here.server) {
+        if (here.server) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
             while (true) {
                 delay(REFRESH_MILLIS)
@@ -86,7 +97,12 @@ fun RequestsPage() {
     // A take-off acts on the row as it was shown: its own entry, and the number of the
     // connection the list was found under then, fixed as the row is drawn, so a menu opened
     // before a reconnect or a new key can't carry the new connection's number when chosen.
-    fun takeOff(album: Pending, under: Long) = asker.takeOff(album, under = under) { done -> if (done) taken += album.id }
+    fun takeOff(album: Pending, under: Long) = asker.takeOff(album, under = under) { done ->
+        if (done) {
+            taken += album.id
+            if (here.server) model.again()
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)
@@ -95,7 +111,7 @@ fun RequestsPage() {
                 // What heads the page: why there is no list (or asking again failed), and the
                 // warnings, which hold whether or not a list has been read (with no key, an
                 // artist's setting may still need putting back on Lidarr).
-                for (head in heads(hasList = waiting != null, why = state.why, askedUnreadable = unreadable, wayBack = wayBack)) when (head) {
+                for (head in heads(hasList = waiting != null, why = state.why, askedUnreadable = unreadable && !here.server, wayBack = if (here.server) "" else wayBack)) when (head) {
                     is Head.Why -> item(key = "why", contentType = "said") { Said(head.words, onRetry = model::again) }
                     is Head.Failed -> item(key = "again-failed", contentType = "failed") { org.medianexus.music.ui.parts.FailedStrip(head.words, model::again) }
                     // What this phone asked for can't be read: the list is short of it, and says
@@ -118,13 +134,17 @@ fun RequestsPage() {
                     val pending = waiting.pending.filter { (album, _) -> UnderWay.offList(album.id, shownUnder) !in going && album.id !in taken }
                     if (waiting.heading.isNotEmpty() && pending.isNotEmpty()) {
                         item(key = "pending-title", contentType = "title") { SectionTitle(waiting.heading) }
-                        items(pending, key = { (album, _) -> "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->
-                            SwipeAway(swipeKey(album, shownUnder), onGone = { takeOff(album, shownUnder) }, Modifier.animateItem(fadeOutSpec = null)) {
-                                PendingRow(album, line, onMenu = {
-                                    ui.sheet = Sheet.Drawn { choose ->
-                                        MenuEntry(stringResource(R.string.take_off_the_list)) { choose { takeOff(album, shownUnder) } }
-                                    }
-                                }, onTakeOff = { takeOff(album, shownUnder) })
+                        items(pending, key = { (album, _) -> if (album.id == 0L) "asked/${album.album}" else "pending/${album.id}" }, contentType = { "pending" }) { (album, line) ->
+                            if (waiting.canRemove(album)) {
+                                SwipeAway(swipeKey(album, shownUnder), onGone = { takeOff(album, shownUnder) }, Modifier.animateItem(fadeOutSpec = null)) {
+                                    PendingRow(album, line, onMenu = {
+                                        ui.sheet = Sheet.Drawn { choose ->
+                                            MenuEntry(stringResource(R.string.take_off_the_list)) { choose { takeOff(album, shownUnder) } }
+                                        }
+                                    }, onTakeOff = { takeOff(album, shownUnder) })
+                                }
+                            } else {
+                                PendingRow(album, line)
                             }
                         }
                     }
@@ -243,7 +263,7 @@ private fun ArrivedRow(asked: org.medianexus.music.core.Asked, line: String, onO
 
 /** An album on its way: its title, the library's line under it, and its "…". */
 @Composable
-private fun PendingRow(album: Pending, line: String, onMenu: () -> Unit, onTakeOff: () -> Unit) {
+private fun PendingRow(album: Pending, line: String, onMenu: (() -> Unit)? = null, onTakeOff: (() -> Unit)? = null) {
     val colors = Theme.colors
     val takeOff = stringResource(R.string.take_off_the_list)
     Row(
@@ -251,7 +271,9 @@ private fun PendingRow(album: Pending, line: String, onMenu: () -> Unit, onTakeO
             .fillMaxWidth()
             .height(Theme.dimens.rowHeight)
             .background(colors.base)
-            .semantics(mergeDescendants = true) { customActions = listOf(CustomAccessibilityAction(takeOff) { onTakeOff(); true }) }
+            .semantics(mergeDescendants = true) {
+                if (onTakeOff != null) customActions = listOf(CustomAccessibilityAction(takeOff) { onTakeOff(); true })
+            }
             .padding(start = Theme.dimens.pagePad, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -260,7 +282,7 @@ private fun PendingRow(album: Pending, line: String, onMenu: () -> Unit, onTakeO
             BasicText(album.title, style = Theme.type.rowTitle.copy(color = colors.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (line.isNotEmpty()) BasicText(line, style = Theme.type.rowDetail.copy(color = colors.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, album.title), onMenu, iconSize = 20.dp)
+        if (onMenu != null) IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, album.title), onMenu, iconSize = 20.dp)
     }
 }
 

@@ -32,7 +32,7 @@ use jni::sys::jbyteArray;
 use nexus_core::asked::{self, Arrival, Asked};
 use nexus_core::bulk;
 use nexus_core::discover::{self, Kept};
-use nexus_core::lidarr::{Lidarr, Offers};
+use nexus_core::lidarr::{Offers, RequestLidarr};
 use nexus_core::listenbrainz::ListenBrainz;
 use nexus_core::musicbrainz::MusicBrainz;
 use nexus_core::requests::{self, Library, Services, Snapshot, Stopped};
@@ -264,27 +264,27 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_placeSingles<'l>(env:
 
 /// Lidarr, MusicBrainz and ListenBrainz as one operation asks them: each through that
 /// operation's own way out.
-struct Asking {
-    lidarr: Lidarr,
+struct Asking<'a> {
+    lidarr: Box<dyn RequestLidarr + 'a>,
     musicbrainz: MusicBrainz,
     listenbrainz: ListenBrainz,
 }
 
-impl Asking {
-    fn of(connection: &Connection, operation: u64) -> Result<Asking, String> {
+impl<'a> Asking<'a> {
+    fn of(connection: &'a Connection, operation: u64) -> Result<Self, String> {
         // (The public services too are asked as this account's doing: nothing they answer
         // can send a request on to its music server.)
         let home = connection.home.as_deref();
         let listenbrainz = || ListenBrainz::new(Host::new(Whose::Operation(operation), Line::ListenBrainz).at_home(home));
         Ok(Asking {
-            lidarr: connection.lidarr(operation)?,
+            lidarr: connection.request_lidarr(operation)?,
             musicbrainz: musicbrainz().over(Host::new(Whose::Operation(operation), Line::MusicBrainz).at_home(home), listenbrainz()),
             listenbrainz: listenbrainz(),
         })
     }
 
     fn services(&self) -> Services<'_> {
-        Services { lidarr: &self.lidarr, musicbrainz: &self.musicbrainz, listenbrainz: &self.listenbrainz }
+        Services { lidarr: self.lidarr.as_ref(), musicbrainz: &self.musicbrainz, listenbrainz: &self.listenbrainz }
     }
 }
 
@@ -382,11 +382,18 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageOnTheirWay<'l>(en
     call_private(env, input, |given: PageIn| {
         let _during = During::new(given.operation);
         let place = place(given.place)?;
+        if let Some(scope) = &given.lidarr.nexus {
+            let client = crate::nexus_requests::backend(scope, given.operation);
+            return Ok(outcome(crate::nexus_requests::waiting(&client, place.library().as_ref())));
+        }
         let lidarr = match given.lidarr.lidarr(given.operation) {
             Ok(lidarr) => lidarr,
             Err(why) => return Ok(outcome(Err(why))),
         };
-        Ok(found(requests::on_their_way(&lidarr, &place.asked())))
+        Ok(match requests::on_their_way(&lidarr, &place.asked()) {
+            Ok(waiting) => outcome(serde_json::to_value(waiting).map_err(|_| "Couldn't show Requests.".to_string())),
+            Err(Stopped) => Outcome::Stopped,
+        })
     })
 }
 
@@ -421,11 +428,11 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_request<'l>(env: JNIE
     call_private(env, input, |given: PageIn| {
         let _during = During::new(given.operation);
         let place = place(given.place)?;
-        let lidarr = match given.lidarr.lidarr(given.operation) {
+        let lidarr = match given.lidarr.request_lidarr(given.operation) {
             Ok(lidarr) => lidarr,
             Err(why) => return Ok(outcome(Err(why))),
         };
-        Ok(match requests::request(&lidarr, &place.offers(given.lidarr.connection), &given.what, &place.job) {
+        Ok(match requests::request(lidarr.as_ref(), &place.offers(given.lidarr.connection), &given.what, &place.job) {
             Ok(result) => outcome(result),
             Err(Stopped) => Outcome::Stopped,
         })
@@ -442,7 +449,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_addArtist<'l>(env: JN
     call_private(env, input, |given: PageIn| {
         let _during = During::new(given.operation);
         let place = place(given.place)?;
-        Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.add_artist(&given.what, &given.name, &place.job))))
+        Ok(outcome(given.lidarr.request_lidarr(given.operation).and_then(|lidarr| lidarr.add_artist(&given.what, &given.name, &place.job))))
     })
 }
 
@@ -462,7 +469,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrRequest<'l>(env
     call_private(env, input, |given: WantedIn| {
         let _during = During::new(given.operation);
         let place = place(given.place)?;
-        Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.request(&given.wanted, &place.job)).map(|()| true)))
+        Ok(outcome(given.lidarr.request_lidarr(given.operation).and_then(|lidarr| lidarr.request(&given.wanted, &place.job)).map(|()| true)))
     })
 }
 
@@ -653,12 +660,12 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_discoverLook<'l>(env:
     call_private(env, input, |given: LookIn| {
         let _during = During::new(given.operation);
         let place = place(given.place)?;
-        let lidarr = match given.lidarr.lidarr(given.operation) {
+        let lidarr = match given.lidarr.request_lidarr(given.operation) {
             Ok(lidarr) => lidarr,
             Err(why) => return Ok(outcome(Err(why))),
         };
         let library = place.library();
-        Ok(found(discover::look(&lidarr, &given.similar, library.as_ref(), given.now)))
+        Ok(found(discover::look(lidarr.as_ref(), &given.similar, library.as_ref(), given.now)))
     })
 }
 

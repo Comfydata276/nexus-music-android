@@ -223,6 +223,7 @@ class RequestsPages internal constructor(
      */
     val arrivals: Flow<Arrival> = flow {
         val offered = ArrayList<Arrived>()
+        if (requests.serverMode) return@flow
         combine(wake, requests.settings.map { it.on }.distinctUntilChanged(), here) { _, on, here -> on to here }.takeWhile { (_, here) -> here }.collect { (on, _) ->
             if (!on) return@collect
             saying.withLock {
@@ -322,6 +323,7 @@ class RequestsPages internal constructor(
     /** One change to what is kept at a time. Never held across a request. */
     private val turn = Mutex()
     private var place: Long? = null
+    private var loadedDirect = false
 
     /**
      * The newest connection anything has been asked under here, and **what is on its way
@@ -455,10 +457,11 @@ class RequestsPages internal constructor(
         turn.withLock {
             // (The account has gone: nothing more is asked for it.)
             if (isGone()) throw CancellationException("the account has gone")
-            synchronized(this@RequestsPages) { place }?.let { return@withLock it }
-            // (The way back is written by this account's own file from the first moment:
-            // on the library's thread, before the call that asked returns.)
-            val opened = Core.placeOpen { batch, surely -> askingFile.write(batch, surely) }
+            val opened = synchronized(this@RequestsPages) {
+                place ?: Core.placeOpen { batch, surely -> askingFile.write(batch, surely) }.also { place = it }
+            }
+            if (requests.serverMode || loadedDirect) return@withLock opened
+            loadedDirect = true
             askingFile.takeUp { written -> Core.placeWays(opened, written.decodeToString()) }
             wayBackTroubleNow.value = when {
                 askingFile.held -> RequestsWords.WAY_BACK_HELD
@@ -477,7 +480,6 @@ class RequestsPages internal constructor(
             }
             // (An arrival the last run of the app found and never got to say.)
             if (arrivalsKept().any { !it.said }) wake.update { it + 1 }
-            synchronized(this@RequestsPages) { place = opened }
             opened
         }
     }
@@ -571,7 +573,9 @@ class RequestsPages internal constructor(
     private suspend fun <T> page(shown: (T) -> Unit = {}, ask: suspend (LidarrAt, Long) -> Outcome<T>): Found<T> = withContext(io) {
         val (at, place, why) = connected()
         if (at == null) return@withContext Found.Not(why)
-        when (val outcome = ask(at, place)) {
+        val outcome = ask(at, place)
+        if (at.feature != null && !requests.current(at)) throw CancellationException("stopped")
+        when (outcome) {
             is Outcome.Got -> {
                 shown(outcome.value)
                 Found.Got(outcome.value, at.connection)
@@ -599,7 +603,7 @@ class RequestsPages internal constructor(
     /** [search], with what is found so far handed over **as it will be answered**: with the
      *  connection it is found under, to keep with its rows. */
     suspend fun searchShowing(query: String, soFar: (Found.Got<Outside>) -> Unit): Found<Outside> =
-        page { at, place -> Core.pageSearch(at, place, query) { soFar(Found.Got(it, at.connection)) } }
+        page { at, place -> Core.pageSearch(at, place, query) { if (at.feature == null || requests.current(at)) soFar(Found.Got(it, at.connection)) } }
 
     /** An artist as the wider world knows them: what they have made, with what the library
      *  has shown as its own and the rest there to be asked for. `id` is an
@@ -618,11 +622,11 @@ class RequestsPages internal constructor(
     /** What has arrived lately and what Lidarr has still to get (the Requests page). Opening
      *  it is also when arrivals are looked for. */
     suspend fun onTheirWay(): Found<Waiting> {
-        checkArrivals()
+        if (!requests.serverMode) checkArrivals()
         var asked: LidarrAt? = null
         return page(shown = { waiting ->
             // (What can be taken off the list is what this very connection has just listed.)
-            val entries = waiting.pending.map { it.first.id to it.first }
+            val entries = waiting.pending.map { it.first }.filter(waiting::canRemove).associateBy { it.id }
             synchronized(this) {
                 if (asked?.connection == shownUnder) {
                     shownPending.clear()
@@ -677,6 +681,9 @@ class RequestsPages internal constructor(
         if (at == null) return@withContext Said(false, why)
         if (!still(connection, at)) return@withContext changed
         val begun = Core.request(at, place, album)
+        if (at.feature != null) return@withContext serverChange(begun, at, Words.askedFor(title)) {
+            Core.marked(place, album, true, at.connection)
+        }
         val through = outlasting(begun) { outcome ->
             when (outcome) {
                 is Outcome.Got -> {
@@ -708,6 +715,24 @@ class RequestsPages internal constructor(
      *  text. `open` is [OutsideArtist.open]. */
     suspend fun adding(name: String, open: Int): Pair<String, String> = withContext(io) { Core.adding(name, open) }
 
+    private suspend fun serverChange(
+        begun: CoreHttp.Begun<out Outcome<*>>,
+        at: LidarrAt,
+        words: String,
+        done: suspend () -> Unit,
+    ): Said = try {
+        val answer = begun.done.await()
+        if (!requests.current(at)) throw CancellationException("stopped")
+        when (answer) {
+            is Outcome.Got -> { done(); Said(true, words) }
+            is Outcome.Failed -> Said(false, answer.why)
+            Outcome.Stopped -> throw CancellationException("stopped")
+        }
+    } catch (e: CancellationException) {
+        begun.stop()
+        throw e
+    }
+
     /** What to say while an artist is being added ("Adding …"). */
     fun addingNow(name: String): String = Words.addingNow(name)
 
@@ -721,6 +746,9 @@ class RequestsPages internal constructor(
         if (at == null) return@withContext Said(false, why)
         if (!still(connection, at)) return@withContext changed
         val begun = Core.addArtist(at, place, id, name)
+        if (at.feature != null) return@withContext serverChange(begun, at, Words.added(name)) {
+            turn.withLock { forgetSuggestion(place, id) }
+        }
         val through = outlasting(begun) { outcome ->
             when (outcome) {
                 is Outcome.Got -> {
@@ -760,7 +788,10 @@ class RequestsPages internal constructor(
         val listed = synchronized(this@RequestsPages) { shownPending[id].takeIf { shownUnder == at.connection } }
         val same = listed != null && listed.album == entry.album && listed.title == entry.title && listed.artist == entry.artist
         if (!same || !still(connection, at)) return@withContext changed
-        val begun = Core.cancelling(at, id)
+        val begun = Core.cancelling(at, id, entry.album)
+        if (at.feature != null) return@withContext serverChange(begun, at, Words.offTheList(title)) {
+            Core.marked(place, entry.album, false, at.connection)
+        }
         val through = outlasting(begun) { outcome ->
             when (outcome) {
                 is Outcome.Got -> {
@@ -846,6 +877,7 @@ class RequestsPages internal constructor(
      * next time the app is opened and its copy refreshed.
      */
     suspend fun checkArrivals() = withContext(io) {
+        if (requests.serverMode) return@withContext
         val place = ready()
         // (Also the moment a list that couldn't be read is tried again: see [keepAsked].)
         if (askedUnreadableNow.value) turn.withLock { if (askedUnreadableNow.value) keepAsked(place, askedNow.value) }

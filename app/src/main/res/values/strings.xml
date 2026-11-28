@@ -864,6 +864,8 @@
     <string name="nexus_history_delete">Delete history</string>
     <string name="nexus_history_deleting">Deleting…</string>
     <string name="nexus_history_deleted">Your listening history was deleted.</string>
+    <string name="nexus_requests_server">Your Nexus server handles requests for music.</string>
+    <string name="nexus_requests_setup">Requests are switched off. Turn them on in Settings.</string>
     <string name="nexus_records_title">What this server records</string>
     <string name="nexus_records_read">Read</string>
     <string name="nexus_records_songs">Your Nexus server records the songs you start, with their titles, artists and albums. It records when you played them, what you played them from, which device played them, how long you listened, and when you skipped, paused or moved within a song.</string>

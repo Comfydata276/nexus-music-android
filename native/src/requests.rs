@@ -112,9 +112,19 @@ pub(crate) struct Connection {
     /// the person said Lidarr is (`wire::Host::at_home`, `typed`).
     #[serde(default)]
     pub(crate) home: Option<String>,
+    #[serde(default)]
+    pub(crate) nexus: Option<crate::client::FeatureScope>,
 }
 
 impl Connection {
+    pub(crate) fn request_lidarr(&self, operation: u64) -> Result<Box<dyn nexus_core::lidarr::RequestLidarr + '_>, String> {
+        if let Some(scope) = &self.nexus {
+            return Ok(Box::new(crate::nexus_requests::backend(scope, operation)));
+        }
+        self.lidarr(operation).map(|lidarr| Box::new(lidarr) as Box<dyn nexus_core::lidarr::RequestLidarr>)
+    }
+
+
     /// Lidarr, asked through this operation's own way out.
     pub(crate) fn lidarr(&self, operation: u64) -> Result<Lidarr, String> {
         let gate = match self.session {
@@ -465,6 +475,8 @@ struct CancelIn {
     operation: u64,
     lidarr: Connection,
     id: i64,
+    #[serde(default)]
+    album: String,
 }
 
 /// `Lidarr::cancel`: takes an album off Lidarr's list.
@@ -472,6 +484,10 @@ struct CancelIn {
 pub extern "system" fn Java_org_medianexus_music_core_Core_lidarrCancel<'l>(env: JNIEnv<'l>, _: JClass<'l>, input: JByteArray<'l>) -> jbyteArray {
     call_private(env, input, |given: CancelIn| {
         let _during = During::new(given.operation);
+        if let Some(scope) = &given.lidarr.nexus {
+            let result = crate::nexus_requests::cancel(scope, given.operation, given.id, &given.album);
+            return Ok(outcome(result.map(|()| true)));
+        }
         Ok(outcome(given.lidarr.lidarr(given.operation).and_then(|lidarr| lidarr.cancel(given.id)).map(|()| true)))
     })
 }

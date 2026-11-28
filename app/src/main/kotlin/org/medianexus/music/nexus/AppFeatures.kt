@@ -61,7 +61,13 @@ internal class FeatureFlight(
     val scope: AppScope,
     val deletesHistory: Boolean,
     val continuation: CancellableContinuation<FeatureResult>,
+    val allowed: () -> Boolean,
 ) {
     var ask: JsonPrimitive? = null
     var answer: FeatureResult.Checked? = null
+}
+
+/** A Rust Requests operation keeps this endpoint for its entire lifetime. */
+internal class FeatureEndpoint(val nexus: Nexus, val scope: AppScope, private val allowed: () -> Boolean = { true }) {
+    fun active(): Boolean = nexus.featureOnline(scope) && allowed()
 }

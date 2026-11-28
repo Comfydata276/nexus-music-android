@@ -97,7 +97,11 @@ data class OutsideArtist(
     /** What to say instead, when there is nothing to show, or why it couldn't be had. */
     val empty: String = "",
     val failed: Boolean = false,
-)
+    /** In server mode only rows with the server's removal bit can be acted on. */
+    val removable: Set<Long>? = null,
+) {
+    fun canRemove(row: Pending): Boolean = removable?.contains(row.id) ?: true
+}
 
 /** The songs an artist is most played for, for the top of their page (`requests::Popular`).
  *  With no `songs` there is nothing to show. */

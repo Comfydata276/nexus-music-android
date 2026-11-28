@@ -12,6 +12,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNamingStrategy
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.put
 
 /**
  * The shared core: the part of the app that is the Windows app's own code, compiled into a
@@ -400,6 +401,18 @@ object Core {
     internal fun nexusListening(input: JsonObject): JsonObject =
         acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusListening)
 
+    internal suspend fun nexusRequestsStatus(endpoint: org.medianexus.music.nexus.FeatureEndpoint): JsonObject =
+        CoreHttp.looking { operation ->
+            wired
+            CoreHttp.useNexus(operation, endpoint)
+            val input = kotlinx.serialization.json.buildJsonObject {
+                put("step", "status")
+                put("scope", endpoint.scope.wire)
+                put("operation", operation)
+            }
+            acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusRequests)
+        }
+
     /** The phone's storage adapter for the core's journal format and retention rules. */
     internal fun nexusJournal(input: JsonObject): JsonElement =
         acrossPrivately(input, JsonObject.serializer(), JsonElement.serializer(), ::nexusJournal)
@@ -445,6 +458,7 @@ object Core {
      *  in an exception's words. */
     private fun <In, T> over(given: In, takes: KSerializer<In>, gives: KSerializer<T>, native: (ByteArray) -> ByteArray?): Outcome<T> {
         wired
+        if (given is LidarrCall) given.lidarr.feature?.let { CoreHttp.useNexus(given.operation, it) }
         val out = acrossPrivately(given, takes, Out.serializer(gives), native)
         return when (out.kind) {
             "got" -> Outcome.Got(out.value ?: throw CoreException("The shared library's answer couldn't be read."))
@@ -613,8 +627,13 @@ object Core {
         }
     }
 
+    private interface LidarrCall {
+        val operation: Long
+        val lidarr: LidarrAt
+    }
+
     @Serializable
-    private class Of(val operation: Long, val lidarr: LidarrAt)
+    private class Of(override val operation: Long, override val lidarr: LidarrAt) : LidarrCall
 
     /** `Lidarr::version`: checks the address and the key (and the sign-in, if there is one)
      *  by asking Lidarr which version it is. */
@@ -670,7 +689,7 @@ object Core {
     } }
 
     @Serializable
-    private class CancelIn(val operation: Long, val lidarr: LidarrAt, val id: Long)
+    private class CancelIn(override val operation: Long, override val lidarr: LidarrAt, val id: Long, val album: String = "") : LidarrCall
 
     /** `Lidarr::cancel`: takes an album off Lidarr's list ([Pending.id]). */
     suspend fun lidarrCancel(lidarr: LidarrAt, id: Long): Outcome<Boolean> = orBusy { CoreHttp.changing { operation ->
@@ -680,8 +699,8 @@ object Core {
     /** [lidarrCancel], **begun and not waited for** (see [request]): whoever begins it must
      *  then forget, here, what Lidarr has taken off its list, whoever has gone away
      *  meanwhile. */
-    internal fun cancelling(lidarr: LidarrAt, id: Long): CoreHttp.Begun<Outcome<Boolean>> = CoreHttp.changingThrough { operation ->
-        over(CancelIn(operation, lidarr, id), CancelIn.serializer(), Boolean.serializer(), ::lidarrCancel)
+    internal fun cancelling(lidarr: LidarrAt, id: Long, album: String = ""): CoreHttp.Begun<Outcome<Boolean>> = CoreHttp.changingThrough { operation ->
+        over(CancelIn(operation, lidarr, id, album), CancelIn.serializer(), Boolean.serializer(), ::lidarrCancel)
     }
 
     @Serializable
@@ -768,7 +787,7 @@ object Core {
     }
 
     @Serializable
-    private class PageIn(val operation: Long, val lidarr: LidarrAt, val place: Long, val what: String, val name: String = "")
+    private class PageIn(override val operation: Long, override val lidarr: LidarrAt, val place: Long, val what: String, val name: String = "") : LidarrCall
 
     /**
      * `requests::search`: songs, artists and albums matching `query` that aren't in the
@@ -921,7 +940,7 @@ object Core {
         across(songs, ListSerializer(Played.serializer()), ListSerializer(TwoNames), ::discoverFavourites)
 
     @Serializable
-    private class SuggestIn(val operation: Long, val lidarr: LidarrAt, val place: Long, val similar: List<@Serializable(with = NameAndNames::class) Pair<String, List<String>>>, val now: Long)
+    private class SuggestIn(override val operation: Long, override val lidarr: LidarrAt, val place: Long, val similar: List<@Serializable(with = NameAndNames::class) Pair<String, List<String>>>, val now: Long) : LidarrCall
 
     /** `discover::look`: suggestions looked for afresh, from who the music server says each
      *  favourite is like (in the favourites' order, most alike first). **Kept only if it is
@@ -1076,6 +1095,7 @@ object Core {
     @JvmStatic private external fun nexusHello(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusMachine(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusCall(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusRequests(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusListening(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusJournal(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusDiagnostics(input: ByteArray): ByteArray?

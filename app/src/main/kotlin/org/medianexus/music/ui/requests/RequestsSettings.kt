@@ -78,6 +78,12 @@ private fun RequestsNotOn() {
     val now by account.requestsNow.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val title = stringResource(R.string.requests_on)
+    if (now is org.medianexus.music.requests.RequestsNow.Unavailable) {
+        BasicText((now as org.medianexus.music.requests.RequestsNow.Unavailable).words,
+            Modifier.padding(vertical = 14.dp).semantics { liveRegion = LiveRegionMode.Polite },
+            style = Theme.type.body.copy(color = Theme.colors.text))
+        return
+    }
     val notYet = now == org.medianexus.music.requests.RequestsNow.NotYet
     SettingRow(title, stringResource(R.string.requests_on_detail)) {
         Toggle(notYet, { on -> if (on) scope.launch { account.turnRequestsOn() } }, title, enabled = !notYet)
@@ -94,7 +100,9 @@ private fun RequestsNotOn() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RequestsSettings() {
-    val localAccess = org.medianexus.music.ui.shell.LocalUi.current.graph.localAccess
+    val graph = org.medianexus.music.ui.shell.LocalUi.current.graph
+    LaunchedEffect(graph) { graph.requestsRouter.refresh() }
+    val localAccess = graph.localAccess
     val askLocal = org.medianexus.music.ui.shell.rememberLocalNetworkAsk(localAccess)
     val here = requestsHere()
     if (here == null) {
@@ -108,6 +116,15 @@ fun RequestsSettings() {
     val activity = LocalActivity.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     val colors = Theme.colors
+
+    if (here.server) {
+        val singles = stringResource(R.string.requests_singles)
+        SettingRow(stringResource(R.string.requests), stringResource(R.string.nexus_requests_server)) {}
+        SettingRow(singles, stringResource(R.string.requests_singles_detail)) {
+            Toggle(settings.singles, { on -> scope.launch { requests.setSingles(on) } }, singles)
+        }
+        return
+    }
 
     val title = stringResource(R.string.requests_on)
     // What is kept can't be read: nothing can be changed until it can, and the switch says so

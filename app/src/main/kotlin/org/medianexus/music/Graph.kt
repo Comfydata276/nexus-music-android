@@ -234,6 +234,8 @@ class Graph(
      * on is signed in to, or the toggle is turned on, in a build that has requests; never
      * otherwise. Its work is the app's own, not an account's.
      */
+    internal val requestsRouter = org.medianexus.music.requests.RequestsRouter()
+
     private val requestsOwners: org.medianexus.music.requests.RequestsOwners by lazy {
         // With offline mode switched on by hand nothing is asked of Lidarr or the services
         // beside it either, and each call says so in the library's sentence ("Couldn't
@@ -246,6 +248,7 @@ class Graph(
         }
         org.medianexus.music.requests.RequestsOwners(
             scope,
+            router = requestsRouter,
             make = { account, sources, here, switched ->
                 // (An account's own work, for as long as the process: a failure in it is
                 // that account's requests', and nobody else's.)
@@ -270,6 +273,7 @@ class Graph(
                     // (A sign-in is finished only with the app's own screen in front: resumed.)
                     front = resumed,
                     switched = switched,
+                    nexusRoute = { requestsRouter.forAccount(account) },
                 )
                 requests to org.medianexus.music.requests.RequestsPages.of(requests, work, account.dirs.data, sources, here, note = { diagnostics.note(it) }, afterwards = afterwards)
             },
@@ -359,6 +363,10 @@ class Graph(
         )
         nexus = made
         made.start()
+        if (org.medianexus.music.requests.RequestsBuild.on) {
+            org.medianexus.music.core.CoreHttp.directRequests = requestsRouter::directEndpoint
+            scope.launch { requestsRouter.follow(made) }
+        }
         // **While a sign-in is under way the app keeps its standing** (6.4): out of sight behind
         // another app (a password manager, the system's settings), Android freezes it within a
         // minute, and the answer would wait unread. The same short foreground hold as Lidarr's

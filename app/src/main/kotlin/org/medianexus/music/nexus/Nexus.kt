@@ -330,18 +330,25 @@ class Nexus internal constructor(
         call(buildJsonObject { put("happened", buildJsonObject { put("event", event); put("given", given()) }) })
     }
 
-    internal suspend fun postFeature(scope: AppScope, post: FeaturePost): FeatureResult =
+    internal fun featureOnline(scope: AppScope): Boolean =
+        !stopped.get() && !offlineNow() && appSession.value?.let { it.scope == scope && it.verified && !it.offline } == true
+
+    internal suspend fun postFeature(
+        scope: AppScope,
+        post: FeaturePost,
+        allowed: () -> Boolean = { true },
+    ): FeatureResult =
         withTimeoutOrNull(FEATURE_WITHIN_MS) {
             suspendCancellableCoroutine { continuation ->
                 val request = featureNumbers.incrementAndGet()
                 continuation.invokeOnCancellation { onWorker { cancelFeature(request) } }
                 onWorker {
                     if (!continuation.isActive) return@onWorker
-                    if (machine == 0L || !canUseFeature(scope)) {
+                    if (machine == 0L || !canUseFeature(scope) || !allowed()) {
                         continuation.resume(FeatureResult.Stopped)
                         return@onWorker
                     }
-                    features[request] = FeatureFlight(scope, post.deletesHistory, continuation)
+                    features[request] = FeatureFlight(scope, post.deletesHistory, continuation, allowed)
                     tell(buildJsonObject {
                         put("app_post", buildJsonObject {
                             put("request", request)
@@ -378,7 +385,7 @@ class Nexus internal constructor(
             val same = app != null && app.scope.sameSession(flight.scope) &&
                 (app.scope == flight.scope || flight.deletesHistory)
             val answer = when {
-                !same || app?.offline != false || offlineNow() -> FeatureResult.Stopped
+                !same || app?.offline != false || offlineNow() || !flight.allowed() -> FeatureResult.Stopped
                 result == "checked" -> flight.answer ?: FeatureResult.Invalid
                 result == "unreachable" -> FeatureResult.Unreachable
                 result == "invalid" -> FeatureResult.Invalid
@@ -507,7 +514,7 @@ class Nexus internal constructor(
             if (offlineNow != toldOffline) tellOffline(offlineNow)
             if (request != null) {
                 val flight = features[request] ?: return@submit false
-                if (!flight.continuation.isActive || !canUseFeature(flight.scope)) return@submit false
+                if (!flight.continuation.isActive || !flight.allowed() || !canUseFeature(flight.scope)) return@submit false
             }
             (Core.nexusCall(buildJsonObject { put("machine", machine); put("call", buildJsonObject { put("waits_for", buildJsonObject { put("ask", id) }) }) })["waits"] as? JsonPrimitive)?.booleanOrNull == true
         }.get()
@@ -731,7 +738,7 @@ class Nexus internal constructor(
 
     private fun featureAnswered(request: Long, event: JsonElement?) {
         val flight = features[request] ?: return
-        if (event == null || !flight.continuation.isActive || !canUseFeature(flight.scope)) {
+        if (event == null || !flight.continuation.isActive || !flight.allowed() || !canUseFeature(flight.scope)) {
             cancelFeature(request)
             return
         }

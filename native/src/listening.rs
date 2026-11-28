@@ -5,32 +5,11 @@ use jni::sys::jbyteArray;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use nexus_core::nexus::account::{self, NotAllowed, Password, Refusal, Reply, RequestHead, RequestId, Stamp};
+use nexus_core::nexus::account::{self, NotAllowed, Password, Refusal, Reply, RequestId, Stamp};
 use nexus_core::nexus::events::{self, HistoryDeleteError, HistoryDeletion, Kind, StatsPage, StatsRequest};
-use nexus_core::nexus::proto::{BackendId, SPEAKS};
+use crate::client::FeatureScope;
 
 use crate::call_private;
-
-#[derive(Deserialize)]
-struct Scope {
-    backend: String,
-    account: u64,
-    restore: u64,
-    life: u64,
-}
-
-impl Scope {
-    fn head(&self) -> RequestHead {
-        RequestHead { speaks: SPEAKS, restore: self.restore }
-    }
-
-    fn owns(&self, stamp: &Stamp) -> bool {
-        stamp.account.get() == self.account
-            && BackendId::from_hex(&self.backend) == Some(stamp.backend)
-            && stamp.restore == self.restore
-            && stamp.life == self.life
-    }
-}
 
 #[derive(Deserialize)]
 struct Answer {
@@ -39,7 +18,7 @@ struct Answer {
 }
 
 impl Answer {
-    fn stats(&self, scope: &Scope) -> Result<(Stamp, StatsPage), HistoryDeleteError> {
+    fn stats(&self, scope: &FeatureScope) -> Result<(Stamp, StatsPage), HistoryDeleteError> {
         match events::read_stats_reply(self.status, self.body.as_bytes())? {
             Reply::Done { result, receipt } if scope.owns(&receipt.stamp) => Ok((receipt.stamp, result)),
             Reply::Refused(reason) => Err(HistoryDeleteError::Refused(reason)),
@@ -55,7 +34,7 @@ struct Delete {
 }
 
 impl Delete {
-    fn plan(&self, scope: &Scope) -> Result<HistoryDeletion, HistoryDeleteError> {
+    fn plan(&self, scope: &FeatureScope) -> Result<HistoryDeletion, HistoryDeleteError> {
         let (stamp, page) = self.stats.stats(scope)?;
         let id = RequestId::new(self.action).ok_or(HistoryDeleteError::Invalid)?;
         HistoryDeletion::new(scope.head(), &stamp, &page, id)
@@ -64,7 +43,7 @@ impl Delete {
 
 #[derive(Deserialize)]
 struct Input {
-    scope: Scope,
+    scope: FeatureScope,
     #[serde(flatten)]
     step: Step,
 }

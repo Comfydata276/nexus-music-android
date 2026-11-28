@@ -59,7 +59,8 @@ internal class AccountListening(private val nexus: Nexus) {
     }
 
     suspend fun read(scope: AppScope): ListeningResult<ListeningStats> = inBackground {
-        val result = step(scope, "read") { put("answer", fetchStats(scope)) }
+        val answer = fetchStats(scope)
+        val result = step(scope, "read") { put("answer", answer) }
         val stats = Json.decodeFromJsonElement<ListeningStats>(result)
         val format = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
         ListeningResult.Done(save(scope, stats.copy(

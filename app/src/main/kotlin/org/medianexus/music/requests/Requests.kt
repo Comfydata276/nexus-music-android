@@ -203,6 +203,7 @@ class Requests internal constructor(
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     /** Told each time the person's toggle has been switched, and written down. */
     private val switched: (Boolean) -> Unit = {},
+    private val nexusRoute: (() -> RequestsRoute.Usable?)? = null,
 ) {
     private val kept = Kept(File(account.dirs.data, "requests.json"), RequestsSettings.serializer(), RequestsSettings(), note)
 
@@ -215,6 +216,31 @@ class Requests internal constructor(
 
     /** A connection Lidarr has just answered on as itself: what it was asked with. */
     class Verified internal constructor(val at: LidarrAt)
+
+    @Volatile private var selected: RequestsRoute.Usable? = null
+
+    internal val serverMode: Boolean get() = selected?.direct == false
+    private fun directAllowed(): Boolean = nexusRoute == null || nexusRoute.invoke()?.let { it.direct && it === selected } == true
+
+    /** Move the offers and invalidate any direct check already on a worker. */
+    internal suspend fun select(route: RequestsRoute.Usable?) = withContext(io) {
+        turn.withLock {
+            if (selected === route) return@withLock
+            selected = route
+            moved()
+            checks++
+            if (route?.direct == false) {
+                read()
+                stateNow.value = RequestsState.Connected("", null)
+            } else {
+                stateNow.value = RequestsState.Off
+                if (route == null) giveUpAttempt()
+            }
+        }
+    }
+
+    internal fun current(at: LidarrAt): Boolean = at.connection == connection &&
+        if (at.feature != null) at.feature?.active() == true else directAllowed()
 
     private val verifiedNow = MutableStateFlow<Verified?>(null)
 
@@ -292,7 +318,7 @@ class Requests internal constructor(
      * Lidarr. It starts somewhere no earlier run of the app can have been, so a number kept
      * across a restart matches nothing.
      */
-    private var connection = (System.currentTimeMillis() shl 16) or java.security.SecureRandom().nextInt(1 shl 16).toLong()
+    @Volatile private var connection = (System.currentTimeMillis() shl 16) or java.security.SecureRandom().nextInt(1 shl 16).toLong()
 
     /** The connection has changed. Under [turn]. */
     private fun moved() {
@@ -424,6 +450,14 @@ class Requests internal constructor(
     suspend fun lidarr(): LidarrAt? = withContext(io) { turn.withLock { lidarrNow() } }
 
     private suspend fun lidarrNow(): LidarrAt? {
+        val server = selected?.takeIf { !it.direct && nexusRoute?.invoke() === it }
+        if (server != null) {
+            val endpoint = org.medianexus.music.nexus.FeatureEndpoint(server.status.nexus, server.status.scope) {
+                nexusRoute?.invoke() === server
+            }
+            return LidarrAt.server(endpoint, connection, home)
+        }
+        if (!directAllowed()) return null
         read()
         val settings = settingsNow.value
         if (unreadable || !settings.on) return null
@@ -480,6 +514,7 @@ class Requests internal constructor(
     /** Reads what is kept and, if requests are on and set up, asks Lidarr whether it is
      *  there. As the account starts; asks nothing of anyone while requests are off. */
     fun start() {
+        if (!directAllowed()) return
         scope.launch(io) {
             val interrupted = turn.withLock {
                 read()
@@ -505,6 +540,7 @@ class Requests internal constructor(
     /** Switches requests on or off (off by default). Off, nothing is asked of anyone; what
      *  is set up is kept for when they are switched on again. */
     suspend fun switch(on: Boolean): RequestsState = withContext(io) {
+        if (!directAllowed()) return@withContext stateNow.value
         turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
@@ -542,6 +578,7 @@ class Requests internal constructor(
      * is kept.
      */
     suspend fun connect(address: String, key: String): RequestsState = withContext(io) {
+        if (!directAllowed()) return@withContext stateNow.value
         val forgotten = turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
@@ -623,13 +660,15 @@ class Requests internal constructor(
     suspend fun check(): RequestsState = check(interrupted = false)
 
     private suspend fun check(interrupted: Boolean, traced: Traced = Traced(Trace.Step.CHECK)): RequestsState = withContext(io) {
+        if (!directAllowed()) return@withContext stateNow.value
         watchAllowed()
         val (mine, at) = turn.withLock {
             read()
             if (unreadable) return@withContext stateNow.value
             val settings = settingsNow.value
             val at = lidarrNow()
-            if (at == null) {
+            if (at == null || at.feature != null) {
+                if (!directAllowed()) return@withContext stateNow.value
                 stateNow.value = when {
                     !settings.on -> RequestsState.Off
                     forgotten -> RequestsState.KeyForgotten
@@ -733,6 +772,7 @@ class Requests internal constructor(
      * (then [state] says why). Starting another retires this one.
      */
     suspend fun signIn(): String? = withContext(io) {
+        if (!directAllowed()) return@withContext null
         // The sign-in's host as it is from here: the browser comes back, and the app trades
         // its code there. On the home network without the permission, the trade would be
         // the first to find out, after the person had signed in: asked about first instead.

@@ -22,7 +22,9 @@ use jni::sys::jbyteArray;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
+use nexus_core::nexus::account::{RequestHead, Stamp};
 use nexus_core::nexus::client::Client;
+use nexus_core::nexus::proto::{BackendId, SPEAKS};
 
 use crate::call_private;
 
@@ -108,4 +110,26 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_nexusCarriesOver<'l>(
         })();
         Ok(login.is_some_and(|login| nexus_core::nexus::client::carries_over(&given.before_address, &given.before_user, &login)))
     })
+}
+
+/// The part of the app-session scope a checked feature receipt can attest to.
+#[derive(Deserialize)]
+pub(crate) struct FeatureScope {
+    backend: String,
+    account: u64,
+    restore: u64,
+    life: u64,
+}
+
+impl FeatureScope {
+    pub(crate) fn head(&self) -> RequestHead {
+        RequestHead { speaks: SPEAKS, restore: self.restore }
+    }
+
+    pub(crate) fn owns(&self, stamp: &Stamp) -> bool {
+        stamp.account.get() == self.account
+            && BackendId::from_hex(&self.backend) == Some(stamp.backend)
+            && stamp.restore == self.restore
+            && stamp.life == self.life
+    }
 }

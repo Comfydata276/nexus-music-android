@@ -5,12 +5,14 @@ import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.medianexus.music.core.Core
@@ -36,8 +38,10 @@ sealed interface RequestsNow {
      *  last sign-in left (a token being handed back, a setting being put back on Lidarr). */
     data object NotYet : RequestsNow
 
+    data class Unavailable(val words: String) : RequestsNow
+
     /** On: the account's connection to Lidarr, and everything its pages ask for. */
-    class On(val requests: Requests, val pages: RequestsPages) : RequestsNow
+    class On(val requests: Requests, val pages: RequestsPages, val server: Boolean = false) : RequestsNow
 }
 
 /**
@@ -76,6 +80,7 @@ class RequestsOwners internal constructor(
     /** Whether anything of an account's Lidarr key or sign-in is kept on the phone: a look
      *  for its files, no more. */
     private val holds: (Account) -> Boolean = { false },
+    private val router: RequestsRouter? = null,
 ) {
     private class Owner(val requests: Requests, val pages: RequestsPages, private val sources: MutableStateFlow<RequestsSources?>, private val here: MutableStateFlow<Boolean>) {
         /** The sign-in that has it now; null between sign-ins, and while switched off. */
@@ -132,6 +137,13 @@ class RequestsOwners internal constructor(
      * (the one thing looked at here: whether a file is there) that is all that happens.
      */
     fun signedIn(account: Account, sources: RequestsSources): Seat {
+        if (router != null) {
+            val seat = Seat(account, sources, RequestsNow.NotYet)
+            seat.follow = scope.launch(io) {
+                router.route.collect { route -> order.trySend { routeChanged(seat, route) } }
+            }
+            return seat
+        }
         val on = marker(account).exists()
         val seat = Seat(account, sources, if (on) RequestsNow.NotYet else RequestsNow.Off)
         if (on) order.trySend { arrive(seat) }
@@ -142,6 +154,7 @@ class RequestsOwners internal constructor(
     inner class Seat internal constructor(internal val account: Account, internal val sources: RequestsSources, first: RequestsNow) {
         internal val state = MutableStateFlow(first)
         @Volatile internal var left = false
+        internal var follow: Job? = null
 
         /** Where the account's requests stand for this sign-in. */
         val now: StateFlow<RequestsNow> = state.asStateFlow()
@@ -150,7 +163,7 @@ class RequestsOwners internal constructor(
          *  are found again), switched on. Returns when they are there, or the sign-in has
          *  ended meanwhile. */
         suspend fun turnOn() {
-            if (left) return
+            if (left || (router != null && router.forAccount(account)?.direct != true)) return
             if (state.value == RequestsNow.Off) state.value = RequestsNow.NotYet
             val done = CompletableDeferred<Unit>()
             order.trySend {
@@ -169,8 +182,40 @@ class RequestsOwners internal constructor(
         /** The sign-in has ended. What it left is finished behind it, in its turn. */
         fun leave() {
             left = true
+            follow?.cancel()
             state.value = RequestsNow.Off
             order.trySend { depart(this) }
+        }
+    }
+
+    private suspend fun routeChanged(seat: Seat, route: RequestsRoute) {
+        if (seat.left || route !== router?.route?.value) return
+        val choice = router.forAccount(seat.account)
+        val existing = owners[seat.account.key]
+        if (choice == null) {
+            if (existing?.seat === seat) {
+                existing.requests.select(null)
+                existing.present(null)
+            }
+            seat.state.value = RequestsNow.Unavailable((route as? RequestsRoute.Unavailable)?.words.orEmpty())
+            return
+        }
+        if (choice.direct && !marker(seat.account).exists()) {
+            if (existing?.seat === seat) {
+                existing.requests.select(choice)
+                existing.present(null)
+            }
+            seat.state.value = RequestsNow.Off
+            return
+        }
+        val owner = owner(seat.account)
+        owner.requests.select(choice)
+        if (choice.direct) {
+            arrive(seat)
+        } else {
+            owner.seat = seat
+            owner.present(seat.sources)
+            seat.state.value = RequestsNow.On(owner.requests, owner.pages, server = true)
         }
     }
 
@@ -178,6 +223,10 @@ class RequestsOwners internal constructor(
         // (Everything that was to be finished before this has been: it is this one's turn.)
         if (seat.left) return
         val owner = withContext(io) { owner(seat.account) }
+        if (router != null) {
+            val choice = router.forAccount(seat.account)?.takeIf { it.direct } ?: return
+            owner.requests.select(choice)
+        }
         if (switchOn) owner.requests.switch(true)
         // (The toggle was turned off and the app stopped before that was all written down.)
         if (owner.requests.isOff()) {
@@ -210,6 +259,7 @@ class RequestsOwners internal constructor(
         // order and a sign-in is over before the next begins, so this is never so; with
         // no seat at all, they were switched off, or the sign-in ended before its turn.)
         if (owner.seat != null && owner.seat !== seat) return
+        val server = owner.requests.serverMode
         owner.seat = null
         owner.present(null)
         // (Whatever is thrown on the way, the account leaves: and the line moves on, see
@@ -217,7 +267,7 @@ class RequestsOwners internal constructor(
         try {
             owner.pages.settled()
         } finally {
-            owner.requests.leave()
+            if (!server) owner.requests.leave() else owner.requests.select(null)
         }
     }
 

@@ -23,6 +23,7 @@
 
 mod client;
 mod listening;
+mod nexus_requests;
 mod standin;
 mod pages;
 mod requests;

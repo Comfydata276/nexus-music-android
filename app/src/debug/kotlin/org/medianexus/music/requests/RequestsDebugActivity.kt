@@ -218,6 +218,7 @@ class RequestsDebugActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        graph.requestsRouter.refresh()
         showing = scope.launch {
             // (The account may still be coming up.)
             graph.accounts.state.collectLatest { account ->
@@ -229,6 +230,7 @@ class RequestsDebugActivity : Activity() {
                     when (now) {
                         RequestsNow.Off -> show("no requests here: the toggle is off (or the build was made without them)\nlast: $last")
                         RequestsNow.NotYet -> show("requests: not yet (${RequestsWords.NOT_YET})")
+                        is RequestsNow.Unavailable -> show(now.words)
                         is RequestsNow.On -> now.requests.state.collectLatest { state -> show(describe(now.requests, state)) }
                     }
                 }

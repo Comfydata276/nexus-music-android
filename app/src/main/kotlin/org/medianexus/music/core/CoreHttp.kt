@@ -15,6 +15,12 @@ import kotlin.concurrent.withLock
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import org.medianexus.music.nexus.FeatureEndpoint
+import org.medianexus.music.nexus.FeaturePost
+import org.medianexus.music.nexus.FeatureResult
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -142,6 +148,8 @@ internal object CoreHttp {
      * of the library's own sentence, as in "Couldn't reach Lidarr. Offline mode is on.").
      * Set by whoever owns the signed-in account; asked before every request.
      */
+    @Volatile var directRequests: (() -> FeatureEndpoint?)? = null
+
     @Volatile var unsent: () -> String? = { null }
 
     /** For the tests, which stand in for MusicBrainz and ListenBrainz on this machine:
@@ -446,6 +454,8 @@ internal object CoreHttp {
 
     /** Each service's connections: kept as long as the Windows app keeps them, and no longer
      *  (MusicBrainz closes one that has been idle for fifteen seconds). */
+    private class DirectSend(val stillSelected: () -> Boolean)
+
     private class Lines(dress: (OkHttpClient.Builder) -> Unit) {
         private val base: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(CONNECT_SECONDS, TimeUnit.SECONDS)
@@ -468,6 +478,8 @@ internal object CoreHttp {
                 .apply {
                     if (!public) eventListenerFactory { call -> Way().also { ways[call] = it } }
                     if (!public) addNetworkInterceptor { chain ->
+                        val guard = chain.request().tag(DirectSend::class.java)
+                        if (guard != null && !guard.stillSelected()) throw IOException(STOPPED_WORDS)
                         chain.connection()?.socket()?.inetAddress?.let { family.set(if (it is java.net.Inet6Address) "IPv6" else "IPv4") }
                         chain.proceed(chain.request())
                     }
@@ -514,6 +526,7 @@ internal object CoreHttp {
         private val wholeMillis: Long? = null,
     ) {
         private val began = System.nanoTime()
+        internal val directAtStart = directRequests?.invoke()
 
         /** The limit a request of this goes under now, not having been stopped; [SPENT] if
          *  the whole of its time has gone, and then no request is made at all. */
@@ -532,6 +545,13 @@ internal object CoreHttp {
         /** The library has said this is to be seen through, and it had not been stopped. */
         private var seenThrough = false
 
+        @Volatile var nexus: Pair<FeatureEndpoint, Job>? = null
+            private set
+
+        fun useNexus(endpoint: FeatureEndpoint) = lock.withLock {
+            if (nexus == null) nexus = endpoint to Job().also { if (stopped) it.cancel() }
+        }
+
         val isStopped: Boolean get() = lock.withLock { stopped }
 
         /** The library's "keep going": honoured unless a stop came first. */
@@ -547,6 +567,7 @@ internal object CoreHttp {
                 stoppedNow.signalAll()
                 flying.toList()
             }
+            nexus?.second?.cancel()
             if (!changing) {
                 cut.forEach { it.cancel() }
             } else if (cut.isNotEmpty()) {
@@ -620,6 +641,7 @@ internal object CoreHttp {
 
     private fun end(doing: Doing) {
         doings.remove(doing.id)
+        doing.nexus?.second?.cancel()
         publishers.remove(doing.id)
         // (The library lets go of every answer it was given; this is for one it didn't.)
         bodies.entries.removeIf { (_, held) ->
@@ -858,6 +880,46 @@ internal object CoreHttp {
         held.doing?.leave(held.call)
     }
 
+    internal fun useNexus(operation: Long, endpoint: FeatureEndpoint) {
+        doings[operation]?.useNexus(endpoint)
+    }
+
+    private val nexusRandom by lazy { java.security.SecureRandom() }
+
+    /** The shared stand-in calls this on a Requests worker. The driver owns the HTTP line. */
+    @Suppress("unused")
+    fun nexusPost(operation: Long, body: ByteArray): ByteArray {
+        val doing = doings[operation] ?: return stopped
+        val (endpoint, job) = doing.nexus ?: return stopped
+        if (!endpoint.active() || doing.isStopped) return stopped
+        return try {
+            val result = runBlocking {
+                withContext(job) {
+                    endpoint.nexus.postFeature(endpoint.scope, FeaturePost("/nexus/api/requests", body.decodeToString()), endpoint::active)
+                }
+            }
+            when (result) {
+                is FeatureResult.Checked -> {
+                    if (!endpoint.active() || doing.isStopped) return stopped
+                    byteArrayOf(FINE, (result.status shr 8).toByte(), result.status.toByte()) + result.body.encodeToByteArray()
+                }
+                FeatureResult.Stopped -> stopped
+                FeatureResult.Invalid, FeatureResult.Unreachable -> failed(NOT_MADE)
+            }
+        } catch (_: CancellationException) {
+            stopped
+        } finally {
+            body.fill(0)
+        }
+    }
+
+    @Suppress("unused")
+    fun nexusId(operation: Long): Long {
+        val doing = doings[operation] ?: return 0
+        if (doing.isStopped || doing.nexus?.first?.active() != true) return 0
+        return nexusRandom.nextLong().ushr(1).coerceAtLeast(1)
+    }
+
     /** Makes one request. */
     fun send(frame: ByteArray): ByteArray = try {
         sent(json.decodeFromString(Asked.serializer(), frame.decodeToString()))
@@ -889,6 +951,12 @@ internal object CoreHttp {
     private fun sending(asked: Asked): ByteArray {
         unsent()?.let { return failed(it) }
         val doing: Doing? = if (asked.operation == 0L) null else doings[asked.operation] ?: return stopped
+        val select = directRequests?.takeIf { asked.line == "lidarr" }
+        val permit = if (select != null) {
+            val started = if (doing == null) select() else doing.directAtStart
+            if (started == null || select() !== started) return stopped
+            DirectSend { select() === started && doing?.isStopped != true && unsent() == null }
+        } else null
         when (doing?.allowance()) {
             Doing.REFUSED -> return stopped
             Doing.SPENT -> {
@@ -907,6 +975,7 @@ internal object CoreHttp {
         if (asked.line != "lidarr" && publicOnly && isInside(url.host)) return failed(INSIDE)
         val body = asked.body.orEmpty().encodeToByteArray()
         val request = Request.Builder().url(url).apply {
+            if (permit != null) tag(DirectSend::class.java, permit)
             var named = false
             var accepts = false
             for (header in asked.headers) {
