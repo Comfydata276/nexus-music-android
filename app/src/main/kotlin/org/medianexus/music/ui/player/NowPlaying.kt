@@ -177,7 +177,7 @@ fun NowPlaying(onClose: () -> Unit) {
                 if (now != null && window.width > window.height) {
                     IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
                 }
-                if (now != null && !org.medianexus.music.playback.Steered.foreign(now)) {
+                if (now != null) {
                     IconButton(R.drawable.ic_ellipsis, stringResource(R.string.more_options_for, now.title), { ui.menu = SongMenu(now) }, tint = colors.text)
                 } else {
                     Spacer(Modifier.width(Theme.dimens.touch))
@@ -284,8 +284,7 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
                 }
             }
         }
-        // (A song of someone else's jam that this library doesn't have can't be liked here.)
-        if (!org.medianexus.music.playback.Steered.foreign(now)) IconButton(
+        IconButton(
             if (liked) R.drawable.ic_heart_fill else R.drawable.ic_heart,
             stringResource(if (liked) R.string.remove_from_liked else R.string.add_to_liked),
             {
@@ -318,8 +317,6 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
         overflow = TextOverflow.Ellipsis,
     )
     SeekBar()
-    // Steering another of the person's devices: its volume (M6).
-    if (org.medianexus.music.jam.JamBuild.on) org.medianexus.music.ui.jam.VolumeThere()
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         IconButton(
             R.drawable.ic_shuffle,
@@ -349,9 +346,6 @@ private fun ColumnScope.Controls(showAlbum: Boolean, queueButton: Boolean = true
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         SleepButton()
         IconButton(R.drawable.ic_mic_vocal, stringResource(if (lyrics) R.string.hide_lyrics else R.string.lyrics), onLyrics, active = lyrics)
-        // Windows' "Connect to a device": the person's other devices, and jams (M6); in a
-        // build with the new linking whether or not it has jams. With neither, not there.
-        if (org.medianexus.music.ui.link.ConnectView.reachable(jams = org.medianexus.music.jam.JamBuild.on, link = org.medianexus.music.link.LinkBuild.on)) org.medianexus.music.ui.jam.ConnectButton()
         Spacer(Modifier.weight(1f))
         if (queueButton) IconButton(R.drawable.ic_list_music, stringResource(R.string.queue), { ui.queueOpen = true }, tint = colors.text)
     }

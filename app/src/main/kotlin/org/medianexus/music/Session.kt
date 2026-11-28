@@ -1,13 +1,12 @@
 package org.medianexus.music
 
-import java.util.concurrent.atomic.AtomicLong
+import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.FlowCollector
@@ -20,16 +19,16 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
-import org.medianexus.music.net.ApiError
+import org.medianexus.music.net.MusicLogin
 import org.medianexus.music.net.OfflineSwitch
-import org.medianexus.music.net.ServerInfo
 import org.medianexus.music.net.Subsonic
-import org.medianexus.music.net.addressesToTry
-import org.medianexus.music.net.splitScheme
-import org.medianexus.music.net.unencryptedBeyondHome
+import org.medianexus.music.net.normalizeServerUrl
+import org.medianexus.music.nexus.Folders
+import org.medianexus.music.nexus.KeptAccount
+import org.medianexus.music.nexus.KeptMusic
+import org.medianexus.music.nexus.NexusKept
 import org.medianexus.music.store.Account
 import org.medianexus.music.store.AccountDirs
-import org.medianexus.music.store.PasswordVault
 import org.medianexus.music.store.SettingsStore
 import org.medianexus.music.store.accountKey
 
@@ -41,36 +40,48 @@ sealed interface SessionState {
     data class SignedIn(val account: Account, val api: Subsonic) : SessionState
 }
 
-/** How the sign-in screen's request is going. `suggestHttp` is set when an address typed
- *  without a scheme got nowhere over HTTPS and wasn't tried over plain HTTP, because it is
- *  beyond the home network: the screen says how to ask for plain HTTP. */
+/**
+ * Where the phone's own part of a sign-in stands: what the Nexus server's machine says of signing
+ * in is its own (`Nexus.shown`); this is only what happens on the phone after the backend has
+ * handed over a music login, before the account is published.
+ */
 data class SignInState(
-    val busy: Boolean = false,
-    val error: String? = null,
-    val suggestHttp: Boolean = false,
-    /** The server couldn't be reached at all (as against refusing, or not being Navidrome). */
-    val unreachable: Boolean = false,
-    /** The server said yes, but the settings naming the account couldn't be written, so
-     *  nobody was signed in. */
-    val settingsNotSaved: Boolean = false,
-    /** The server said yes, but the pins and choices of the account that was signed in
-     *  before couldn't be put away on the phone, so nobody was signed in. */
+    /** The music server the backend handed over leads inside the house on this network, and the
+     *  app may not reach it (Android 17): the screen explains and asks before it is connected to
+     *  (6.4). Answered either way, [Session.continueSignIn] carries on. */
+    val musicNeedsPermission: Boolean = false,
+    /** The music server could not be reached at all, and the permission may be why: the screen
+     *  says so and offers to ask. [Session.continueSignIn] carries on either way. */
+    val musicMayBeWhy: Boolean = false,
+    /** Signed in at the backend, but the person's choices of the account before could not be
+     *  put away on the phone, so nobody was signed in here. */
     val choicesNotPutAway: Boolean = false,
 )
 
 /**
- * The signed-in account and its client for the server. Signing in and out happen here, not
- * in a screen, so they carry on through a screen being rebuilt and work for the playback
- * service with no screen at all.
+ * The signed-in account and its client for the music server. **Signing in is the Nexus
+ * server's** (`nexus/Nexus.kt`, the shared core's machine): this is what the phone does with
+ * what it hands over, and how a start begins from what it left.
  *
- * Every change of who is signed in (reading the saved sign-in at start-up, signing in,
- * signing out) is a step in one queue, run one at a time in the order asked for. So a
- * restore can't land after a sign-out, a sign-out's deletion can't land after the next
- * sign-in has saved its password, and `state` only changes once the password on disk agrees.
+ * - **A cold start reads what sign-in left on the phone and plays** (the backend design's 6.1):
+ *   the music login, kept sealed with the rest of the sign-in, and who it is for. Nothing is
+ *   asked of the backend first, and nothing of the shared library is waited for; the client for
+ *   the music server is made from the salt and token the backend handed over ([MusicLogin]).
+ * - **A music login handed over** ([handed]) is put in place in the client already published if
+ *   it is the same music server and user (a renewal: nothing of the account is made again), and
+ *   otherwise taken on as an account: its folder found ([Folders]), its choices taken on, then
+ *   published.
+ * - **Its music login forgotten** ([forgotten]: signed out here, or by the backend) ends the
+ *   account on the phone at once: nobody is signed in; the queue and Recently played go;
+ *   downloads stay, under that person.
+ *
+ * Every change of who is signed in is a step in one queue, run one at a time in the order asked
+ * for, so a start's restore can't land after a sign-out.
  */
 class Session(
     private val settings: SettingsStore,
-    private val vault: PasswordVault,
+    private val kept: NexusKept,
+    private val folders: Folders,
     private val http: OkHttpClient,
     private val offline: OfflineSwitch,
     private val dirsFor: (key: String) -> AccountDirs,
@@ -81,65 +92,49 @@ class Session(
      *  its key, before it is said to be signed in: the account before's are put away first
      *  (`sync/Belongs.kt`). False if that couldn't be done: then nobody is signed in. */
     private val takeOn: suspend (key: String) -> Boolean = { true },
+    /** Whether the music server at an address leads inside the house on this network and the
+     *  local-network permission is not held (6.4): asked before it is first connected to. */
+    private val needsPermission: suspend (address: String) -> Boolean = { false },
+    /** Whether a failure to reach an address may be for want of that permission. */
+    private val mayBeWhy: suspend (address: String) -> Boolean = { false },
+    /** Told the number of a music login the music server refused (the shared core's rule). */
+    private val refusedLogin: (count: Long) -> Unit = {},
 ) {
     private val current = MutableStateFlow<SessionState>(SessionState.Restoring)
     val state: StateFlow<SessionState> = current.asStateFlow()
 
-    /** The client for the signed-in account; null when nobody is (or not yet known). Read
-     *  straight from `state`, so the two can never disagree. */
+    /** The client for the signed-in account; null when nobody is (or not yet known). */
     val api: StateFlow<Subsonic?> = ApiOf(current)
 
     private val signingIn = MutableStateFlow(SignInState())
     val signIn: StateFlow<SignInState> = signingIn.asStateFlow()
-    private var signInJob: Job? = null
 
     /** The steps that change who is signed in, run by one consumer (see the class). */
     private val steps = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
-    /** Moves on at every sign-out, so a sign-in or restore begun before it can tell it has
-     *  been overtaken and must not sign anyone in. */
-    private val generation = AtomicLong(0)
-
-    /** Held while a sign-out moves `generation` on, and while a sign-in or restore looks at
-     *  it and says "signed in": so the look and the saying are one step, and a sign-out is
-     *  either before both (nobody is signed in) or after both (its own step signs them out). */
-    private val gate = Any()
-
-    /** Work that belongs to the signed-in session (warming up connections), stopped when it
-     *  ends. Only touched by steps. */
-    private var sessionWork: Job? = null
+    /** A login handed over and waiting for the person to answer a question about its music
+     *  server (see [SignInState]): in memory only. */
+    private var waiting: Pair<KeptMusic, KeptAccount>? = null
 
     init {
         scope.launch(io) { for (step in steps) step() }
-        // The password is opened by the Keystore, which can take a moment: not on the main
-        // thread. Nothing is asked of the server here; pages show what's kept and check after.
-        val asked = generation.get()
+        // The sign-in is opened by the Keystore, which can take a moment: not on the main
+        // thread. Nothing is asked of the backend or the music server here.
         inOrder {
-            val saved = settings.value
-            val password = if (saved.server.isNotEmpty() && saved.username.isNotEmpty()) {
-                vault.load(saved.server, saved.username)
-            } else {
-                null
-            }
-            val restored = password?.let { signedIn(Subsonic(saved.server, saved.username, it, http, offline)) }
-            // **Through the same door as a typed sign-in**: the account is taken on before
-            // it is said to be signed in. If the choices in the settings are another
-            // account's and can't be put away, nobody is signed in, and the sign-in screen
-            // says why; the password stays, for the next start.
-            if (restored != null && generation.get() == asked && !takeOn(restored.account.key)) {
-                if (generation.get() == asked) signingIn.value = SignInState(choicesNotPutAway = true)
+            val parts = kept.load()
+            val music = parts.music
+            val account = parts.account
+            val restored = if (music != null && account != null) signedIn(music, account) else null
+            // **Through the same door as a sign-in**: the account is taken on before it is said
+            // to be signed in. If the choices in the settings are another account's and can't
+            // be put away, nobody is signed in, and the sign-in screen says why.
+            if (restored != null && !takeOn(restored.account.key)) {
+                signingIn.value = SignInState(choicesNotPutAway = true)
                 current.value = SessionState.SignedOut
                 return@inOrder
             }
-            if (restored == null || !publish(asked, restored)) current.value = SessionState.SignedOut
+            current.value = restored ?: SessionState.SignedOut
         }
-    }
-
-    /** Says "signed in", unless a sign-out has been asked for since `asked` was read. */
-    private fun publish(asked: Long, state: SessionState.SignedIn): Boolean = synchronized(gate) {
-        if (generation.get() != asked) return false
-        current.value = state
-        true
     }
 
     /** Waits until the saved sign-in has been read. */
@@ -159,149 +154,128 @@ class Session(
         return done
     }
 
-    private fun signedIn(api: Subsonic): SessionState.SignedIn {
-        val key = accountKey(api.server, api.username)
+    /** The account for a music login and who it is for: its folder, and a client made from the
+     *  salt and token handed over. */
+    private fun signedIn(music: KeptMusic, who: KeptAccount): SessionState.SignedIn {
+        val login = MusicLogin(music.handed).also { login -> login.onRefused = { refusedLogin(it.count) } }
+        val api = Subsonic(music.address, music.name, login, http, offline)
+        val key = folders.of(Folders.personOf(who))
         return SessionState.SignedIn(Account(api.server, api.username, key, dirsFor(key)), api)
     }
 
-    /** What was typed for a sign-in that is waiting on a question (see [hold]). */
-    private class Waiting(val server: String, val username: String, val password: String)
-
-    private var waiting: Waiting? = null
-
     /**
-     * Holds a sign-in that is waiting for the person to answer Android's local-network
-     * question: in memory only, here rather than in the screen, which Android may rebuild
-     * (and so empty) while its question is up. [resumeWaiting] signs in with it; [dropWaiting]
-     * lets it go. False, and nothing held, if one is already waiting: only one question is
-     * open at a time. After the app has been killed there is nothing to resume: the screen
-     * simply asks again.
+     * The Nexus server's machine handed the player this music login (`Hand::Login`), for `who`.
+     * On the machine's thread: queued, never waited for there.
      */
-    fun hold(server: String, username: String, password: String): Boolean = synchronized(gate) {
-        if (waiting != null) return false
-        waiting = Waiting(server, username, password)
-        true
-    }
-
-    /** The question has been answered: the sign-in that waited on it goes ahead. False if
-     *  nothing was waiting. */
-    fun resumeWaiting(): Boolean {
-        val held = synchronized(gate) { waiting.also { waiting = null } } ?: return false
-        signIn(held.server, held.username, held.password)
-        return true
-    }
-
-    /** The question was abandoned: what was typed is let go. */
-    fun dropWaiting() {
-        synchronized(gate) { waiting = null }
-    }
-
-    /** Whether a sign-in is waiting on a question. */
-    val isWaiting: Boolean get() = synchronized(gate) { waiting != null }
-
-    /**
-     * Signs in. An address typed without "http://" or "https://" is tried over HTTPS first,
-     * and over plain HTTP only if nothing answers there and the address is on the home
-     * network (see `addressesToTry`).
-     */
-    fun signIn(server: String, username: String, password: String) {
-        if (signingIn.value.busy) return
-        signingIn.value = SignInState(busy = true)
-        val name = username.trim()
-        val asked = generation.get()
-        signInJob = scope.launch {
-            var answer: Result<Pair<Subsonic, ServerInfo>> = Result.failure(ApiError.Network("No address was given."))
-            val addresses = addressesToTry(server)
-            for ((index, address) in addresses.withIndex()) {
-                // Asking to sign in always goes out, offline mode or not, as on Windows where
-                // signing in makes a client of its own. The client kept afterwards shares the
-                // app's switch, so offline mode stays as it was.
-                val client = Subsonic(address, name, password, http, OfflineSwitch())
-                // HTTPS was a guess: if nothing answers there soon, go on to plain HTTP
-                // without waiting out the full time a real server is given.
-                if (index + 1 < addresses.size && !client.answersWithin(GUESS_LIMIT_MILLIS)) continue
-                answer = try {
-                    Result.success(client to client.ping())
-                } catch (e: ApiError) {
-                    Result.failure(e)
-                }
-                // Signed in, or the server is there and says no: either way that settles it.
-                val error = answer.exceptionOrNull()
-                if (error == null || error is ApiError.Server) break
+    fun handed(music: KeptMusic, who: KeptAccount?) {
+        inOrder {
+            val now = current.value as? SessionState.SignedIn
+            if (now != null && normalizeServerUrl(music.address) == now.api.server && music.name == now.api.username) {
+                // A renewal: the same music server and user, a new salt and token (or the same
+                // one, at a start). Put in place in the client every request uses, at once.
+                now.api.login.renew(music.handed)
+                return@inOrder
             }
-            val client = answer.getOrNull()?.first?.sharing(offline)
-            if (client == null) {
-                val error = answer.exceptionOrNull()
-                // HTTPS was the only thing tried, and not because the person said so.
-                val onlyGuessedHttps = addresses.size == 1 && splitScheme(server.trim()).first == null
-                if (generation.get() == asked) {
-                    signingIn.value = SignInState(error = error?.message, suggestHttp = onlyGuessedHttps && error !is ApiError.Server, unreachable = error is ApiError.Network && !error.answered)
-                }
-                return@launch
+            if (who == null) return@inOrder
+            // **6.4, for the music server's address as the backend handed it**: judged before
+            // it is first connected to. The screen explains and asks, then [continueSignIn].
+            if (needsPermission(music.address)) {
+                waiting = music to who
+                signingIn.value = SignInState(musicNeedsPermission = true)
+                return@inOrder
             }
-            inOrder {
-                // Signed out while the server was being asked: that sign-out wins.
-                if (generation.get() != asked) return@inOrder
-                // The settings name the account first, and the password is saved only once
-                // they're on disk: a failure between the two never leaves a new account's
-                // password beside settings that name the old one. Without the password the
-                // next start simply asks for it.
-                settings.update { it.copy(server = client.server, username = name) }
-                if (!settings.flush()) {
-                    if (generation.get() == asked) signingIn.value = SignInState(settingsNotSaved = true)
-                    return@inOrder
-                }
-                // Writing the settings took a moment, and saving the password takes another:
-                // a sign-out asked for during either still wins. Its own step, queued behind
-                // this one, removes whatever password was saved here.
-                if (generation.get() != asked) return@inOrder
-                // The account before's choices are put away, and this one's brought out,
-                // before anyone is signed in and before the password is saved: if they
-                // can't be, this account would share them as its own.
-                val account = signedIn(client)
-                if (!takeOn(account.account.key)) {
-                    if (generation.get() == asked) signingIn.value = SignInState(choicesNotPutAway = true)
-                    return@inOrder
-                }
-                if (generation.get() != asked) return@inOrder
-                val kept = withContext(io) { vault.save(client.server, name, password) }
-                if (!publish(asked, account)) return@inOrder
-                if (!kept) notices.post(Notice.PasswordNotSaved)
-                if (unencryptedBeyondHome(client.server)) notices.post(Notice.SignedInWithoutEncryption)
-                signingIn.value = SignInState()
-                // Have connections open before the first taps need them.
-                sessionWork?.cancel()
-                sessionWork = scope.launch { client.warmUp(WARM_CONNECTIONS) }
-            }.await()
+            adopt(music, who, judged = false)
         }
     }
 
-    /**
-     * Signs out and forgets the password. The address and username stay, ready for signing
-     * in again. Done once the saved password is gone from the phone; if it can't be removed,
-     * the account stays signed in (it would be back at the next start anyway) and a notice
-     * says so. The job returned finishes when the sign-out has.
-     */
-    fun signOut(): Job {
-        synchronized(gate) { generation.incrementAndGet() }
-        signInJob?.cancel()
+    /** The question about the music server has been answered (either way), or the person chose
+     *  to carry on: the sign-in that waited on it goes on. */
+    fun continueSignIn() {
+        inOrder {
+            val (music, who) = waiting ?: return@inOrder
+            waiting = null
+            adopt(music, who, judged = true)
+        }
+    }
+
+    /** Takes on the account a music login is for, and publishes it. In a step. */
+    private suspend fun adopt(music: KeptMusic, who: KeptAccount, judged: Boolean) {
+        val person = Folders.personOf(who)
+        // **Section 11's carry-over, once:** the first sign-in on this version, if the login
+        // names the same music server and user as the sign-in this phone had before, is given
+        // that folder (its downloads, settings and queue). The earlier sign-in is forgotten
+        // whatever happens, so that nobody later is given it.
+        val before = settings.value
+        if (before.server.isNotEmpty() || before.username.isNotEmpty()) {
+            if (normalizeServerUrl(music.address) == before.server && music.name == before.username && folders.of(person) == person) {
+                folders.carry(person, accountKey(before.server, before.username))
+            }
+            settings.update { it.copy(server = "", username = "") }
+        }
+        val account = signedIn(music, who)
+        // **And again after a failure in which no connection was opened** (6.4): one look at
+        // the music server before the account is published, a few seconds at most. Reached,
+        // refused, or not the permission's fault: on it goes.
+        if (!judged) {
+            val failed = withContext(io) {
+                kotlinx.coroutines.withTimeoutOrNull(LOOK_MILLIS) {
+                    try {
+                        account.api.ping()
+                        null
+                    } catch (e: org.medianexus.music.net.ApiError.Network) {
+                        e
+                    } catch (e: org.medianexus.music.net.ApiError) {
+                        null
+                    }
+                }
+            }
+            if (failed != null && !failed.answered && mayBeWhy(music.address)) {
+                waiting = music to who
+                signingIn.value = SignInState(musicMayBeWhy = true)
+                return
+            }
+        }
+        if (!takeOn(account.account.key)) {
+            signingIn.value = SignInState(choicesNotPutAway = true)
+            return
+        }
+        settings.update { it.copy(folder = account.account.key) }
         signingIn.value = SignInState()
-        return inOrder {
-            sessionWork?.cancel()
-            sessionWork = null
-            if (withContext(io) { vault.delete() }) {
-                notices.dismiss(Notice.SignOutFailed)
-                notices.dismiss(Notice.SignedInWithoutEncryption)
-                current.value = SessionState.SignedOut
-            } else {
-                notices.post(Notice.SignOutFailed)
-            }
+        current.value = account
+    }
+
+    /** The machine set the login of this number aside (`Hand::Refused`). */
+    fun refused(count: Long) {
+        (current.value as? SessionState.SignedIn)?.api?.login?.refuseCount(count)
+    }
+
+    /**
+     * The music login is forgotten (`Forget::Music`: signed out here, or by the backend). Nobody
+     * is signed in from now; the queue and Recently played go; downloads stay. The job returned
+     * finishes when it has.
+     */
+    fun forgotten() = inOrder {
+        waiting = null
+        signingIn.value = SignInState()
+        val was = current.value as? SessionState.SignedIn
+        current.value = SessionState.SignedOut
+        settings.update { it.copy(folder = "") }
+        if (was != null) withContext(io) {
+            for (name in listOf("queue.json", "queue-place.json", "history.json")) File(was.account.dirs.data, name).delete()
         }
     }
+
+    /** What is kept of the sign-in (for the tests, which stand in for the Nexus server's machine
+     *  where it is not what they are about). */
+    internal val keptForTests: NexusKept get() = kept
+
+    /** What the machine said to keep could not be written: signed in for now, asked again at
+     *  the next start. */
+    fun notKept() = notices.post(Notice.SignInNotKept)
 
     private companion object {
-        const val GUESS_LIMIT_MILLIS = 5_000L
-        const val WARM_CONNECTIONS = 6
+        /** The look at the music server before an account is published (see [adopt]). */
+        const val LOOK_MILLIS = 6_000L
     }
 }
 

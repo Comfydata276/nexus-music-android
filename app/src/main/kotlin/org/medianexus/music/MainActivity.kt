@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         // Closed for good (not rebuilt) with Android's local-network question up: it will
-        // never be answered here, and a sign-in waiting on it lets go of its password.
+        // never be answered here, and what waited on it is let go.
         if (isFinishing) graph.localAccess.abandoned()
         super.onDestroy()
     }
@@ -115,7 +115,7 @@ private fun Root(graph: Graph) {
                 // as the window had.
                 SessionState.Restoring -> Unit
                 SessionState.SignedOut -> {
-                    SignInScreen(graph.session, graph.localAccess, settings.server, settings.username)
+                    SignInScreen(graph)
                     // Such as the settings having been found damaged, which is likely why
                     // the sign-in is being asked for.
                     Column(Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.navigationBars)) {

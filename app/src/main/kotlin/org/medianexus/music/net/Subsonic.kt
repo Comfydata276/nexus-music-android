@@ -3,8 +3,6 @@ package org.medianexus.music.net
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
-import java.security.MessageDigest
-import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 import java.security.cert.CertPathBuilderException
 import java.security.cert.CertPathValidatorException
@@ -48,25 +46,16 @@ class OfflineSwitch(initially: Boolean = false) {
  *
  * Every call suspends; the network and the reading of answers happen off the main thread.
  */
-class Subsonic private constructor(
+class Subsonic(
     server: String,
     val username: String,
-    private val salt: String,
-    private val token: String,
+    /** The music login every request sends, as the Nexus server handed it (see [MusicLogin]):
+     *  shared with every copy of this client. */
+    val login: MusicLogin,
     private val http: OkHttpClient,
-    private val offline: OfflineSwitch,
-    private val io: CoroutineDispatcher,
+    private val offline: OfflineSwitch = OfflineSwitch(),
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
-    constructor(
-        server: String,
-        username: String,
-        password: String,
-        http: OkHttpClient,
-        offline: OfflineSwitch = OfflineSwitch(),
-        salt: String = randomSalt(),
-        io: CoroutineDispatcher = Dispatchers.IO,
-    ) : this(server, username, salt, md5Hex(password + salt), http, offline, io)
-
     /** The server's address, tidied (see `normalizeServerUrl`). */
     val server: String = normalizeServerUrl(server)
 
@@ -78,12 +67,12 @@ class Subsonic private constructor(
     @Volatile var onReached: ((Boolean) -> Unit)? = null
 
     /** The same sign-in, under another offline switch. */
-    fun sharing(offline: OfflineSwitch): Subsonic = Subsonic(server, username, salt, token, http, offline, io)
+    fun sharing(offline: OfflineSwitch): Subsonic = Subsonic(server, username, login, http, offline, io)
 
     /** The same sign-in, asked by another way out (a client bound to one network: see
      *  `BoundRoute`). What it finds says nothing about the phone's own route, and is not
      *  told to [onReached]. */
-    fun over(client: OkHttpClient): Subsonic = Subsonic(server, username, salt, token, client, offline, io)
+    fun over(client: OkHttpClient): Subsonic = Subsonic(server, username, login, client, offline, io)
 
     /**
      * The same sign-in, for requests that must never be sent twice (a change to a playlist:
@@ -96,7 +85,7 @@ class Subsonic private constructor(
      * Still told to [onReached].
      */
     fun once(): Subsonic = Subsonic(
-        server, username, salt, token,
+        server, username, login,
         http.newBuilder().retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).addNetworkInterceptor(AnswerOnce).build(),
         offline, io,
     ).also { it.onReached = onReached }
@@ -112,15 +101,6 @@ class Subsonic private constructor(
         }
     }
 
-    /**
-     * The sign-in as the shared library's own requests to this server carry it, for linking
-     * the person's devices (`core/Core.linkLook`): the address of `/rest`, the sign-in as
-     * the parameters of a form, and the account's name. It holds the token: handed to the
-     * library and nowhere else, never logged.
-     */
-    fun linkAccount(): Triple<String, String, String> =
-        Triple("$server/rest", "u=${encode(username)}&t=$token&s=$salt&v=$API_VERSION&c=${encode(CLIENT_NAME)}", username)
-
     /** In offline mode nothing is sent: requests fail straight away. */
     fun setOffline(on: Boolean) {
         offline.on = on
@@ -135,12 +115,12 @@ class Subsonic private constructor(
     // ------------------------------------------------------------------------------------
 
     /** `app` is the name the request gives for this app. */
-    private fun url(endpoint: String, params: List<Pair<String, String>>, app: String = CLIENT_NAME): String {
+    private fun url(endpoint: String, params: List<Pair<String, String>>, app: String = CLIENT_NAME, pair: Handed = login.now): String {
         val url = StringBuilder()
             .append(server).append("/rest/").append(endpoint)
             .append("?u=").append(encode(username))
-            .append("&t=").append(token)
-            .append("&s=").append(salt)
+            .append("&t=").append(pair.token)
+            .append("&s=").append(pair.salt)
             .append("&v=").append(API_VERSION)
             .append("&c=").append(encode(app))
             .append("&f=json")
@@ -187,7 +167,11 @@ class Subsonic private constructor(
         serializer: KSerializer<T>?,
         app: String = CLIENT_NAME,
     ): Answer<T> {
-        val url = url(endpoint, params, app)
+        // **A refused music login is never sent again as it was** (see [MusicLogin]): one check,
+        // here, before anything leaves. It is failed as the server failed it, unsent.
+        val pair = login.now
+        if (login.isRefused) throw ApiError.Server(40L, "")
+        val url = url(endpoint, params, app, pair)
         // A long list of song ids can outgrow what servers and proxies accept in an address,
         // so those go in the body of a POST instead (the OpenSubsonic "formPost" extension).
         val question = url.indexOf('?')
@@ -218,7 +202,11 @@ class Subsonic private constructor(
             val error = answer.error as? JsonObject
             val code = (error?.get("code") as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: 0
             val message = (error?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "unknown error"
-            throw ApiError.Server(code, safeServerMessage(message))
+            val refused = ApiError.Server(code, safeServerMessage(message))
+            // "Wrong name or password" (40, and only that: the shared core's rule): that pair is
+            // never sent again, and the Nexus server's part is told, once, and renews it.
+            if (refused.code == 40L) login.refuse(pair)
+            throw refused
         }
         if (answer.sentNull) throw ApiError.NotSubsonic("Unexpected response from $endpoint (at $).")
         return answer
@@ -257,7 +245,7 @@ class Subsonic private constructor(
      *  username counts: it is half of one), the address or a chunk of the request (some
      *  servers echo it back): then nothing. */
     private fun safeServerMessage(text: String): String {
-        val giveaways = listOfNotNull(token, salt, host, username).filter { it.isNotEmpty() }
+        val giveaways = listOfNotNull(login.now.token, login.now.salt, host, username).filter { it.isNotEmpty() }
         val risky = text.length > 200 || "://" in text || '{' in text || '[' in text ||
             giveaways.any { text.contains(it, ignoreCase = true) }
         return if (risky) "" else text
@@ -300,7 +288,7 @@ class Subsonic private constructor(
      *  milliseconds. The gap between them is what connection reuse saves. */
     suspend fun measure(): Pair<Long, Long> {
         // The same sign-in, on a client with no connections open yet.
-        val fresh = Subsonic(server, username, salt, token, http.newBuilder().connectionPool(ConnectionPool()).build(), OfflineSwitch(), io)
+        val fresh = Subsonic(server, username, login, http.newBuilder().connectionPool(ConnectionPool()).build(), OfflineSwitch(), io)
         var started = System.nanoTime()
         fresh.ping()
         val cold = (System.nanoTime() - started) / 1_000_000
@@ -583,13 +571,6 @@ class Subsonic private constructor(
             explicitNulls = false
         }
 
-        private val random = SecureRandom()
-        private const val ALPHANUMERIC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-        fun randomSalt(): String = buildString { repeat(16) { append(ALPHANUMERIC[random.nextInt(ALPHANUMERIC.length)]) } }
-
-        internal fun md5Hex(text: String): String =
-            MessageDigest.getInstance("MD5").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 }
 

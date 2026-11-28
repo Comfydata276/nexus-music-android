@@ -33,19 +33,28 @@
     <string name="try_again">Try again</string>
 
     <!-- Sign-in (LoginPage on Windows) -->
-    <string name="sign_in_title">Connect to your Navidrome server</string>
-    <string name="sign_in_intro">Nexus Music streams straight from the music library you host.</string>
-    <string name="server_address">Server address</string>
-    <string name="server_address_hint">http://192.168.1.10:4533</string>
-    <string name="username">Username</string>
+    <string name="sign_in_title">Sign in to Nexus Music</string>
+    <string name="sign_in_intro">Your Nexus server knows where your music is. Sign in with its address and the email and password of your account there.</string>
+    <string name="server_address">Nexus server address</string>
+    <string name="server_address_hint">nexus.example.org</string>
+    <string name="email">Email</string>
+    <string name="one_time_code">One-time code</string>
+    <string name="use_code">I have a one-time code</string>
+    <string name="use_password">Sign in with a password</string>
+    <string name="choose_password_title">Choose a password</string>
+    <string name="choose_password_intro">At least ten characters, and not your email. You\'ll sign in with it on your other devices.</string>
+    <string name="new_password">New password</string>
+    <string name="password_again">Type it again</string>
+    <string name="current_password">Present password</string>
+    <string name="choose">Choose</string>
     <string name="password">Password</string>
     <string name="connect">Connect</string>
     <string name="connecting">Connecting…</string>
-    <string name="sign_in_unencrypted">Over plain HTTP your sign-in and your music can be read on the way. If your server has an https:// address, use that.</string>
-    <string name="sign_in_not_saved">Couldn\'t save your settings on this phone, so you haven\'t been signed in. Try again.</string>
     <string name="sign_in_choices_not_put_away">Couldn\'t put away the other account\'s pins and list choices on this phone, so you haven\'t been signed in. Try again.</string>
-    <string name="sign_in_try_http">If your server really has no HTTPS, type http:// in front of the address.</string>
-    <string name="password_kept">Your password is kept on this phone, sealed with a key that never leaves it.</string>
+    <string name="password_kept">Your password is sent once, to your Nexus server, and is kept nowhere on this phone.</string>
+    <string name="music_local_network_why">Your music server is on your home network. Android will now ask whether Nexus Music may find and connect to nearby devices: that is what lets it reach your music.</string>
+    <string name="music_local_network_refused">Can\'t reach your music server. Nexus Music isn\'t allowed to reach devices on your home network, and if your music server is there, that may be why.</string>
+    <string name="continue_anyway">Continue anyway</string>
 
     <!-- The shell -->
     <string name="tab_home">Home</string>
@@ -71,9 +80,16 @@
     <string name="elsewhere_song">%1$s — %2$s</string>
     <string name="sign_out">Sign out</string>
     <!-- The Nexus server beside the music server (nexus/Nexus.kt). -->
+    <string name="your_devices">Your devices</string>
+    <string name="your_devices_detail">Every device signed in to your account. Any of them can be forced out.</string>
+    <string name="show">Show</string>
+    <string name="force_out">Force out</string>
+    <string name="forcing_out">Forcing out…</string>
+    <string name="refresh">Refresh</string>
+    <string name="change_password">Change password</string>
+    <string name="change_password_detail">Your other devices are signed out when you change it.</string>
+    <string name="change">Change</string>
     <string name="nexus_server">Nexus server</string>
-    <string name="nexus_found_at">Found at %1$s</string>
-    <string name="nexus_none_found">None found</string>
     <string name="about">About</string>
     <string name="diagnostics">Diagnostics</string>
     <string name="diagnostics_detail">A note of what the player has met: which apps connected to it and whether they were let in, what started it, and playback errors. Useful when something isn\'t working, in the car above all. It names no server address, account or song, and it stays on this phone unless you share it.</string>
@@ -107,9 +123,7 @@
     <string name="notice_settings_reset">Your settings file couldn\'t be read and there was no copy to fall back on. It has been kept as %1$s, and the app has started with its default settings.</string>
     <string name="notice_settings_reset_lost">Your settings file couldn\'t be read and there was no copy to fall back on, and it couldn\'t be kept aside either. The app has started with its default settings.</string>
     <string name="notice_settings_not_saved">Couldn\'t save your settings. They\'ll be tried again at your next change.</string>
-    <string name="notice_password_not_saved">Couldn\'t save your password; you\'ll need to sign in next time.</string>
-    <string name="notice_sign_out_failed">Couldn\'t sign out: your saved password couldn\'t be removed from this phone. Try again.</string>
-    <string name="notice_unencrypted">Signed in without encryption: over plain HTTP your sign-in and your music can be read on the way. If your server has an https:// address, sign in with that.</string>
+    <string name="notice_sign_in_not_kept">Couldn\'t keep your sign-in on this phone; you\'ll need to sign in next time.</string>
 
     <!-- Playing, the notification and the car -->
     <string name="liked_songs">Liked songs</string>
@@ -252,26 +266,6 @@
     <string name="local_network_refused">Nexus Music isn\'t allowed to reach devices on your home network. If your server is there, that may be why it can\'t be reached. Allow it, and it connects again.</string>
     <string name="local_network_blocked">Nexus Music isn\'t allowed to reach your home network, where your server is, so nothing can be played from it.</string>
     <!-- The car asked for music and Android would not let the app start playing from where it was (not in front, and no standing to play in the background). -->
-    <!-- Linking the person's devices (in no build yet): said once if it stops for a fault and the shared library's own words for it cannot be had. -->
-    <string name="link_stopped">Linking has stopped on this phone until the app is next opened.</string>
-    <!-- Settings, Account, in a build in which linking exists (none that is released). -->
-    <string name="link_my_devices">Link my devices</string>
-    <string name="link_my_devices_detail">Your other devices signed in to this account can see what this phone is playing, steer it, and move the music to or from it. Only while Nexus Music is open or playing.</string>
-    <string name="link_relay">Relay host link</string>
-    <string name="link_relay_detail">The relay your devices find each other through, with its key: paste the host link the relay gives, the same one as on your other devices.</string>
-    <string name="link_relay_hint">https://relay.example/#key</string>
-    <string name="link_relay_on_file">A relay is saved. Paste a link to replace it.</string>
-    <string name="link_relay_keep">Save</string>
-    <string name="link_relay_kept">Saved for %1$s.</string>
-    <string name="link_relay_not_kept">This phone couldn\'t keep the key safe, so it wasn\'t saved.</string>
-    <string name="link_relay_wrong">That isn\'t a host link: it is the relay\'s address, then #, then its key.</string>
-    <!-- The Connect sheet's own words for the new linking: the Windows app's. Every sentence
-         the list shows is the library's, as handed. -->
-    <string name="link_linked_devices">Linked devices (new)</string>
-    <string name="link_stop_steering">Stop steering</string>
-    <string name="link_pause_device">Pause %1$s</string>
-    <!-- At the top of Connect, under the name of a device steered while it is paused. -->
-    <string name="link_paused_there">Paused there</string>
     <!-- A Play or Add whose songs were looked up first, by the time they were in the music
          was playing somewhere else (another device steered, or no longer): nothing done. -->
     <string name="moved_while_looking_up">Nothing was done: where the music plays changed while that was loading.</string>
@@ -358,7 +352,6 @@
     <string name="off">Off</string>
     <string name="size_gb">%1$d GB</string>
     <string name="storage">Storage</string>
-    <string name="notice_sign_in_gone">Your saved sign-in no longer works. Sign in again.</string>
     <string name="bad_download">The downloaded copy of “%1$s” wouldn\'t play. It will be downloaded again when your server can be reached.</string>
 
     <!-- Download marks and the download button (Windows' TrackRow and ActionBar) -->

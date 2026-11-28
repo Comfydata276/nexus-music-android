@@ -25,13 +25,18 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
@@ -50,97 +55,118 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
-import org.medianexus.music.LocalAccess
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.medianexus.music.Graph
 import org.medianexus.music.R
-import org.medianexus.music.Session
-import org.medianexus.music.ui.shell.rememberLocalNetworkAsk
-import org.medianexus.music.net.unencryptedBeyondHome
+import org.medianexus.music.nexus.NexusShown
 import org.medianexus.music.ui.parts.Field
 import org.medianexus.music.ui.parts.Icon
 import org.medianexus.music.ui.parts.TextButton
+import org.medianexus.music.ui.shell.rememberLocalNetworkAsk
 import org.medianexus.music.ui.theme.Theme
 
 /**
- * The phone's version of the Windows app's sign-in page (`LoginPage`): the server's address,
- * a username and a password. The sign-in itself runs in the session, so it carries on if the
- * screen is rebuilt part-way.
+ * **Signing in to the Nexus server** (the backend design's 8.5): the server's address, the
+ * person's email and password, or the one-time code the admin gave them, then a password of
+ * their own chosen (8.4). **A form in the app, and nothing that leaves it** (6.4: Android freezes
+ * an app behind a browser). The signing in itself is the Nexus server's machine's
+ * (`nexus/Nexus.kt`), so it carries on if this screen is rebuilt part-way; **every sentence it
+ * shows about how it went is the machine's**.
+ *
+ * **The password typed is handed to the machine once and kept nowhere** (R5): not in the state
+ * Android may write out, and wiped, with its undo history, as soon as it is handed over and when
+ * the screen goes.
+ *
+ * **Android 17's local-network permission is judged here, for each address on its own** (6.4):
+ * the Nexus server's address before it is first connected to (and again, by the machine, after a
+ * failure in which no connection was opened); and the music server's address the backend hands
+ * back, before it is first connected to and again if it can't be reached (`Session`). Where an
+ * address leads inside the house and the permission is not held, the app's screen that explains
+ * and asks is shown.
  */
 @Composable
-fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String, savedUsername: String) {
+fun SignInScreen(graph: Graph) {
+    val shown = rememberShown(graph)
+    if (shown?.screen == "choose_password") ChoosePassword(graph, shown) else SignInForm(graph, shown)
+}
+
+@Composable
+private fun rememberShown(graph: Graph): NexusShown? {
+    val shown by produceState<NexusShown?>(graph.nexus?.shown?.value, graph) {
+        while (graph.nexus == null) kotlinx.coroutines.delay(100)
+        graph.nexus!!.shown.collect { value = it }
+    }
+    return shown
+}
+
+@Composable
+private fun SignInForm(graph: Graph, shown: NexusShown?) {
     val colors = Theme.colors
-    val state by session.signIn.collectAsStateWithLifecycle()
+    val local = graph.localAccess
+    val phone by graph.session.signIn.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
-    val server = rememberTextFieldState(savedServer)
-    val username = rememberTextFieldState(savedUsername)
-    // Not `rememberTextFieldState`: that is saved with the activity's state, which Android
-    // may write out, so the password would sit there in plain text. Kept in memory only, it
-    // is simply empty if the app is killed and brought back; and it is wiped, with its undo
-    // history, when the screen goes away (signing in is one way it does).
-    val password = remember { TextFieldState() }
-    DisposableEffect(password) {
+    val form = shown?.signIn
+    val address = rememberTextFieldState(form?.address.orEmpty())
+    val email = rememberTextFieldState(form?.email.orEmpty())
+    // What the machine puts back in the form (after a start, or a sign-out), once it has said.
+    LaunchedEffect(form?.address, form?.email) {
+        if (address.text.isEmpty() && !form?.address.isNullOrEmpty()) address.setTextAndPlaceCursorAtEnd(form!!.address)
+        if (email.text.isEmpty() && !form?.email.isNullOrEmpty()) email.setTextAndPlaceCursorAtEnd(form!!.email)
+    }
+    // Not `rememberTextFieldState`: that is saved with the activity's state, which Android may
+    // write out, so the password would sit there in plain text.
+    val secret = remember { TextFieldState() }
+    DisposableEffect(secret) {
         onDispose {
-            password.clearText()
-            password.undoState.clearHistory()
+            secret.clearText()
+            secret.undoState.clearHistory()
         }
     }
+    var withCode by rememberSaveable { mutableStateOf(false) }
+    val working = form?.state == "working"
     val keyboard = LocalSoftwareKeyboardController.current
-    val ready = !state.busy && server.text.isNotBlank() && username.text.isNotBlank() && password.text.isNotEmpty()
-    // Android 17: a server on the home network can't be reached without the local-network
-    // permission. Before signing in to one that is certainly there, a sentence says why the
-    // question is coming, then the system asks; the sign-in goes ahead either way, when the
-    // answer comes (kept by LocalAccess, so turning the phone meanwhile loses nothing). One
-    // that only may be there (a name, a VPN's range) is connected to straight away; if that
-    // fails, the screen says the permission may be why.
+    val ready = shown != null && !working && address.text.isNotBlank() && secret.text.isNotEmpty() && (withCode || email.text.isNotBlank())
     var explaining by rememberSaveable { mutableStateOf(false) }
-    val asked by localAccess.ask.collectAsStateWithLifecycle()
-    var mayBeWhy by remember { mutableStateOf(false) }
-    LaunchedEffect(state.error, state.unreachable, asked) {
-        mayBeWhy = state.error != null && state.unreachable && localAccess.mayBeWhy(server.text.toString())
-    }
-    val go = { session.signIn(server.text.toString(), username.text.toString(), password.text.toString()) }
-    // Allowed meanwhile (in the phone's settings, say) after failing for want of it: it
-    // connects again by itself.
-    val allowed by localAccess.allowed.collectAsStateWithLifecycle()
-    LaunchedEffect(allowed) {
-        if (allowed > 0 && state.error != null && state.unreachable && !state.busy && ready) go()
-    }
-    val ask = rememberLocalNetworkAsk(localAccess)
-    // What was typed waits for the answer in the session, not in this screen: Android may
-    // rebuild the screen while its question is up (a change of font size, say), and this
-    // screen's password field is empty when it is. Let go as soon as it is used, or if the
-    // question is never put.
-    val holdThenAsk = { then: (Boolean) -> Unit ->
-        if (session.hold(server.text.toString(), username.text.toString(), password.text.toString())) {
-            if (!ask(then)) session.dropWaiting()
+    val ask = rememberLocalNetworkAsk(local)
+    // The press, made once: the secret goes to the machine and is wiped here.
+    val press: () -> Unit = {
+        val typed = secret.text.toString()
+        val asked = if (withCode) {
+            buildJsonObject { put("sign_in_with_code", buildJsonObject { put("address", address.text.toString()); put("code", typed) }) }
+        } else {
+            buildJsonObject { put("sign_in", buildJsonObject { put("address", address.text.toString()); put("email", email.text.toString()); put("password", typed) }) }
         }
+        secret.clearText()
+        secret.undoState.clearHistory()
+        graph.nexus?.press(asked)
     }
-    val askThenGo = {
-        explaining = false
-        // Whatever the answer, the sign-in goes ahead with what was typed.
-        holdThenAsk { session.resumeWaiting() }
-    }
+    // What was pressed waits here for the answer to Android's question, in memory only; the
+    // sign-in goes ahead whatever the answer. Rebuilt meanwhile, the screen asks for it again.
+    var held by remember { mutableStateOf<(() -> Unit)?>(null) }
     val connect: () -> Unit = {
         if (ready) {
             keyboard?.hide()
             scope.launch {
-                if (localAccess.neededFor(server.text.toString())) explaining = true else go()
+                // **Before it connects**: where the Nexus server's address leads on this network.
+                if (local.neededStrictlyFor(address.text.toString())) {
+                    held = press
+                    explaining = true
+                } else {
+                    press()
+                }
             }
         }
     }
-    val accent = colors.accent
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(colors.base)
-            // A wash of the brand colour behind the form.
             .drawBehind {
                 drawRect(
                     Brush.radialGradient(
-                        listOf(accent.copy(alpha = 0.25f), accent.copy(alpha = 0f)),
+                        listOf(colors.accent.copy(alpha = 0.25f), colors.accent.copy(alpha = 0f)),
                         center = Offset(size.width / 2, 30.dp.toPx()),
                         radius = 450.dp.toPx() * 0.7f,
                     ),
@@ -159,112 +185,161 @@ fun SignInScreen(session: Session, localAccess: LocalAccess, savedServer: String
             verticalArrangement = Arrangement.Center,
         ) {
             Column(Modifier.widthIn(max = 420.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(
-                    Modifier.size(48.dp).background(accent, RoundedCornerShape(14.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
+                Box(Modifier.size(48.dp).background(colors.accent, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
                     Icon(R.drawable.ic_bars, size = 26.dp, tint = Color.White)
                 }
-                BasicText(
-                    stringResource(R.string.sign_in_title),
-                    Modifier.semantics { heading() },
-                    style = Theme.type.hero.copy(color = colors.text),
-                )
+                BasicText(stringResource(R.string.sign_in_title), Modifier.semantics { heading() }, style = Theme.type.hero.copy(color = colors.text))
                 BasicText(stringResource(R.string.sign_in_intro), style = Theme.type.body.copy(color = colors.muted))
                 Spacer(Modifier.height(8.dp))
 
                 Label(stringResource(R.string.server_address))
                 Field(
-                    server,
+                    address,
                     stringResource(R.string.server_address),
                     placeholder = stringResource(R.string.server_address_hint),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.None,
-                        autoCorrectEnabled = false,
-                        keyboardType = KeyboardType.Uri,
-                        imeAction = ImeAction.Next,
-                    ),
-                    enabled = !state.busy,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                    enabled = !working,
                 )
-                if (unencryptedBeyondHome(server.text.trim().toString())) {
-                    BasicText(stringResource(R.string.sign_in_unencrypted), style = Theme.type.rowDetail.copy(color = colors.warm))
+                if (!withCode) {
+                    Label(stringResource(R.string.email))
+                    Field(
+                        email,
+                        stringResource(R.string.email),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                        contentType = ContentType.EmailAddress,
+                        enabled = !working,
+                    )
                 }
-
-                Label(stringResource(R.string.username))
+                Label(stringResource(if (withCode) R.string.one_time_code else R.string.password))
                 Field(
-                    username,
-                    stringResource(R.string.username),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.None,
-                        autoCorrectEnabled = false,
-                        keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Next,
-                    ),
-                    contentType = ContentType.Username,
-                    enabled = !state.busy,
-                )
-
-                Label(stringResource(R.string.password))
-                Field(
-                    password,
-                    stringResource(R.string.password),
-                    secret = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    secret,
+                    stringResource(if (withCode) R.string.one_time_code else R.string.password),
+                    secret = !withCode,
+                    keyboardOptions = if (withCode) {
+                        KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done)
+                    } else {
+                        KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done)
+                    },
                     onKeyboardAction = { connect() },
-                    contentType = ContentType.Password,
-                    enabled = !state.busy,
+                    contentType = if (withCode) null else ContentType.Password,
+                    enabled = !working,
                 )
 
-                val error = state.error ?: when {
-                    state.settingsNotSaved -> stringResource(R.string.sign_in_not_saved)
-                    state.choicesNotPutAway -> stringResource(R.string.sign_in_choices_not_put_away)
-                    else -> null
+                // How it went, in the machine's words; then the phone's own about its music.
+                val said = form?.words.orEmpty().ifEmpty { if (phone.choicesNotPutAway) stringResource(R.string.sign_in_choices_not_put_away) else "" }
+                if (said.isNotEmpty()) {
+                    BasicText(said, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.rowDetail.copy(color = if (working) colors.muted else colors.danger))
                 }
-                error?.let {
-                    val shown = if (state.suggestHttp) "$it ${stringResource(R.string.sign_in_try_http)}" else it
-                    BasicText(
-                        shown,
-                        Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                        style = Theme.type.rowDetail.copy(color = colors.danger),
-                    )
-                }
-                if (explaining) {
-                    // Why the system is about to ask, said before it does.
-                    BasicText(
-                        stringResource(R.string.local_network_why),
-                        Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                        style = Theme.type.body.copy(color = colors.text),
-                    )
-                    TextButton(stringResource(R.string.continue_on), onClick = askThenGo, modifier = Modifier.fillMaxWidth(), primary = true)
-                } else if (mayBeWhy && !state.busy) {
-                    BasicText(stringResource(R.string.local_network_refused), style = Theme.type.rowDetail.copy(color = colors.warm))
-                    // Allowed, it connects again by itself.
-                    TextButton(
-                        stringResource(R.string.allow),
-                        onClick = {
-                            if (ready) {
-                                holdThenAsk { granted -> if (granted) session.resumeWaiting() else session.dropWaiting() }
-                            } else {
-                                ask(null)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-                if (!explaining) {
-                    TextButton(
-                        stringResource(if (state.busy) R.string.connecting else R.string.connect),
-                        onClick = connect,
-                        modifier = Modifier.fillMaxWidth(),
-                        primary = true,
-                        enabled = ready,
-                    )
+                when {
+                    explaining -> {
+                        // Why the system is about to ask, said before it does; the sign-in goes
+                        // ahead with what was pressed whatever the answer.
+                        Explain(stringResource(R.string.local_network_why))
+                        TextButton(stringResource(R.string.continue_on), onClick = {
+                            explaining = false
+                            val go = held
+                            held = null
+                            if (!ask { go?.invoke() }) go?.invoke()
+                        }, modifier = Modifier.fillMaxWidth(), primary = true)
+                    }
+                    phone.musicNeedsPermission -> {
+                        Explain(stringResource(R.string.music_local_network_why))
+                        TextButton(stringResource(R.string.continue_on), onClick = {
+                            if (!ask { graph.session.continueSignIn() }) graph.session.continueSignIn()
+                        }, modifier = Modifier.fillMaxWidth(), primary = true)
+                    }
+                    phone.musicMayBeWhy -> {
+                        BasicText(stringResource(R.string.music_local_network_refused), style = Theme.type.rowDetail.copy(color = colors.warm))
+                        TextButton(stringResource(R.string.allow), onClick = {
+                            if (!ask { graph.session.continueSignIn() }) graph.session.continueSignIn()
+                        }, modifier = Modifier.fillMaxWidth(), primary = true)
+                        TextButton(stringResource(R.string.continue_anyway), onClick = graph.session::continueSignIn, modifier = Modifier.fillMaxWidth())
+                    }
+                    else -> {
+                        // **After a failure in which no connection was opened**, the machine says
+                        // the permission may be why: allowed, the person signs in again.
+                        if (form?.askPermission == true && !working) {
+                            BasicText(stringResource(R.string.local_network_refused), style = Theme.type.rowDetail.copy(color = colors.warm))
+                            TextButton(stringResource(R.string.allow), onClick = { ask(null) }, modifier = Modifier.fillMaxWidth())
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(
+                            stringResource(if (working) R.string.connecting else R.string.sign_in),
+                            onClick = connect,
+                            modifier = Modifier.fillMaxWidth(),
+                            primary = true,
+                            enabled = ready,
+                        )
+                        TextButton(
+                            stringResource(if (withCode) R.string.use_password else R.string.use_code),
+                            onClick = {
+                                withCode = !withCode
+                                secret.clearText()
+                                secret.undoState.clearHistory()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !working,
+                        )
+                    }
                 }
                 BasicText(stringResource(R.string.password_kept), style = Theme.type.caption.copy(color = colors.muted))
             }
         }
     }
+}
+
+/** Signed in with a one-time code: the password the person will sign in with from now, typed
+ *  twice (8.4). Kept in memory only, as the sign-in's. */
+@Composable
+private fun ChoosePassword(graph: Graph, shown: NexusShown) {
+    val colors = Theme.colors
+    val new = remember { TextFieldState() }
+    val again = remember { TextFieldState() }
+    DisposableEffect(Unit) {
+        onDispose { listOf(new, again).forEach { it.clearText(); it.undoState.clearHistory() } }
+    }
+    val working = shown.signIn.state == "working"
+    Box(Modifier.fillMaxSize().background(colors.base)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime))
+                .padding(horizontal = 24.dp, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Column(Modifier.widthIn(max = 420.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                BasicText(stringResource(R.string.choose_password_title), Modifier.semantics { heading() }, style = Theme.type.hero.copy(color = colors.text))
+                shown.who?.let { BasicText(it, style = Theme.type.body.copy(color = colors.muted)) }
+                BasicText(stringResource(R.string.choose_password_intro), style = Theme.type.body.copy(color = colors.muted))
+                val password = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next)
+                Label(stringResource(R.string.new_password))
+                Field(new, stringResource(R.string.new_password), secret = true, keyboardOptions = password, contentType = ContentType.NewPassword, enabled = !working)
+                Label(stringResource(R.string.password_again))
+                Field(again, stringResource(R.string.password_again), secret = true, keyboardOptions = password.copy(imeAction = ImeAction.Done), contentType = ContentType.NewPassword, enabled = !working)
+                if (shown.signIn.words.isNotEmpty()) {
+                    BasicText(shown.signIn.words, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.rowDetail.copy(color = if (working) colors.muted else colors.danger))
+                }
+                TextButton(
+                    stringResource(if (working) R.string.connecting else R.string.choose),
+                    onClick = {
+                        graph.nexus?.press(buildJsonObject { put("choose_password", buildJsonObject { put("password", new.text.toString()); put("again", again.text.toString()) }) })
+                        listOf(new, again).forEach { it.clearText(); it.undoState.clearHistory() }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    primary = true,
+                    enabled = !working && new.text.isNotEmpty() && again.text.isNotEmpty(),
+                )
+                TextButton(stringResource(R.string.sign_out), onClick = { graph.nexus?.press(kotlinx.serialization.json.JsonPrimitive("sign_out")) }, modifier = Modifier.fillMaxWidth(), enabled = !working)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Explain(text: String) {
+    BasicText(text, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.body.copy(color = Theme.colors.text))
 }
 
 @Composable

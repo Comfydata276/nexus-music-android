@@ -6,11 +6,12 @@ import java.security.MessageDigest
 
 /** Who is signed in, and where what's kept for them lives on the phone. */
 data class Account(
+    /** The music server, and the user there, of the music login the Nexus server handed over. */
     val server: String,
     val username: String,
-    /** A name for the account that can be part of a file's name. It gives away neither the
-     *  server nor the username (see `accountKey`), but it is the same for them on every
-     *  phone: it never leaves the app (a cover's address has `artworkIdOf` instead). */
+    /** The person's folder name (`nexus/Kept.kt`, `Folders`): who they are to the Nexus server,
+     *  or the folder carried over to them. It gives away neither, and never leaves the app (a
+     *  cover's address has `artworkIdOf` instead). */
     val key: String,
     val dirs: AccountDirs,
 )
@@ -26,8 +27,9 @@ data class AccountDirs(
     val cache: File,
 )
 
-/** The account's folder name: the first half of a SHA-256 of the server and username, in
- *  hex. The same account always gets the same folder. */
+/** The folder name earlier versions gave an account: the first half of a SHA-256 of the
+ *  server and username, in hex. Now only the folder that can be carried over (`Folders`), and
+ *  where requests' secrets are kept apart by account. */
 fun accountKey(server: String, username: String): String =
     MessageDigest.getInstance("SHA-256")
         .digest("$server\n$username".toByteArray(Charsets.UTF_8))
@@ -72,52 +74,4 @@ interface SecretBox {
 
     /** Null if the bytes can't be opened: tampered with, or sealed with a key since lost. */
     fun open(sealed: ByteArray): ByteArray?
-}
-
-/**
- * The account password, kept sealed in one file. What's sealed names the account it belongs
- * to, so a password is only ever handed back for the account it was saved for (as the
- * Windows app checks on platforms without a credential store).
- */
-class PasswordVault(private val file: File, private val box: SecretBox) {
-    // The plain bytes are wiped once used, so the password isn't left lying in memory in more
-    // copies than it has to be (the String it arrives as can't be wiped).
-    fun save(server: String, username: String, password: String): Boolean = try {
-        val plain = "${accountKey(server, username)}\n$password".toByteArray(Charsets.UTF_8)
-        try {
-            writeAtomically(file, box.seal(plain))
-        } finally {
-            plain.fill(0)
-        }
-        true
-    } catch (_: IOException) {
-        false
-    } catch (_: java.security.GeneralSecurityException) {
-        false
-    } catch (_: java.security.ProviderException) {
-        // The Keystore failing in a way it doesn't declare, as some phones' do.
-        false
-    }
-
-    fun load(server: String, username: String): String? {
-        val sealed = try {
-            file.readBytes()
-        } catch (_: IOException) {
-            return null
-        }
-        val plain = box.open(sealed) ?: return null
-        try {
-            // The account's key, a newline, then the password: only the password becomes text.
-            val newline = plain.indexOf('\n'.code.toByte())
-            if (newline < 0) return null
-            val who = String(plain, 0, newline, Charsets.UTF_8)
-            if (who != accountKey(server, username)) return null
-            return String(plain, newline + 1, plain.size - newline - 1, Charsets.UTF_8)
-        } finally {
-            plain.fill(0)
-        }
-    }
-
-    /** Removes the password. True once it is gone (or was never there). */
-    fun delete(): Boolean = file.delete() || !file.exists()
 }

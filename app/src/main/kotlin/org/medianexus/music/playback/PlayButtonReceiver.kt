@@ -9,7 +9,6 @@ import java.io.File
 import org.medianexus.music.Graph
 import org.medianexus.music.graph
 import org.medianexus.music.store.accountDirs
-import org.medianexus.music.store.accountKey
 
 /**
  * A headset's or a car's Play button with the app not running. Media3's receiver starts the
@@ -28,8 +27,8 @@ class PlayButtonReceiver : MediaButtonReceiver() {
             // if not, the service works it out for itself and ends cleanly if need be).
             return true
         }
-        val dirs = accountDirs(context.filesDir, context.cacheDir, accountKey(settings.server, settings.username))
-        val worth = Resumption.possible(settings.server, settings.username, Graph.passwordFile(context), QueueFiles.queueFile(dirs.data))
+        val dirs = accountDirs(context.filesDir, context.cacheDir, settings.folder.ifEmpty { "-" })
+        val worth = Resumption.possible(settings.folder, Graph.signInFile(context), QueueFiles.queueFile(dirs.data))
         context.graph.diagnostics.note("a media button with the player not running: ${if (worth) "starting it" else "nothing to resume, so not started"}", now = true)
         if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "play button with the app not running: ${if (worth) "starting the player" else "nothing to resume, not started"}")
         return worth
@@ -45,11 +44,11 @@ class PlayButtonReceiver : MediaButtonReceiver() {
 /** Whether "play" with nothing loaded has anything to pick up, from what is on disk alone. */
 object Resumption {
     /**
-     * Someone is signed in (an address, a name, and a saved password to go with them), and
-     * a queue was saved for them. A few looks at the file system, quick enough for the main
+     * Someone is signed in (a person's folder named in the settings, and what sign-in left
+     * kept beside it), and a queue was saved for them. A few looks at the file system, quick enough for the main
      * thread in a broadcast receiver. It can be wrong in the other direction only (a queue
      * file that turns out to be damaged), and the service ends cleanly when it is.
      */
-    fun possible(server: String, username: String, password: File, queue: File): Boolean =
-        server.isNotEmpty() && username.isNotEmpty() && password.isFile && password.length() > 0 && queue.isFile && queue.length() > 2
+    fun possible(folder: String, signIn: File, queue: File): Boolean =
+        folder.isNotEmpty() && signIn.isFile && signIn.length() > 0 && queue.isFile && queue.length() > 2
 }

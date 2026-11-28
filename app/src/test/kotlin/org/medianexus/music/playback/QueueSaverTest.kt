@@ -228,22 +228,21 @@ class QueueSaverTest {
     @Test
     fun aButtonOnlyStartsThePlayerWhenThereIsSomethingToResume() {
         // What the Play button looks at before it promises the system that music is coming.
-        val password = File(folder.root, "password.sealed")
+        val signIn = File(folder.root, "nexus-signin.sealed")
         val saved = File(folder.root, "queue.json")
-        fun worth(server: String = "https://music.example", name: String = "ada") = Resumption.possible(server, name, password, saved)
-        // Signed out: no password. (The address and name stay after a sign-out.)
+        fun worth(person: String = "0123abcd") = Resumption.possible(person, signIn, saved)
+        // Signed out: nothing kept of a sign-in.
         assertFalse(worth())
-        password.writeText("sealed")
+        signIn.writeText("sealed")
         // Signed in, and nothing was ever played.
         assertFalse(worth())
         saved.writeText("")
         assertFalse(worth())
         files().save(queue("a", "b"))
         assertTrue(worth())
-        // Never signed in at all.
-        assertFalse(worth(server = ""))
-        assertFalse(worth(name = ""))
-        password.delete()
+        // Nobody's folder named.
+        assertFalse(worth(person = ""))
+        signIn.delete()
         assertFalse(worth())
     }
 

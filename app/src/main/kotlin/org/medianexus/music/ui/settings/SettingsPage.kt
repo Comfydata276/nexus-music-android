@@ -67,9 +67,9 @@ import org.medianexus.music.ui.theme.THEMES
 import org.medianexus.music.ui.theme.Theme
 import org.medianexus.music.ui.theme.ThemeColors
 
-/** Settings' sections, as Windows' chips name them and in its order: Requests and Jam only
- *  in a build that has them. */
-private enum class Section(val title: Int) { APPEARANCE(R.string.appearance), PLAYBACK(R.string.playback), SOUND(R.string.sound), STORAGE(R.string.storage), REQUESTS(R.string.requests), JAM(R.string.settings_jam), ACCOUNT(R.string.account), ABOUT(R.string.about) }
+/** Settings' sections, as Windows' chips name them and in its order: Requests only in a build
+ *  that has them. (Jams are off until the Nexus server hosts them: the backend design's step 6.) */
+private enum class Section(val title: Int) { APPEARANCE(R.string.appearance), PLAYBACK(R.string.playback), SOUND(R.string.sound), STORAGE(R.string.storage), REQUESTS(R.string.requests), ACCOUNT(R.string.account), ABOUT(R.string.about) }
 
 /**
  * Settings, as Windows' `SettingsPage` (ui/pages.slint) has them, rebuilt for a phone: the
@@ -83,11 +83,8 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
     val scroll = rememberScrollState()
     Column(Modifier.fillMaxSize()) {
         TitleBar(stringResource(R.string.settings), onBack = onBack)
-        // (Jam only in a build where jams exist: see jam/JamBuild. Requests the same: see
-        // requests/RequestsBuild.)
-        val sections = Section.entries.filter {
-            (it != Section.JAM || org.medianexus.music.jam.JamBuild.on) && (it != Section.REQUESTS || org.medianexus.music.requests.RequestsBuild.on)
-        }
+        // (Requests only in a build where they exist: see requests/RequestsBuild.)
+        val sections = Section.entries.filter { it != Section.REQUESTS || org.medianexus.music.requests.RequestsBuild.on }
         ChipRow(sections.map { stringResource(it.title) }, selected = section, onChoose = {
             section = it
         })
@@ -107,7 +104,6 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
                 Section.SOUND -> Sound(graph)
                 Section.STORAGE -> Storage(graph)
                 Section.REQUESTS -> org.medianexus.music.ui.requests.RequestsSettings()
-                Section.JAM -> org.medianexus.music.ui.jam.JamSettings(graph)
                 Section.ACCOUNT -> Account(graph)
                 Section.ABOUT -> About(onDiagnostics, onLicences)
             }
@@ -254,17 +250,12 @@ private fun Storage(graph: Graph) {
 @Composable
 private fun Account(graph: Graph) {
     val session by graph.session.state.collectAsStateWithLifecycle()
-    val signedIn = session as? SessionState.SignedIn ?: return
-    SettingRow(signedIn.account.server, stringResource(R.string.signed_in_as, signedIn.account.username)) {
-        TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
-    }
-    // The Nexus server beside the music server, if there is one (nexus/Nexus.kt): what was
-    // found, and nothing to do yet.
-    // The Nexus server's row: only in a build with its client (nexus/NexusBuild.kt).
-    if (org.medianexus.music.nexus.NexusBuild.on) NexusRow(graph, signedIn)
-    // Linking the person's devices: two rows, only in a build in which it exists (none
-    // that is released: see link/LinkBuild.kt).
-    if (org.medianexus.music.link.LinkBuild.on) org.medianexus.music.ui.link.LinkRows(graph)
+    if (session !is SessionState.SignedIn) return
+    // **Everything here is the Nexus server's machine's** (nexus/Nexus.kt): who is signed in,
+    // the row for the server, the devices and their words, what changing a password says. The
+    // phone draws it and says what was pressed.
+    // (The account's rows come with the next commit: the machine's own screens.)
+    org.medianexus.music.ui.parts.TextButton(stringResource(R.string.sign_out), onClick = { graph.nexus?.press(kotlinx.serialization.json.JsonPrimitive("sign_out")) })
     // Where Windows has it, in Windows' words. Off, nothing of this is read from the server
     // or written to it. Not shown at all in a build where it doesn't exist (this one: see
     // sync/InStepBuild.kt).
@@ -277,23 +268,6 @@ private fun Account(graph: Graph) {
     SettingRow(inStep, stringResource(R.string.keep_in_step_detail) + if (clockWrong && settings.sync) " " + stringResource(R.string.keep_in_step_clock) else "") {
         Toggle(settings.sync, { on -> graph.settings.update { it.copy(sync = on) } }, inStep)
     }
-}
-
-/** The Nexus server beside the music server, if there is one (nexus/Nexus.kt): what was found,
- *  and nothing to do yet. */
-@Composable
-private fun NexusRow(graph: Graph, signedIn: SessionState.SignedIn) {
-    // Shown only for the account it was found for, judged against `signedIn`, the one value the
-    // heading above is drawn from: never one account's under another's.
-    val address by androidx.compose.runtime.produceState<String?>(null, signedIn) {
-        // (The client exists once an account has been published: looked for until then.)
-        while (graph.nexus == null) kotlinx.coroutines.delay(250)
-        graph.nexus!!.found.collect { value = graph.nexusShown(signedIn) }
-    }
-    SettingRow(
-        stringResource(R.string.nexus_server),
-        address?.let { stringResource(R.string.nexus_found_at, it) } ?: stringResource(R.string.nexus_none_found),
-    ) {}
 }
 
 @Composable

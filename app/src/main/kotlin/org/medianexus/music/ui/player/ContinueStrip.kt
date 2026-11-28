@@ -42,8 +42,7 @@ fun ContinueStrip(modifier: Modifier = Modifier) {
     val there = offered ?: return
     val playing by ui.player.playing.collectAsStateWithLifecycle()
     // (Steering another device, the queue on show is that one's, and nothing is offered.)
-    val steered by ui.player.elsewhere.collectAsStateWithLifecycle()
-    if (playing || steered != null) return
+    if (playing) return
     val colors = Theme.colors
     Row(
         modifier

@@ -20,14 +20,21 @@ import mockwebserver3.RecordedRequest
 import mockwebserver3.SocketEffect
 import okhttp3.internal.platform.Platform
 import okio.Buffer
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.medianexus.music.SessionState
 import org.medianexus.music.graph
 
 /**
  * The music server's origin as the phone meets it once the Nexus server has been set up beside
- * it (docs/backend-design.md, 6.1): **one HTTPS origin**, the music server's own paths answered
- * as Navidrome answers them (enough to be signed in, browse, stream and download), and
- * everything under `/nexus/` broken in one of the ways of the design's 5.3.
+ * it (docs/backend-design.md, 7.1): **one HTTPS origin**, the music server's own paths answered
+ * as Navidrome answers them (enough to browse, stream and download, and to refuse a music login
+ * that is no longer good), and everything under `/nexus/` either **a backend that is there**
+ * ([backendThere]: `hello`, signing in, the session's check, the music login, signing out, each
+ * answered with a body the shared core's own encoder wrote) or broken in one of the ways of the
+ * design's 5.3.
  *
  * HTTPS, with the certificate made for "localhost" (`localhost.p12`, test resources), because
  * the backend's line is HTTPS only (R5): a phone signed in over plain HTTP never asks it
@@ -109,9 +116,40 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
 
     private val release = CountDownLatch(1)
 
-    /** Set, it answers everything under `/nexus/` instead of [broken]: a backend that is
-     *  there, or answers in some way a test wants. */
+    /** Set, it answers everything under `/nexus/` instead of [broken]: in some way a test
+     *  wants. */
     @Volatile var answer: ((RecordedRequest) -> MockResponse)? = null
+
+    /** While set, a backend that is there answers under `/nexus/` (the design's own calls), as
+     *  while a test signs in; otherwise it is as [broken] says. */
+    @Volatile var backendThere = false
+
+    /** The backend says to every session that it has ended (`not_signed_in`): a device forced
+     *  out, the account switched off. Only while [backendThere]. */
+    @Volatile var sessionEnded = false
+
+    /** The music login the backend hands over now: its number, and the password its token is
+     *  made from (a new number is a new password, as when a device is forced out). */
+    @Volatile var musicCount = 1L
+    private fun musicPassword(count: Long = musicCount) = "music password $count"
+
+    /** The music logins the music server takes, by token: every one made from the password of
+     *  the latest number. Any other is refused, as Navidrome refuses a wrong password (40). */
+    private fun takes(token: String?, salt: String?): Boolean = token != null && salt != null && token == org.medianexus.music.net.md5Hex(musicPassword() + salt)
+
+    /** The backend turns a sign-in away as a wrong email or password. */
+    @Volatile var refuseSignIn = false
+
+    /** Whether the music server checks the login at all (off: the tests that are not about it). */
+    @Volatile var checksLogins = true
+
+    /** Requests the music server refused for a wrong login, ever. */
+    val refusedLogins = java.util.concurrent.atomic.AtomicInteger()
+
+    /** The calls a backend that was there answered, by path. */
+    val backendAnswered = CopyOnWriteArrayList<String>()
+
+    private var signedInAs = "tester"
 
     /** Songs, by id, that the server has; and the album they are all on. */
     val songs = listOf("s1", "s2", "s3")
@@ -166,7 +204,7 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
         }
     }
 
-    private fun nexus(request: RecordedRequest): MockResponse = answer?.invoke(request) ?: when (broken) {
+    private fun nexus(request: RecordedRequest): MockResponse = answer?.invoke(request) ?: if (backendThere) there(request) else when (broken) {
         Broken.ABSENT, Broken.WARM_UP ->
             if (request.method == "GET") {
                 MockResponse.Builder().code(302).setHeader("Location", "/app/").setHeader("Content-Type", "text/html; charset=utf-8").body("<a href=\"/app/\">Found</a>.\n\n").build()
@@ -197,9 +235,57 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
         }
     }
 
+    /** A backend that is there: each of the design's calls, answered by the core's own words. */
+    private fun there(request: RecordedRequest): MockResponse {
+        val path = request.url.encodedPath
+        backendAnswered += path
+        val base = buildJsonObject {
+            put("backend", BACKEND_ID)
+            put("email", "${signedInAs}@example.org")
+            put("name", signedInAs)
+            put("device", 1)
+            put("count", musicCount)
+        }
+        val salt = "s${musicCount}".padEnd(16, 'x')
+        val music = buildJsonObject {
+            put("address", address)
+            put("name", signedInAs)
+            put("salt", salt)
+            put("token", org.medianexus.music.net.md5Hex(musicPassword() + salt))
+            put("count", musicCount)
+        }
+        val kind = when {
+            path == "/nexus/api/hello" -> return answered(org.medianexus.music.core.Core.nexusStandIn(JsonObject(base + ("kind" to JsonPrimitive("hello")))))
+            path == "/nexus/api/signin" && refuseSignIn -> "wrong_login"
+            path == "/nexus/api/signin" -> "signed_in"
+            sessionEnded -> "not_signed_in"
+            path == "/nexus/api/devices" -> "devices"
+            path == "/nexus/api/music-login" -> "music_login"
+            path == "/nexus/api/signout" -> "signed_out"
+            path == "/nexus/api/force-out" -> "forced_out"
+            path == "/nexus/api/change-password" -> "password_changed"
+            else -> return MockResponse.Builder().code(404).build()
+        }
+        val asked = if (kind == "not_signed_in" || kind == "wrong_login") {
+            JsonObject(base + ("kind" to JsonPrimitive("refused")) + ("reason" to JsonPrimitive(kind)))
+        } else {
+            JsonObject(base + ("kind" to JsonPrimitive(kind)) + ("session" to JsonPrimitive("cd".repeat(32))) + ("music" to music))
+        }
+        return answered(org.medianexus.music.core.Core.nexusStandIn(asked))
+    }
+
+    private fun answered(body: ByteArray) = MockResponse.Builder().code(200).setHeader("Content-Type", "application/json").body(Buffer().write(body)).build()
+
     private fun music(request: RecordedRequest): MockResponse {
         val endpoint = request.url.encodedPath.substringAfterLast('/').removeSuffix(".view")
         if (!request.url.encodedPath.startsWith("/rest/")) return MockResponse.Builder().code(404).build()
+        // A music login that is no longer good: refused as Navidrome refuses it, with a success
+        // status and a small body (the design's 6.3).
+        if (checksLogins && !takes(request.url.queryParameter("t"), request.url.queryParameter("s"))) {
+            refusedLogins.incrementAndGet()
+            return MockResponse.Builder().code(200).setHeader("Content-Type", "application/json")
+                .body("""{"subsonic-response":{"status":"failed","version":"1.16.1","type":"navidrome","serverVersion":"0.64.2","openSubsonic":true,"error":{"code":40,"message":"Wrong username or password"}}}""").build()
+        }
         if (endpoint in failing) return MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build()
         if ((endpoint == "stream" || endpoint == "download") && cutOnce.remove(request.url.queryParameter("id"))) {
             // (Its length the whole file's, a third of it sent, and the connection closed.)
@@ -225,16 +311,30 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
         """{"id":"$id","title":"Song ${id.removePrefix("s")}","album":"First Light","albumId":"al-1","artist":"Paper Lanterns","artistId":"ar-1","track":${id.removePrefix("s")},"duration":3,"suffix":"flac","contentType":"audio/flac","size":${audio.size},"isDir":false}"""
 
     /**
-     * Signs the app in to this origin, and returns once the account's objects are there (other
-     * threads' work, waited for before a test begins).
+     * **Signs the app in to this origin through the Nexus server**, as a person does at the
+     * sign-in screen: the machine asks `hello`, then signs in, and is handed the music login;
+     * the account is published. A backend that is there answers while it does, and the case's
+     * own way of being broken holds again once the account's objects are there (other threads'
+     * work, waited for before a test begins).
      */
     fun signIn(app: Application, username: String = "tester") {
-        app.graph.session.signIn(address, username, "a password")
-        runBlocking {
-            withTimeout(30_000) {
-                val signedIn = app.graph.session.state.first { it is SessionState.SignedIn && it.account.username == username } as SessionState.SignedIn
-                app.graph.accounts.state.first { it?.api === signedIn.api }
+        val graph = app.graph
+        signedInAs = username
+        backendThere = true
+        try {
+            graph.started()
+            runBlocking {
+                withTimeout(30_000) {
+                    while (graph.nexus?.started != true) kotlinx.coroutines.delay(10)
+                    graph.nexus!!.press(buildJsonObject {
+                        put("sign_in", buildJsonObject { put("address", address); put("email", "$username@example.org"); put("password", "a password long enough") })
+                    })
+                    val signedIn = graph.session.state.first { it is SessionState.SignedIn && it.account.username == username } as SessionState.SignedIn
+                    graph.accounts.state.first { it?.api === signedIn.api }
+                }
             }
+        } finally {
+            backendThere = false
         }
     }
 
@@ -244,6 +344,9 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
 
         /** A valid `hello` (the shared library's own example, design 12.1). */
         const val HELLO = """{"nexus":"0.1.0","id":"0123456789abcdef0123456789abcdef","speaks":[1,1],"has":["plays"]}"""
+
+        /** The stand-in backend's id. */
+        const val BACKEND_ID = "0123456789abcdef0123456789abcdef"
 
         private const val PASSWORD = "testing"
 

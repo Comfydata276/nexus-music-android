@@ -53,8 +53,6 @@ sealed interface Route {
     @Serializable data class Mix(val id: String, val title: String = "", val cover: String = "") : Route
     /** "Your stats", for a period (`Stats.TODAY` … `Stats.ALL`, a finer choice, or a year). */
     @Serializable data class Stats(val period: Int = org.medianexus.music.library.Stats.TODAY) : Route
-    /** Jams (from Library, Connect and the strip): `link` is one another app handed over. */
-    @Serializable data class Jam(val link: String = "") : Route
     /** Requests: an artist as the wider world knows them (Lidarr's name for them), with what
      *  the card or row it was opened from said of them. */
     @Serializable data class OutsideArtist(val id: String, val name: String = "", val cover: String = "") : Route
@@ -131,7 +129,7 @@ class Navigator private constructor(saved: Saved?) {
     val canGoBack: Boolean get() = visible.size > 1
 
     fun open(route: Route) {
-        // No way to jams or requests in a build where they don't exist.
+        // No way to requests in a build where they don't exist.
         if (!exists(route)) return
         motion = Motion.PUSH
         stacks.getValue(tab) += Place(route, next++)
@@ -163,10 +161,9 @@ class Navigator private constructor(saved: Saved?) {
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
 
-        /** Whether this build has the page: jams' only with jams (jam/JamBuild), requests' only
-         *  with requests (requests/RequestsBuild). */
+        /** Whether this build has the page: requests' only with requests
+         *  (requests/RequestsBuild). */
         fun exists(route: Route): Boolean = when (route) {
-            is Route.Jam -> org.medianexus.music.jam.JamBuild.on
             is Route.OutsideArtist, is Route.OutsideAlbum, Route.Requests -> org.medianexus.music.requests.RequestsBuild.on
             else -> true
         }

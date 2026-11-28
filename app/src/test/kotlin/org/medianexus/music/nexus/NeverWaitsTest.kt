@@ -159,11 +159,10 @@ class NeverWaitsTest(private val broken: Broken) {
                 "a connection carried both the music server's requests and the backend's",
                 standIn.musicConnections.intersect(standIn.nexusConnections).isEmpty(),
             )
-            // Never a backend shown under the account published now.
-            assertNull(holds.shown(app.graph))
         } finally {
             for (service in services.asReversed()) runCatching { service.onDestroy() }
             runCatching { settle() }
+            (graphs + app.graph).forEach { runCatching { it.nexus?.stop() } }
             graphs.forEach { it.scope.cancel() }
             (graphs + app.graph).forEach { runCatching { it.http.connectionPool.evictAll() } }
             standIn.stop()
@@ -182,6 +181,24 @@ class NeverWaitsTest(private val broken: Broken) {
             settle()
             if (done()) return
             check(System.nanoTime() < end) { "not so within thirty seconds: $what. Lately noted: ${app.graph.diagnostics.entries().takeLast(8).map { it.text }}" }
+            Thread.sleep(2)
+        }
+    }
+
+    /** As [until], saying every half second that the network is back: the machine asks what it
+     *  owes only when something says the backend may be reachable (a request still held at the
+     *  stand-in is given up on at its own limit first). */
+    private fun nudging(what: String, done: () -> Boolean) {
+        var next = 0L
+        val end = System.nanoTime() + 45_000_000_000L
+        while (true) {
+            settle()
+            if (done()) return
+            if (System.nanoTime() > next) {
+                next = System.nanoTime() + 500_000_000
+                app.graph.nexus?.network(true)
+            }
+            check(System.nanoTime() < end) { "not so within 45 seconds: $what" }
             Thread.sleep(2)
         }
     }
@@ -276,9 +293,10 @@ class NeverWaitsTest(private val broken: Broken) {
         services -= first
         settle()
         runBlocking { before.settings.flush() }
+        before.nexus?.stop()
         before.scope.cancel()
         before.http.connectionPool.evictAll()
-        // (The Play button's receiver looks for a saved password's file; PlainBox wrote one.)
+        // (The Play button's receiver looks for the kept sign-in's file; PlainBox wrote one.)
         holds.holdTheLauncherFromItsStart()
         val box = GatedBox()
         val graph = Graph(app, box).also { graphs += it }
@@ -307,11 +325,12 @@ class NeverWaitsTest(private val broken: Broken) {
 
     @Test
     fun coldStartPublishesTheSavedAccount() {
-        // Someone signed in, with the password saved; the app is ended.
+        // Someone signed in, through the Nexus server, what it left kept; the app is ended.
         val before = Graph(app, PlainBox).also { graphs += it }
-        before.session.signIn(standIn.address, "tester", "a password")
-        runBlocking { withTimeout(30_000) { before.accounts.state.first { it != null } } }
+        becomeTheApp(before)
+        standIn.signIn(app)
         runBlocking { before.settings.flush() }
+        before.nexus?.stop()
         before.scope.cancel()
         // The app starts again, the client's launcher held from its first instruction where the
         // case holds it: the saved sign-in is read and the account published.
@@ -350,7 +369,9 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun aDirectPlayStartsItCold() {
         savedQueue()
-        Graph.passwordFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
+        // (The Play button's receiver looks for the kept sign-in's file, not into it: the test
+        // runner has no Keystore to seal it with.)
+        Graph.signInFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
         val started = timed("a_direct_play_starts_it_cold", "receiver") {
             PlayButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(app.packageName).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
             shadowOf(app).nextStartedService
@@ -371,7 +392,9 @@ class NeverWaitsTest(private val broken: Broken) {
     @Test
     fun aDirectPlayByTheReceiversOldNameStartsItCold() {
         savedQueue()
-        Graph.passwordFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
+        // (The Play button's receiver looks for the kept sign-in's file, not into it: the test
+        // runner has no Keystore to seal it with.)
+        Graph.signInFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
         val started = timed("a_direct_play_starts_it_cold", "old_receiver") {
             androidx.media3.session.MediaButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(ComponentName(app, "androidx.media3.session.MediaButtonReceiver")).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
             shadowOf(app).nextStartedService
@@ -698,21 +721,119 @@ class NeverWaitsTest(private val broken: Broken) {
         assertEquals("[\"s1\",1000000,\"playlist:p\"]\n[\"s2\",1000240]\n", log.readText())
     }
 
+    /**
+     * Signing out and another person signing in, with the first account's check on its session
+     * held as the case holds it. (Not with the Nexus server's own threads held: signing in and
+     * out are its own work, and wait for it by design. What never waits are the paths above.)
+     */
     @Test
     fun anAccountChangeIsNotHeldUp() {
+        assumeTrue(broken != Broken.WORKERS_HELD)
         signedIn()
-        // The launcher held too, so the old client is not let go of while the step runs: the new
-        // account is published with all of the old one's client stuck.
-        holds.holdTheLauncher(app.graph)
         val test = "an_account_change_is_not_held_up"
         timed(test, "next_account") {
-            app.graph.session.signOut()
+            app.graph.nexus!!.press(kotlinx.serialization.json.JsonPrimitive("sign_out"))
+            until("signed out") { app.graph.session.state.value == SessionState.SignedOut }
             standIn.signIn(app, username = "another")
             assertEquals("another", account().account.username)
             assertTrue(app.graph.session.state.value is SessionState.SignedIn)
         }
-        // Then let go: the old client is let go of, and its threads end.
-        holds.oldClientLetGo()
+    }
+
+    // ---- What the Nexus server's sign-in adds (the backend design's 6.3 and 6.5) ----------------
+
+    /** **A refused music login is asked for once** (6.3): the music server turns the login away;
+     *  nothing more is sent with it, from anywhere; the Nexus server is asked for the current one
+     *  once, in the background (and, with it out of reach, what is on the phone plays and the
+     *  machine says so); no request for music waits on that. */
+    @Test
+    fun aRefusedMusicLoginIsAskedForOnce() {
+        savedQueue()
+        val service = service(Foreground())
+        val inside = service.inside()
+        until("settled") { settled(service) }
+        // The person's music login changed at the backend (a device of theirs forced out).
+        standIn.musicCount = 2
+        val refusedBefore = standIn.refusedLogins.get()
+        runBlocking { runCatching { account().api.ping() } }
+        until("the login set aside") { account().api.login.isRefused }
+        // Every way to the music server after it: nothing sent with the refused login.
+        runBlocking { repeat(3) { runCatching { account().api.ping() } } }
+        assertEquals(SessionResult.RESULT_SUCCESS, answer(inside.callback.onGetChildren(inside.session, car, "downloads", 0, Int.MAX_VALUE, null)).resultCode)
+        answer(inside.callback.onGetChildren(inside.session, car, "home", 0, Int.MAX_VALUE, null))
+        assertEquals("the refused login was sent again", refusedBefore + 1, standIn.refusedLogins.get())
+        // The backend asked for the current login once, whatever became of the asking.
+        until("the renewal asked for") { standIn.asked.count { it == "POST /nexus/api/music-login" } >= 1 || broken == Broken.WORKERS_HELD }
+        assertTrue("asked more than once", standIn.asked.count { it == "POST /nexus/api/music-login" } <= 1)
+        // Still signed in: a refusal by the music server never signs anyone out.
+        assertTrue(app.graph.session.state.value is SessionState.SignedIn)
+        // The backend there again, and the network back: the new login is put in place, in
+        // the same client, and the music server takes it.
+        if (broken != Broken.WORKERS_HELD) {
+            holds.release()
+            standIn.backendThere = true
+            nudging("the new login put in place") { account().api.login.now.count == 2L && !account().api.login.isRefused }
+            runBlocking { account().api.ping() }
+            assertTrue(standIn.asked.count { it == "POST /nexus/api/music-login" } <= 2)
+        }
+    }
+
+    /** **A device whose session was ended goes on playing what it has until the backend says
+     *  so** (6.3, 6.5): the car, a cold start and Play with the session ended at the backend and
+     *  the phone not told; then told, it is signed out, and its downloads stay. */
+    @Test
+    fun aForcedOutDeviceStopsOnlyWhenTold() {
+        savedQueue()
+        standIn.sessionEnded = true
+        val android = Foreground()
+        val service = service(android)
+        val inside = service.inside()
+        val test = "the_car_starts_the_service_cold"
+        // The car connecting to a phone whose session was ended, and not told of it.
+        val chosen = timed(test, "choice") {
+            inside.callback.onSetMediaItems(inside.session, car, listOf(MediaItem.Builder().setMediaId("track/0/s1/album/al-1").build()), C.INDEX_UNSET, C.TIME_UNSET)
+        }
+        assertTrue(android.inIt)
+        timed(test, "chosen") { assertChosen(answer(chosen)) }
+        timed(test, "resumption_card") { assertTrue(answer(inside.callback.onPlaybackResumption(inside.session, car, false)).mediaItems.isNotEmpty()) }
+        assertTrue(app.graph.session.state.value is SessionState.SignedIn)
+        // Now the backend says so, to this session: signed out; what is on the phone stays.
+        if (broken == Broken.WORKERS_HELD) return
+        holds.release()
+        val folder = account().account.dirs.data
+        standIn.backendThere = true
+        // (Told in the answer to the next thing asked of it: here, the music login asked for
+        // after the music server turned the old one away.)
+        standIn.musicCount = 2
+        runBlocking { runCatching { account().api.ping() } }
+        nudging("signed out, told by the backend") { app.graph.session.state.value == SessionState.SignedOut }
+        assertTrue("the person's folder went with the session", folder.isDirectory)
+        assertTrue("the kept sign-in was not forgotten", app.graph.nexusKept.load().music == null)
+    }
+
+    /** **The session ended, and the music login's number risen, while the phone was offline**
+     *  (6.3, 9.4): a cold start offline plays and serves the car as ever, asking nothing; back
+     *  online, the music server's refusal brings the new login, once, and the session's end is
+     *  heard only when the backend says it. */
+    @Test
+    fun theMusicLoginChangedWhileOffline() {
+        savedQueue()
+        app.graph.settings.update { it.copy(offline = true) }
+        until("offline") { app.graph.watch.state.value.offline }
+        standIn.musicCount = 2
+        val asked = standIn.nexusArrived.get()
+        val service = service(Foreground())
+        val inside = service.inside()
+        timed("cold_start_puts_the_queue_back_and_plays", "restore") { until("the saved queue is the player's") { settled(service) } }
+        assertEquals(SessionResult.RESULT_SUCCESS, answer(inside.callback.onGetChildren(inside.session, car, "downloads", 0, Int.MAX_VALUE, null)).resultCode)
+        assertEquals("the backend was asked while offline", asked, standIn.nexusArrived.get())
+        if (broken == Broken.WORKERS_HELD) return
+        holds.release()
+        standIn.backendThere = true
+        app.graph.settings.update { it.copy(offline = false) }
+        app.graph.checkIfDown()
+        nudging("the new login put in place") { account().api.login.now.count == 2L }
+        assertTrue(app.graph.session.state.value is SessionState.SignedIn)
     }
 
     /** The timings are an alarm a dependency of 400 ms trips: the car's folders, each time with

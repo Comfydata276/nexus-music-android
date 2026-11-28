@@ -124,19 +124,9 @@ private class CoverFetcher(private val art: CoverArt, private val covers: CoverS
     class Factory(private val accounts: Accounts) : Fetcher.Factory<CoverArt> {
         override fun create(data: CoverArt, options: Options, imageLoader: ImageLoader): Fetcher? {
             if (data.id.isEmpty()) return null
-            // A song of someone else's jam: its cover is the relay's (see JamCovers).
-            if (data.id.startsWith(org.medianexus.music.playback.Steered.FOREIGN)) return ForeignCover(data)
             val covers = accounts.state.value?.covers ?: return null
             return CoverFetcher(data, covers)
         }
-    }
-}
-
-/** A cover the relay passes on from the host of a jam, used only if it is a picture. */
-private class ForeignCover(private val art: CoverArt) : Fetcher {
-    override suspend fun fetch(): FetchResult {
-        val bytes = org.medianexus.music.jam.JamCovers.fetch(art.id, art.large) ?: throw IOException("No cover")
-        return SourceFetchResult(ImageSource(okio.Buffer().write(bytes), FileSystem.SYSTEM), null, DataSource.NETWORK)
     }
 }
 

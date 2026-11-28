@@ -144,7 +144,7 @@ class HttpTest {
     /** Nothing private in an error's words: not the host, the token or its salt. */
     private fun assertNothingPrivate(error: Throwable, vararg also: String) {
         val text = error.toString()
-        for (secret in listOf("localhost", "127.0.0.1", SALT, Subsonic.md5Hex("sesame$SALT"), "CN=", "sha256/") + also) {
+        for (secret in listOf("localhost", "127.0.0.1", SALT, md5Hex("sesame$SALT"), "CN=", "sha256/") + also) {
             assertFalse("\"$secret\" in: $text", text.contains(secret, ignoreCase = true))
         }
         assertNull(error.cause)

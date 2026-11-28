@@ -84,9 +84,16 @@ data class SavedCurve(val name: String = "", val gains: List<Float> = FLAT)
  */
 @Serializable
 data class Settings(
-    // ---- The account (the password is kept apart: see `PasswordVault`) ----
+    // ---- The account ----
+    /** **The music server and user this phone was signed in to before the Nexus server**, as
+     *  an earlier version kept them: the one folder that can be carried over to the first person
+     *  to sign in on this version if they are handed the same music login (`nexus/Kept.kt`,
+     *  `Folders`). Emptied at that first sign-in, whoever it is. Nothing else reads them. */
     val server: String = "",
     val username: String = "",
+    /** The folder of the person signed in now (`Folders`): what a Play button finds the saved
+     *  queue by before anything is opened. Empty with nobody signed in. */
+    val folder: String = "",
 
     // ---- Playback ----
     val shuffle: Boolean = false,

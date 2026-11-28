@@ -17,7 +17,6 @@ import org.medianexus.music.playback.KnownHosts
 import org.medianexus.music.playback.PlayerConnection
 import org.medianexus.music.playback.QueueSaver
 import org.medianexus.music.store.KeystoreBox
-import org.medianexus.music.store.PasswordVault
 import org.medianexus.music.store.SettingsStore
 import org.medianexus.music.store.accountDirs
 
@@ -29,8 +28,8 @@ import org.medianexus.music.store.accountDirs
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class Graph(
     context: Context,
-    /** What seals the saved password: the Android Keystore, except in a test of the
-     *  saved-password start (the test runner has no Keystore). */
+    /** What seals what sign-in leaves on the phone: the Android Keystore, except in a test of
+     *  a start from it (the test runner has no Keystore). */
     passwordBox: org.medianexus.music.store.SecretBox = KeystoreBox(),
 ) {
     private val app: Context = context.applicationContext
@@ -105,9 +104,13 @@ class Graph(
 
     val offline = OfflineSwitch(settings.value.offline)
 
-    val session = Session(
+    /** What the Nexus server's part of the app keeps where secrets are kept (nexus/Kept.kt). */
+    val nexusKept = org.medianexus.music.nexus.NexusKept(signInFile(context), File(context.noBackupFilesDir, "nexus-device.sealed"), passwordBox)
+
+    val session: Session = Session(
         settings = settings,
-        vault = PasswordVault(passwordFile(context), passwordBox),
+        kept = nexusKept,
+        folders = org.medianexus.music.nexus.Folders(File(context.filesDir, "accounts/carried.json")),
         http = http,
         offline = offline,
         dirsFor = { key -> accountDirs(context.filesDir, context.cacheDir, key) },
@@ -115,6 +118,11 @@ class Graph(
         scope = scope,
         io = Dispatchers.IO,
         takeOn = { key -> takeOn(key) },
+        // 6.4, for the music server the backend hands over: judged as its own address.
+        needsPermission = { address -> localAccess.neededStrictlyFor(address) },
+        mayBeWhy = { address -> localAccess.mayBeWhyStrictly(address) },
+        // The shared core's rule for a refused music login (nexus::client): told the number.
+        refusedLogin = { count -> nexus?.musicRefused(count) },
     )
 
     /** The one writer of saved queues: it outlives the playback service and any account,
@@ -154,7 +162,10 @@ class Graph(
                 ?: throw org.medianexus.music.net.ApiError.Network("It took too long to answer.")
         },
         cameOnline = { caughtUp(back = true) },
-        signInGone = ::signInGone,
+        // **A refusal by the music server never signs anyone out** (the backend design's 6.3):
+        // the client set that login aside the moment it was refused and told the shared core's
+        // rule, which renews it in the background. What is on the phone plays meanwhile.
+        signInGone = {},
         caughtUp = { caughtUp(back = false) },
         // Not a server on the home network while the app isn't allowed to reach it: it can't
         // answer, so asking is for nothing. Allowed, asking resumes (see localAccess.allowed).
@@ -164,13 +175,6 @@ class Graph(
 
     /** Set by the playback service: something is playing, or meant to be (Play is down). */
     @Volatile var playing = false
-        set(value) {
-            field = value
-            // M6: music playing is a reason for the phone to be among the person's devices.
-            jamsIfMade()?.let { jams -> mainHandler.post { jams.playingChanged(value) } }
-        }
-
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /**
      * Whether anything wants to know, now, that the server is back: the app's screens in
@@ -271,45 +275,53 @@ class Graph(
         )
     }
 
-    /** The Nexus server's client's launcher (`nexus/Nexus.kt`): null until the app has started
-     *  ([started]) and an account has been published; it is made then, off the main thread,
-     *  with everything of the client's. Null too if it could not be made. */
-    @Volatile var nexus: org.medianexus.music.nexus.NexusLauncher? = null
+    /** The Nexus server's part of the app (`nexus/Nexus.kt`: the shared core's machine,
+     *  driven): null until the app has started ([started]); made then, off the main thread,
+     *  with everything of its own. Null too if it could not be made. */
+    @Volatile var nexus: org.medianexus.music.nexus.Nexus? = null
         private set
 
-    /** Whether the app has started: `App.graph` is these objects ([started]). */
-    @Volatile private var appStarted = false
-
     /**
-     * The app has started (`App.onCreate`, once `App.graph` is assigned): from now the Nexus
-     * server's client may be made, when an account is published. Nothing of it exists while
-     * these objects are being made. (Sets a flag; dispatches only if an account is already
-     * published.)
+     * The app has started (`App.onCreate`, once `App.graph` is assigned): **only now is the
+     * Nexus server's part made and started**, off the main thread, after the app is already
+     * usable (the backend design's 6.1). Nothing a cold start, the car or downloads go through
+     * waits for it: the account was published from what sign-in left before it exists.
      */
     fun started() {
-        appStarted = true
-        if (accounts.state.value != null) scope.launch { makeNexus() }
+        if (!startedOnce.compareAndSet(false, true)) return
+        scope.launch(Dispatchers.IO) {
+            try {
+                makeNexus()
+            } catch (e: Exception) {
+                diagnostics.note("the Nexus server's part of the app couldn't be started: ${e.javaClass.simpleName}")
+            } catch (e: LinkageError) {
+                diagnostics.note("the Nexus server's part of the app couldn't be started: ${e.javaClass.simpleName}")
+            }
+        }
     }
 
-    private val nexusLock = Any()
+    private val startedOnce = java.util.concurrent.atomic.AtomicBoolean()
 
-    /** Makes the launcher, once, if the app has started and an account is published. On the
-     *  account watcher's thread or [started]'s dispatch; never the main thread. */
     private fun makeNexus() {
-        // (Not in a build without it: nothing of it is made. See nexus/NexusBuild.kt.)
-        if (!org.medianexus.music.nexus.NexusBuild.on) return
-        if (!appStarted || accounts.state.value == null) return
-        synchronized(nexusLock) { if (nexus == null) nexus = startNexus() }
-    }
-
-    /**
-     * The address the row under Settings shows, for the signed-in account of `session`: the one
-     * value the row's heading is drawn from. Shown only if what was found carries that account
-     * as its owner.
-     */
-    fun nexusShown(session: SessionState): String? {
-        val signedIn = session as? SessionState.SignedIn ?: return null
-        return nexus?.found?.value?.takeIf { it.owner === signedIn.api }?.address
+        val made = org.medianexus.music.nexus.Nexus(
+            kept = nexusKept,
+            side = object : org.medianexus.music.nexus.Nexus.Side {
+                override fun handLogin(music: org.medianexus.music.nexus.KeptMusic, account: org.medianexus.music.nexus.KeptAccount?) = session.handed(music, account)
+                override fun notKept() = session.notKept()
+                override fun refused(count: Long) = session.refused(count)
+                override fun musicForgotten() {
+                    session.forgotten()
+                }
+                override fun inside(host: String): Boolean? = localForTests?.inside ?: localAccess.insideNow(host)
+                override val permission: Boolean? get() = localForTests?.permission ?: localAccess.permissionNow
+            },
+            userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)",
+            appVersion = BuildConfig.VERSION_NAME.substringBefore('-'),
+            deviceName = deviceName(app),
+            offlineNow = { settings.value.offline },
+        )
+        nexus = made
+        made.start()
     }
 
     val toasts = Toasts()
@@ -322,7 +334,7 @@ class Graph(
     val sleep = org.medianexus.music.playback.SleepTimer(scope)
 
     /** Whether a server on the home network can be reached (Android 17's permission). */
-    val localAccess = LocalAccess(context.applicationContext, session, settings, scope)
+    val localAccess: LocalAccess = LocalAccess(context.applicationContext, session, settings, scope)
 
     private val reconnectCount = kotlinx.coroutines.flow.MutableStateFlow(0)
 
@@ -373,28 +385,6 @@ class Graph(
         }
     }
 
-    /** The server refused the saved sign-in (the password was changed there): signed out,
-     *  as Windows does, to be asked for it again. Nothing kept for the account is lost. */
-    private fun signInGone() {
-        notices.post(Notice.SignInGone)
-        session.signOut()
-    }
-
-    private fun startNexus(): org.medianexus.music.nexus.NexusLauncher? = try {
-        org.medianexus.music.nexus.NexusLauncher(
-            accounts.state, scope,
-            userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)",
-            // Not with offline mode switched on by hand; not while the phone may not reach the
-            // home network; and only while the app is in use (its screens in front, or music
-            // playing or meant to be).
-            mayAsk = { !settings.value.offline && !localAccess.certain.value && (front.value || playing) },
-        )
-    } catch (e: Exception) {
-        null
-    } catch (e: LinkageError) {
-        null
-    }
-
     private fun downloadsFor(context: Context, account: AccountGraph) = org.medianexus.music.downloads.Downloads(
         context = context,
         catalogue = account.catalogue,
@@ -443,42 +433,12 @@ class Graph(
         reconnectCount.value++
     }
 
-    /** Another player the phone's player shows while it is in a jam or steering another of
-     *  the person's devices (M6; see `jam/Jams`). */
-    val steered = org.medianexus.music.playback.Steered()
-
-    /** The person's other devices as the new linking knows them: what a list of them is
-     *  drawn from and calls. Empty, and doing nothing, wherever there is no linking. */
-    val linked = org.medianexus.music.playback.Linked()
-
     /** The screens' one way to the player (the playback service's session). */
-    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), steered, linked, quality)
+    val player = PlayerConnection(context.applicationContext, accounts, settings, scope, context.getString(R.string.live_stream), context.getString(R.string.lost_connection), quality = quality)
 
-    /** The jam relay's host key, sealed as the password is (see `jam/KeyVault`). */
-    val relayKey = org.medianexus.music.jam.KeyVault(java.io.File(context.noBackupFilesDir, "relay-key.sealed"), KeystoreBox())
-
-    fun relayKeyKept(): Boolean = relayKey.kept()
-
-    private val jamsNow = kotlinx.coroutines.flow.MutableStateFlow<org.medianexus.music.jam.Jams?>(null)
-
-    /** [jams] once anything has made it; null until then (the strip and Connect look here,
-     *  so that showing them doesn't make it). */
-    val jamsMade: kotlinx.coroutines.flow.StateFlow<org.medianexus.music.jam.Jams?> = jamsNow
-
-    /** Jams and the person's other devices: made the first time anything asks (see
-     *  `jam/JamApp`), never with the feature unused. */
-    val jams: org.medianexus.music.jam.Jams by lazy {
-        // Never in a build without them: nothing that would ask is there (jam/JamBuild).
-        check(org.medianexus.music.jam.JamBuild.on) { "Jams don't exist in this build" }
-        org.medianexus.music.jam.JamApp(app, this, steered).also { it.start() }.jams.also { jamsNow.value = it }
-    }
-
-    /** A jam's link handed over by another app (see `jam/JamLinkActivity`), for the jam page
-     *  to put in its box; taken by the shell. */
-    val jamLinkArrived = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-
-    /** [jams], if anything has made it. */
-    fun jamsIfMade(): org.medianexus.music.jam.Jams? = jamsNow.value
+    /** For the tests only: where an address leads and whether the local-network permission is
+     *  held, as a test says (the build machine is not a phone on the owner's Wi-Fi). */
+    class LocalForTests(val inside: Boolean, val permission: Boolean)
 
     companion object {
         /** How long the server is given to answer the first time it is asked after start-up. */
@@ -487,9 +447,17 @@ class Graph(
         @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
         private fun databaseFor(context: Context): androidx.media3.database.DatabaseProvider = androidx.media3.database.StandaloneDatabaseProvider(context)
 
-        /** Where the saved password is. Kept out of backups: the key that opens it can't
+        @Volatile internal var localForTests: LocalForTests? = null
+
+        /** Where what sign-in left is kept, sealed. Out of backups: the key that opens it can't
          *  leave the phone anyway. */
-        fun passwordFile(context: Context): File = File(context.noBackupFilesDir, "password.sealed")
+        fun signInFile(context: Context): File = File(context.noBackupFilesDir, "nexus-signin.sealed")
+
+        /** What this phone is called in the person's list of devices: its own name, as the
+         *  person set it, or its model. */
+        fun deviceName(context: Context): String =
+            (try { android.provider.Settings.Global.getString(context.contentResolver, "device_name") } catch (_: RuntimeException) { null })
+                ?.trim()?.takeIf { it.isNotEmpty() }?.take(64) ?: android.os.Build.MODEL.orEmpty().ifEmpty { "Android phone" }
     }
 
     init {
@@ -501,6 +469,11 @@ class Graph(
         // anything asks (core/Core.kt). And the person's changes to what is shared, made in
         // turn (see [choose]).
         scope.launch(Dispatchers.IO) {
+            // **What earlier versions kept and nothing reads now is removed when this one first
+            // runs** (the backend design's section 11): the saved music-server password, and
+            // the jam relay's key that went with it. Nothing falls back to either.
+            File(context.noBackupFilesDir, "password.sealed").delete()
+            File(context.noBackupFilesDir, "relay-key.sealed").delete()
             try {
                 org.medianexus.music.core.Core.warm()
             } catch (e: org.medianexus.music.core.CoreException) {
@@ -544,17 +517,9 @@ class Graph(
         scope.launch {
             var had = false
             accounts.state.collect { account ->
-                // The Nexus server's client's launcher, once an account is published and the app
-                // has started (nexus/Nexus.kt): never a reason for anything here to fail.
-                if (account != null) makeNexus()
                 // Signed out (not "not yet read", at start-up, when the job may be what
                 // started the app): nothing of theirs is carried on, by job or service.
                 if (account == null && had) org.medianexus.music.downloads.DownloadKeeper.letGo(app)
-                // Signed out: the relay's key goes with the password (M6, rule 4).
-                if (account == null && had && org.medianexus.music.jam.JamBuild.on) {
-                    relayKey.delete()
-                    jamsIfMade()?.let { jams -> mainHandler.post { jams.signedOut() } }
-                }
                 had = account != null
                 // What was found out about one account's server is not the next account's.
                 watch.reset()
@@ -586,24 +551,28 @@ class Graph(
                 }
             }
         }
-        // Jams and linked devices, when hosting is switched on: made now, so that the phone
-        // can be among the person's devices while it has a reason to be (M6). Otherwise
-        // nothing of them is made until asked for.
-        if (org.medianexus.music.jam.JamBuild.on && settings.value.jamHost) mainHandler.post { jams }
         // Allowed to reach the home network: what failed tries again.
         scope.launch { localAccess.allowed.collect { if (it > 0) { reconnected(); watch.networkBack() } } }
         // A network again (after none, or another one): the same.
         network.onBack = {
             reconnected()
             watch.networkBack()
+            // (The Nexus server's machine asks what it owes: a renewal, a sign-out to tell.)
+            nexus?.network(true)
         }
         // No network at all: the server is out of reach until it answers again.
-        scope.launch { network.state.collect { if (!it.connected && accounts.state.value != null) watch.noNetwork() } }
+        scope.launch {
+            network.state.collect {
+                if (!it.connected && accounts.state.value != null) watch.noNetwork()
+                if (!it.connected) nexus?.network(false)
+            }
+        }
         // The switch in Settings and the one every request checks are the same.
         scope.launch {
             settings.state.map { it.offline }.distinctUntilChanged().collect {
                 offline.on = it
                 watch.manual(it)
+                nexus?.offline(it)
             }
         }
     }

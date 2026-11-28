@@ -172,13 +172,6 @@ class DebugControl : BroadcastReceiver() {
         intent.getStringExtra("requests")?.let { what ->
             resultData = org.medianexus.music.requests.DebugRequests.asked(context.applicationContext, what)
         }
-        // Linking the person's devices forced on or off for the next start, and what stands
-        // in for its screens (see link/DebugLink.kt). On this, the main thread, where
-        // linking lives.
-        intent.getStringExtra("link")?.let { what ->
-            resultData = org.medianexus.music.link.DebugLink.asked(context.applicationContext, what) ?: Linking.debug(what)
-            return
-        }
         // Keeping in step forced on, an exchange made now, a pin; and the shared library made
         // to panic (see sync/DebugStep.kt).
         (intent.getStringExtra("instep") ?: intent.getStringExtra("core"))?.let { what ->

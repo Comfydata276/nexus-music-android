@@ -573,8 +573,6 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_wireProbe<'l>(env: JN
         let line = match given.line.as_str() {
             "musicbrainz" => Line::MusicBrainz,
             "listenbrainz" => Line::ListenBrainz,
-            "music" => Line::Music,
-            "relay" => Line::Relay,
             _ => Line::Lidarr,
         };
         let whose = if given.nobodys { Whose::Nobodys } else { Whose::Operation(given.operation) };

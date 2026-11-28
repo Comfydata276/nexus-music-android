@@ -8,38 +8,6 @@ plugins {
 }
 
 /**
- * Whether jams and linked devices (M6: `jam/`, `ui/jam/`) exist in this build. **They do not.**
- * A security review found that the way linked devices prove they are the person's own leaks a
- * guessable fingerprint of the music-server password to the relay, and ways a guest or
- * another app can interfere with playback; none of it goes to a phone until that is fixed.
- * This is the one switch: it gives the app `BuildConfig.JAMS` (read through
- * `jam/JamBuild.kt`), and decides whether `src/jam/AndroidManifest.xml` (the activity that
- * takes a jam link from other apps, `JamService`, and the permission it needs) is merged into
- * the APK at all, so that with it off the phone offers other apps nothing for it.
- */
-val jamsExist = false
-
-/**
- * Whether linking the person's devices (`link/`, `playback/Linking`, `playback/LinkSide`:
- * the scheme of the Windows repository's `docs/linking-design.md`) exists in this build.
- * **It does not**, in any build that is released. It gives the app `BuildConfig.LINK`
- * (read through `link/LinkBuild.kt`); with it off nothing of linking is made, shown or
- * asked for. A build for trying it out is this same source built with
- * `-PlinkExists=true`, and is the same app otherwise.
- */
-val linkExists = providers.gradleProperty("linkExists").orNull == "true"
-
-/**
- * Whether the Nexus server's client (`nexus/`: the backend design's slice P1) exists in this
- * build. **It does not**, in any build that is published, until what only a real phone, a car
- * and a real proxy can show has been done (docs/DESIGN.md, "The Nexus server's client"). It
- * gives the app `BuildConfig.NEXUS` (read through `nexus/NexusBuild.kt`); with it off nothing of
- * the client is made, no thread, no row under Settings, no request. A build for trying it out
- * is this same source built with `-PnexusExists=true`.
- */
-val nexusExists = providers.gradleProperty("nexusExists").orNull == "true"
-
-/**
  * The shared core: the Windows app's own code for what every app on an account must do
  * identically, compiled into a library the app carries (`native/`, docs/DESIGN.md "The
  * shared core"). **Every build of the app builds it first, and none can leave it out**:
@@ -82,9 +50,6 @@ android {
         // (-PversionCode=12 -PversionName=0.6.2-link1); without them, the app's own.
         versionCode = providers.gradleProperty("versionCode").orNull?.toInt() ?: 13
         versionName = providers.gradleProperty("versionName").orNull ?: "0.6.3"
-        buildConfigField("boolean", "JAMS", jamsExist.toString())
-        buildConfigField("boolean", "LINK", linkExists.toString())
-        buildConfigField("boolean", "NEXUS", nexusExists.toString())
         // The app carries a library of its own, compiled for these two kinds of processor
         // and no other (see "The shared core", below): an arm64 phone, and the x86_64
         // emulators. Naming them here leaves every other kind out of the APK altogether,
@@ -148,13 +113,6 @@ android {
     lint {
         abortOnError = true
         checkDependencies = false
-    }
-}
-
-// (See jamsExist, above.)
-androidComponents {
-    onVariants { variant ->
-        if (jamsExist) variant.sources.manifests.addStaticManifestFile("src/jam/AndroidManifest.xml")
     }
 }
 

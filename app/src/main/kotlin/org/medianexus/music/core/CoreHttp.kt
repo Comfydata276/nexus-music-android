@@ -107,12 +107,6 @@ internal object CoreHttp {
     const val LOOKING_WAITING = 32
     const val CHANGING_WAITING = 8
 
-    /** Linking's requests ([linking]): how many at once, and how many more may wait. At
-     *  rest it uses one (the stay at the relay); a look, a send and a look-up of songs
-     *  beside it are four; the rest is room for look-ups that come together. */
-    const val LINKING = 6
-    const val LINKING_WAITING = 32
-
     /** What is said to whoever asks while every thread is taken and every place in the
      *  queue too. */
     const val BUSY = "The app is busy with other requests. Try again in a moment."
@@ -150,31 +144,6 @@ internal object CoreHttp {
      */
     @Volatile var unsent: () -> String? = { null }
 
-    /**
-     * **Linking the person's devices** (`native/src/link.rs`; `playback/Linking`) is the one
-     * thing the library asks of the music server and of the relay through here, on two
-     * lines of their own, "music" and "relay". Each goes to **one place and nowhere else**:
-     * the music server's own place for the first ([linkMusic]) and the relay's for the
-     * second ([linkRelay]), as [originOf] has them; a request on either line for anywhere
-     * else is not sent, and **neither is ever sent on**: an answer that says "go there
-     * instead" is the answer, whatever it names ([onward]; the sign-in goes with every
-     * request to the one, the host key and a place's token with every request to the
-     * other, and neither server needs to send one on). **The relay's place is never the
-     * music server's**: a relay set to that address is asked nothing here (and `Linking`
-     * refuses it, and one at Lidarr's address, before it begins). Both go over the client
-     * the app keeps for the music server ([linkClient]),
-     * so that what that client will and will not trust is what these trust. All three are
-     * null, and both lines closed, unless linking exists and is set up: set by `Linking`,
-     * and by nothing else.
-     */
-    @Volatile var linkMusic: () -> String? = { null }
-    @Volatile var linkRelay: () -> String? = { null }
-    @Volatile var linkClient: () -> OkHttpClient? = { null }
-        set(value) {
-            field = value
-            linkLines = null
-        }
-
     /** For the tests, which stand in for MusicBrainz and ListenBrainz on this machine:
      *  whether those two may be reached only at public addresses. Nothing in the app
      *  changes it. */
@@ -199,7 +168,6 @@ internal object CoreHttp {
     private const val HOME = "It was for the music server's own address, which requests are never sent to."
     private const val INSIDE = "It pointed at an address inside a private network."
     private const val ELSEWHERE = "The request would have carried a key to an address it wasn't given for, so it wasn't sent."
-    private const val NOT_LINKINGS = "It was for an address that linking your devices doesn't use, so it wasn't sent."
 
     /** Why a request failed on its way, to end the library's sentence with ("Couldn't reach
      *  Lidarr. …"). Never the exception's own words, which name the host and can quote more. */
@@ -462,12 +430,10 @@ internal object CoreHttp {
      * - only from `https` to `https`;
      * - never to this phone, the link it is on or a private network, and never to the
      *   music server;
-     * - [ONWARD] times at the most;
-     * - **never for linking's two lines** ([linkMusic]): each has one place, and what goes
-     *   with its requests is for that place alone.
+     * - [ONWARD] times at the most.
      */
     private fun onward(asked: Asked, from: HttpUrl, response: Response, steps: Int): HttpUrl? {
-        if (asked.line == "lidarr" || asked.line == "music" || asked.line == "relay" || asked.method != "GET" || steps >= ONWARD) return null
+        if (asked.line == "lidarr" || asked.method != "GET" || steps >= ONWARD) return null
         if (response.code !in intArrayOf(301, 302, 303, 307, 308)) return null
         val to = response.header("Location")?.let(from::resolve) ?: return null
         if (!from.isHttps || !to.isHttps) return null
@@ -531,26 +497,6 @@ internal object CoreHttp {
 
     @Volatile private var lines: Lines? = null
 
-    /** Linking's two lines ([linkMusic]): what looks, and what is sent once. */
-    @Volatile private var linkLines: Pair<OkHttpClient, OkHttpClient>? = null
-
-    /** A hold at the relay is twenty seconds; the library gives each call its own limit. */
-    private const val LINK_ANSWER_SECONDS = 45L
-
-    private fun linkLine(changes: Boolean): OkHttpClient? {
-        val pair = linkLines ?: synchronized(this) {
-            linkLines ?: linkClient()?.let { base ->
-                val looks = base.newBuilder()
-                    .followRedirects(false).followSslRedirects(false)
-                    .readTimeout(LINK_ANSWER_SECONDS, TimeUnit.SECONDS)
-                    .callTimeout(0, TimeUnit.SECONDS)
-                    .build()
-                (looks to looks.newBuilder().retryOnConnectionFailure(false).build()).also { linkLines = it }
-            }
-        } ?: return null
-        return if (changes) pair.second else pair.first
-    }
-
     private fun lines(): Lines = lines ?: synchronized(this) { lines ?: Lines(dress).also { lines = it } }
 
     // ---- operations ---------------------------------------------------------------------------
@@ -566,11 +512,6 @@ internal object CoreHttp {
         /** The longest **the whole of it** may take, from when it was begun, however many
          *  requests it makes: what is left of that is the most its next request may take. */
         private val wholeMillis: Long? = null,
-        /** One of linking's ([linking]): **a stop always stops it**, whatever the library
-         *  has said of seeing it through. What that saying still buys it is that the
-         *  request in flight (a write) is let finish; nothing more is sent after it and
-         *  its waits end. */
-        private val alwaysStops: Boolean = false,
     ) {
         private val began = System.nanoTime()
 
@@ -600,12 +541,11 @@ internal object CoreHttp {
 
         fun stop() {
             val cut = lock.withLock {
-                if (stopped || (seenThrough && !alwaysStops)) return
+                if (stopped || seenThrough) return
                 stopped = true
                 stoppedAt = System.nanoTime()
                 stoppedNow.signalAll()
-                // (Linking's, being seen through: what is in flight finishes.)
-                if (seenThrough) emptyList() else flying.toList()
+                flying.toList()
             }
             if (!changing) {
                 cut.forEach { it.cancel() }
@@ -735,42 +675,6 @@ internal object CoreHttp {
      *  screen that asked has gone (to write down what Lidarr accepted). Stopping it is
      *  as stopping [changing]. */
     fun <T> changingThrough(act: (operation: Long) -> T): Begun<T> = begun(begin(changing = true, callMillis = changeMillis), act)
-
-    /**
-     * One of linking's requests (a look at the secret, the stay at the relay, sends, a
-     * look-up of songs, the reading of the relay's key: `playback/Linking`), **on one of
-     * [LINKING] threads kept for linking and nothing else**, with room for
-     * [LINKING_WAITING] more to wait their turn: a stay lasts as long as its session, and
-     * must not hold one of the threads kept for looking. Null, and nothing begun, if
-     * there is no room. Ending what is given back ([Doing.stop]) is how it is stopped,
-     * **always**: the request in flight is cut off (or, once the library has said it is
-     * writing something it must see through, let finish), its waits end, and no more are
-     * sent. Whatever `act` throws ends that piece of work and nothing else; nothing of it
-     * is said here.
-     */
-    fun linking(name: String, act: (operation: Long) -> Unit): Doing? {
-        val doing = Doing(nextDoing.incrementAndGet(), changing = false, alwaysStops = true).also { doings[it.id] = it }
-        try {
-            linkers.execute {
-                val thread = Thread.currentThread()
-                val was = thread.name
-                thread.name = "link-$name"
-                try {
-                    if (!doing.isStopped) act(doing.id)
-                } catch (_: Exception) {
-                } finally {
-                    thread.name = was
-                    end(doing)
-                }
-            }
-        } catch (_: java.util.concurrent.RejectedExecutionException) {
-            end(doing)
-            return null
-        }
-        return doing
-    }
-
-    private val linkers by pool("link", LINKING, LINKING_WAITING)
 
     /** A thread of its own for each thing run on it: for what must never wait its turn. */
     private val apart = Executor { work -> Thread(work, "requests-sign-in").apply { isDaemon = true }.start() }
@@ -997,17 +901,10 @@ internal object CoreHttp {
         // A secret goes to the place it was given for and nowhere else, whatever address the
         // library was handed or made of it.
         if (asked.bound != null && carriesSecret(asked) && origin(url) != asked.bound) return failed(ELSEWHERE)
-        // Linking's two lines go to one place each and nowhere else ([linkMusic]).
-        val linking = asked.line == "music" || asked.line == "relay"
-        if (linking) {
-            val music = linkMusic()
-            val place = if (asked.line == "music") music else linkRelay()?.takeIf { it != music }
-            if (place == null || origin(url) != place) return failed(NOT_LINKINGS)
-        }
-        // Nothing else goes to the music server from here, but Lidarr's own API if that is
-        // where the person said Lidarr is.
-        if (!linking && asked.home != null && origin(url) == asked.home && !(asked.typed && asked.bound == asked.home)) return failed(HOME)
-        if (!linking && asked.line != "lidarr" && publicOnly && isInside(url.host)) return failed(INSIDE)
+        // Nothing goes to the music server from here, but Lidarr's own API if that is where
+        // the person said Lidarr is.
+        if (asked.home != null && origin(url) == asked.home && !(asked.typed && asked.bound == asked.home)) return failed(HOME)
+        if (asked.line != "lidarr" && publicOnly && isInside(url.host)) return failed(INSIDE)
         val body = asked.body.orEmpty().encodeToByteArray()
         val request = Request.Builder().url(url).apply {
             var named = false
@@ -1027,7 +924,7 @@ internal object CoreHttp {
                 else -> return failed(NOT_MADE)
             }
         }.build()
-        val client = (if (linking) linkLine(changes = asked.method != "GET") else lines().of(asked.line, changes = asked.method != "GET")) ?: return failed(NOT_MADE)
+        val client = lines().of(asked.line, changes = asked.method != "GET") ?: return failed(NOT_MADE)
         var going = request
         var steps = 0
         while (true) {

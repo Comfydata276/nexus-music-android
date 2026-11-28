@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.medianexus.music.net.LocalNetwork
 import org.medianexus.music.net.LocalNetwork.Nearness
+import org.medianexus.music.requests.LocalGate
 import org.medianexus.music.store.SettingsStore
 
 /**
@@ -121,7 +122,6 @@ class LocalAccess(private val context: Context, private val session: Session, pr
      */
     fun abandoned() {
         waiting = null
-        session.dropWaiting()
         if (asked.value == Ask.ASKING) asked.value = if (settings.value.localNetworkRefusedForGood) Ask.CANNOT_ASK else Ask.NOT_ASKED
     }
 
@@ -152,6 +152,31 @@ class LocalAccess(private val context: Context, private val session: Session, pr
     /** Whether signing in to `address` needs the permission asked for first: it is certainly
      *  on the home network, and the permission isn't held. */
     suspend fun neededFor(address: String): Boolean = APPLIES && !isGranted() && nearnessOf(address) == Nearness.LOCAL
+
+    /**
+     * **For the Nexus server's address, and the music server's the backend hands back** (the
+     * backend design's 6.4): whether it needs the permission asked for before it is connected
+     * to. **A name is judged by what it leads to on this network now**, as Lidarr's is
+     * (`requests/LocalGate`): a public name that leads to an address inside the house, on
+     * Wi-Fi or Ethernet, is certainly local. That is the owner's router, and the fault that cost
+     * three releases.
+     */
+    suspend fun neededStrictlyFor(address: String): Boolean =
+        APPLIES && !isGranted() && LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork()) == Nearness.LOCAL
+
+    /** As [neededStrictlyFor], after a failure in which no connection was opened: whether the
+     *  permission may be why (the address is, or may be, inside). */
+    suspend fun mayBeWhyStrictly(address: String): Boolean =
+        APPLIES && !isGranted() && LocalGate.nearnessOf(LocalNetwork.hostOf(address), homeNetwork()).let { it != null && it != Nearness.NOT }
+
+    /** Whether `host` leads inside the house on this network now; null if it couldn't be
+     *  judged. Blocks for a look-up of a few seconds at most: never on the main thread. */
+    fun insideNow(host: String): Boolean? = kotlinx.coroutines.runBlocking { LocalGate.nearnessOf(host, homeNetwork()) }?.let { it == Nearness.LOCAL }
+
+    /** Whether the permission is held, where the phone has one (Android 17 on); null before. */
+    val permissionNow: Boolean? get() = if (APPLIES) isGranted() else null
+
+    private fun homeNetwork(): Boolean = transportNow(context).let { it == "Wi-Fi" || it == "Ethernet" }
 
     /** Whether a failure to reach `address` may be for want of the permission: it is or may
      *  be on the home network, and the permission isn't held. */

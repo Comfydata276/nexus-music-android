@@ -144,8 +144,7 @@ fun MiniPlayer(modifier: Modifier = Modifier) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            // (A song of someone else's jam that this library doesn't have can't be liked here.)
-            if (!org.medianexus.music.playback.Steered.foreign(now)) IconButton(
+            IconButton(
                 if (liked) R.drawable.ic_heart_fill else R.drawable.ic_heart,
                 stringResource(if (liked) R.string.remove_from_liked else R.string.add_to_liked),
                 {

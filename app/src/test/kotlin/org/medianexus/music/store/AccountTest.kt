@@ -4,7 +4,6 @@ import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -34,24 +33,5 @@ class AccountTest {
         val dirs = accountDirs(File("/files"), File("/cache"), key)
         assertEquals(File("/files/accounts/$key"), dirs.data)
         assertEquals(File("/cache/accounts/$key"), dirs.cache)
-    }
-
-    @Test
-    fun thePasswordIsOnlyHandedBackForItsOwnAccount() {
-        val file = File(folder.newFolder(), "password.sealed")
-        val vault = PasswordVault(file, FakeBox())
-        assertNull(vault.load("https://music.example.org", "ada"))
-        assertTrue(vault.save("https://music.example.org", "ada", "correct horse\nbattery"))
-        assertFalse(file.readText().contains("correct horse"))
-        assertEquals("correct horse\nbattery", vault.load("https://music.example.org", "ada"))
-        assertNull(vault.load("https://music.example.org", "grace"))
-        assertNull(vault.load("https://other.example.org", "ada"))
-        // Sealed by a key since lost: as good as no password.
-        file.writeBytes(byteArrayOf(7, 7, 7))
-        assertNull(vault.load("https://music.example.org", "ada"))
-        vault.save("https://music.example.org", "ada", "x")
-        vault.delete()
-        assertFalse(file.exists())
-        assertNull(vault.load("https://music.example.org", "ada"))
     }
 }

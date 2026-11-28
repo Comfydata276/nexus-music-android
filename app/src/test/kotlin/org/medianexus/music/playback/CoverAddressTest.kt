@@ -17,6 +17,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.medianexus.music.App
 import org.medianexus.music.graph
+import org.medianexus.music.signOut
 import org.medianexus.music.net.Song
 import org.medianexus.music.store.CoverProvider
 import org.robolectric.Robolectric

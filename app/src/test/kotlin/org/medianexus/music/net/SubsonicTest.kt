@@ -34,6 +34,8 @@ class SubsonicTest {
     @After
     fun stop() {
         server.close()
+        // (A login one test's server refused is not another test's.)
+        MusicLogin.Gate.forgetForTests()
     }
 
     private fun client(password: String = "sesame", salt: String = "abcdefghijklmnop", offline: OfflineSwitch = OfflineSwitch()) =
@@ -70,7 +72,7 @@ class SubsonicTest {
         assertEquals("Ada Lovelace", query.queryParameter("u"))
         assertEquals("abcdefghijklmnop", query.queryParameter("s"))
         // md5("sesame" + "abcdefghijklmnop"), worked out apart from the app.
-        assertEquals(Subsonic.md5Hex("sesameabcdefghijklmnop"), query.queryParameter("t"))
+        assertEquals(md5Hex("sesameabcdefghijklmnop"), query.queryParameter("t"))
         assertEquals("1.16.1", query.queryParameter("v"))
         assertEquals("NexusMusic", query.queryParameter("c"))
         assertEquals("json", query.queryParameter("f"))
@@ -83,10 +85,32 @@ class SubsonicTest {
 
     @Test
     fun theTokenIsMd5OfPasswordAndSalt() {
-        // The example from the Subsonic API's own documentation.
-        assertEquals("26719a1196d2a940705a59634eb18eab", Subsonic.md5Hex("sesamec19b2d"))
-        assertEquals(16, Subsonic.randomSalt().length)
-        assertTrue(Subsonic.randomSalt().all { it.isLetterOrDigit() })
+        // The example from the Subsonic API's own documentation (the tests' own maker of a
+        // token: the app is handed its salt and token by the Nexus server).
+        assertEquals("26719a1196d2a940705a59634eb18eab", md5Hex("sesamec19b2d"))
+    }
+
+    /** **A refused music login is never sent again as it was** (the backend design's 6.3):
+     *  the one refusal is told once, with its number, and every request after fails unsent,
+     *  a stream's address included, until a new login is put in place. */
+    @Test
+    fun aRefusedLoginIsNeverSentAgain() = runBlocking {
+        MusicLogin.Gate.forgetForTests()
+        failed(40, "Wrong username or password")
+        val api = client()
+        val told = java.util.concurrent.CopyOnWriteArrayList<Long>()
+        api.login.onRefused = { told += it.count }
+        expect<ApiError.Server> { api.ping() }
+        val sentBefore = server.requestCount
+        expect<ApiError.Server> { api.ping() }
+        expect<ApiError.Server> { api.ping() }
+        assertEquals("sent again with the refused login", sentBefore, server.requestCount)
+        assertEquals(listOf(1L), told.toList())
+        assertTrue(MusicLogin.Gate.refused(api.login.now.token))
+        // A new pair: sent from now on, by the same client.
+        assertTrue(api.login.renew(Handed("zyxwvutsrqponmlk", md5Hex("sesame" + "zyxwvutsrqponmlk"), 2)))
+        assertTrue(!api.login.isRefused)
+        MusicLogin.Gate.forgetForTests()
     }
 
     @Test
@@ -95,6 +119,9 @@ class SubsonicTest {
         val wrong = expect<ApiError.Server> { client().ping() }
         assertEquals("Wrong username or password.", wrong.message)
         assertTrue(wrong.signInRefused)
+        // (That login is now set aside, and never sent again: see aRefusedLoginIsNeverSentAgain.
+        // The others are asked with it put back.)
+        MusicLogin.Gate.forgetForTests()
 
         failed(41, "Token authentication not supported for LDAP users")
         val ldap = expect<ApiError.Server> { client().ping() }
@@ -348,7 +375,7 @@ class SubsonicTest {
     /** Nothing private in an error's words: not the host, the token, its salt, or `also`. */
     private fun assertNothingPrivate(error: Throwable, vararg also: String) {
         val text = error.toString()
-        val token = Subsonic.md5Hex("sesame" + "abcdefghijklmnop")
+        val token = md5Hex("sesame" + "abcdefghijklmnop")
         for (secret in listOf(server.hostName, "abcdefghijklmnop", token) + also) {
             assertFalse("\"$secret\" in: $text", text.contains(secret, ignoreCase = true))
         }
@@ -357,7 +384,7 @@ class SubsonicTest {
 
     @Test
     fun errorsSayNothingPrivate() = runBlocking {
-        val token = Subsonic.md5Hex("sesame" + "abcdefghijklmnop")
+        val token = md5Hex("sesame" + "abcdefghijklmnop")
         // The decoder's own message would quote the answer.
         ok(""""album":{"id":"1","songCount":"secret-payload"}""")
         val odd = expect<ApiError.NotSubsonic> { client().album("1") }
@@ -377,6 +404,8 @@ class SubsonicTest {
         val named = expect<ApiError.Server> { client().ping() }
         assertEquals("", named.serverMessage)
         assertFalse(named.toString(), named.toString().contains("Lovelace"))
+        // (That login is set aside now; the rest are asked with it put back.)
+        MusicLogin.Gate.forgetForTests()
         // An ordinary message still comes through.
         failed(10, "Required parameter is missing")
         assertEquals("The server reported: Required parameter is missing", expect<ApiError.Server> { client().ping() }.message)

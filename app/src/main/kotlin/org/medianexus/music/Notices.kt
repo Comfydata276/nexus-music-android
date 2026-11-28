@@ -14,20 +14,11 @@ import org.medianexus.music.store.SettingsDamage
 sealed interface Notice {
     data class SettingsDamaged(val damage: SettingsDamage) : Notice
 
-    /** Signed in, but the password couldn't be kept: the next start asks for it again. */
-    data object PasswordNotSaved : Notice
-
-    /** Signed in over plain HTTP to somewhere beyond the home network. */
-    data object SignedInWithoutEncryption : Notice
-
-    /** Signing out didn't happen: the saved password couldn't be removed from the phone. */
-    data object SignOutFailed : Notice
+    /** Signed in, but the sign-in couldn't be kept on the phone: the next start asks again. */
+    data object SignInNotKept : Notice
 
     /** The settings couldn't be written; they're tried again at the next change. */
     data object SettingsNotSaved : Notice
-
-    /** The server refused the saved sign-in (its password was changed there): signed out. */
-    data object SignInGone : Notice
 }
 
 /** The notices waiting to be seen, oldest first. */

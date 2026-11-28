@@ -12,13 +12,6 @@ publish = false
 # `libnexus_core_android.so`: what `System.loadLibrary("nexus_core_android")` finds.
 crate-type = ["cdylib"]
 
-[features]
-# What the tests of the phone's side of linking use in place of another device (see the
-# end of `src/link.rs`). **Only in the library built for this machine**, which the unit
-# tests load: `native/build` turns it on for that one and for no other, so nothing of it
-# is in a library a phone carries.
-test-seams = []
-
 [dependencies]
 # The core itself, **at one fixed commit of the Windows repository**: the commit a release
 # of the Windows app was built from, so that the phone and that release run the same rules.

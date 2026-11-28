@@ -283,8 +283,6 @@ class PlaybackService : MediaLibraryService() {
         // gapless joins and seeking are checked on the emulator, which can't record sound.
         if (BuildConfig.DEBUG) exo.addAnalyticsListener(EventLogger("NexusPlayer"))
         exo.addAnalyticsListener(heard)
-        // Linking the person's devices, where it exists in this build: otherwise nothing.
-        if (org.medianexus.music.link.LinkBuild.on) startLinking()
 
         session = MediaLibrarySession.Builder(this, player, callback)
             .setSessionActivity(openApp())
@@ -612,13 +610,6 @@ class PlaybackService : MediaLibraryService() {
         // The Play that Media3 sends after a request that was overtaken, or failed: not a
         // Play anyone pressed. Whatever is in the player now stays as it is.
         if (requests.isDropped(session.controllerForCurrentRequest)) return false
-        // M6, rule 2: while the phone's player shows another (a jam, another of the person's
-        // devices), nothing plays this phone's own music over it. The app's own screens steer
-        // the other; whatever else asks (the car above all) is told to open the app.
-        if (graph.steered.shown.value != null) {
-            cannotStart("the phone's player is showing another device's music")
-            return false
-        }
         if (!holdForeground(why = "to play")) {
             cannotStart("Android would not let the player into the foreground")
             return false
@@ -758,8 +749,6 @@ class PlaybackService : MediaLibraryService() {
         if (::ahead.isInitialized) ahead.release()
         // Handed to the app's writer, which finishes it whatever becomes of this service.
         save()
-        linking?.close()
-        linking = null
         scope.cancel()
         session.release()
         player.release()
@@ -844,10 +833,6 @@ class PlaybackService : MediaLibraryService() {
         cantStart = false
         // Someone else, or nobody: what was playing was theirs.
         if (era != null) {
-            // (Said to linking before the player is switched: nothing more is asked of the
-            // player for the sign-in that is over.)
-            linking?.signInEnded()
-            linkSongs = null
             save()
             leave()
             // Emptying the player isn't a change to the queue that was theirs: it stays saved
@@ -872,66 +857,11 @@ class PlaybackService : MediaLibraryService() {
         era = next
         current = next
         reload()
-        // The phone's copy of the library, for linking: read for this sign-in, by its
-        // number as it is when each reading begins, and made ready off the main thread.
-        linking?.let { link ->
-            next.scope.launch {
-                now.copy.state.collect { copy ->
-                    val readFor = link.signIn
-                    if (copy == null) return@collect
-                    val places = withContext(Dispatchers.Default) {
-                        val places = HashMap<String, Int>(copy.songs.size * 2)
-                        for (i in 0 until copy.songs.size) places[copy.songs.id(i)] = i
-                        places
-                    }
-                    if (era !== next) return@collect
-                    // **The app's own index first, and only then the ids to the
-                    // library**: so the library never counts as held a song the player
-                    // cannot yet find. (The other way about, for the moment between,
-                    // only a song that has left the library is still counted, and that
-                    // one cannot be played either way.)
-                    linkSongs = copy to places
-                    withContext(Dispatchers.Default) { link.library(readFor, places.keys.toList()) }
-                }
-            }
-        }
-        // The like button follows the likes, wherever they're changed.
-        next.scope.launch { now.likes.liked.collect { updateButtons() } }
-        // The list the queue came from changed (a fresh copy from the server, a song unliked
-        // from Liked songs): the queue follows it. And a list the car has open, perhaps as
-        // numbered ranges: every one of those folders is told to load again (see
-        // CarTree.stale).
-        next.scope.launch {
-            var following: kotlinx.coroutines.Job? = null
-            now.pages.changes.collect { (key, value) ->
-                if (key == player.queue.source) songsIn(value)?.let { songs ->
-                    // Nothing to do when the list's songs are the ones the queue last saw (most
-                    // refreshes of a page): no dates, no sort. Otherwise the list's order (its
-                    // dates added, a sort of thousands) is worked out off the main thread, and
-                    // only the queue's own change made on it; a newer copy of the list
-                    // overtakes one still being worked out.
-                    if (sameSongs(player.queue.sourceList, songs)) return@let
-                    val filter = player.queue.filter
-                    following?.cancel()
-                    following = next.scope.launch {
-                        val order = withContext(Dispatchers.Default) { orderOf(key, songs, filter) }
-                        // (Offline, what doesn't play doesn't join, as on Windows.)
-                        // (The list changed, perhaps on another device: not a change to the
-                        // queue made here.)
-                        if (player.queue.source == key) quietly { player.follow(key, songs, order, playsOffline() ?: { true }) }
-                    }
-                }
-                for (id in next.tree.stale(asked.toList(), key)) session.notifyChildrenChanged(id, Int.MAX_VALUE, null)
-            }
-        }
-        next.scope.launch { restore(next) }
         // The person's other devices: this is the player whose queue is shared with them.
         queueStamp = 0
         queueTaken = null
         queueMark = null
         now.queueStep?.here = queueHere(next)
-        // M6: what another of the person's devices hands this phone to carry on with.
-        graph.steered.handOver = handOver(next)
         // The library copy arriving or changing: songs held that came without levelling
         // values may find them there.
         next.scope.launch { now.copy.state.collect { copy -> if (era === next) sound.songsHeld(songsHeld(), copy) } }
@@ -1000,13 +930,11 @@ class PlaybackService : MediaLibraryService() {
             // Putting it back isn't a change to pass on: it keeps the time it last changed.
             if (player.queue.isEmpty) {
                 queueStamp = saved.stamp
-                // (A queue marked as handed to another device by a run in which linking
-                // existed is this phone's own in a run in which it does not: nothing in
-                // such a run hands a queue on or takes the mark back.)
-                queueTaken = saved.taken.takeUnless { it == LinkSide.HANDED && linkSide == null }
+                // (A queue marked as handed to another device by the device linking that
+                // earlier builds had is this phone's own: nothing hands a queue on now.)
+                queueTaken = saved.taken.takeUnless { it == HANDED_BY_LINKING }
             }
             quietly { player.restore(revived, (saved.position * 1000).toLong()) }
-            linkSide?.restored()
         }
         // Only now: the saved queue is the player's, or there was none.
         era.queue.settle()
@@ -1049,7 +977,6 @@ class PlaybackService : MediaLibraryService() {
     private fun leave() {
         val old = era ?: return
         old.account.queueStep?.here = null
-        graph.steered.handOver = null
         stopWaiting()
         outage.clear()
         current = null
@@ -1310,10 +1237,7 @@ class PlaybackService : MediaLibraryService() {
             // moved, that is the song playing on: a change to save if the queue is this
             // phone's own, and nothing at all if it is still another device's.
             val listChanged = before == null || before.first != mark.first
-            // (And a queue linking has marked as handed to another device is not made the
-            // phone's own here: only by the person's choice, which says so itself.)
-            val handedOn = linkSide?.handedStill() == true
-            if (!queueQuiet && !queue.isEmpty && (listChanged || queueTaken == null) && !handedOn) {
+            if (!queueQuiet && !queue.isEmpty && (listChanged || queueTaken == null)) {
                 queueStamp = System.currentTimeMillis() / 1000
                 queueTaken = null
                 // Saved on the server for the person's other devices: a few seconds after a
@@ -1370,15 +1294,6 @@ class PlaybackService : MediaLibraryService() {
      * in the player, the last run's queue put back.
      */
     private fun claimQueue() {
-        claimed()
-        // (Where linking the person's devices exists: said at the press, as its contract
-        // asks. A seek changes nothing it could find out by looking.)
-        linking?.chose()
-    }
-
-    /** What [claimQueue] does to the queue: for the person's press here, and for a choice the
-     *  person made at another of their devices that linking has carried out on this one. */
-    private fun claimed() {
         queueTaken = null
         if (player.queue.isEmpty) return
         queueStamp = System.currentTimeMillis() / 1000
@@ -1391,69 +1306,6 @@ class PlaybackService : MediaLibraryService() {
         step.actedPast()
         step.changedHere()
     }
-
-    // ---- Linking the person's devices (only where `LinkBuild.on`) ----------------------------
-
-    /** Null wherever linking does not exist, which is every build so far. */
-    private var linking: Linking? = null
-    private var linkSide: LinkSide? = null
-
-    /** The phone's copy of the library by song id, as last read for linking (made off the
-     *  main thread, with the copy it is of). */
-    private var linkSongs: Pair<org.medianexus.music.library.LibrarySnapshot, Map<String, Int>>? = null
-
-    /** (For a test: how many songs linking can make from the phone's copy of the library.) */
-    @androidx.annotation.VisibleForTesting
-    internal val linkSongsForTests: Int get() = linkSongs?.second?.size ?: 0
-
-    private fun startLinking() {
-        val side = LinkSide(
-            player, exo,
-            object : LinkSide.Owner {
-                override var taken: String?
-                    get() = queueTaken
-                    set(value) {
-                        queueTaken = value
-                    }
-
-                override fun claim() = claimed()
-
-                override fun written(): Boolean {
-                    queueRevision++
-                    save()
-                    // (Nothing is saved for a sign-in whose queue is not yet the player's.)
-                    val kept = era?.queue?.takeIf { !leaving && it.settled } ?: return false
-                    // Not back until the one writer of saved queues has got to it (it is
-                    // in its line, behind at most a queue being written), or a moment has
-                    // gone. **And yes only if this very save reached the disk**: its own
-                    // write's result, by its number, not the writer having had its turn
-                    // and not an earlier write that put the same words there.
-                    val reached = kotlinx.coroutines.runBlocking { withTimeoutOrNull(LinkSide.MARK_WAIT_MILLIS) { graph.queueSaver.flush() } } != null
-                    return reached && kept.written()
-                }
-            },
-            songFor = { id -> linking?.foundSong(id) ?: linkSongs?.let { (copy, places) -> places[id]?.let(copy.songs::song) } },
-            mayPlay = { mayPlay() },
-            // **A question that touches nothing**, for a phone that is already playing:
-            // whether a start would be allowed now, by the two things the service's own
-            // gate goes by that can be read without doing anything (the phone's player
-            // is not showing another device's music, and the service is in the
-            // foreground). The gate itself is not asked: its "no" stops the player.
-            mayPlayOn = { graph.steered.shown.value == null && foreground.isIn() },
-        )
-        val made = Linking(
-            side, LinkHost(this, graph) { account },
-            steered = graph.steered,
-            linked = graph.linked,
-            inAJam = { graph.jamsIfMade()?.ui?.value?.let { it.joined != null || it.hosting != null } == true },
-        )
-        // (False where it could not be started, with nothing left attached; and where
-        // linking stopped for a fault earlier in this run of the app.)
-        if (!made.start()) return
-        linkSide = side
-        linking = made
-    }
-
 
     /** Once a press has been carried out, the queue as it then stands is kept: a seek in a
      *  paused song moves the place, and nothing else would write that down before the
@@ -1538,24 +1390,6 @@ class PlaybackService : MediaLibraryService() {
             // queue from this moment, by its own clock.
             if (done && choice != null) claimQueue()
             return done
-        }
-    }
-
-    /**
-     * M6, rule 3: a queue another of the person's devices hands this phone (see jam/Host). It
-     * is a choice the person made over there, and it takes its place in the order of choices
-     * (`place`, taken as it arrived): if anything here has taken a later place by the time the
-     * queue is ready, it gives way, as any start does. Not done quietly: the queue changed here
-     * because the person asked for it.
-     */
-    private fun handOver(era: Era) = object : Steered.HandOver {
-        override suspend fun take(songs: List<Song>, cursor: Int, positionMs: Long, play: Boolean, context: String, place: Long): Boolean {
-            era.restoring.await()
-            if (this@PlaybackService.era !== era || songs.isEmpty()) return false
-            val next = withContext(Dispatchers.Default) { player.prepare(songs, cursor.coerceIn(0, songs.size - 1), context = context, shuffle = false) }
-            if (this@PlaybackService.era !== era || !Choices.stands(place)) return false
-            if (play) holdForeground(why = "for a queue handed over from another device")
-            return player.playFor(place, next, positionMs, playNow = play)
         }
     }
 
@@ -2119,23 +1953,6 @@ class PlaybackService : MediaLibraryService() {
     // ---- The session's callback: the car, the notification, the app's screens ----------------
 
     private inner class Callback : MediaLibrarySession.Callback {
-        /**
-         * M6, rule 2: a media key (a headset's, a Bluetooth device's, the notification's own
-         * buttons, which Media3 sends as media keys) while the phone's player shows another
-         * steers that one, as Windows' media keys do; nothing of this phone's own moves.
-         */
-        override fun onMediaButtonEvent(session: MediaSession, controllerInfo: MediaSession.ControllerInfo, intent: Intent): Boolean {
-            val hands = graph.steered.hands ?: return super.onMediaButtonEvent(session, controllerInfo, intent)
-            @Suppress("DEPRECATION")
-            val key = intent.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return super.onMediaButtonEvent(session, controllerInfo, intent)
-            // (One of the person's own devices, through linking: Play and Pause said outright.
-            // The notification's own Play/Pause button arrives as the headset's one key, under
-            // the notification's name; it means what it showed, which is the phone's player.)
-            val outright = linking?.outright()
-            val notificationShowsPlay = if (outright != null && session.isMediaNotificationController(controllerInfo)) androidx.media3.common.util.Util.shouldShowPlayButton(player) else null
-            return Steered.key(hands, key, outright, notificationShowsPlay) || super.onMediaButtonEvent(session, controllerInfo, intent)
-        }
-
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             // Media3 sorts callers into trusted (this app, the system, and anything allowed to
             // read notifications or control media, which is what a car's own screens are, and
@@ -2201,19 +2018,6 @@ class PlaybackService : MediaLibraryService() {
         @Deprecated("Media3 offers nothing else that is asked per command and per controller")
         override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
             val caller = callerOf(session, controller)
-            // M6, rule 2: while the phone's player shows another, a headset's buttons (and the
-            // notification's, which arrive under the same name) steer that one, as Windows'
-            // media keys do, and nothing of this phone's own moves (see Steered.press).
-            // While it shows one of the person's own devices, steered through linking: a
-            // controller that is not the notification (which stands for the system's own
-            // controls and a headset) or the app's own screens (a car, a watch, another app)
-            // does nothing, to that device or to the phone's own queue. A Play or Pause from
-            // the system's controls arrives as one command that says neither: nothing.
-            val outright = linking?.outright()
-            if (outright != null && caller != Caller.NOTIFICATION && caller != Caller.OWN_INTERFACE) return SessionError.ERROR_PERMISSION_DENIED
-            if (caller == Caller.NOTIFICATION) graph.steered.hands?.let { hands ->
-                if (Steered.press(hands, playerCommand, outright)) return SessionError.ERROR_PERMISSION_DENIED
-            }
             // ("Play that entry of the queue", by its place, from someone whose screen may
             // still show the places as they were a moment ago, is the player's to act on or
             // not: see QueuePlayer.placeIsSure.)
@@ -2497,12 +2301,6 @@ class PlaybackService : MediaLibraryService() {
             // was granted when it connected.
             val caller = callerOf(session, controller)
             if (!Access.mayCustom(caller, customCommand.customAction)) {
-                return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
-            }
-            // While it shows one of the person's own devices, steered through linking: the
-            // same gate as for the player's commands. Another controller (the car's Shuffle)
-            // does nothing, to that device or to the phone's own queue.
-            if (linking?.outright() != null && caller != Caller.NOTIFICATION && caller != Caller.OWN_INTERFACE) {
                 return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
             }
             // (The app's own commands for the queue, and shuffle, are the person's doing.)
@@ -3046,6 +2844,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     companion object {
+        /** What the device linking of earlier builds marked a saved queue with when it handed it
+         *  to another device. */
+        private const val HANDED_BY_LINKING = "handed to another device"
+
         /**
          * The player commands that are the person doing something to the queue or to
          * playing it: transport, choosing what plays, changing the list, and shuffle (which

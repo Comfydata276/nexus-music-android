@@ -7,7 +7,7 @@ package org.medianexus.music.requests
  * asked of anyone (see [RequestsOwners]; one look for a file at each sign-in is all).
  *
  * The switch stays, one line as the other two are
- * ([org.medianexus.music.sync.InStepBuild], [org.medianexus.music.jam.JamBuild]), so that a
+ * ([org.medianexus.music.sync.InStepBuild]), so that a
  * build can be made without them. With it off an account has not even a seat at its
  * requests: [org.medianexus.music.AccountGraph.requests] is null, what owns requests is
  * never asked for, no screen of them is reachable, the client for the library's requests

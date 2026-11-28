@@ -36,6 +36,9 @@ object Http {
         // load many at a time without opening new ones.
         .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 24 })
+        // A music login the music server has refused is never sent again, from anywhere: a
+        // stream, a cover, a download included (see `MusicLogin`).
+        .addInterceptor(MusicLogin.Gate)
         .addNetworkInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("User-Agent", userAgent).build())
         }

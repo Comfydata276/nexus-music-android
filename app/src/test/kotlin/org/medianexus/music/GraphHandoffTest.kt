@@ -56,8 +56,9 @@ class GraphHandoffTest {
 
     private fun graph() = Graph(app, PlainBox).also { graphs += it }
 
-    /** (The address as the session keeps it: without the last "/".) */
-    private fun key(username: String) = accountKey(server.address.trimEnd('/'), username)
+    /** The person's folder, as a sign-in leaves it (`SignedInForTests`): who they are to the
+     *  Nexus server. */
+    private fun key(username: String) = org.medianexus.music.nexus.Folders.personOf(org.medianexus.music.nexus.KeptAccount(TEST_NEXUS, TEST_BACKEND, "$username@example.org"))
     private fun dataOf(key: String) = accountDirs(app.filesDir, app.cacheDir, key).data
 
     /** Signs in, and returns once the account's objects are there (or not within `millis`). */
@@ -137,7 +138,7 @@ class GraphHandoffTest {
 
     @Test
     fun theSavedPasswordStartTakesTheAccountOnBeforeAnyoneIsSignedInOrSignsNobodyIn() {
-        // Ada is signed in, and her password is saved.
+        // Ada is signed in, and what the sign-in left is kept.
         val first = graph()
         assertTrue(signIn(first, "ada"))
         // The choices in the settings are another account's (a change of account that did

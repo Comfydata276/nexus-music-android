@@ -55,10 +55,10 @@ if [ -n "${NEXUS_CORE_LOCAL:-}" ]; then
 fi
 
 cd "$src"
-# The two a phone or an emulator carries; and, apart, the one for this machine, which alone
-# has what the tests of linking use in place of another device (`test-seams`, Cargo.toml).
+# The two a phone or an emulator carries; and, apart, the one for this machine, which the
+# unit tests load.
 cargo build "${locked[@]}" --release --target aarch64-linux-android --target x86_64-linux-android \
-  && cargo build "${locked[@]}" --release --target x86_64-unknown-linux-gnu --features test-seams \
+  && cargo build "${locked[@]}" --release --target x86_64-unknown-linux-gnu \
   || die "the shared core did not build (above). If Cargo.lock is out of step with Cargo.toml: scripts/dx native/build --relock"
 
 put() { mkdir -p "$out/$2" && cp "$CARGO_TARGET_DIR/$1/release/libnexus_core_android.so" "$out/$2/"; }

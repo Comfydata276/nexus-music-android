@@ -10,6 +10,7 @@ import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import org.medianexus.music.graph
+import org.medianexus.music.signIn
 
 /**
  * A music server for the tests that run the playback service whole: it answers like

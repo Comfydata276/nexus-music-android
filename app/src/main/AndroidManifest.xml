@@ -151,9 +151,6 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- Jams and linked devices: their activity and service are in src/jam/AndroidManifest.xml,
-             merged only into a build where they exist (jamsExist in app/build.gradle.kts). -->
-
         <!-- Cover art for the car and the system's media controls, which can't fetch it from
              the server. Read-only, it serves nothing but covers, and only to this app and
              the callers the player itself lets connect (see store/CoverProvider.kt). -->

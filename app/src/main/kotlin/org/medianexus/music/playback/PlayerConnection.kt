@@ -90,12 +90,6 @@ class PlayerConnection(
     private val liveStream: String = "Live stream",
     /** The words for a lost connection: the player says it shortly, for a car's screen. */
     private val lostConnection: String = "Lost the connection to the server.",
-    /** Another player this one shows while the phone is in a jam or steering another of the
-     *  person's devices (M6; see [Steered]). */
-    private val steered: Steered = Steered(),
-    /** The person's other devices as the new linking knows them: which one is steered, by its
-     *  place in the room (review Z1). Null where there is none to know (the jam's own player). */
-    private val linked: Linked? = null,
     /** What songs are streamed as (the app's one place for it): the format line's, before
      *  the player has opened the song. */
     private val quality: StreamQuality = StreamQuality(settings.state),
@@ -134,50 +128,36 @@ class PlayerConnection(
         connect = { connect() },
     )
 
-    /** What the screens show: this phone's own player's `own`, or while the player shows
-     *  another ([Steered]: a jam, another of the person's devices), that one's. */
-    private fun <T> shown(own: StateFlow<T>, there: (Steered.Shown) -> T): StateFlow<T> =
-        combine(own, steered.shown) { mine, other -> if (other != null) there(other) else mine }
-            .stateIn(scope, SharingStarted.Eagerly, steered.shown.value?.let(there) ?: own.value)
-
     /** The song playing (or paused on); null with an empty queue. */
-    val song: StateFlow<Song?> = shown(currentSong) { it.song }
+    val song: StateFlow<Song?> = currentSong
     /** The queue entry playing, by its own number: the same song twice in a row is two. */
-    val entry: StateFlow<Long> = shown(entryNow) { steeredEntry(it) }
-    val playing: StateFlow<Boolean> = shown(playingNow) { it.playing }
+    val entry: StateFlow<Long> = entryNow
+    val playing: StateFlow<Boolean> = playingNow
     /** Waiting for the stream. */
-    val buffering: StateFlow<Boolean> = shown(bufferingNow) { false }
+    val buffering: StateFlow<Boolean> = bufferingNow
     /** Milliseconds into the song; moves about four times a second while it plays. */
-    val position: StateFlow<Long> = steered.shown
-        .flatMapLatest { other -> if (other == null) positionNow else Steered.ticking(other, TICK_MILLIS) }
-        .stateIn(scope, SharingStarted.WhileSubscribed(), positionNow.value)
+    val position: StateFlow<Long> = positionNow
     /** The song's length in milliseconds, 0 if not known yet. */
-    val duration: StateFlow<Long> = shown(durationNow) { it.durationMs }
-    val queue: StateFlow<UpNext> = shown(queueNow) { it.queue }
-    val shuffle: StateFlow<Boolean> = shown(shuffleNow) { it.shuffle }
+    val duration: StateFlow<Long> = durationNow
+    val queue: StateFlow<UpNext> = queueNow
+    val shuffle: StateFlow<Boolean> = shuffleNow
     /** [Repeat.OFF], [Repeat.ALL] or [Repeat.ONE]. */
-    val repeat: StateFlow<Int> = shown(repeatNow) { it.repeat }
+    val repeat: StateFlow<Int> = repeatNow
     /** Whether Previous is there to press: the player's own word (it is not on a radio
      *  station with nothing before it in the queue, which has nowhere to go back to). A
      *  button the player would not carry out is shown dimmed, not left looking live. */
-    val canPrevious: StateFlow<Boolean> = shown(previousNow) { true }
+    val canPrevious: StateFlow<Boolean> = previousNow
     /** Why the song isn't playing, in words, when something went wrong ("Lost the
      *  connection to the server…", in the service's words). */
-    val error: StateFlow<String?> = shown(errorNow) { null }
+    val error: StateFlow<String?> = errorNow
     /** The list what's playing came from, and its place in it. */
-    val from: StateFlow<PlayingFrom> = shown(fromNow) { PlayingFrom() }
+    val from: StateFlow<PlayingFrom> = fromNow
 
     /** The player has said what it's doing since the screens connected. Until then "nothing
      *  playing" means only "not heard yet" (as when the app has just come back after Android
      *  stopped it, and the service hasn't answered). */
-    val reported: StateFlow<Boolean> = shown(reportedNow) { true }
+    val reported: StateFlow<Boolean> = reportedNow
 
-    /** This phone's own player's place in its song now, in milliseconds (a session hosted here
-     *  tells the relay; M6). */
-    val positionNowMs: Long get() = controller?.currentPosition?.coerceAtLeast(0) ?: positionNow.value
-
-    /** The player shows another (see [Steered]), and what it is. */
-    val elsewhere: StateFlow<Steered.Shown?> get() = steered.shown
 
     /** Whether the song playing is liked. */
     val liked: StateFlow<Boolean> = accounts.state
@@ -207,8 +187,7 @@ class PlayerConnection(
             saved.bitrate > 0 -> FormatLine("MP3 · ${saved.bitrate} kbps", false)
             else -> formatLine(song, 0, false, liveStream)
         }
-    }.let { line -> combine(line, steered.shown) { mine, other -> if (other != null) FormatLine("", false) else mine } }
-        .stateIn(scope, SharingStarted.Eagerly, FormatLine("", false))
+    }.stateIn(scope, SharingStarted.Eagerly, FormatLine("", false))
 
     private val listener = object : Player.Listener, MediaController.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -374,8 +353,6 @@ class PlayerConnection(
 
     /** Sends a PLAY made by [playArgs] or [pageArgs]. */
     fun play(args: Bundle) {
-        // Showing another player: it is played there (or, in a friend's jam, added).
-        steered.hands?.let { Steered.play(it, args); return }
         // Its place in the order of choices is taken here, at the tap, and goes with it: the
         // service plays it only if nothing has taken a later place by the time it lands.
         args.putLong(AppCommands.PLACE, Choices.take())
@@ -392,7 +369,7 @@ class PlayerConnection(
     fun afterLookup(scope: kotlinx.coroutines.CoroutineScope, lookup: suspend () -> List<Song>?, moved: () -> Unit = {}, act: (List<Song>) -> Unit) {
         val asked = Choices.take()
         val who = accounts.state.value
-        afterLookup(scope, kotlinx.coroutines.Dispatchers.Main.immediate, lookup, stands = { Choices.stands(asked) && accounts.state.value === who }, aim = { aimOf(steered, linked) }, act = act, moved = moved)
+        afterLookup(scope, kotlinx.coroutines.Dispatchers.Main.immediate, lookup, stands = { Choices.stands(asked) && accounts.state.value === who }, act = act, moved = moved)
     }
 
     /** Plays these straight after the song playing, ahead of anything else queued. */
@@ -402,7 +379,6 @@ class PlayerConnection(
     fun addToQueue(songs: List<Song>) = enqueue(songs, playNext = false)
 
     private fun enqueue(songs: List<Song>, playNext: Boolean) {
-        steered.hands?.let { it.add(songs, playNext); return }
         Choices.take()
         send(AppCommands.ENQUEUE, AppCommands.enqueueArgs(songs, playNext))
     }
@@ -415,7 +391,6 @@ class PlayerConnection(
      *  song playing), into "Next in queue" (`queued`) or out of it. */
     fun move(uid: Long, after: Long?, queued: Boolean) {
         if (uid == AppCommands.NONE) return
-        steered.hands?.let { it.move(uid, after, queued); return }
         // A change to the queue is the person's choice, at the tap (order of choices): a
         // queue from another device that was on its way into the player ("Continue here",
         // or one taken up unasked) gives way to it, and does not replace what was changed.
@@ -426,7 +401,6 @@ class PlayerConnection(
     /** Takes the entry `uid` out of the queue. */
     fun remove(uid: Long) {
         if (uid == AppCommands.NONE) return
-        steered.hands?.let { it.remove(uid); return }
         // (A choice, at the tap: see [move].)
         Choices.take()
         send(AppCommands.REMOVE, Bundle().apply { putLong("uid", uid) })
@@ -434,7 +408,6 @@ class PlayerConnection(
 
     /** Empties "Next in queue" (`queued`), or the rest of the list after it. */
     fun clear(queued: Boolean) {
-        steered.hands?.let { it.clear(queued); return }
         // (A choice, at the tap: see [move].)
         Choices.take()
         send(AppCommands.CLEAR, Bundle().apply { putBoolean("queued", queued) })
@@ -443,14 +416,12 @@ class PlayerConnection(
     /** Plays the entry `uid` now. */
     fun jump(uid: Long) {
         if (uid == AppCommands.NONE) return
-        steered.hands?.let { it.jump(uid); return }
         // A choice, at the tap (order of choices): a lookup still out for something older gives way.
         Choices.take()
         send(AppCommands.JUMP, Bundle().apply { putLong("uid", uid) })
     }
 
     fun playPause() {
-        steered.hands?.let { it.toggle(); return }
         // Resuming (or pausing) takes its place at the tap (order of choices): a lookup still
         // out for something chosen before it gives way to it. Arriving, it takes no other.
         Choices.tapPlayPause()
@@ -472,17 +443,14 @@ class PlayerConnection(
     }
 
     fun next() {
-        steered.hands?.let { it.next(); return }
         withController { it.seekToNext() }
     }
 
     fun previous() {
-        steered.hands?.let { it.previous(); return }
         withController { it.seekToPrevious() }
     }
 
     fun seek(positionMs: Long) {
-        steered.hands?.let { it.seek(positionMs); return }
         withController {
             it.seekTo(positionMs)
             // The place the player holds, never the place that was asked for: a seek the
@@ -494,31 +462,21 @@ class PlayerConnection(
     }
 
     fun setShuffle(on: Boolean) {
-        steered.hands?.let { if (on != steered.shown.value?.shuffle) it.shuffle(); return }
         withController { it.shuffleModeEnabled = on }
     }
 
     fun setRepeat(mode: Int) {
-        steered.hands?.let { it.repeat(); return }
         withController { it.repeatMode = QueuePlayer.exoRepeat(mode) }
     }
 
     /** Off, the whole queue, one song, and round again: the repeat button. */
     fun cycleRepeat() {
-        steered.hands?.let { it.repeat(); return }
         setRepeat((repeatNow.value + 1) % 3)
-    }
-
-    /** Another of the person's devices being steered from here: its volume (0 to 1). */
-    fun setVolumeThere(to: Float) {
-        steered.hands?.volume(to)
     }
 
     /** Likes or unlikes the song playing. */
     fun toggleLike() {
         val song = this.song.value ?: return
-        // A song of someone else's jam that this library doesn't have can't be liked here.
-        if (Steered.foreign(song)) return
         accounts.state.value?.likes?.toggle(song)
     }
 
@@ -540,57 +498,23 @@ class PlayerConnection(
         private const val TICK_MILLIS = 250L
 
         /**
-         * **Where a press is aimed**: this phone's own player (null), or the player it shows
-         * (a device steered, a friend's jam) by what carries its presses, the name it is shown
-         * by and, for a device steered, **its place in the room** (review Z1): two devices of
-         * one name are two devices, and another steered meanwhile is somewhere else.
-         */
-        fun aimOf(steered: Steered, linked: Linked?): Any? = steered.hands?.let { hands ->
-            Triple(hands, steered.shown.value?.where, linked?.state?.value?.devices?.firstOrNull { it.steered }?.place)
-        }
-
-        /**
          * A look-up, then `act` with what it found, on `on`: only if `stands` still holds then
-         * (nothing chosen since, the same account) and **the press is still aimed where it was
-         * when the finger came down** (review X1). If it is not (steering has begun, ended, or
-         * moved to another device meanwhile), nothing is done anywhere and `moved` is told.
+         * (nothing chosen since, the same account).
          */
         fun afterLookup(
             scope: kotlinx.coroutines.CoroutineScope,
             on: kotlin.coroutines.CoroutineContext,
             lookup: suspend () -> List<Song>?,
             stands: () -> Boolean,
-            aim: () -> Any?,
             act: (List<Song>) -> Unit,
-            moved: () -> Unit,
+            @Suppress("UNUSED_PARAMETER") moved: () -> Unit = {},
         ) {
-            val aimed = aim()
             scope.launch(on) {
                 val songs = lookup() ?: return@launch
                 if (!stands()) return@launch
-                if (aim() != aimed) return@launch moved()
                 act(songs)
             }
         }
-
-        /**
-         * **The entry another player is on, as the seek bar keys a drag by it** (review X3): one
-         * number for each song it plays, far from the phone's own entries, so a drag begun on
-         * one song is dropped when that player moves to another. (Its view names no entry
-         * beyond the song: the same song again straight after is the same to this.) [AppCommands.NONE]
-         * with nothing playing there.
-         */
-        fun steeredEntry(shown: Steered.Shown): Long {
-            val id = shown.song?.id ?: return AppCommands.NONE
-            return synchronized(steeredEntries) { steeredEntries.getOrPut(id) { STEERED_ENTRY + steeredEntries.size } }
-        }
-
-        /** The numbers [steeredEntry] has given, by song. */
-        private val steeredEntries = HashMap<String, Long>()
-
-        /** Where [steeredEntry]'s numbers begin: far from the phone's own (which count up from
-         *  1) and from the numbers of another player's rows. */
-        private const val STEERED_ENTRY = Long.MIN_VALUE / 2
 
         /**
          * What a PLAY from a screen carries (see [play]). The list itself, as drawn, is left

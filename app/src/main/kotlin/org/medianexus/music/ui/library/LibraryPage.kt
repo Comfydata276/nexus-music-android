@@ -154,7 +154,7 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
     // list of playlists may not be kept, or may not have it), and of the kept list those with
     // a song that plays. Each opens from what is on the phone.
     // (Where linking the person's devices is running: without the playlist its record is in.)
-    val listed = feed.value?.let(org.medianexus.music.link.LinkShown::of)
+    val listed = feed.value
     val onPhone = org.medianexus.music.ui.downloads.playlistsOffline(listed)
     val playlists = remember(listed, pinned, onPhone) {
         (if (phone != null) onPhone else listed)
@@ -190,15 +190,6 @@ private fun Playlists(phone: List<org.medianexus.music.net.Song>?) {
                         Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
                         contentAlignment = Alignment.Center,
                     ) { Icon(R.drawable.ic_radio, size = 24.dp, tint = Theme.colors.muted) }
-                }
-            }
-            // Jams (Windows' Jam, in its sidebar under Radio): one queue friends add to.
-            if (org.medianexus.music.jam.JamBuild.on) item(key = "jam", contentType = "row") {
-                ListRow(stringResource(R.string.jam), stringResource(R.string.jam_listen_with_friends), onClick = { ui.open(Route.Jam()) }) {
-                    Box(
-                        Modifier.size(56.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(Theme.dimens.rowCoverRadius)).background(Theme.colors.raised),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(R.drawable.ic_party_popper, size = 24.dp, tint = Theme.colors.muted) }
                 }
             }
             // What's been played most (Windows' "Your stats", in its sidebar under Radio): from
