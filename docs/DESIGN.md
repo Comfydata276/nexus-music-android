@@ -4396,6 +4396,111 @@ reachable and the Connect sheet is as M6 made it.
 - **Linking stopped:** nothing is offered (no rows, no "Play here"), and the note is shown:
   then it is the library's sentence for it, the one the person was told by a note.
 
+## The Nexus server's client (P1: an empty component)
+
+The backend of our own beside the music server is designed in the Windows repository's
+`docs/backend-design.md`. This is the phone's side at its very smallest: slice P1 of that
+design's section 15. **It asks the backend's `hello`, and shows one row under Settings.** It
+reads, sends and keeps nothing else: no sign-in, no plays, no file. All of it is
+`nexus/Nexus.kt`; the review of P1 set most of what follows.
+
+- **Behind a switch that is off.** It exists only in a build made with `-PnexusExists=true`
+  (`BuildConfig.NEXUS`, read through `nexus/NexusBuild.kt`; the pattern of linking's
+  `-PlinkExists`). Without it nothing of it is made: no launcher, no thread, no row under
+  Settings, no request; the app as released (`nexus/NexusSwitchedOffTest`). Its tests switch it
+  on for themselves, so `scripts/check --release` passes either way. **It stays off in every
+  published build until these have been done**, which nothing on this machine can do:
+  - a real phone, on Android 17 and on the phone's own Android, signed in over HTTPS through
+    the owner's real proxy, with the backend absent, stalled and there (and Android 17's
+    permission to reach the home network denied, then granted);
+  - a real car (the design's E13): starting it cold, the queue, voice, with the backend stalled;
+  - a real proxy (E2b): the rule of the design's 6.2 in Nginx Proxy Manager, with and without a
+    content network, and both apps' real clients against it;
+  - gapless joins of cached and downloaded songs with the backend held, and on Android 17
+    (streamed joins were recorded on the Android 16 emulator: docs/TESTING.md).
+- **Where `hello` is, for a music server's address**, is worked out here in Kotlin
+  (`NexusClient.origin` and `HELLO`): the origin's scheme (HTTPS only), host and port, and the
+  path `/nexus/api/hello`. The Windows repository is moving that into `core/src/nexus/`; when it
+  lands, the phone takes it from there.
+- **Not on the way the app starts.** Nothing of it is allocated or dispatched while `Graph` is
+  being made, or before `App.graph` is assigned: `App.onCreate` then calls `Graph.started`,
+  which sets a flag. The launcher (`NexusLauncher`), with the state the row reads, is made by
+  the account watcher that `Graph` already has, off the main thread, once an account is
+  published and the app has started, catching anything that fails in the making. Nothing of
+  the account's (`AccountGraph`), and nothing `Accounts.restored` waits for, makes it or waits
+  on it.
+- **Its own workers, all of them.** The launcher's thread ("nexus-launcher"); for each account
+  a client with its own worker ("nexus-worker", which also does the connect: OkHttp's fast
+  fallback, which hands connects to a scheduler, is off), its own dispatcher's thread
+  ("nexus-calls"), its own connection pool (of one) and **its own OkHttp task runner**
+  ("nexus-okhttp", for the pool's upkeep) where the app's own client uses OkHttp's
+  process-wide one. OkHttp keeps the setter and the constructor that take a task runner to
+  itself: they are reached by name, and `proguard-rules.pro` keeps those names. HTTP/1.1 only,
+  so nothing of HTTP/2 runs. **Shared with the rest of the app, and only these:** the system's
+  DNS and sockets, OkHttp's platform (TLS) and Okio's timeout watchdog.
+- **Never the shared library's load.** It asks the core only once the core is loaded
+  (`Core.isReady`, which takes no lock); otherwise it says "none found" and asks nothing. So it
+  never takes the load's lock, which the next sign-in can need.
+- **Nothing it does can take the app down.** Every failure inside it is caught inside it (an
+  interrupt while connecting, when it is let go of, among them), but a cancellation, which is
+  let through so that its loop ends; its coroutines and threads have handlers of their own
+  besides, which the tests hold to never being reached. Every way out of its loop lets it go.
+- **Let go without anyone waiting.** `stop` returns at once; the rest (cancelling its request,
+  closing its idle connection, which takes its own scheduler's lock, and shutting down its
+  executors, its OkHttp scheduler's included) runs on a thread of its own, each step whatever
+  the one before it did. The new account's client is started before the old one is let go of.
+- **Bound to its account.** What it finds is kept with the account it was found for and the
+  generation of the client that found it (`NexusShown`, in `NexusLauncher.found`), published by
+  compare-and-set on the generation, so an earlier account's late worker never overwrites a
+  later one's. The row shows it only if its account is the one in the session's own signed-in
+  value, the same value the row's heading is drawn from (`Graph.nexusShown`). A client whose
+  account is no longer published drops what it brings back and stops by itself, whether or not
+  the launcher has got to it.
+- **One probe is one request on the wire.** No retry on a failed connection, no redirect
+  followed, and no follow-up of OkHttp's own (a 503 with "Retry-After: 0", a 408, a 421, a
+  401's authenticator): a network interceptor refuses any second attempt of one call before it
+  is sent, and the call is "none found".
+- **Only while it may:** not with offline mode switched on by hand (a car-only start with it
+  on included), not while the phone may not reach the home network (Android 17's permission,
+  as the server watch has it), and only while the app is in use: its screens in front, or
+  music playing or meant to be. At most once an hour; it looks whether it may every minute.
+  The design's 9.4 says this of sending and fetching plays; the client takes it now.
+- **What it asks:** `GET https://<the music server's host and port>/nexus/api/hello`, built
+  from the constant `nexus::proto::HELLO` (written again in Kotlin, `NexusClient.HELLO`),
+  whatever path the music server itself is under, with no query. HTTPS only (plain HTTP is
+  refused by the client itself, whatever the network security configuration allows the rest of
+  the app); an account whose server is plain HTTP has no backend asked after at all.
+- **What counts as found:** decided by the shared core, `nexus::proto::classify`, through
+  `Core.nexusHello`: the status, and for a 200 the body as the transport read it, **to its end
+  or to one byte past 4,096 bytes, and whether reading failed first**. The library is handed
+  that as the reader it asks for. The body of anything but a 200 is not waited for (the core
+  does not read it). No header is looked at. Anything else, a failure to connect included, is
+  "none found".
+- **The row:** Settings, Account, under the signed-in row: "Nexus server", with "Found at
+  music.example.org" (the port too if it is not 443; an IPv6 address in brackets then) or
+  "None found". Nothing to press.
+- **Limits, accepted (the lead, on the recheck of P1):**
+  - **Okio's timeout watchdog** is one thread for the whole process and cannot be given to the
+    client alone: its timeouts ride on it like every other request's. An unchecked failure
+    inside OkHttp's own timeout callback is OkHttp's, as it is for a stream today.
+  - **A worker already past its checks** when the account changes, or offline mode is switched
+    on, may still send its one `hello` (to the old origin, or just after offline mode): its
+    answer is thrown away (the generation and the owner, above).
+  - **Through a system HTTP forward proxy** a fresh connection sends the proxy a `CONNECT`
+    before the one `GET`: "one request" means one request to the origin.
+- **The proof that nothing waits for it** is the suite of the design's 5.3, `nexus/
+  NeverWaitsTest`, run with the backend's side broken in each way and the client's own threads
+  held (docs/TESTING.md, "What never waits for the Nexus server").
+
+**What the shared core is pinned to for this.** `native/Cargo.toml` names `a0bf4d8` of the
+Windows repository: slice C1 (`core::nexus::proto`), directly on 0.40.12, whose core is the
+0.40.11 core this app carried before but for that module. It is **not a release of the
+Windows app**, which "The shared core" above asks of a pin, and it is not on GitHub yet; the
+lock file was made from the local repository and is the one the pushed commit gives. Before
+this can be built anywhere else, that commit has to be pushed (to any branch: a pin names a
+commit, and Cargo fetches it by its id), and before it lands on `main` the lead decides
+whether to wait for a Windows release that carries it.
+
 ## Milestones
 
 Each one ends with the app building, its tests passing, a run on the emulator, and a review.

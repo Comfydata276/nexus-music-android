@@ -271,6 +271,47 @@ class Graph(
         )
     }
 
+    /** The Nexus server's client's launcher (`nexus/Nexus.kt`): null until the app has started
+     *  ([started]) and an account has been published; it is made then, off the main thread,
+     *  with everything of the client's. Null too if it could not be made. */
+    @Volatile var nexus: org.medianexus.music.nexus.NexusLauncher? = null
+        private set
+
+    /** Whether the app has started: `App.graph` is these objects ([started]). */
+    @Volatile private var appStarted = false
+
+    /**
+     * The app has started (`App.onCreate`, once `App.graph` is assigned): from now the Nexus
+     * server's client may be made, when an account is published. Nothing of it exists while
+     * these objects are being made. (Sets a flag; dispatches only if an account is already
+     * published.)
+     */
+    fun started() {
+        appStarted = true
+        if (accounts.state.value != null) scope.launch { makeNexus() }
+    }
+
+    private val nexusLock = Any()
+
+    /** Makes the launcher, once, if the app has started and an account is published. On the
+     *  account watcher's thread or [started]'s dispatch; never the main thread. */
+    private fun makeNexus() {
+        // (Not in a build without it: nothing of it is made. See nexus/NexusBuild.kt.)
+        if (!org.medianexus.music.nexus.NexusBuild.on) return
+        if (!appStarted || accounts.state.value == null) return
+        synchronized(nexusLock) { if (nexus == null) nexus = startNexus() }
+    }
+
+    /**
+     * The address the row under Settings shows, for the signed-in account of `session`: the one
+     * value the row's heading is drawn from. Shown only if what was found carries that account
+     * as its owner.
+     */
+    fun nexusShown(session: SessionState): String? {
+        val signedIn = session as? SessionState.SignedIn ?: return null
+        return nexus?.found?.value?.takeIf { it.owner === signedIn.api }?.address
+    }
+
     val toasts = Toasts()
 
     /** What the server last said in refusing something asked from the car (see [Refusals]). */
@@ -337,6 +378,21 @@ class Graph(
     private fun signInGone() {
         notices.post(Notice.SignInGone)
         session.signOut()
+    }
+
+    private fun startNexus(): org.medianexus.music.nexus.NexusLauncher? = try {
+        org.medianexus.music.nexus.NexusLauncher(
+            accounts.state, scope,
+            userAgent = "NexusMusic/${BuildConfig.VERSION_NAME} (Android)",
+            // Not with offline mode switched on by hand; not while the phone may not reach the
+            // home network; and only while the app is in use (its screens in front, or music
+            // playing or meant to be).
+            mayAsk = { !settings.value.offline && !localAccess.certain.value && (front.value || playing) },
+        )
+    } catch (e: Exception) {
+        null
+    } catch (e: LinkageError) {
+        null
     }
 
     private fun downloadsFor(context: Context, account: AccountGraph) = org.medianexus.music.downloads.Downloads(
@@ -488,6 +544,9 @@ class Graph(
         scope.launch {
             var had = false
             accounts.state.collect { account ->
+                // The Nexus server's client's launcher, once an account is published and the app
+                // has started (nexus/Nexus.kt): never a reason for anything here to fail.
+                if (account != null) makeNexus()
                 // Signed out (not "not yet read", at start-up, when the job may be what
                 // started the app): nothing of theirs is carried on, by job or service.
                 if (account == null && had) org.medianexus.music.downloads.DownloadKeeper.letGo(app)

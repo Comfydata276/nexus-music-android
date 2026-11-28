@@ -258,6 +258,10 @@ private fun Account(graph: Graph) {
     SettingRow(signedIn.account.server, stringResource(R.string.signed_in_as, signedIn.account.username)) {
         TextButton(stringResource(R.string.sign_out), onClick = graph.session::signOut)
     }
+    // The Nexus server beside the music server, if there is one (nexus/Nexus.kt): what was
+    // found, and nothing to do yet.
+    // The Nexus server's row: only in a build with its client (nexus/NexusBuild.kt).
+    if (org.medianexus.music.nexus.NexusBuild.on) NexusRow(graph, signedIn)
     // Linking the person's devices: two rows, only in a build in which it exists (none
     // that is released: see link/LinkBuild.kt).
     if (org.medianexus.music.link.LinkBuild.on) org.medianexus.music.ui.link.LinkRows(graph)
@@ -273,6 +277,23 @@ private fun Account(graph: Graph) {
     SettingRow(inStep, stringResource(R.string.keep_in_step_detail) + if (clockWrong && settings.sync) " " + stringResource(R.string.keep_in_step_clock) else "") {
         Toggle(settings.sync, { on -> graph.settings.update { it.copy(sync = on) } }, inStep)
     }
+}
+
+/** The Nexus server beside the music server, if there is one (nexus/Nexus.kt): what was found,
+ *  and nothing to do yet. */
+@Composable
+private fun NexusRow(graph: Graph, signedIn: SessionState.SignedIn) {
+    // Shown only for the account it was found for, judged against `signedIn`, the one value the
+    // heading above is drawn from: never one account's under another's.
+    val address by androidx.compose.runtime.produceState<String?>(null, signedIn) {
+        // (The client exists once an account has been published: looked for until then.)
+        while (graph.nexus == null) kotlinx.coroutines.delay(250)
+        graph.nexus!!.found.collect { value = graph.nexusShown(signedIn) }
+    }
+    SettingRow(
+        stringResource(R.string.nexus_server),
+        address?.let { stringResource(R.string.nexus_found_at, it) } ?: stringResource(R.string.nexus_none_found),
+    ) {}
 }
 
 @Composable

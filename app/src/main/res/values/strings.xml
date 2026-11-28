@@ -70,6 +70,10 @@
     <string name="continue_from">Continue from %1$s</string>
     <string name="elsewhere_song">%1$s — %2$s</string>
     <string name="sign_out">Sign out</string>
+    <!-- The Nexus server beside the music server (nexus/Nexus.kt). -->
+    <string name="nexus_server">Nexus server</string>
+    <string name="nexus_found_at">Found at %1$s</string>
+    <string name="nexus_none_found">None found</string>
     <string name="about">About</string>
     <string name="diagnostics">Diagnostics</string>
     <string name="diagnostics_detail">A note of what the player has met: which apps connected to it and whether they were let in, what started it, and playback errors. Useful when something isn\'t working, in the car above all. It names no server address, account or song, and it stays on this phone unless you share it.</string>

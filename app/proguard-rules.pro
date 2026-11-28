@@ -32,3 +32,19 @@
     byte[] ahead(); int toCome(); int carryOut(byte[]); void pause(); void take(byte[]); void claim();
     void handedOn(); void handedBack(); byte[] random(int); long elapsed(); void wake();
 }
+
+# The Nexus server's client gives its OkHttp client and pool a task runner of its own
+# (nexus/Nexus.kt), through a setter and a constructor that OkHttp keeps internal, found by name.
+-keepclassmembers class okhttp3.OkHttpClient$Builder {
+    okhttp3.OkHttpClient$Builder taskRunner$okhttp(okhttp3.internal.concurrent.TaskRunner);
+}
+-keepclassmembers class okhttp3.ConnectionPool {
+    <init>(int, long, java.util.concurrent.TimeUnit, okhttp3.internal.concurrent.TaskRunner, okhttp3.internal.connection.ConnectionListener);
+}
+-keepnames class okhttp3.internal.connection.ConnectionListener
+-keepclassmembers class okhttp3.internal.connection.ConnectionListener {
+    public static final okhttp3.internal.connection.ConnectionListener$Companion Companion;
+}
+-keepclassmembers class okhttp3.internal.connection.ConnectionListener$Companion {
+    public okhttp3.internal.connection.ConnectionListener getNONE();
+}
