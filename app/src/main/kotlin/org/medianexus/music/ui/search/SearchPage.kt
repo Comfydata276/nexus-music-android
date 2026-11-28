@@ -88,7 +88,7 @@ fun SearchPage() {
                 account?.library?.search?.find(query, LIMITS) ?: Found()
             }
         }, instant = { graph.watch.offline || account?.library?.search?.instant == true }, observe = { query ->
-            account?.let { graph.recording.search(query, it.account.key) }?.let { observation ->
+            account?.let { graph.recording.search(query, it.account.nexusPerson) }?.let { observation ->
                 { count -> graph.recording.found(observation, count) }
             }
         })

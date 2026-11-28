@@ -64,7 +64,7 @@ class Graph(
     val diagnostics = Diagnostics(File(context.filesDir, "diagnostics.txt"), scope, Dispatchers.IO)
     private val folders = org.medianexus.music.nexus.Folders(File(context.filesDir, "accounts/carried.json"))
 
-    internal val recording = org.medianexus.music.nexus.NexusRecording(context.noBackupFilesDir, folderFor = folders::of)
+    internal val recording = org.medianexus.music.nexus.NexusRecording(context.noBackupFilesDir)
 
 
     /** Who may connect to the player and read covers: this app, callers Android trusts with
@@ -517,7 +517,6 @@ class Graph(
         scope.launch { toasts.all.collect { recording.diagnostics.note(org.medianexus.music.nexus.DiagnosticNote.APP_MESSAGE) } }
         scope.launch(Dispatchers.IO) {
             accounts.state.collect {
-                recording.refreshFolder()
                 recording.diagnostics.about(org.medianexus.music.nexus.PhoneDiagnostics(
                     androidMajor = android.os.Build.VERSION.RELEASE.substringBefore('.').toIntOrNull() ?: 0,
                     https = it?.account?.server?.startsWith("https://") == true,

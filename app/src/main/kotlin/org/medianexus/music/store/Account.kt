@@ -23,6 +23,8 @@ data class Account(
      * are not kept in step through it (held back, until the record is kept by Nexus account).
      */
     val ownsSharedRecord: Boolean = true,
+    /** Who this account is to Nexus, including when it has inherited a different folder. */
+    val nexusPerson: String = key,
 )
 
 /**

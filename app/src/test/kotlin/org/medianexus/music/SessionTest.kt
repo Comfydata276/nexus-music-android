@@ -35,6 +35,11 @@ import org.medianexus.music.nexus.Folders
 import org.medianexus.music.nexus.KeptAccount
 import org.medianexus.music.nexus.KeptMusic
 import org.medianexus.music.nexus.NexusKept
+import org.medianexus.music.nexus.NexusRecording
+import org.medianexus.music.nexus.Listening
+import org.medianexus.music.nexus.PlayBegan
+import org.medianexus.music.nexus.PlayOrigin
+import org.medianexus.music.nexus.PlaySound
 import org.medianexus.music.store.SecretBox
 import org.medianexus.music.store.SettingsStore
 import org.medianexus.music.store.accountDirs
@@ -121,7 +126,7 @@ class SessionTest {
     /** **The real start seam**: the shared core's machine, started over what is kept, its Hand
      *  and Forget fed to the session exactly as the app does (`Graph.makeNexus`). Nothing is
      *  asked (Offline is on, and no ask is let out anyway). */
-    private fun machine(m: Made): org.medianexus.music.nexus.Nexus = org.medianexus.music.nexus.Nexus(
+    private fun machine(m: Made, recording: NexusRecording? = null): org.medianexus.music.nexus.Nexus = org.medianexus.music.nexus.Nexus(
         kept = m.kept,
         side = object : org.medianexus.music.nexus.Nexus.Side {
             override fun handLogin(music: KeptMusic, account: KeptAccount?, generation: String) = m.session.handed(music, account, generation)
@@ -134,7 +139,7 @@ class SessionTest {
             override fun inside(host: String): Boolean? = null
             override val permission: Boolean? get() = null
         },
-        userAgent = "test", appVersion = "0.41.0", deviceName = "test phone", offlineNow = { true },
+        userAgent = "test", appVersion = "0.41.0", deviceName = "test phone", offlineNow = { true }, recording = recording,
     ).also { machines += it; it.start() }
 
     private val machines = java.util.concurrent.CopyOnWriteArrayList<org.medianexus.music.nexus.Nexus>()
@@ -233,6 +238,25 @@ class SessionTest {
         assertEquals(secure, m.settings.value.server)
         m.session.handed(music(at = secure), who("7"))
         assertEquals(accountKey(secure, "ada"), signedIn(m.session).account.key)
+    }
+
+    @Test
+    fun theFirstPlayAfterCarryOverUsesTheAlreadyPublishedJournalScope() = runBlocking<Unit> {
+        val m = made(before = secure to "ada")
+        val noMusic = JsonObject(savedJson(music(at = secure), who("7")) - "music")
+        assertTrue(m.kept.save(NexusKept.Parts(noMusic, emptyList())))
+        val recording = NexusRecording(m.dir)
+        machine(m, recording)
+        assertEquals(SessionState.SignedOut, settled(m.session))
+        val before = recording.scope()!!
+        m.session.handed(music(at = secure), who("7"))
+        val account = signedIn(m.session).account
+        assertEquals(accountKey(secure, "ada"), account.key)
+        val firstPlay = recording.scopeFor(account.nexusPerson)
+        assertEquals(before, firstPlay)
+        val start = Listening.Start(org.medianexus.music.net.Song(id = "s1"), PlayOrigin.from(""), PlayBegan.CAR, PlaySound.DOWNLOAD, 0)
+        val id = recording.capture(start, firstPlay)
+        assertTrue("the first start was not accepted", id != null)
     }
 
     @Test

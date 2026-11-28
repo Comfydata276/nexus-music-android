@@ -29,19 +29,16 @@ internal class NexusRecording(
     root: File,
     private val version: String = BuildConfig.VERSION_NAME,
     private val wall: () -> Long = System::currentTimeMillis,
-    private val folderFor: (String) -> String = { it },
     port: (JsonObject) -> JsonElement = Core::nexusJournal,
 ) {
     private val journal: ListeningJournal = ListeningJournal(File(root, "nexus-listening"), wall, port, ::journalLossChanged)
     val diagnostics: CleanDiagnostics = CleanDiagnostics(File(root, "nexus-diagnostics"), version, wall, journal::losses, ::fault)
     private var opened = false
-    @Volatile private var folder: Pair<JournalScope, String>? = null
 
     fun publish(saved: JsonObject?, noticeOutstanding: Boolean, emit: RecordingEvent) {
         diagnostics.attach(emit)
         val next = saved?.takeUnless { noticeOutstanding || it["session"] == null || it["session"] == JsonNull }
             ?.let(JournalScope::saved)
-        if (next?.backend != folder?.first?.backend || next?.number != folder?.first?.number) folder = next?.let { it to folderFor(it.person) }
         journal.publish(next, emit)
         if (next != null && !opened) {
             opened = true
@@ -75,18 +72,7 @@ internal class NexusRecording(
     fun scope(): JournalScope? = journal.current
     internal fun losses(): JournalLoss = journal.losses()
 
-    fun scopeFor(accountFolder: String): JournalScope? {
-        val active = scope() ?: return null
-        val expected = folder ?: return null
-        return active.takeIf { it.backend == expected.first.backend && it.number == expected.first.number && expected.second == accountFolder }
-    }
-
-    /** The first sign-in can carry over the old folder just after the driver publishes. */
-    fun refreshFolder() {
-        val active = scope() ?: return
-        val resolved = folderFor(active.person)
-        if (scope() == active) folder = active to resolved
-    }
+    fun scopeFor(person: String): JournalScope? = scope()?.takeIf { it.person == person }
 
     fun capture(data: Listening, scope: JournalScope? = scope(), at: Long = wall()): EventId? {
         if (scope == null) return null
@@ -94,8 +80,8 @@ internal class NexusRecording(
         return id.takeIf { journal.offer(Captured(scope, id, at, data)) }
     }
 
-    fun search(words: String, accountFolder: String, requests: Boolean = false): SearchObservation? {
-        val scope = scopeFor(accountFolder) ?: return null
+    fun search(words: String, person: String, requests: Boolean = false): SearchObservation? {
+        val scope = scopeFor(person) ?: return null
         val id = journal.takeId() ?: return null
         return SearchObservation(scope, id, words, requests, wall())
     }
@@ -120,7 +106,7 @@ internal data class SearchObservation(val scope: JournalScope, val id: EventId, 
 }
 
 internal data class JournalScope(val backend: JsonPrimitive, val number: JsonPrimitive, val life: JsonPrimitive) {
-    val person get() = Folders.personOf(KeptAccount("", backend.content, number.content))
+    val person = Folders.personOf(KeptAccount("", backend.content, number.content))
 
     val account: JsonObject get() = buildJsonObject {
         put("backend_id", backend)

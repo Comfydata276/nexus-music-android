@@ -64,7 +64,7 @@ fun rememberOutsideSearch(here: RequestsHere?, typed: String): OutsideSearch? {
     val recording = LocalUi.current.graph.recording
     val model = remember(key) {
         OutsideSearch({ query, soFar ->
-            val search = recording.search(query, here.account.account.key, requests = true)
+            val search = recording.search(query, here.account.account.nexusPerson, requests = true)
             var count = 0
             try {
                 pages.searchShowing(query, soFar).also { result ->

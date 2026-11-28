@@ -1548,7 +1548,7 @@ class PlaybackService : MediaLibraryService() {
 
     private fun observeSounding() {
         val queue = player.queue
-        val scope = era?.account?.account?.key?.let(graph.recording::scopeFor)
+        val scope = era?.account?.account?.nexusPerson?.let(graph.recording::scopeFor)
         val entry = entryOf(exo.currentMediaItem)
         listening.retire(scope, entry, exo.currentPosition)
         if (scope == null || entry == null || entry != queue.currentUid()) return
@@ -2343,7 +2343,7 @@ class PlaybackService : MediaLibraryService() {
                 LibraryResult.ofError(signedOut())
             }) { era ->
                 era.searchedBy.made(browser, query)
-                val search = graph.recording.search(query, era.account.account.key)
+                val search = graph.recording.search(query, era.account.account.nexusPerson)
                 var count = 0
                 try {
                     val found = fromTree(era) { it.search(query) }
@@ -2373,7 +2373,7 @@ class PlaybackService : MediaLibraryService() {
             answer({ LibraryResult.ofError(signedOut()) }) { era ->
                 try {
                     val found = era.searches.get(query) ?: run {
-                        val search = graph.recording.search(query, era.account.account.key)
+                        val search = graph.recording.search(query, era.account.account.nexusPerson)
                         var count = 0
                         try {
                             fromTree(era) { it.search(query) }.also { result ->
@@ -2919,7 +2919,7 @@ class PlaybackService : MediaLibraryService() {
             genre = said(EXTRA_MEDIA_GENRE),
         )
         if (request.unnamed) return resume(mine, era, controller)
-        val search = graph.recording.search(request.query, era.account.account.key)
+        val search = graph.recording.search(request.query, era.account.account.nexusPerson)
         var count = 0
         val list = try {
             withContext(Dispatchers.Default) { tree.forVoice(request) }.also { count = it?.songs?.size ?: 0 }

@@ -215,7 +215,11 @@ class Session(
         val key = folders.of(person)
         // (The music user's shared record is this person's only if the earlier folder, the one
         // that used it, was carried over to them: see `Account.ownsSharedRecord`.)
-        return SessionState.SignedIn(Account(api.server, api.username, key, dirsFor(key), ownsSharedRecord = sharedRecordForTests ?: (key != person)), api, person)
+        val account = Account(
+            api.server, api.username, key, dirsFor(key),
+            ownsSharedRecord = sharedRecordForTests ?: (key != person), nexusPerson = person,
+        )
+        return SessionState.SignedIn(account, api, person)
     }
 
     /** The account in front is let go of before another is published: nothing more is sent with
