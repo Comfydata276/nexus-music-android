@@ -48,7 +48,7 @@ class SearchModelTest {
         val model = SearchModel(
             backgroundScope,
             search = { query -> Found(songs = List(count) { Song(id = "$query-$it") }) },
-            observe = { query -> { resultCount -> observations.add(query to resultCount); Unit } },
+            observe = { query -> { resultCount -> observations += query to resultCount } },
         )
         runCurrent()
         model.type("lantern")

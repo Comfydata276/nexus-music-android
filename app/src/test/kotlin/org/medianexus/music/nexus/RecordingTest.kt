@@ -299,6 +299,21 @@ class RecordingTest {
         assertEquals(JsonNull, waitFor("diagnostics_read")["text"])
     }
 
+    @Test fun checkedHelloDistinguishesOmittedOffAndUnreadableDefaults() {
+        val body = buildJsonObject {
+            put("nexus", "0.41.0")
+            put("id", backend)
+            put("speaks", buildJsonArray { add(JsonPrimitive(1)); add(JsonPrimitive(1)) })
+            put("has", buildJsonArray { add(JsonPrimitive("accounts")) })
+        }
+        val accepted = Core.nexusHello(200, body.toString().encodeToByteArray(), whole = true)
+        assertEquals(backend, accepted.backendId)
+        assertEquals(true, accepted.diagnosticsDefault)
+        val disabled = JsonObject(body + ("diagnostics" to JsonPrimitive(false)))
+        assertEquals(false, Core.nexusHello(200, disabled.toString().encodeToByteArray(), whole = true).diagnosticsDefault)
+        assertNull(Core.nexusHello(200, body.toString().encodeToByteArray(), whole = false).diagnosticsDefault)
+    }
+
     @Test fun diagnosticSwitchFollowsHelloUntilTheExplicitChoiceAndSaysWhyItIsPaused() {
         val service = recording()
         val diag = service.diagnostics
