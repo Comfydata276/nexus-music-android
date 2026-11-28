@@ -25,6 +25,7 @@ mod client;
 mod standin;
 mod pages;
 mod requests;
+mod recording;
 mod wire;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};

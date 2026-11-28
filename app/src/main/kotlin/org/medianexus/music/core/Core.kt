@@ -390,6 +390,14 @@ object Core {
      *  `client/json.rs` in the core): gives what the core wrote, `{"generation", "do"}`. */
     fun nexusCall(input: JsonObject): JsonObject = acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusCall)
 
+    /** The phone's storage adapter for the core's journal format and retention rules. */
+    internal fun nexusJournal(input: JsonObject): JsonElement =
+        acrossPrivately(input, JsonObject.serializer(), JsonElement.serializer(), ::nexusJournal)
+
+    /** Closed observations, canonical report text and the core's device switch rule. */
+    internal fun nexusDiagnostics(input: JsonObject): JsonElement =
+        acrossPrivately(input, JsonObject.serializer(), JsonElement.serializer(), ::nexusDiagnostics)
+
     /** `client::carries_over`: whether the folder this phone had goes to the person `music`
      *  (a music login as the machine handed it) was handed to. */
     fun nexusCarriesOver(beforeAddress: String, beforeUser: String, music: JsonObject): Boolean =
@@ -1058,6 +1066,8 @@ object Core {
     @JvmStatic private external fun nexusHello(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusMachine(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusCall(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusJournal(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusDiagnostics(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusStandIn(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusCarriesOver(input: ByteArray): ByteArray?
     @JvmStatic private external fun stop(input: ByteArray): ByteArray?
