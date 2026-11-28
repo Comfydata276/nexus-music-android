@@ -27,8 +27,8 @@ import org.medianexus.music.net.ApiError
  * fetched at a time, and a picture that couldn't be fetched is left alone for a minute
  * before it is asked for again.
  *
- * Two sizes, as Windows has more than one: [SIZE] for everything (rows, cards, the car), and
- * [LARGE] for Now Playing only, where a whole phone's width of cover would look soft at 640.
+ * Screen requests use a size suited to the display. The car, system media controls and
+ * downloads use [SIZE]. Now Playing asks for [LARGE] with a [SIZE] preview.
  *
  * `fetch` gets the picture's bytes from the server (the signed-in account's client).
  */
@@ -120,9 +120,29 @@ class CoverStore(
      * places at once.
      */
     suspend fun file(id: String, size: Int = SIZE): File? {
+        return load(id, size, larger = false)
+    }
+
+    /** A picture already on the phone can also serve a smaller display. */
+    internal suspend fun forScreen(id: String, size: Int): File? = load(id, size, larger = true)
+
+    /** The largest smaller picture already on the phone, only when the screen needs a fetch. */
+    internal suspend fun screenPreview(id: String, size: Int): File? = withContext(io) {
+        if (keptForScreen(id, size) != null) return@withContext null
+        sizes.asReversed().firstNotNullOfOrNull { candidate ->
+            if (candidate < size) kept(id, candidate) else null
+        }
+    }
+
+    private fun keptForScreen(id: String, size: Int): File? =
+        kept(id, size) ?: sizes.firstNotNullOfOrNull { candidate ->
+            if (candidate > size) kept(id, candidate) else null
+        }
+
+    private suspend fun load(id: String, size: Int, larger: Boolean): File? {
         val file = fileFor(id, size) ?: return null
-        if (withContext(io) { file.isFile && file.length() > 0 }) return file
-        pinnedFor(id, size)?.let { kept -> if (withContext(io) { kept.isFile && kept.length() > 0 }) return kept }
+        val cached = withContext(io) { if (larger) keptForScreen(id, size) else kept(id, size) }
+        if (cached != null) return cached
         val entry = start(id, size, file) ?: return null
         return try {
             await(file.name, entry)
@@ -292,18 +312,26 @@ class CoverStore(
 
     companion object {
         /**
-         * The size covers are fetched at, in pixels: the Windows app's largest (its Now Playing
-         * art). Enough for the car, which asks for about 512; rows and cards are cut down from
-         * it.
+         * The size for the car, media controls, offline downloads and Now Playing's preview.
          */
         const val SIZE = 640
 
         /**
          * Now Playing's size: its cover is nearly the phone's width, over a thousand pixels on
-         * a large phone. Fetched only for that screen, which shows the [SIZE] copy until it
-         * arrives. Navidrome never makes a picture larger than its original.
+         * a large phone. Now Playing shows the [SIZE] copy until it arrives. Navidrome never
+         * makes a picture larger than its original.
          */
         const val LARGE = 1200
+
+        internal const val SMALLEST = 160
+        private val screenSizes = listOf(SMALLEST, 320, 512, SIZE)
+        private val sizes = screenSizes + LARGE
+
+        internal fun sizeFor(pixels: Int, round: Boolean = false): Int {
+            val tier = screenSizes.indexOfFirst { it >= pixels }
+            if (tier == -1) return SIZE
+            return screenSizes[(tier + if (round) 1 else 0).coerceAtMost(screenSizes.lastIndex)]
+        }
 
         const val RETRY_AFTER_MILLIS = 60_000L
 
@@ -326,7 +354,7 @@ class CoverStore(
          * folder.
          */
         fun fileName(id: String, size: Int = SIZE): String? =
-            if (id.isNotEmpty() && id.length <= 160 && id.all { it.isLetterOrDigit() && it.code < 128 || it == '-' || it == '_' } && (size == SIZE || size == LARGE)) {
+            if (id.isNotEmpty() && id.length <= 160 && id.all { it.isLetterOrDigit() && it.code < 128 || it == '-' || it == '_' } && size in sizes) {
                 "$id.$size"
             } else {
                 null

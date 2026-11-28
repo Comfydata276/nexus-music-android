@@ -35,6 +35,77 @@ class CoverStoreTest {
     private fun store(fetch: suspend (String, Int) -> ByteArray) = CoverStore(folder.root, scope, Dispatchers.IO, fetch, clock = { now })
 
     @Test
+    fun displaySizesRoundUpToACoverTier() {
+        val widths = listOf(113, 160, 161, 320, 321, 512, 513, 640, 641, 2000)
+        assertEquals(listOf(160, 160, 320, 320, 512, 512, 640, 640, 640, 640),
+            widths.map { CoverStore.sizeFor(it) })
+        assertEquals(listOf(320, 320, 512, 512, 640, 640, 640, 640, 640, 640),
+            widths.map { CoverStore.sizeFor(it, round = true) })
+    }
+
+    @Test
+    fun aWideOfflineAlbumPageUsesItsDownloadedCover() = runBlocking {
+        val pinned = folder.newFolder("downloads")
+        val offline = pinned.resolve("album.640").apply { writeBytes(jpeg) }
+        val covers = CoverStore(folder.root, scope, Dispatchers.IO,
+            { _, _ -> error("the downloaded album is offline") }, pinned = pinned)
+        val size = CoverStore.sizeFor(800)
+        assertEquals(offline, covers.forScreen("album", size))
+        assertNull(covers.screenPreview("album", size))
+    }
+
+    @Test
+    fun downloadingArtworkFetchesItsOwnCopyWhenOnlyASmallerTierIsKept() = runBlocking {
+        val pinned = folder.newFolder("downloads")
+        val small = folder.newFile("album.512").apply { writeBytes(jpeg) }
+        val downloaded = jpeg + byteArrayOf(42)
+        val covers = CoverStore(folder.root, scope, Dispatchers.IO,
+            { _, _ -> error("the download supplies its own network fetch") }, pinned = pinned)
+        // The car and content provider check the usual size.
+        assertNull(covers.kept("album"))
+        assertTrue(covers.pin("album") { downloaded })
+        assertArrayEquals(downloaded, pinned.resolve("album.640").readBytes())
+        assertArrayEquals(jpeg, small.readBytes())
+    }
+
+    @Test
+    fun aFailureAtASmallerTierDoesNotBlockTheUsualSize() = runBlocking {
+        val asked = mutableListOf<Int>()
+        val covers = store { _, size ->
+            asked += size
+            if (size == 160) throw ApiError.Network("(down)")
+            jpeg
+        }
+        assertNull(covers.forScreen("album", 160))
+        assertNotNull(covers.forOutside("album", 2_000))
+        assertEquals(listOf(160, 640), asked)
+    }
+
+    @Test
+    fun aCachedLargeCoverCanServeASmallScreenWithoutCreatingAnotherFile() = runBlocking {
+        val old = folder.newFile("old.640").apply { writeBytes(jpeg) }
+        val pinned = folder.newFolder("downloads")
+        val offline = pinned.resolve("offline.640").apply { writeBytes(jpeg) }
+        val covers = CoverStore(folder.root, scope, Dispatchers.IO,
+            { _, _ -> error("both covers are on the phone") }, pinned = pinned)
+        assertEquals(old, covers.forScreen("old", 160))
+        assertEquals(offline, covers.forScreen("offline", 320))
+        assertTrue(!folder.root.resolve("old.160").exists())
+        assertTrue(!folder.root.resolve("offline.320").exists())
+        assertArrayEquals(jpeg, old.readBytes())
+    }
+
+    @Test
+    fun enlargingAScreenAndServingTheCarBothFetchTheirOwnTier() = runBlocking {
+        val asked = mutableListOf<Int>()
+        val covers = store { _, size -> asked += size; jpeg }
+        assertEquals("album.160", covers.forScreen("album", 160)!!.name)
+        assertEquals("album.512", covers.forScreen("album", 512)!!.name)
+        assertEquals("album.640", covers.forOutside("album", 2_000)!!.name)
+        assertEquals(listOf(160, 512, 640), asked)
+    }
+
+    @Test
     fun nowPlayingsLargerSizeIsKeptApartFromTheUsualOne() = runBlocking {
         val asked = mutableListOf<Pair<String, Int>>()
         val covers = store { id, size -> asked += id to size; jpeg }
