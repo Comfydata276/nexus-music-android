@@ -223,10 +223,10 @@ class RecordingTest {
         assertTrue(apply(service, "taken", change(a, taken)))
         assertEquals(1uL, service.losses().refused)
         assertTrue(apply(service, "resend_all", buildJsonObject { put("backend_id", backend) }))
-        val replay = read(service, a).toString()
-        assertTrue("taken line" in replay)
-        assertFalse("refused line" in replay)
-        assertTrue(""kind":"start"" in replay)
+        val replay = read(service, a)
+        assertTrue("taken line" in replay.toString())
+        assertFalse("refused line" in replay.toString())
+        assertTrue(replay.any { it.jsonObject.getValue("event").jsonObject["kind"] == JsonPrimitive("start") })
         assertEquals(1uL, service.losses().refused)
     }
 
