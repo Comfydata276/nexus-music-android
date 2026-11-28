@@ -141,13 +141,16 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_nexusStandIn<'l>(env:
                 result: account::GrantIssued { grant: account::GrantSecret::from_bytes([4; 32]) },
                 receipt: receipt(&given, count)?,
             }))()),
-            "requests_ready" | "requests_away" | "requests_unconfigured" | "requests_off" | "requests_denied" => {
-                use nexus_core::nexus::requests::{Answer, Availability, Refusal};
+            "requests_ready" | "requests_away" | "requests_unconfigured" | "requests_off" | "requests_denied" | "batch_begun" | "batch_done" | "batch_lines" => {
+                use nexus_core::nexus::requests::{Answer, Availability, Completed, JobId, Refusal};
                 let result = match given.kind.as_str() {
                     "requests_ready" => Answer::Status { lidarr: Availability::Ready },
                     "requests_away" => Answer::Status { lidarr: Availability::Unavailable },
                     "requests_unconfigured" => Answer::Refused { reason: Refusal::LidarrNotSetUp },
                     "requests_off" => Answer::Refused { reason: Refusal::SwitchedOff },
+                    "batch_begun" => Answer::Begun { job: JobId(std::num::NonZeroU64::new(9).unwrap()) },
+                    "batch_done" => Answer::Done { result: Completed::Batch },
+                    "batch_lines" => Answer::BatchLines { lines: Vec::new(), next: None },
                     _ => Answer::Refused { reason: Refusal::NotAllowed },
                 };
                 reply!((|| Some(Reply::Done { result, receipt: receipt(&given, count)? }))())

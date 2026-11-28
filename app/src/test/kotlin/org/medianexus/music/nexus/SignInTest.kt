@@ -1,13 +1,18 @@
 package org.medianexus.music.nexus
 
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.AfterClass
@@ -29,7 +34,9 @@ import org.medianexus.music.core.Outcome
 import org.medianexus.music.core.StandIn
 import org.medianexus.music.graph
 import org.medianexus.music.requests.RequestsNow
+import org.medianexus.music.requests.RequestsRoute
 import org.medianexus.music.requests.RequestsSecrets
+import org.medianexus.music.requests.ServerBatch
 import org.medianexus.music.store.SecretBox
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -338,6 +345,51 @@ class SignInTest {
         }
         assertEquals(scope, nexus.appSession.value?.scope)
         assertTrue(graph.session.state.value is SessionState.SignedIn)
+    }
+
+    @Test
+    fun sendingAgainAfterABatchBeginReplyIsLostReusesTheSavedRequest() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        until { graph.nexus!!.appSession.value?.takeIf { it.verified } }
+        val begins = CopyOnWriteArrayList<JsonObject>()
+        standIn.answer = { request ->
+            if (request.url.encodedPath != "/nexus/api/requests") standIn.there(request)
+            else {
+                val call = Json.parseToJsonElement(request.body!!.utf8()).jsonObject.getValue("call").jsonObject
+                when (call.getValue("ask").jsonPrimitive.content) {
+                    "status" -> standIn.feature("requests_ready")
+                    "begin" -> {
+                        begins += call
+                        if (begins.size == 1) mockwebserver3.MockResponse.Builder()
+                            .onResponseStart(mockwebserver3.SocketEffect.CloseSocket()).build()
+                        else standIn.feature("batch_begun")
+                    }
+                    "after" -> standIn.feature("batch_done")
+                    "batch_lines" -> standIn.feature("batch_lines")
+                    else -> error("unexpected batch call")
+                }
+            }
+        }
+        graph.requestsRouter.refresh()
+        val route = until { (graph.requestsRouter.route.value as? RequestsRoute.Usable)?.takeUnless { it.direct } }
+        val dir = java.nio.file.Files.createTempDirectory("nexus-batch-restart").toFile()
+        try {
+            runBlocking {
+                assertTrue(ServerBatch(dir).show(route.status, "First Artist | First Album | First Song", true) != null)
+                assertEquals(1, begins.size)
+                val reopened = ServerBatch(dir)
+                assertEquals("The phone couldn't confirm the previous batch number.", reopened.show(route.status, null, false))
+                assertEquals(1, begins.size)
+                assertEquals("The previous batch finished. Send the changed batch again.",
+                    reopened.show(route.status, "Other Artist | Other Album | Other Song", false))
+                assertEquals(2, begins.size)
+                assertEquals(begins[0], begins[1])
+                assertTrue(dir.listFiles()!!.single().readText().contains("\"job\":9"))
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 
     @Test

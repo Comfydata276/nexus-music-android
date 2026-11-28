@@ -99,6 +99,8 @@ internal class ServerBatch(private val dir: File) {
             null
         }
 
+        val toReplay = previous?.takeIf { it.job == null && it.session == session }
+        var changedInput = false
         var saved = if (songs == null) {
             previous ?: return
         } else {
@@ -108,20 +110,24 @@ internal class ServerBatch(private val dir: File) {
                     throw BatchFailure("Your Nexus server is still handling the previous batch.")
                 }
             }
-            val lines = songs.lineSequence().filter(String::isNotBlank).map { text ->
-                val fields = text.split('|', limit = 3).map(String::trim)
-                if (fields.size != 3 || fields.first().isEmpty() || fields.last().isEmpty()) {
-                    throw BatchFailure("Enter each song on its own line as Artist | Album | Song.")
+            val lines = readLines(songs)
+            val pending = if (toReplay != null) {
+                changedInput = toReplay.lines != lines || toReplay.singles != singles
+                toReplay
+            } else {
+                Saved(random.nextLong().ushr(1).coerceAtLeast(1), session, singles, lines).also { keep(file, it) }
+            }
+            val answer = try {
+                ask(endpoint, "batch_begin") {
+                    put("request", pending.request)
+                    put("singles", pending.singles)
+                    put("lines", Json.encodeToJsonElement(pending.lines))
                 }
-                SongLine(fields[0], fields[1], fields[2])
-            }.take(2001).toList()
-            if (lines.isEmpty() || lines.size > 2000) throw BatchFailure("Enter between 1 and 2,000 songs.")
-            val pending = Saved(random.nextLong().ushr(1).coerceAtLeast(1), session, singles, lines)
-            keep(file, pending)
-            val answer = ask(endpoint, "batch_begin") {
-                put("request", pending.request)
-                put("singles", singles)
-                put("lines", Json.encodeToJsonElement(lines))
+            } catch (e: BatchFailure) {
+                // A refusal of a replay can precede the server's receipt lookup. It may
+                // still have accepted the original Begin.
+                if (toReplay == null && e.refused) java.nio.file.Files.deleteIfExists(file.toPath())
+                throw e
             }
             val job = answer["job"] as? JsonPrimitive ?: throw BatchFailure(UNCONFIRMED)
             pending.copy(job = job).also { keep(file, it) }
@@ -137,8 +143,14 @@ internal class ServerBatch(private val dir: File) {
                 Row(line.song, "${line.artist} · ${row.detail}")
             }
             if (!endpoint.active()) return
-            shown.value = View(scope, snapshot.notice, rows, snapshot.working)
-            if (!snapshot.working) return
+            val notice = if (changedInput && snapshot.working) {
+                "Your Nexus server is still handling the previous batch. Send the changed batch after it finishes."
+            } else snapshot.notice
+            shown.value = View(scope, notice, rows, snapshot.working)
+            if (!snapshot.working) {
+                if (changedInput) throw BatchFailure("The previous batch finished. Send the changed batch again.")
+                return
+            }
             if (session == saved.session) {
                 for (row in snapshot.rows.filter(Progress::needsResolution)) {
                     saved = resolve(endpoint, file, saved, job, row.index, allowReplay = songs == null)
@@ -146,6 +158,18 @@ internal class ServerBatch(private val dir: File) {
             }
             delay(1000)
         }
+    }
+
+    private fun readLines(songs: String): List<SongLine> {
+        val lines = songs.lineSequence().filter(String::isNotBlank).map { text ->
+            val fields = text.split('|', limit = 3).map(String::trim)
+            if (fields.size != 3 || fields.first().isEmpty() || fields.last().isEmpty()) {
+                throw BatchFailure("Enter each song on its own line as Artist | Album | Song.")
+            }
+            SongLine(fields[0], fields[1], fields[2])
+        }.take(2001).toList()
+        if (lines.isEmpty() || lines.size > 2000) throw BatchFailure("Enter between 1 and 2,000 songs.")
+        return lines
     }
 
     private suspend fun resolve(
@@ -204,7 +228,7 @@ internal class ServerBatch(private val dir: File) {
         if (!endpoint.active()) throw CancellationException("Requests session changed")
         val words = (result["error"] as? JsonPrimitive)?.contentOrNull
         if (words != null && !(allowMissing && (result["missing"] as? JsonPrimitive)?.booleanOrNull == true)) {
-            throw BatchFailure(words)
+            throw BatchFailure(words, refused = (result["refused"] as? JsonPrimitive)?.booleanOrNull == true)
         }
         return result
     }
@@ -213,7 +237,7 @@ internal class ServerBatch(private val dir: File) {
         writeAtomically(file, Json.encodeToString(Saved.serializer(), saved).encodeToByteArray(), durable = true)
     }
 
-    private class BatchFailure(val words: String) : Exception()
+    private class BatchFailure(val words: String, val refused: Boolean = false) : Exception()
 
     private companion object {
         const val UNCONFIRMED = "The phone couldn't confirm the previous batch number."

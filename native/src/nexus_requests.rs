@@ -90,6 +90,8 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_nexusRequests<'l>(
         Ok(run(given).unwrap_or_else(|error| json!({
             "error": error.to_string(),
             "missing": error == RequestError::Refused(Refusal::JobNotFound),
+            "refused": matches!(error, RequestError::Refused(reason)
+                if !matches!(reason, Refusal::Busy | Refusal::NotDealtWith)),
         })))
     })
 }
