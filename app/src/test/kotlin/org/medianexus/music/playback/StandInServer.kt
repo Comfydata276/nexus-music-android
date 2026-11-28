@@ -67,6 +67,9 @@ class StandInServer {
      * accounts may not yet have let the old ones go, and are briefly with nobody after.
      */
     fun signIn(app: Application, username: String = "tester") {
+        // (After the machine's own start, which reads what is kept and publishes from it: a
+        // sign-in written under it would be published twice, the second replacing the first.)
+        runBlocking { withTimeout(30_000) { app.graph.session.restored() } }
         app.graph.session.signIn(address, username, "a password")
         runBlocking {
             withTimeout(30_000) {

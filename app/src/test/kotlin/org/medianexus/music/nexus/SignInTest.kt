@@ -10,6 +10,7 @@ import org.junit.After
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.BeforeClass
@@ -106,6 +107,42 @@ class SignInTest {
         assertTrue("the machine's words for it", said.signIn.words.isNotEmpty())
         assertEquals(SessionState.SignedOut, app.graph.session.state.value)
         assertFalse(app.graph.nexusKept.load().session)
+    }
+
+    /** **The journal and Diagnostics hear who is signed in from the driver** (the ten cautions,
+     *  3, 7): nobody while the notice of what the server records waits to be seen, the account
+     *  once it is, Diagnostics signed in and knowing the default `hello` said; nobody after
+     *  signing out. */
+    @Test
+    fun theJournalAndDiagnosticsHearWhoIsSignedInFromTheDriver() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        val nexus = graph.nexus!!
+        val now = shown(nexus) { it.screen == "signed_in" }
+        if (now.notice != null) {
+            assertNull("recorded before the notice was seen", graph.recording.scope())
+            nexus.press(buildJsonObject { put("notice_seen", buildJsonObject {}) })
+        }
+        val scope = until { graph.recording.scope() }
+        assertEquals(BackendStandIn.BACKEND_ID, scope.backend.content)
+        assertEquals("7", scope.number.content)
+        val diagnostics = runBlocking { withTimeout(30_000) { graph.recording.diagnostics.settings.first { it.signedIn && it.knowsDefault } } }
+        assertTrue("on by default", diagnostics.switchedOn)
+        standIn.backendThere = true
+        nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
+        until { if (graph.recording.scope() == null) Unit else null }
+        runBlocking { withTimeout(30_000) { graph.recording.diagnostics.settings.first { !it.signedIn } } }
+    }
+
+    private fun <T : Any> until(what: () -> T?): T = runBlocking {
+        withTimeout(30_000) {
+            var found = what()
+            while (found == null) {
+                kotlinx.coroutines.delay(10)
+                found = what()
+            }
+            found
+        }
     }
 
     /** No connection is ever opened (Android 17 drops it, without the permission, where the

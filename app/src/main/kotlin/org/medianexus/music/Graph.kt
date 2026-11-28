@@ -353,6 +353,7 @@ class Graph(
             appVersion = BuildConfig.VERSION_NAME.substringBefore('-'),
             deviceName = deviceName(app),
             offlineNow = { settings.value.offline },
+            recording = recording,
         )
         nexus = made
         made.start()

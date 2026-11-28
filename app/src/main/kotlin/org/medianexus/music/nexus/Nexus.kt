@@ -63,6 +63,10 @@ class Nexus internal constructor(
     private val deviceName: String,
     /** Whether offline mode is switched on by hand, now. */
     private val offlineNow: () -> Boolean,
+    /** The listening journal and Diagnostics (`NexusRecording`): told who is signed in from what
+     *  is kept, on this thread, and doing the machine's `Do::Journal`. None in a test of the
+     *  sign-in alone (every read is then answered with nothing waiting). */
+    private val recording: NexusRecording? = null,
 ) {
     /** What the app does for the machine, beside the I/O. Called on the machine's thread. */
     interface Side {
@@ -163,6 +167,33 @@ class Nexus internal constructor(
      *  tried again before anything else, at the next call (only touched on [worker]). */
     private var pending: List<JsonObject> = emptyList()
 
+    /** What the machine said after a change to the journal (taken, refused, life moved, send all
+     *  again), in its order, waiting for the journal's writer to have made it: never waited for
+     *  on this thread, but done when the writer says so ([resume]). Only touched on [worker]. */
+    private var awaiting: Awaiting? = null
+
+    private class Awaiting(val rest: MutableList<JsonObject>, val atStart: Boolean, val change: JsonObject)
+
+    /** Whether the last `Keep::DiagSchedule` was durably written (14.4): what a Diagnostics read
+     *  is answered with only then. Only touched on [worker]. */
+    private var scheduleKept = false
+
+    /** The last `hello` answered here: its origin, its id, and Diagnostics' default it says (absent
+     *  is on). Diagnostics' state uses it only for the backend signed in to. On [worker]. */
+    private var heard: Triple<String, String, Boolean>? = null
+
+    /**
+     * **The one sink the journal and Diagnostics tell the machine through** (the same on every
+     * publish): called on main, the journal's writer and reader and `nexus-diagnostics`, it only
+     * puts the event on this machine's own thread, and never throws.
+     */
+    private val sink: RecordingEvent = { event ->
+        try {
+            happened(event)
+        } catch (_: Throwable) {
+        }
+    }
+
     /** Starts it: on its own thread, after the app is usable. Returns at once. */
     fun start() = onWorker {
         gate?.invoke()
@@ -191,8 +222,8 @@ class Nexus internal constructor(
             // by its place.)
             put("notes", JsonArray(parts.raw))
             put("offline", toldOffline)
-            // (The phone has no Diagnostics switch yet: no choice made.)
-            put("diagnostics", JsonNull)
+            // (The person's own Diagnostics choice, read here on this thread; none made: null.)
+            put("diagnostics", recording?.let { safe { it.diagnostics.choice() } }?.let(::JsonPrimitive) ?: JsonNull)
             put("diag_schedule", kept.diagSchedule() ?: JsonNull)
         }
         parts = NexusKept.Parts(parts.saved, parts.raw)
@@ -206,7 +237,32 @@ class Nexus internal constructor(
             }, atStart = true)
         } finally {
             parts = parts.compact()
+            // **Who is signed in, for the journal and Diagnostics, from what is kept, at every
+            // start** (whatever started the process: the car, a media button, the app).
+            publish()
         }
+    }
+
+    /** Tells the journal and Diagnostics who is signed in, from what is kept on the disk now:
+     *  on this thread, before anything after the write that made it so. The notice not yet seen
+     *  (13.6) holds recording back; nobody (null) is only a sign-in forgotten. */
+    private fun publish() {
+        val recording = recording ?: return
+        val saved = parts.saved
+        safe { recording.publish(saved, noticeOutstanding = saved != null && saved["notice"].let { it != null && it != JsonNull }, sink) }
+        tellDiagnostics(toldOffline)
+    }
+
+    /** Diagnostics' state, on every change of who is signed in, Offline, or the `hello` heard. */
+    private fun tellDiagnostics(offline: Boolean) {
+        val recording = recording ?: return
+        val saved = parts.saved
+        val signedIn = saved != null && saved["session"].let { it != null && it != JsonNull }
+        val default = heard?.takeIf { (origin, id, _) ->
+            signedIn && (saved!!["nexus"] as? JsonPrimitive)?.contentOrNull?.trimEnd('/').equals(origin, ignoreCase = true) &&
+                (saved["backend_id"] as? JsonPrimitive)?.contentOrNull.equals(id, ignoreCase = true)
+        }?.third
+        safe { recording.diagnostics.state(signedIn, offline, default) }
     }
 
     /** The person pressed something: `press` as the machine reads it (`client::Press`, as
@@ -220,8 +276,16 @@ class Nexus internal constructor(
      *  first, see [waitsFor].) */
     fun offline(on: Boolean) = onWorker {
         if (machine == 0L || on == toldOffline) return@onWorker
+        tellOffline(on)
+    }
+
+    /** The machine told of Offline; Diagnostics' state before it when switching off and after it
+     *  when switching on (as Windows does), so nothing is shown as able to send while it is on. */
+    private fun tellOffline(on: Boolean) {
         toldOffline = on
+        if (!on) tellDiagnostics(false)
         call(buildJsonObject { put("happened", buildJsonObject { put("event", buildJsonObject { put("offline", on) }); put("given", given()) }) })
+        if (on) tellDiagnostics(true)
     }
 
     /** The music server refused the login of this number, handed under this generation
@@ -303,15 +367,35 @@ class Nexus internal constructor(
     /** One call to the machine, and everything it gives back done, in its order. On [worker].
      *  What waited for a failed write is tried first. */
     private fun call(envelope: JsonObject, atStart: Boolean = false) {
-        if (pending.isNotEmpty()) doAll(pending.also { pending = emptyList() }, atStart = false)
+        if (awaiting == null && pending.isNotEmpty()) doAll(pending.also { pending = emptyList() }, atStart = false)
         val out = Core.nexusCall(buildJsonObject { put("machine", machine); put("call", envelope) })
         val does = (out["do"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: run {
             // (Refused as input: what it said, which names nothing of what it was given.)
             lastFailure = IllegalStateException("the machine said ${out.toString().take(120)} to ${envelope.keys}")
             return
         }
-        // (After a write that failed, everything the machine says waits behind it, in order.)
-        if (pending.isNotEmpty()) pending = pending + does else doAll(does, atStart)
+        // (After a write that failed, or behind a change the journal is making, everything the
+        // machine says waits, in order.)
+        val waiting = awaiting
+        when {
+            waiting != null -> waiting.rest += does
+            pending.isNotEmpty() -> pending = pending + does
+            else -> doAll(does, atStart)
+        }
+    }
+
+    /** The journal's writer has made a change, or could not: what waited behind it is done now,
+     *  in its order, either way. (A change not made leaves events that may be read and sent
+     *  again, which the backend takes once by their ids; holding the rest behind a journal that
+     *  cannot write would hold the sign-in itself.) */
+    private fun resume(waited: Awaiting, made: Boolean) {
+        if (awaiting !== waited) return
+        awaiting = null
+        if (!made) lastFailure = IllegalStateException("the journal did not make ${waited.change.keys}")
+        // (A life moved: the journal has the new one already, published at its Keep; told again,
+        // which is nothing if it is the same.)
+        publish()
+        doAll(waited.rest.toList(), waited.atStart)
     }
 
     /** **Whether the machine still waits for the answer to this ask**: asked on its own thread
@@ -322,10 +406,7 @@ class Nexus internal constructor(
         worker.submit<Boolean> {
             if (machine == 0L || stopped.get()) return@submit false
             val offlineNow = offlineNow()
-            if (offlineNow != toldOffline) {
-                toldOffline = offlineNow
-                call(buildJsonObject { put("happened", buildJsonObject { put("event", buildJsonObject { put("offline", offlineNow) }); put("given", given()) }) })
-            }
+            if (offlineNow != toldOffline) tellOffline(offlineNow)
             (Core.nexusCall(buildJsonObject { put("machine", machine); put("call", buildJsonObject { put("waits_for", buildJsonObject { put("ask", id) }) }) })["waits"] as? JsonPrimitive)?.booleanOrNull == true
         }.get()
     } catch (e: Exception) {
@@ -363,6 +444,8 @@ class Nexus internal constructor(
             if (!kept.save(parts)) return false
             this.parts = parts
             dirty = false
+            // (The journal hears who is signed in before anything after the write is done.)
+            publish()
             signedIn?.let { (account, music) -> if (!atStart) side.signedInAs(account, music) }
             signedIn = null
             // Forgotten: the music login goes from the player too (downloads stay).
@@ -401,7 +484,10 @@ class Nexus internal constructor(
                         }
                         "note" -> (kept as? JsonObject)?.let { parts = parts.withNote(it) }
                         // (Before the read it is kept for: a failure stops the read.)
-                        "diag_schedule" -> if (!this.kept.keepDiagSchedule(kept)) return stopAt(index)
+                        "diag_schedule" -> {
+                            scheduleKept = this.kept.keepDiagSchedule(kept)
+                            if (!scheduleKept) return stopAt(index)
+                        }
                     }
                 }
                 "forget" -> when {
@@ -410,9 +496,12 @@ class Nexus internal constructor(
                         forgot = true
                     }
                     value is JsonPrimitive && value.contentOrNull == "device_secret" -> if (!this.kept.forgetDeviceSecret()) return stopAt(index)
-                    value is JsonPrimitive && value.contentOrNull == "diag_schedule" -> if (!this.kept.forgetDiagSchedule()) return stopAt(index)
-                    // (No Diagnostics choice is kept on the phone yet: nothing to forget.)
-                    value is JsonPrimitive && value.contentOrNull == "diagnostics" -> Unit
+                    value is JsonPrimitive && value.contentOrNull == "diag_schedule" -> {
+                        scheduleKept = false
+                        if (!this.kept.forgetDiagSchedule()) return stopAt(index)
+                    }
+                    // (The person's choice did not read: none made, and the file goes.)
+                    value is JsonPrimitive && value.contentOrNull == "diagnostics" -> recording?.let { safe { it.diagnostics.forgetChoice() } }
                     value is JsonObject && value["note"] is JsonObject -> (value["note"] as JsonObject).let { note ->
                         val backend = (note["backend_id"] as? JsonPrimitive)?.content
                         val session = (note["session"] as? JsonPrimitive)?.content
@@ -424,7 +513,10 @@ class Nexus internal constructor(
                 }
                 "show" -> (value as? JsonObject)?.let { showing.value = NexusShown.of(it) }
                 "hand" -> (value as? JsonObject)?.let { hand(it, atStart) }
-                "journal" -> (value as? JsonObject)?.let(::journal)
+                "journal" -> (value as? JsonObject)?.let { change ->
+                    // A change to the journal: what follows waits for the writer to have made it.
+                    if (journal(change, does.subList(index + 1, does.size), atStart)) return
+                }
                 "ask" -> (value as? JsonObject)?.let(::send)
             }
         }
@@ -449,28 +541,45 @@ class Nexus internal constructor(
     }
 
     /**
-     * **The sending half's things to do** (`Do::Journal`). The phone has no journal yet (that is
-     * its own slice): **every read is answered, with nothing waiting** (the machine's contract:
-     * a read not answered stops that kind of sending until the next start), and what would
-     * change the journal has nothing to change.
+     * **The sending half's things to do** (`Do::Journal`), done by the journal and Diagnostics
+     * (`NexusRecording`): a read goes to the journal's READER (or Diagnostics' own thread) and is
+     * answered later through [sink]; a change goes to the journal's writer, and **what the machine
+     * said after it waits until the writer has made it** (never waited for here). True when the
+     * rest now waits. With no recording (a test of the sign-in alone), every read is answered with
+     * nothing waiting.
      */
-    private fun journal(thing: JsonObject) {
-        val (kind, value) = thing.entries.singleOrNull() ?: return
-        val body = value as? JsonObject ?: return
-        val read = body["read"] as? JsonPrimitive ?: return
-        when (kind) {
-            "read_events" -> {
-                val account = body["account"] ?: return
-                val life = body["life"] ?: return
-                happened(buildJsonObject {
-                    put("events_read", buildJsonObject { put("read", read); put("account", account); put("life", life); put("events", JsonArray(emptyList())) })
+    private fun journal(thing: JsonObject, rest: List<JsonObject>, atStart: Boolean): Boolean {
+        val (kind, value) = thing.entries.singleOrNull() ?: return false
+        val body = value as? JsonObject ?: return false
+        val recording = recording
+        if (recording == null) {
+            val read = body["read"] as? JsonPrimitive ?: return false
+            when (kind) {
+                "read_events" -> {
+                    val account = body["account"] ?: return false
+                    val life = body["life"] ?: return false
+                    happened(buildJsonObject {
+                        put("events_read", buildJsonObject { put("read", read); put("account", account); put("life", life); put("events", JsonArray(emptyList())) })
+                    })
+                }
+                "read_diagnostics" -> happened(buildJsonObject {
+                    put("diagnostics_read", buildJsonObject { put("read", read); put("text", JsonNull) })
                 })
             }
-            "read_diagnostics" -> happened(buildJsonObject {
-                put("diagnostics_read", buildJsonObject { put("read", read); put("text", JsonNull) })
-            })
-            // taken, refused, life_moved, resend_all: no journal on the phone yet.
+            return false
         }
+        if (kind == "read_events" || kind == "read_diagnostics") {
+            safe { recording.journal(thing, scheduleKept, sink) { } }
+            return false
+        }
+        val waited = Awaiting(rest.toMutableList(), atStart, thing)
+        awaiting = waited
+        val done = safe {
+            // (Called on the writer's thread, or at once: only puts the rest on this thread.)
+            recording.journal(thing, scheduleKept, sink) { made -> onWorker { resume(waited, made) } }
+        }
+        if (done == null) resume(waited, false)
+        return true
     }
 
     /** Sends one ask, once, on the requests' threads, and tells the machine what came of it.
@@ -521,6 +630,7 @@ class Nexus internal constructor(
             calling.decrementAndGet()
             body.fill(0)
         }
+        if (sent is Sent.Answer && sent.status == 200 && url.encodedPath == HELLO_PATH) heardHello(url, sent.body)
         return when (sent) {
             is Sent.Answer -> buildJsonObject {
                 put("answered", buildJsonObject {
@@ -536,6 +646,21 @@ class Nexus internal constructor(
             is Sent.Failed -> failed(id, sent.how, if (sent.how == "name" || sent.how == "connect") url.host else null)
             // No longer waited for at its send: nothing was written, and nothing is told.
             Sent.Dropped -> null
+        }
+    }
+
+    /** A `hello` answered: Diagnostics' default it says (14.3), for Diagnostics' state, once it is
+     *  the backend signed in to (its origin and its id). Only what Diagnostics shows; whether
+     *  anything is sent is the machine's. */
+    private fun heardHello(url: okhttp3.HttpUrl, body: ByteArray) {
+        val hello = safe { kotlinx.serialization.json.Json.parseToJsonElement(String(body, Charsets.UTF_8)) as? JsonObject } ?: return
+        val id = (hello["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.length == 32 } ?: return
+        if ((hello["nexus"] as? JsonPrimitive)?.isString != true) return
+        val default = (hello["diagnostics"] as? JsonPrimitive)?.booleanOrNull ?: true
+        val origin = "https://" + url.host + (if (url.port != 443) ":${url.port}" else "")
+        onWorker {
+            heard = Triple(origin, id, default)
+            tellDiagnostics(toldOffline)
         }
     }
 
@@ -568,6 +693,9 @@ class Nexus internal constructor(
 
         /** How often the machine is told a minute has passed (`client::TICK_MS`). */
         const val TICK_MILLIS = 60_000L
+
+        /** Where a backend answers `hello` (`proto::HELLO`). */
+        const val HELLO_PATH = "/nexus/api/hello"
 
         /** The requests that may be under way at once: the machine never has two of a kind. */
         const val CALLS = 4

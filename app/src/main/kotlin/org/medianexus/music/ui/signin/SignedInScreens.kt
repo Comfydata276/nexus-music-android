@@ -89,6 +89,8 @@ fun NexusNotice(graph: Graph, shown: NexusShown) {
         Modifier.fillMaxWidth().background(colors.raised, RoundedCornerShape(12.dp)).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        // (The heading both apps use: "What your Nexus server records", one button, "OK".)
+        BasicText(stringResource(R.string.diagnostics_recording_notice), style = Theme.type.rowTitle.copy(color = colors.text))
         BasicText(notice, style = Theme.type.rowDetail.copy(color = colors.text))
         TextButton(stringResource(R.string.ok), onClick = { graph.nexus?.press(buildJsonObject { put("notice_seen", buildJsonObject {}) }) }, modifier = Modifier.fillMaxWidth())
     }
