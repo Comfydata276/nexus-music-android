@@ -16,6 +16,8 @@ internal enum class PlaySound(val wire: String) {
 
 internal enum class StopReason(val wire: String) {
     FINISHED("finished"), NEXT("next"), PREVIOUS("previous"), CHOICE("another_choice"), STOPPED("stopped"), ERROR("error"),
+    /** Core's close of a Start left open: the end of the play was not seen. */
+    UNKNOWN("unknown"),
 }
 
 @ConsistentCopyVisibility
@@ -87,8 +89,9 @@ internal sealed interface Listening {
             put("duration_ms", duration?.let { JsonPrimitive(ms(it)) } ?: JsonNull)
             put("heard_ms", ms(heard))
             put("why", buildJsonObject {
-                put("kind", reason.wire)
-                fault?.let { put("fault", it.eventWire()) }
+                // The pinned core permits an absent duration only with Unknown.
+                put("kind", if (duration == null) "unknown" else reason.wire)
+                if (duration != null) fault?.let { put("fault", it.eventWire()) }
             })
         })
         is Pause -> positionEvent("pause", start, position)

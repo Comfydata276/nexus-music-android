@@ -70,6 +70,25 @@ class ListeningPlaybackTest {
         assertFalse(events.any { it.first == two && (it.second as? Listening.Start)?.songId == "first" })
     }
 
+    @Test fun aMissedStopRetiresTheOldPlayAndKeepsRecording() {
+        playback.sounding(one, 10, song, PlayOrigin.from(""), PlayBegan.HERE, PlaySound.STREAM, 0, 12_000)
+        time += 5_000
+        playback.checkpoint(10, 4_800)
+        playback.sounding(one, 20, song.copy(id = "next"), PlayOrigin.from(""), PlayBegan.NEXT, PlaySound.STREAM, 0, null)
+        val stop = events.map { it.second }.filterIsInstance<Listening.Stop>().single()
+        assertEquals(4_800L, stop.position)
+        assertEquals(EventId(0, 1), stop.start)
+        assertEquals(StopReason.UNKNOWN, stop.reason)
+        assertEquals(JsonPrimitive("unknown"), ((stop.wire()["stop"] as kotlinx.serialization.json.JsonObject)["why"] as kotlinx.serialization.json.JsonObject)["kind"])
+        assertEquals(2, events.count { it.second is Listening.Start })
+        playback.stop(20, 280, StopReason.NEXT)
+        val nextStop = events.last().second as Listening.Stop
+        org.junit.Assert.assertNull(nextStop.duration)
+        val wire = nextStop.wire()["stop"] as kotlinx.serialization.json.JsonObject
+        assertEquals(kotlinx.serialization.json.JsonNull, wire["duration_ms"])
+        assertEquals(JsonPrimitive("unknown"), (wire["why"] as kotlinx.serialization.json.JsonObject)["kind"])
+    }
+
     @Test fun aPreviousThatRewindsIsASeekAndAChangedEntryCanStopAsNextOrPrevious() {
         playback.sounding(one, 10, song, PlayOrigin.from(""), PlayBegan.HERE, PlaySound.STREAM, 0, null)
         playback.seek(10, 4_000, 0)

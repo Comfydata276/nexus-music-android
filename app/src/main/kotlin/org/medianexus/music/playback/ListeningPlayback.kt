@@ -22,6 +22,7 @@ internal class ListeningPlayback(
         val duration: Long?,
         var played: Long,
         var runningSince: Long?,
+        var lastPosition: Long,
         var paused: Boolean = false,
     )
 
@@ -44,9 +45,11 @@ internal class ListeningPlayback(
             resume(entry, position)
             return
         }
-        if (existing != null) return // The old entry must be ended with its own position first.
+        // A play left open (its Stop was missed) is closed as core closes an open Start:
+        // Unknown, at its last checkpoint position. Recording then goes on with this Start.
+        if (existing != null) stop(existing.entry, existing.lastPosition, StopReason.UNKNOWN)
         val id = record(Listening.Start(song, from, began, sound, position), scope) ?: return
-        play = Play(id, scope, entry, duration, 0, clock())
+        play = Play(id, scope, entry, duration, 0, clock(), position)
         checkedAt = 0
     }
 
@@ -64,6 +67,7 @@ internal class ListeningPlayback(
     fun resume(entry: Long?, position: Long) {
         val current = play?.takeIf { it.entry == entry && it.paused } ?: return
         current.paused = false
+        current.lastPosition = position
         record(Listening.Resume(current.id, position), current.scope)
     }
 
@@ -86,14 +90,14 @@ internal class ListeningPlayback(
         val current = play?.takeIf { it.entry == entry } ?: return
         running(false)
         play = null
-        record(Listening.Stop(current.id, position, current.duration ?: position, current.played, reason, fault), current.scope)
+        record(Listening.Stop(current.id, position, current.duration, current.played, reason, fault), current.scope)
     }
 
     fun retire(scope: JournalScope?, entry: Long?, position: Long) {
         val existing = play ?: return
         if (existing.scope == scope) return
         if (existing.entry == entry) stop(entry, position, StopReason.STOPPED)
-        else play = null
+        else stop(existing.entry, existing.lastPosition, StopReason.UNKNOWN)
     }
 
     fun checkpoint(entry: Long?, position: Long, force: Boolean = false) {
@@ -101,6 +105,7 @@ internal class ListeningPlayback(
         val at = clock()
         if (!force && at - checkedAt < CHECKPOINT_MILLIS) return
         checkedAt = at
+        current.lastPosition = position
         record(Listening.Position(current.id, position), current.scope)
     }
 
