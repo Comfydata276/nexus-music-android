@@ -1801,11 +1801,11 @@ class PlaybackService : MediaLibraryService() {
                     publishExtras()
                     exo.prepare()
                 }
-                // **The music login is set aside** (6.3): this entry waits where it is, and is
-                // made ready again once, under the login the Nexus server hands next (see the
-                // era's `renewals`). Nothing is passed over, nothing tried on a timer.
-                (error.cause as? StreamFailure)?.signIn == true -> {
-                    heldForRenewal = era?.let { held -> player.queue.currentUid()?.let { Recovery.Retry(held.number, it) } }
+                // A saved copy further along keeps the queue playing in the car. If
+                // nothing plays here, this entry stays current for one try on renewal.
+                failure?.signIn == true -> {
+                    val held = era?.let { current -> player.queue.currentUid()?.let { Recovery.Retry(current.number, it) } }
+                    heldForRenewal = if (passOverToThePhone(carSignInLine())) null else held
                 }
                 // Offline mode, and this one isn't on the phone: the next that is.
                 offline(error) -> passOverToThePhone()
@@ -2029,18 +2029,22 @@ class PlaybackService : MediaLibraryService() {
      * and not one that has already failed in this run of passing over ([passing]); with
      * none, it stays where it is, stopped, and says so.
      */
-    private fun passOverToThePhone() {
+    private fun passOverToThePhone(noNext: String = getString(R.string.cant_play_offline)): Boolean {
         player.queue.current()?.let { passing.failed(player.queue.currentUid(), it.id) }
         val next = nextOnThePhone(passing::mayTry)
         if (next == null) {
             finishWithError()
-            say(getString(R.string.cant_play_offline))
-            return
+            say(noNext)
+            return false
         }
         passTo(next)
         passing.passedTo(player.queue.currentUid())
         exo.prepare()
+        return true
     }
+
+    private fun carSignInLine(): String =
+        graph.nexus?.shown?.value?.car ?: getString(R.string.car_sign_in_refused)
 
     private fun finishWithError() {
         listening.stop(entryOf(exo.currentMediaItem), exo.currentPosition, StopReason.ERROR,
@@ -2079,6 +2083,7 @@ class PlaybackService : MediaLibraryService() {
         // The player's own error is not passed on as the cause: a playback error goes to
         // every app with a controller, cause and all.
         offline(error) -> PlaybackException(getString(R.string.cant_play_offline), null, error.errorCode)
+        (error.cause as? StreamFailure)?.signIn == true -> PlaybackException(carSignInLine(), null, error.errorCode, openAppButton())
         // A station given up on after its rejoins: as a song that can't be played.
         song?.radioUrl?.isNotEmpty() == true && player.stationGaveUp() -> PlaybackException(getString(R.string.couldnt_play_song), null, error.errorCode)
         network(error) && graph.localAccess.blocked.value -> PlaybackException(getString(R.string.car_local_network), null, error.errorCode, openAppButton())

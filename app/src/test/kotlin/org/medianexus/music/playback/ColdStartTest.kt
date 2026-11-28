@@ -174,6 +174,36 @@ class ColdStartTest {
     }
 
     @Test
+    fun aRefusedLoginSkipsTheOnlineSongAndExplainsWhenThereIsNothingLeft() {
+        server.start()
+        server.signIn(app)
+        val service = start()
+        val inside = service.inside()
+        val until = System.nanoTime() + 30_000_000_000L
+        while (!inside.session.sessionExtras.getBoolean(PlaybackService.EXTRA_SETTLED)) {
+            settle()
+            check(System.nanoTime() < until) { "the saved queue was not read in thirty seconds" }
+            Thread.yield()
+        }
+        val songs = listOf("first", "online", "download").map {
+            org.medianexus.music.net.Song(id = it, title = it, suffix = "flac")
+        }
+        val catalogue = app.graph.accounts.state.value!!.catalogue
+        catalogue.add(org.medianexus.music.downloads.Downloaded(songs[2], "download.flac", 4, at = 1, suffix = "flac"))
+        inside.player.play(songs, 1, "Mix", playNow = false)
+        val failed = StreamFailure.of(org.medianexus.music.net.RefusedLogin())
+        val error = androidx.media3.common.PlaybackException(failed.message, failed, androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED)
+        inside.watcher.onPlayerError(error)
+        assertEquals("download", inside.player.queue.current()?.id)
+        assertEquals(songs, inside.player.queue.playingOrder())
+        catalogue.remove(setOf("download"))
+        inside.player.play(songs.take(2), 1, "Mix", playNow = false)
+        inside.watcher.onPlayerError(error)
+        assertEquals("online", inside.player.queue.current()?.id)
+        assertEquals(app.getString(org.medianexus.music.R.string.car_sign_in_refused), service.explain(error, songs[1])?.message)
+    }
+
+    @Test
     fun theButtonReceiversOldNameStillLeadsSomewhere() {
         val packages = app.packageManager
         // The first builds named Media3's own receiver. The system goes on sending a Play
