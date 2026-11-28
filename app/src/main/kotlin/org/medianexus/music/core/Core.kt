@@ -629,9 +629,10 @@ object Core {
      *  seconds and no more ([CoreHttp.finishing]), because until a sign-out's goodbye is
      *  done nobody is handed any account's requests (`RequestsOwners`). `bound` is the
      *  place the token was given for: it is handed back there or not at all. */
-    suspend fun gateGiveUp(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), home: String? = null) {
+    suspend fun gateGiveUp(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), home: String? = null, directEpoch: Long? = null) {
         try {
             CoreHttp.finishing { operation ->
+                if (directEpoch != null) CoreHttp.pinDirectEpoch(operation, directEpoch)
                 wired
                 acrossPrivately(GateGiveUpIn(operation, door.service, token, bound, home), GateGiveUpIn.serializer(), Boolean.serializer(), ::gateGiveUp)
             }

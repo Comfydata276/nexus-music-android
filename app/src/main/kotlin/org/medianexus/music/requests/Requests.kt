@@ -902,7 +902,7 @@ class Requests internal constructor(
             // 0: this sign-in has been retired meanwhile; 1: it didn't go through; 2: signed in.
             val ended = withContext(NonCancellable) {
                 turn.withLock {
-                    if (attempt !== mine || !scope.isActive) return@withLock 0
+                    if (attempt !== mine || !scope.isActive || !directAllowed()) return@withLock 0
                     attempt = null
                     val settings = settingsNow.value
                     val place = Core.servicePlace(found.service)
@@ -940,7 +940,7 @@ class Requests internal constructor(
             code?.say(if (ended == 2) BrowserReturn.Page.SIGNED_IN else BrowserReturn.Page.NOT_THROUGH)
             mine.door.close()
             // (A token the service gave that is not in this app's keeping is handed back.)
-            if (ended == 1 && token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home) }
+            if (ended == 1 && token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home, mine.direct?.identity) }
             if (ended != 2) {
                 val wire = Trace.last(tradeSince)?.ended
                 when {
@@ -953,7 +953,7 @@ class Requests internal constructor(
                 }
             }
             if (ended == 0) {
-                if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home) }
+                if (token != null) afterwards { Core.gateGiveUp(found, token.token, Core.servicePlace(found.service), home, mine.direct?.identity) }
                 return
             }
             if (ended == 2) check(interrupted = false, traced = Traced(Trace.Step.LOOK, browser))
@@ -1028,6 +1028,7 @@ class Requests internal constructor(
         // (Handed back to the service it was given for, and to no other: what the client is
         // told is the place that was kept with the token.)
         val place = was?.place ?: onFile?.origin
+        val epoch = selected?.status?.identity
         val said = CompletableDeferred<Unit>()
         goodbye = said
         // **Whatever goes wrong with it, the goodbye is said to be over**: whoever waits
@@ -1038,7 +1039,7 @@ class Requests internal constructor(
                     // Closing waits out a renewal that is under way, so the token handed
                     // back is the one that is good now.
                     val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile?.secret
-                    if (token != null) Core.gateGiveUp(door, token, place, home)
+                    if (token != null && (nexusRoute == null || epoch != null)) Core.gateGiveUp(door, token, place, home, epoch)
                     // Tidied away only if what is kept is still the very token that was
                     // handed back (its first deletion failed, say). Anything else there by
                     // now is a later sign-in's, and is not this one's to take.
