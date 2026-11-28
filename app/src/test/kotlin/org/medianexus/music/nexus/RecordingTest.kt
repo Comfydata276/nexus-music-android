@@ -99,6 +99,17 @@ class RecordingTest {
         }
     }
 
+    @Test fun anAudioFaultBurstIsKeptAsOneCountedJournalEvent() {
+        val service = recording()
+        val scope = publish(service, 1)
+        waitForPending(scope, 1)
+        repeat(12) { service.diagnostics.fault(DiagnosticFault(DiagnosticPlace.AUDIO_OUTPUT, DiagnosticShape.NO_SOUND)) }
+        waitForPending(scope, 2)
+        val faults = read(service, scope).map { it.jsonObject.getValue("event").jsonObject }
+            .filter { it["kind"] == JsonPrimitive("fault") }
+        assertEquals(JsonPrimitive(12), faults.single()["count"])
+    }
+
     @Test fun unsignedAndOutstandingNoticeRecordNothing() {
         val service = recording()
         service.publish(saved(1), true, events::add)

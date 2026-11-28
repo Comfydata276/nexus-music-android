@@ -357,8 +357,18 @@ private class ListeningJournal(
                     // Collect already queued records, preserving every control boundary.
                     val records = ArrayList<Captured>()
                     records += job.captured
-                    while (jobs.peek() is Job.Event && records.size < CAPACITY) {
-                        records += (jobs.poll() as Job.Event).captured
+                    val faultBurst = job.captured.data is Listening.Fault
+                    val until = monotonic + FAULT_BATCH_NANOS
+                    while (records.size < CAPACITY) {
+                        val next = jobs.peek()
+                        val left = until - System.nanoTime()
+                        if (faultBurst && next == null && left > 0) {
+                            LockSupport.parkNanos(left)
+                        } else if (next is Job.Event) {
+                            records += (jobs.poll() as Job.Event).captured
+                        } else {
+                            break
+                        }
                     }
                     queued.addAndGet(-records.size)
                     try {
@@ -453,6 +463,7 @@ private class ListeningJournal(
 
     companion object {
         private const val CAPACITY = 256
+        private const val FAULT_BATCH_NANOS = 250_000_000L
         private const val REPORT_NANOS = 1_000_000_000L
         private const val LOSS_RETRY_NANOS = 5_000_000_000L
         private val EMPTY = JsonArray(emptyList())

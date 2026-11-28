@@ -84,9 +84,11 @@ enum Observation {
     Resume { start: String, position_ms: u32 },
     Seek { start: String, from_ms: u32, to_ms: u32 },
     Search { words: String, found: u32, requests: bool },
-    Fault { fault: events::Fault },
+    Fault { fault: events::Fault, #[serde(default = "one_fault")] count: u32 },
     Position { start: String, position_ms: u32 },
 }
+
+fn one_fault() -> u32 { 1 }
 
 impl Observation {
     fn kind(self) -> io::Result<Kind> {
@@ -102,7 +104,7 @@ impl Observation {
             Self::Search { words, found, requests } => Kind::Search {
                 words, found, where_: if requests { events::SearchedIn::Requests } else { events::SearchedIn::Library },
             },
-            Self::Fault { fault } => Kind::Fault { fault, count: 1 },
+            Self::Fault { fault, count } => Kind::Fault { fault, count },
             Self::Position { .. } => return Err(invalid(())),
         })
     }
@@ -406,9 +408,20 @@ impl Writer {
 
     fn append_batch(&mut self, records: Vec<Capture>, lost: u64, now: u64) -> u64 {
         let mut dirty = HashSet::new();
-        let mut positions = BTreeMap::new();
-        for capture in records {
+        let mut positions = HashMap::new();
+        let mut records = records.into_iter().peekable();
+        while let Some(mut capture) = records.next() {
             let scope = capture.scope;
+            let mut observation_count = 1;
+            if let Observation::Fault { fault, count } = &mut capture.data {
+                while let Some(next) = records.peek() {
+                    let Observation::Fault { fault: other, count: extra } = &next.data else { break };
+                    if *fault != *other || scope != next.scope { break; }
+                    *count = count.saturating_add(*extra);
+                    records.next();
+                }
+                observation_count = u64::from(*count);
+            }
             let position_only = matches!(&capture.data, Observation::Position { .. });
             let result = (|| {
                 let key = scope.account.key()?;
@@ -426,7 +439,7 @@ impl Writer {
                 Ok::<_, io::Error>(())
             })();
             if result.is_err() && !position_only {
-                self.unwritten = self.unwritten.saturating_add(1);
+                self.unwritten = self.unwritten.saturating_add(observation_count);
             }
         }
         for scope in dirty {
