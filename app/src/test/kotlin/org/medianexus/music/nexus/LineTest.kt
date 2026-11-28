@@ -1,6 +1,7 @@
 package org.medianexus.music.nexus
 
 import java.security.KeyStore
+import kotlinx.coroutines.flow.first
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.KeyManagerFactory
@@ -87,6 +88,11 @@ class LineTest {
             assertEquals(0, server.requestCount)
             assertTrue(ask() is Sent.Answer)
             assertEquals(1, server.requestCount)
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeout(10_000) {
+                    diagnostics.settings.first { !it.switchedOn && it.choiceWrite == ChoiceWrite.SAVED }
+                }
+            }
         } finally {
             root.deleteRecursively()
         }

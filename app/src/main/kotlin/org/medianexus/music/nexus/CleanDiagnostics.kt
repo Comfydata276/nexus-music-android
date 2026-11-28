@@ -14,6 +14,7 @@ import java.util.concurrent.locks.LockSupport
 import javax.net.ssl.SSLException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -131,15 +132,18 @@ internal enum class DiagnosticSessionEnd(val wire: String) {
     SWITCHED_OFF("account_switched_off"), DELETED("account_deleted"), OTHER("other"),
 }
 
+internal enum class ChoiceWrite { SAVED, PENDING, FAILED }
+
 internal data class DiagnosticsState(
     val switchedOn: Boolean = true,
     val signedIn: Boolean = false,
     val offline: Boolean = false,
     val knowsDefault: Boolean = false,
-    val choiceSaved: Boolean = true,
+    val choiceWrite: ChoiceWrite = ChoiceWrite.SAVED,
 ) {
     val status: String? get() = when {
-        !choiceSaved -> "The diagnostics choice couldn’t be saved. Trying again."
+        choiceWrite == ChoiceWrite.PENDING -> "Saving your diagnostics choice…"
+        choiceWrite == ChoiceWrite.FAILED -> "The diagnostics choice couldn’t be saved. Trying again."
         !signedIn -> "Sign in to a Nexus server to send diagnostics."
         offline -> "Diagnostics are paused in Offline mode."
         !switchedOn -> "Sending is off."
@@ -186,7 +190,7 @@ internal class CleanDiagnostics(
 
     @Volatile private var about = PhoneDiagnostics()
     @Volatile private var send: RecordingEvent? = null
-    private data class Choice(val enabled: Boolean?)
+    private class Choice(val enabled: Boolean?, @Volatile var write: ChoiceWrite = ChoiceWrite.SAVED)
     private val preferred = AtomicReference<Choice?>()
     private data class Mode(val signedIn: Boolean, val offline: Boolean, val default: Boolean?)
     @Volatile private var mode = Mode(signedIn = false, offline = false, default = null)
@@ -309,9 +313,9 @@ internal class CleanDiagnostics(
 
     fun choose(value: Boolean) {
         startWorker()
-        val choice = Choice(value)
+        val choice = Choice(value, if (value) ChoiceWrite.SAVED else ChoiceWrite.PENDING)
         preferred.set(choice)
-        state.value = state.value.copy(switchedOn = value)
+        state.update { it.copy(switchedOn = value, choiceWrite = choice.write) }
         safe { send?.invoke(recordingEvent("diagnostics_switch", JsonPrimitive(value))) }
         enqueue { keepChoice(choice) }
     }
@@ -340,6 +344,7 @@ internal class CleanDiagnostics(
             }
             true
         } == true
+        choice.write = if (saved) ChoiceWrite.SAVED else ChoiceWrite.FAILED
         failedChoice = if (saved) null else choice
         choiceRetryAt = System.nanoTime() + CHOICE_RETRY_NANOS
         updateState()
@@ -462,7 +467,14 @@ internal class CleanDiagnostics(
                 })
             }) as JsonPrimitive).booleanOrNull
         } ?: state.value.switchedOn
-        state.value = DiagnosticsState(on, current.signedIn, current.offline, default != null, failedChoice == null)
+        state.update {
+            // The tap can replace the choice while the worker was calculating the default.
+            val latest = preferred.get()
+            DiagnosticsState(
+                latest?.enabled ?: on, current.signedIn, current.offline, default != null,
+                latest?.write ?: ChoiceWrite.SAVED,
+            )
+        }
     }
 
     private fun checkpoint(): String? = safe {

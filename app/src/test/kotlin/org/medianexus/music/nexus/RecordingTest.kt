@@ -141,10 +141,10 @@ class RecordingTest {
         // A nonempty directory cannot be replaced by the preference file.
         File(blocked, "held").writeText("fixture")
         diag.choose(false)
-        waitForSetting(diag) { !it.choiceSaved }
+        waitForSetting(diag) { it.choiceWrite == ChoiceWrite.FAILED }
         assertFalse(diag.settings.value.switchedOn)
         assertTrue(blocked.deleteRecursively())
-        waitForSetting(diag) { it.choiceSaved }
+        waitForSetting(diag) { it.choiceWrite == ChoiceWrite.SAVED }
         assertEquals(false, recording().diagnostics.choice())
     }
 
