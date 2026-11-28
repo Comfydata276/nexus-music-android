@@ -754,6 +754,9 @@ class NeverWaitsTest(private val broken: Broken) {
         val service = service(Foreground())
         val inside = service.inside()
         until("settled") { settled(service) }
+        // (The renewal asked while the backend is broken gives up at a few seconds, as a real one
+        // gives up at its own limit, so that it can be asked again once the backend is back.)
+        Nexus.withinForTests = 5_000
         // The person's music login changed at the backend (a device of theirs forced out).
         standIn.musicCount = 2
         runBlocking { runCatching { account().api.ping() } }

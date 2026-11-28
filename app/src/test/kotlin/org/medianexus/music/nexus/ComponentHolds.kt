@@ -124,8 +124,10 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
             }
             // (Saturated: answered "busy" after eight seconds, when it is asked again: see
             // [beforeStep]. Every other kept request is held to the end.)
-            keeps && broken != Broken.SATURATED -> assertTrue("$what: the stand-in no longer keeps the check", ownRequestHeld(client))
-            broken == Broken.HALF_CONNECTED -> assertTrue("$what: the check's answer is no longer being read", ownAnswerHalfRead(client))
+            // (A step can end with a new ask on its way to the stand-in, sent and not yet arrived:
+            // looked at until it has.)
+            keeps && broken != Broken.SATURATED -> until("$what: the stand-in still keeps the check") { ownRequestHeld(client) }
+            broken == Broken.HALF_CONNECTED -> until("$what: the check's answer is still being read") { ownAnswerHalfRead(client) }
             else -> {}
         }
     }

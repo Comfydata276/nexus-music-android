@@ -4278,6 +4278,13 @@ makes them (5.5), and does the I/O: `nexus/Nexus.kt` (the driver), `nexus/Line.k
 - **Requests are as they were** (the design's 5.2: cut after step 1, requests are the app's own
   line to Lidarr until step 4).
 
+**What the shared core is pinned to for this.** `native/Cargo.toml` names `105bb45` of the
+Windows repository's `t3/nexus-build` (pushed): every core module of steps 1 to 3, the machine
+(`nexus::client`) among them, on 0.40.13. It is **not a release of the Windows app**, which "The
+shared core" above asks of a pin; before this lands on `main` the lead decides whether to wait
+for one. The core now carries `url` (the one reading of an address), which brings `idna` and its
+tables into the library.
+
 ## Milestones
 
 Each one ends with the app building, its tests passing, a run on the emulator, and a review.

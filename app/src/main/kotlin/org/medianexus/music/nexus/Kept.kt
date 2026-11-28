@@ -45,10 +45,13 @@ class NexusKept(private val file: File, private val secretFile: File, private va
 
         fun withSaved(next: JsonObject?) = Parts(next, notes)
 
-        /** A note kept by the session it ends: in place of one for the same session. */
-        fun withNote(note: JsonObject) = Parts(saved, notes.filter { sessionOf(it) != sessionOf(note) } + note)
+        /** A note kept by the backend and session it ends: in place of one for the same. */
+        fun withNote(note: JsonObject) = Parts(saved, notes.filter { keyOf(it) != keyOf(note) } + note)
 
-        fun withoutNote(session: String) = Parts(saved, notes.filter { sessionOf(it) != session })
+        fun withoutNote(backendId: String, session: String) = Parts(saved, notes.filter { keyOf(it) != (backendId to session) })
+
+        /** Without the note at this place (one that did not read, as the machine was handed it). */
+        fun withoutNoteAt(index: Int) = Parts(saved, notes.filterIndexed { at, _ -> at != index })
 
         fun toJson(): JsonObject = JsonObject(buildMap {
             saved?.let { put("saved", it) }
@@ -60,8 +63,10 @@ class NexusKept(private val file: File, private val secretFile: File, private va
         companion object {
             val NONE = Parts(null, emptyList())
 
-            /** The session a note ends (`revoke.session`), as the machine wrote it. */
-            fun sessionOf(note: JsonObject): String? = ((note["revoke"] as? JsonObject)?.get("session") as? JsonPrimitive)?.content
+            /** The backend and the session a note ends (`backend_id`, `revoke.session`), as the
+             *  machine wrote them. */
+            fun keyOf(note: JsonObject): Pair<String?, String?> =
+                (note["backend_id"] as? JsonPrimitive)?.content to ((note["revoke"] as? JsonObject)?.get("session") as? JsonPrimitive)?.content
 
             fun of(all: JsonObject) = Parts(
                 all["saved"] as? JsonObject,
@@ -96,17 +101,23 @@ class NexusKept(private val file: File, private val secretFile: File, private va
     /** Whether anything is kept: looked for, not opened (the Play button's receiver asks). */
     fun exists(): Boolean = file.isFile && file.length() > 0
 
-    /** The device's own secret, as the machine wrote it (hex); null if none is kept. */
-    fun deviceSecret(): String? {
+    /** The device's own key, exactly as the machine wrote it (`client::DeviceKey`: the secret,
+     *  and the backend it is for); null if none is kept, or it doesn't read (then the machine
+     *  makes another when it is next needed). */
+    fun deviceSecret(): JsonElement? {
         val plain = openFrom(secretFile, box) ?: return null
         return try {
-            String(plain, Charsets.UTF_8)
+            json.parseToJsonElement(String(plain, Charsets.UTF_8))
+        } catch (_: IllegalArgumentException) {
+            null
         } finally {
             plain.fill(0)
         }
     }
 
-    fun keepDeviceSecret(hex: String): Boolean = sealTo(secretFile, hex.toByteArray(Charsets.UTF_8), box)
+    fun keepDeviceSecret(key: JsonElement): Boolean = sealTo(secretFile, key.toString().toByteArray(Charsets.UTF_8), box)
+
+    fun forgetDeviceSecret(): Boolean = secretFile.delete() || !secretFile.exists()
 }
 
 /** A kept music login: what the player needs, and its number as the machine wrote it. */

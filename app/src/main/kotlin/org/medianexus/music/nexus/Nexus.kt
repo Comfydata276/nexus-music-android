@@ -147,7 +147,7 @@ class Nexus internal constructor(
         machine = Core.nexusMachine()
         parts = kept.load()
         val keptJson = buildJsonObject {
-            put("device_secret", kept.deviceSecret()?.let(::JsonPrimitive) ?: JsonNull)
+            put("device_secret", kept.deviceSecret() ?: JsonNull)
             put("saved", parts.saved ?: JsonNull)
             put("notes", JsonArray(parts.notes))
             put("offline", offlineNow())
@@ -284,7 +284,7 @@ class Nexus internal constructor(
                 "keep" -> {
                     val (part, kept) = (value as? JsonObject)?.entries?.singleOrNull() ?: continue
                     when (part) {
-                        "device_secret" -> (kept as? JsonPrimitive)?.contentOrNull?.let { this.kept.keepDeviceSecret(it) }
+                        "device_secret" -> this.kept.keepDeviceSecret(kept)
                         "saved" -> (kept as? JsonObject)?.let { parts = parts.withSaved(it); changed = true }
                         "note" -> (kept as? JsonObject)?.let { parts = parts.withNote(it); changed = true }
                     }
@@ -295,10 +295,20 @@ class Nexus internal constructor(
                         changed = true
                         forgot = true
                     }
-                    value is JsonObject -> ((value["note"] as? JsonObject)?.get("session") as? JsonPrimitive)?.content?.let {
-                        parts = parts.withoutNote(it)
-                        changed = true
+                    value is JsonPrimitive && value.contentOrNull == "device_secret" -> this.kept.forgetDeviceSecret()
+                    value is JsonObject && value["note"] is JsonObject -> (value["note"] as JsonObject).let { note ->
+                        val backend = (note["backend_id"] as? JsonPrimitive)?.content
+                        val session = (note["session"] as? JsonPrimitive)?.content
+                        if (backend != null && session != null) {
+                            parts = parts.withoutNote(backend, session)
+                            changed = true
+                        }
                     }
+                    value is JsonObject && value["unreadable_note"] is JsonObject ->
+                        (((value["unreadable_note"] as JsonObject)["index"]) as? JsonPrimitive)?.content?.toIntOrNull()?.let {
+                            parts = parts.withoutNoteAt(it)
+                            changed = true
+                        }
                 }
                 "show" -> (value as? JsonObject)?.let { showing.value = NexusShown.of(it) }
                 "hand" -> (value as? JsonObject)?.let(hands::add)
@@ -320,6 +330,9 @@ class Nexus internal constructor(
             when (kind) {
                 "login" -> (body["login"] as? JsonObject)?.let(KeptMusic::of)?.let { side.handLogin(it, parts.account, generation) }
                 "refused" -> (body["count"] as? JsonPrimitive)?.content?.let(side::refused)
+                // Another account signed in with no music login: the old one is not the
+                // player's any more (what is on the phone stays).
+                "no_login" -> side.musicForgotten()
             }
         }
         for (ask in asks) send(ask)

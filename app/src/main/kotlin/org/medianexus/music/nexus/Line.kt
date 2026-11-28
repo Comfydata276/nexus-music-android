@@ -100,7 +100,10 @@ internal fun exchange(http: OkHttpClient, url: HttpUrl, post: Boolean, authoriza
             opened.set(true)
             secure.set(true)
         }
-    }).callTimeout(withinMs, TimeUnit.MILLISECONDS).build()
+    }).callTimeout(withinMs, TimeUnit.MILLISECONDS).apply {
+        // (A test that holds a request for its whole length gives it that long between bytes too.)
+        if (withinMs > Nexus.READ_SECONDS * 1000) readTimeout(withinMs, TimeUnit.MILLISECONDS)
+    }.build()
     val request = Request.Builder().url(url)
         .header("User-Agent", userAgent)
         .apply { if (authorization.isNotEmpty()) header("Authorization", authorization) }
