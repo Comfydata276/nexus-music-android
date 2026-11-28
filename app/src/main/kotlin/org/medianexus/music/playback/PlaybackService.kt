@@ -66,6 +66,14 @@ import org.medianexus.music.Graph
 import org.medianexus.music.MainActivity
 import org.medianexus.music.R
 import org.medianexus.music.SessionState
+import org.medianexus.music.nexus.DiagnosticFault
+import org.medianexus.music.nexus.DiagnosticNote
+import org.medianexus.music.nexus.DiagnosticPlace
+import org.medianexus.music.nexus.DiagnosticShape
+import org.medianexus.music.nexus.PlayBegan
+import org.medianexus.music.nexus.PlayOrigin
+import org.medianexus.music.nexus.PlaySound
+import org.medianexus.music.nexus.StopReason
 import org.medianexus.music.graph
 import org.medianexus.music.net.ApiError
 import org.medianexus.music.net.Http
@@ -155,7 +163,13 @@ class PlaybackService : MediaLibraryService() {
             },
             scope = scope,
             offline = { graph.watch.offline },
-            found = { seed, songs, resume -> if (era === this) player.carriedOn(seed, songs, resume) },
+            found = { seed, songs, resume ->
+                if (era === this) {
+                    val before = player.queue.lastUid()
+                    player.carriedOn(seed, songs, resume)
+                    if (before != player.queue.lastUid()) journalAutoplayFrom = before
+                }
+            },
             intent = { player.intent },
         ).also { player.end = it }
 
@@ -271,6 +285,7 @@ class PlaybackService : MediaLibraryService() {
             overtaken = { session.controllerForCurrentRequest?.let(requests::drop) },
             mayPrepare = { !requests.isDropped(session.controllerForCurrentRequest) },
         )
+        player.observeTransport = ::observeTransport
         exo.addListener(watcher)
         exo.addListener(sleepWatch)
         // The sleep timer: the time is up (told on this, the player's thread, while that timer
@@ -376,6 +391,7 @@ class PlaybackService : MediaLibraryService() {
         if (startedBy != null) return
         startedBy = what
         val cold = madeAt - android.os.Process.getStartElapsedRealtime() < COLD_START_MILLIS
+        graph.recording.diagnostics.note(DiagnosticNote.PLAYER_STARTED)
         graph.diagnostics.note("player started by $what, with the app ${if (cold) "not running" else "already running"}", now = true)
     }
 
@@ -403,12 +419,14 @@ class PlaybackService : MediaLibraryService() {
                 if (failure != null) {
                     // (Media3 has caught it; if it is Android refusing the foreground, its
                     // listener is told too: see onCreate.)
+                    foregroundFault()
                     graph.diagnostics.note("foreground: Android refused it (${failure.javaClass.simpleName})", now = true)
                 } else if (inForeground() || !holding) {
                     // Media3's notification holds the foreground from here.
                     if (holding) heldLongEnough()
                     if (!foregroundNoted) {
                         foregroundNoted = true
+                        graph.recording.diagnostics.foreground(clock() - madeAt)
                         graph.diagnostics.note("foreground: playing in it ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made")
                     }
                 } else {
@@ -417,6 +435,7 @@ class PlaybackService : MediaLibraryService() {
                     // this service was holding for the start went with it. By Android's word,
                     // not Media3's: the service is not in the foreground. Entered again, if
                     // the player still means to play.
+                    foregroundFault()
                     graph.diagnostics.note("foreground: Media3 did not take it over when playback began", now = true)
                     holding = false
                     if (busy()) holdForeground(why = "again, Media3 having let it go")
@@ -575,10 +594,12 @@ class PlaybackService : MediaLibraryService() {
                     .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
                     .build()
                 foreground.enter(notification)
+                graph.recording.diagnostics.note(DiagnosticNote.FOREGROUND_ENTERED)
                 holding = true
                 // (Said once for each life of the service, with how soon; then only counted.)
                 if (!holdNoted) {
                     holdNoted = true
+                    graph.recording.diagnostics.foreground(clock() - madeAt)
                     graph.diagnostics.note("foreground: entered at once $why, ${android.os.SystemClock.elapsedRealtime() - madeAt} ms after the player was made", now = true)
                 } else {
                     graph.diagnostics.note("foreground: entered at once $why")
@@ -588,6 +609,7 @@ class PlaybackService : MediaLibraryService() {
                 // and later; or a rule this was not written for). The caller is told: a Play
                 // is then not carried out (see mayPlay); a request that has only arrived goes
                 // on being looked up, and is asked again when its Play comes.
+                foregroundFault()
                 graph.diagnostics.note("foreground: Android refused it $why (${e.javaClass.simpleName})", now = true)
                 return false
             }
@@ -743,7 +765,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
-        if (::graph.isInitialized) graph.playing = false
+        if (::graph.isInitialized) {
+            graph.playing = false
+            graph.recording.diagnostics.playing(false)
+        }
         if (::graph.isInitialized) graph.sleep.player = null
         main.removeCallbacksAndMessages(null)
         if (::ahead.isInitialized) ahead.release()
@@ -773,6 +798,8 @@ class PlaybackService : MediaLibraryService() {
      *  that was the song's end: the next is lined up, paused (as on Windows, the timer is
      *  for the song playing however it ends). */
     private fun passTo(place: Int) {
+        listening.stop(entryOf(exo.currentMediaItem), exo.currentPosition, StopReason.ERROR,
+            journalFault ?: DiagnosticFault(DiagnosticPlace.MUSIC_SERVER, DiagnosticShape.UNAVAILABLE))
         player.passTo(place)
         if (graph.sleep.songEnded()) {
             player.pause()
@@ -1006,6 +1033,10 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun leave() {
         val old = era ?: return
+        listening.retire(null, entryOf(exo.currentMediaItem), exo.currentPosition)
+        journalCarEntry = null
+        journalAutoplayFrom = null
+        journalInAutoplay = false
         old.account.queueStep?.here = null
         stopWaiting()
         outage.clear()
@@ -1465,9 +1496,69 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- What the player does -----------------------------------------------------------------
 
+    private val listening = ListeningPlayback(::clock) { event, scope -> graph.recording.capture(event, scope) }
+    private var journalReason: StopReason? = null
+    private var journalBegan = PlayBegan.HERE
+    private var journalCarEntry: Long? = null
+    private var journalAutoplayFrom: Long? = null
+    private var journalInAutoplay = false
+    private var journalFault: DiagnosticFault? = null
+
+    private fun foregroundFault() {
+        graph.recording.diagnostics.fault(DiagnosticFault(DiagnosticPlace.FOREGROUND, DiagnosticShape.PERMISSION))
+    }
+
+    private fun carController(controller: MediaSession.ControllerInfo?): Boolean =
+        controller?.packageName == "com.google.android.projection.gearhead" ||
+            controller?.packageName == "com.android.car.media"
+
+    private fun observeTransport(command: Int) {
+        when (command) {
+            Player.COMMAND_STOP -> listening.stop(entryOf(exo.currentMediaItem), exo.currentPosition, StopReason.STOPPED)
+            Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> journalReason = StopReason.NEXT
+            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> journalReason = StopReason.PREVIOUS
+            Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_CHANGE_MEDIA_ITEMS -> {
+                journalReason = StopReason.CHOICE
+                journalAutoplayFrom = null
+                journalInAutoplay = false
+            }
+        }
+        if (::session.isInitialized && carController(session.controllerForCurrentRequest)) {
+            journalBegan = PlayBegan.CAR
+        }
+    }
+
+    private fun observeSounding() {
+        val queue = player.queue
+        val scope = era?.account?.account?.key?.let(graph.recording::scopeFor)
+        val entry = entryOf(exo.currentMediaItem)
+        listening.retire(scope, entry, exo.currentPosition)
+        if (scope == null || entry == null || entry != queue.currentUid()) return
+        val song = queue.current() ?: return
+        val fromRadio = Autoplay.isRadio(queue.source)
+        val onPage = queue.currentOrigin() != null
+        val source = if (onPage || fromRadio) queue.source else ""
+        val began = when {
+            entry == journalCarEntry -> PlayBegan.CAR
+            journalBegan == PlayBegan.NEXT && journalInAutoplay && !onPage && !song.queued -> PlayBegan.AUTOMATIC
+            else -> journalBegan
+        }
+        val sound = when (val opened = reading[entry]) {
+            is SongCopy.Download -> PlaySound.DOWNLOAD
+            is SongCopy.Stream -> if (opened.fromKept) PlaySound.KEPT else PlaySound.STREAM
+            null -> PlaySound.STREAM
+        }
+        val duration = exo.duration.takeIf { it > 0 } ?: (song.duration * 1000L).takeIf { it > 0 }
+        listening.sounding(scope, entry, song, PlayOrigin.from(source, if (fromRadio) queue.songs.firstOrNull()?.id else null), began, sound, exo.currentPosition, duration)
+        journalBegan = PlayBegan.HERE
+        journalCarEntry = null
+    }
+
     private inner class Watcher : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            listening.running(isPlaying)
             if (isPlaying) {
+                journalFault = null
                 heardUid = player.queue.currentUid()
                 failures = 0
                 passing.end()
@@ -1501,7 +1592,10 @@ class PlaybackService : MediaLibraryService() {
             passOverOutOfReach()
             // Rolled into the next song while playing (the song before it has had its last
             // sample, in onPositionDiscontinuity, which comes first).
-            if (exo.isPlaying) countPlaying()
+            if (exo.isPlaying) {
+                if (heardThisTime) observeSounding()
+                countPlaying()
+            }
             aheadNow()
         }
 
@@ -1511,7 +1605,23 @@ class PlaybackService : MediaLibraryService() {
             // second of the same song too, which the queue's time can't show).
             if (reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION) queueRevision++
             val from = oldPosition.positionMs / 1000.0
-            val sameEntry = entryOf(oldPosition.mediaItem) != null && entryOf(oldPosition.mediaItem) == entryOf(newPosition.mediaItem)
+            val oldEntry = entryOf(oldPosition.mediaItem)
+            val sameEntry = oldEntry != null && oldEntry == entryOf(newPosition.mediaItem)
+            val intent = journalReason
+            journalReason = null
+            when {
+                reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> {
+                    listening.stop(oldEntry, oldPosition.positionMs, StopReason.FINISHED)
+                    if (oldEntry != null && journalAutoplayFrom == oldEntry) journalInAutoplay = true
+                    journalBegan = PlayBegan.NEXT
+                }
+                !sameEntry -> {
+                    listening.stop(oldEntry, oldPosition.positionMs, intent ?: StopReason.CHOICE)
+                    if (journalBegan != PlayBegan.CAR) journalBegan = if (intent == StopReason.NEXT) PlayBegan.NEXT else PlayBegan.HERE
+                }
+                intent == StopReason.NEXT -> listening.stop(oldEntry, oldPosition.positionMs, StopReason.NEXT)
+                reason == Player.DISCONTINUITY_REASON_SEEK -> listening.seek(oldEntry, oldPosition.positionMs, newPosition.positionMs)
+            }
             when {
                 // Repeating one song: the play that just finished is counted, and the next
                 // time round is a new play of it.
@@ -1523,13 +1633,20 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             // The end of the queue. The same song started again from the top is a new play.
-            if (playbackState == Player.STATE_ENDED) plays.ended(clock())
+            if (playbackState == Player.STATE_ENDED) {
+                listening.stop(entryOf(exo.currentMediaItem), exo.currentPosition, StopReason.FINISHED)
+                plays.ended(clock())
+            }
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             // Something is playing, or meant to be: a reason to know whether the server is
             // back, and to ask now if it is out of reach (see ServerWatch).
             graph.playing = playWhenReady
+            graph.recording.diagnostics.playing(playWhenReady)
+            if (!playWhenReady && reason != Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
+                listening.pause(entryOf(exo.currentMediaItem), exo.currentPosition)
+            }
             // (Play and pause: a save of the queue prepared before it was decided on what
             // was true then. See `QueueHere.revision`.)
             queueRevision++
@@ -1580,6 +1697,16 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlayerError(error: PlaybackException) {
             // By kind only: an error's own message can name the server.
             val status = (error.cause as? StreamFailure)?.status?.takeIf { it > 0 }
+            val fault = DiagnosticFault(DiagnosticPlace.PLAYBACK, when {
+                undecodable(error) -> DiagnosticShape.DECODE
+                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> DiagnosticShape.TIMEOUT
+                network(error) -> DiagnosticShape.CONNECTION
+                status == 401 || status == 403 -> DiagnosticShape.REFUSED
+                status != null -> DiagnosticShape.ANSWER
+                else -> DiagnosticShape.READ
+            })
+            journalFault = fault
+            graph.recording.diagnostics.fault(fault)
             graph.diagnostics.note("playback error: ${error.errorCodeName}" + (status?.let { " (the server answered $it)" } ?: ""))
             val song = player.queue.current() ?: return
             val failure = error.cause as? StreamFailure
@@ -1752,14 +1879,17 @@ class PlaybackService : MediaLibraryService() {
 
     private val notHeard = Runnable {
         if (exo.isPlaying && !heardThisTime) {
+            graph.recording.diagnostics.fault(DiagnosticFault(DiagnosticPlace.AUDIO_OUTPUT, DiagnosticShape.NO_SOUND))
             graph.diagnostics.note("sound: playing for ${HEARD_WITHIN_MILLIS / 1000} s and the audio track has not moved. ${Audible.describe(this, inForeground())}", now = true)
         }
     }
 
     private val heard = object : androidx.media3.exoplayer.analytics.AnalyticsListener {
         override fun onAudioPositionAdvancing(eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, playoutStartSystemTimeMs: Long) {
+            if (exo.isPlaying) observeSounding()
             if (heardThisTime) return
             heardThisTime = true
+            graph.recording.diagnostics.note(DiagnosticNote.SOUND_MOVED)
             graph.diagnostics.note("sound: the audio track is moving. ${Audible.describe(this@PlaybackService, inForeground())}")
         }
 
@@ -1851,12 +1981,18 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun passOver() {
         failures++
-        if (failures >= 3) return
+        if (failures >= 3) {
+            finishWithError()
+            return
+        }
         // "The next" is the queue's to say, in the order it will play: the place after this
         // one, and from the last, round to the top if repeat is on (as Next goes). The
         // player's own playlist is only part of a long queue, and ends where that part does.
-        val step = player.queue.next() ?: return
-        if (!step.carriesOn || step.place == player.queue.cursor) return
+        val step = player.queue.next()
+        if (step == null || !step.carriesOn || step.place == player.queue.cursor) {
+            finishWithError()
+            return
+        }
         passTo(step.place)
         exo.prepare()
     }
@@ -1871,12 +2007,18 @@ class PlaybackService : MediaLibraryService() {
         player.queue.current()?.let { passing.failed(player.queue.currentUid(), it.id) }
         val next = nextOnThePhone(passing::mayTry)
         if (next == null) {
+            finishWithError()
             say(getString(R.string.cant_play_offline))
             return
         }
         passTo(next)
         passing.passedTo(player.queue.currentUid())
         exo.prepare()
+    }
+
+    private fun finishWithError() {
+        listening.stop(entryOf(exo.currentMediaItem), exo.currentPosition, StopReason.ERROR,
+            journalFault ?: DiagnosticFault(DiagnosticPlace.PLAYBACK, DiagnosticShape.UNAVAILABLE))
     }
 
     private fun undecodable(error: PlaybackException) = error.errorCode in listOf(
@@ -1931,6 +2073,7 @@ class PlaybackService : MediaLibraryService() {
     private val ticker = object : Runnable {
         override fun run() {
             if (exo.isPlaying) {
+                listening.checkpoint(entryOf(exo.currentMediaItem), exo.currentPosition)
                 plays.tick(exo.currentPosition / 1000.0, clock())
                 if (System.currentTimeMillis() - lastSaveAt >= CHECKPOINT_MILLIS) save()
             }
@@ -2055,6 +2198,9 @@ class PlaybackService : MediaLibraryService() {
             // The person's press, about to be carried out: the queue is this phone's own
             // from now (see claimQueue).
             if (playerCommand in PRESSES) {
+                if (carController(controller) && playerCommand == Player.COMMAND_PLAY_PAUSE) {
+                    journalCarEntry = entryOf(exo.currentMediaItem)
+                }
                 claimQueue()
                 // (After the command itself, which is carried out as this returns.)
                 main.removeCallbacks(keepAfterPress)
@@ -2184,6 +2330,8 @@ class PlaybackService : MediaLibraryService() {
                     era.searches.put(query, emptyList())
                     session.notifySearchResultChanged(browser, query, 0, params)
                     LibraryResult.ofError(trouble(browser, e))
+                } finally {
+                    graph.recording.found(search, count)
                 }
             }
 
@@ -2244,7 +2392,7 @@ class PlaybackService : MediaLibraryService() {
                         is CarNode.Shuffle -> fromTree(era) { it.shuffled(chosen.list) }
                         else -> throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.nothing_to_play)))
                     } ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_play_song)))
-                    staged(mine, era, list)
+                    staged(mine, era, list, carController(controller))
                 } catch (e: ApiError) {
                     throw refuse(controller, trouble(controller, e))
                 }
@@ -2481,6 +2629,12 @@ class PlaybackService : MediaLibraryService() {
             Caller.NOTIFICATION -> "let in as the notification's own"
             Caller.OWN_INTERFACE -> "let in as the app's own screens"
         }
+        if (!own) graph.recording.diagnostics.note(when {
+            caller == Caller.REFUSED && carController(controller) -> DiagnosticNote.AUTO_REFUSED
+            caller == Caller.REFUSED -> DiagnosticNote.CONTROLLER_REFUSED
+            carController(controller) -> DiagnosticNote.AUTO_ADMITTED
+            else -> DiagnosticNote.CONTROLLER_ADMITTED
+        })
         graph.diagnostics.note(
             "connection from ${controller.packageName} by $how: $outcome. Android trusts it: ${yes(controller.isTrusted)}; known host: ${yes(known)}" +
                 // (Said only when it is why: a caller on an older phone giving a name the
@@ -2661,7 +2815,7 @@ class PlaybackService : MediaLibraryService() {
      * when something else can be chosen): one that has been overtaken hands over nothing and
      * disturbs nothing that a newer start has handed over.
      */
-    private suspend fun staged(mine: Long, era: Era, list: PlayList): MediaItemsWithStartPosition {
+    private suspend fun staged(mine: Long, era: Era, list: PlayList, car: Boolean = false): MediaItemsWithStartPosition {
         val shuffle = list.shuffle ?: shuffleFor(list.source)
         // "Shuffle" at the top of a list is the person saying how that list plays: the list
         // remembers, as on Windows (with the time, so other devices take it as the newer).
@@ -2681,6 +2835,7 @@ class PlaybackService : MediaLibraryService() {
         }
         val (items, start) = (if (era === this.era) player.stage(next, mine) else null)
             ?: throw UnsupportedOperationException("Overtaken by a newer choice")
+        if (car) journalCarEntry = entryOf(items.getOrNull(start))
         return MediaItemsWithStartPosition(items, start, 0)
     }
 
@@ -2692,7 +2847,10 @@ class PlaybackService : MediaLibraryService() {
         if (this.era !== era) throw UnsupportedOperationException("The account this was for has gone")
         // ("Carry on" from a request that something newer has overtaken carries nothing on.)
         if (!player.stands(mine)) throw UnsupportedOperationException("Overtaken by a newer choice")
-        player.stageCurrent()?.let { (items, start) -> return MediaItemsWithStartPosition(items, start, exo.currentPosition) }
+        player.stageCurrent()?.let { (items, start) ->
+            if (carController(controller)) journalCarEntry = entryOf(items.getOrNull(start))
+            return MediaItemsWithStartPosition(items, start, exo.currentPosition)
+        }
         val liked = try {
             fromTree(era) { it.shuffledLiked() }
         } catch (e: ApiError) {
@@ -2716,13 +2874,19 @@ class PlaybackService : MediaLibraryService() {
             genre = said(EXTRA_MEDIA_GENRE),
         )
         if (request.unnamed) return resume(mine, era, controller)
-        val list = withContext(Dispatchers.Default) { tree.forVoice(request) }
+        val search = graph.recording.search(request.query, era.account.account.key)
+        var count = 0
+        val list = try {
+            withContext(Dispatchers.Default) { tree.forVoice(request) }.also { count = it?.songs?.size ?: 0 }
+        } finally {
+            graph.recording.found(search, count)
+        }
             // A fixed sentence: what was asked for is the person's words, and the session's
             // error is read by every app with a controller (as a server's refusal is never put
             // there either).
             ?: throw refuse(controller, SessionError(SessionError.ERROR_BAD_VALUE, getString(R.string.couldnt_find_that)))
         if (BuildConfig.DEBUG) android.util.Log.d(TAG, "voice: $request -> ${list.context} (${list.songs.size} songs)")
-        return staged(mine, era, list)
+        return staged(mine, era, list, carController(controller))
     }
 
     /**

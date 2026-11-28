@@ -98,7 +98,7 @@ sealed interface SongCopy {
      *  that long, or was not put there then, is another copy. */
     data class Download(val file: java.io.File, val modified: Long, val length: Long, override val kbps: Int) : SongCopy
 
-    data class Stream(val form: StreamForm) : SongCopy {
+    data class Stream(val form: StreamForm, val fromKept: Boolean = false) : SongCopy {
         override val kbps: Int get() = form.bitrate
     }
 }
@@ -324,7 +324,13 @@ class SongDataSource(
         this.where = where
         if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened ${if (lease.cache == null) "without" else "through"} the kept songs, at byte ${dataSpec.position}")
         val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
-        return streamed(lease, id) { reader.open(where, dataSpec.position) { lease.offline } }
+        return streamed(lease, id) { reader.open(where, dataSpec.position) { lease.offline } }.also {
+            if (reader.openedFromKept) {
+                val kept = SongCopy.Stream(where.form, fromKept = true)
+                copy = kept
+                lease.opened(id, entry, kept)
+            }
+        }
     }
 
     /**

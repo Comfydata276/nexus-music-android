@@ -293,6 +293,7 @@ class DownloadsJob : JobService() {
         val downloads = graph.accounts.state.value?.downloads
         downloads?.stoppedByAndroid(true)
         downloads?.useNetwork(null)
+        graph.recording.diagnostics.downloadStopped(reason)
         graph.diagnostics.note("downloads: the job was stopped by Android (reason $reason); they wait until it runs again")
         // Run again later if there is still something to fetch.
         return downloads?.state?.value?.busy == true

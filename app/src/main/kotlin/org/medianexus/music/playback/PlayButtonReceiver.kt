@@ -29,6 +29,10 @@ class PlayButtonReceiver : MediaButtonReceiver() {
         }
         val dirs = accountDirs(context.filesDir, context.cacheDir, settings.folder.ifEmpty { "-" })
         val worth = Resumption.possible(settings.folder, Graph.signInFile(context), QueueFiles.queueFile(dirs.data))
+        context.graph.recording.diagnostics.note(
+            if (worth) org.medianexus.music.nexus.DiagnosticNote.MEDIA_BUTTON_STARTED
+            else org.medianexus.music.nexus.DiagnosticNote.MEDIA_BUTTON_EMPTY,
+        )
         context.graph.diagnostics.note("a media button with the player not running: ${if (worth) "starting it" else "nothing to resume, so not started"}", now = true)
         if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "play button with the app not running: ${if (worth) "starting the player" else "nothing to resume, not started"}")
         return worth
@@ -37,6 +41,7 @@ class PlayButtonReceiver : MediaButtonReceiver() {
     /** Android would not let the player be started from here. Media3 catches it; it is
      *  noted, for Settings' Diagnostics, and nothing is started. */
     override fun onForegroundServiceStartNotAllowedException(context: Context, intent: Intent, e: android.app.ForegroundServiceStartNotAllowedException) {
+        runCatching { context.graph.recording.diagnostics.note(org.medianexus.music.nexus.DiagnosticNote.MEDIA_BUTTON_REFUSED) }
         runCatching { context.graph.diagnostics.note("a media button with the player not running: Android would not let it be started from the background", now = true) }
     }
 }

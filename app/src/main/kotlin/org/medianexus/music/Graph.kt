@@ -46,6 +46,10 @@ class Graph(
 
     /** What the player has met, for Settings to show and share (see [Diagnostics]). */
     val diagnostics = Diagnostics(File(context.filesDir, "diagnostics.txt"), scope, Dispatchers.IO)
+    internal val recording = org.medianexus.music.nexus.NexusRecording(context.noBackupFilesDir,
+        folderFor = org.medianexus.music.nexus.Folders(File(context.filesDir, "accounts/carried.json"))::of,
+    )
+
 
     /** Who may connect to the player and read covers: this app, callers Android trusts with
      *  media, and the known hosts of media apps (Google's list; see `KnownHosts`). Made when
@@ -465,6 +469,20 @@ class Graph(
 
     init {
         quietMedia3(BuildConfig.DEBUG)
+        scope.launch { front.collect { recording.diagnostics.visible(it) } }
+        scope.launch(Dispatchers.IO) {
+            accounts.state.collect {
+                recording.refreshFolder()
+                recording.diagnostics.about(org.medianexus.music.nexus.PhoneDiagnostics(
+                    androidMajor = android.os.Build.VERSION.RELEASE.substringBefore('.').toIntOrNull() ?: 0,
+                    https = it?.account?.server?.startsWith("https://") == true,
+                    localPermission = localAccess.permissionNow,
+                    auto = org.medianexus.music.nexus.safe {
+                        app.packageManager.getPackageInfo("com.google.android.projection.gearhead", 0)
+                    } != null,
+                ))
+            }
+        }
         // A debug build logs what each download did (by song id; never an address).
         if (BuildConfig.DEBUG) org.medianexus.music.downloads.CrashPoints.log = { android.util.Log.d("NexusDownloads", it) }
         DebugHosts.load(context)
@@ -480,6 +498,7 @@ class Graph(
             try {
                 org.medianexus.music.core.Core.warm()
             } catch (e: org.medianexus.music.core.CoreException) {
+                recording.diagnostics.note(org.medianexus.music.nexus.DiagnosticNote.LIBRARY_UNAVAILABLE)
                 diagnostics.note("the shared library couldn't be loaded: ${e.message}")
             }
             for (tapped in chosen) {

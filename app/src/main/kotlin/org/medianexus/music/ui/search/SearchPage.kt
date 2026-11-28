@@ -78,14 +78,22 @@ fun SearchPage() {
     val graph = ui.graph
     val model = remember(account) {
         SearchModel(null, search = { query ->
-            if (graph.watch.offline && account != null) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    // Stopped part-way when more typing replaces it, as online.
-                    val job = coroutineContext[kotlinx.coroutines.Job]
-                    org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS, { account.likes.isLiked(it) }) { job?.isActive == false }
+            val observation = account?.let { graph.recording.search(query, it.account.key) }
+            var count = 0
+            try {
+                val found = if (graph.watch.offline && account != null) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        // Stopped part-way when more typing replaces it, as online.
+                        val job = coroutineContext[kotlinx.coroutines.Job]
+                        org.medianexus.music.library.LocalSearch.find(query, account.availability.playable(), LIMITS, { account.likes.isLiked(it) }) { job?.isActive == false }
+                    }
+                } else {
+                    account?.library?.search?.find(query, LIMITS) ?: Found()
                 }
-            } else {
-                account?.library?.search?.find(query, LIMITS) ?: Found()
+                count = found.songs.size + found.albums.size + found.artists.size
+                found
+            } finally {
+                graph.recording.found(observation, count)
             }
         }, instant = { graph.watch.offline || account?.library?.search?.instant == true })
     }

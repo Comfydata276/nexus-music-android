@@ -105,7 +105,7 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
                 Section.STORAGE -> Storage(graph)
                 Section.REQUESTS -> org.medianexus.music.ui.requests.RequestsSettings()
                 Section.ACCOUNT -> Account(graph)
-                Section.ABOUT -> About(onDiagnostics, onLicences)
+                Section.ABOUT -> About(graph, onDiagnostics, onLicences)
             }
         }
     }
@@ -270,12 +270,18 @@ private fun Account(graph: Graph) {
 }
 
 @Composable
-private fun About(onDiagnostics: () -> Unit, onLicences: () -> Unit) {
+private fun About(graph: Graph, onDiagnostics: () -> Unit, onLicences: () -> Unit) {
     SettingRow(stringResource(R.string.app_version, BuildConfig.VERSION_NAME), stringResource(R.string.about_detail)) {}
-    // As Windows has it under About ("Save diagnostics"): here it is shown, and shared from
-    // there.
-    SettingRow(stringResource(R.string.diagnostics), stringResource(R.string.diagnostics_detail), stacked = true) {
-        TextButton(stringResource(R.string.show_diagnostics), onClick = onDiagnostics)
+    val diagnostics = graph.recording.diagnostics
+    val state by diagnostics.settings.collectAsStateWithLifecycle()
+    val title = stringResource(R.string.diagnostics_send)
+    val what = stringResource(R.string.diagnostics_send_detail)
+    val detail = listOfNotNull(what, state.status).joinToString("\n")
+    SettingRow(title, detail) {
+        Toggle(state.switchedOn, diagnostics::choose, title)
+    }
+    SettingRow(stringResource(R.string.diagnostics), "", stacked = true) {
+        TextButton(stringResource(R.string.diagnostics_what_sent), onClick = onDiagnostics)
     }
     SettingRow(stringResource(R.string.licences), stringResource(R.string.licences_detail), stacked = true) {
         TextButton(stringResource(R.string.show_licences), onClick = onLicences)

@@ -328,9 +328,12 @@ class QueuePlayer(
         invalidateState()
     }
 
+    internal var observeTransport: (Int) -> Unit = {}
+
     override fun handleStop(): ListenableFuture<*> {
         // (Media3's stop leaves "play when ready" as it was: the stop itself is what counts.)
         moved()
+        observeTransport(COMMAND_STOP)
         return super.handleStop()
     }
 
@@ -384,6 +387,7 @@ class QueuePlayer(
             val songs = mediaItems.map { songOf(it) }
             queue.replace(songs, if (startIndex == C.INDEX_UNSET) 0 else startIndex, context = "", shuffle = false)
         }
+        if (another) observeTransport(COMMAND_SET_MEDIA_ITEM)
         load(if (startIndex == C.INDEX_UNSET || startPositionMs == C.TIME_UNSET) 0L else startPositionMs, another)
         return Futures.immediateVoidFuture()
     }
@@ -450,6 +454,7 @@ class QueuePlayer(
                 // (Media3 passes that on as a seek to nowhere). On the last song, round to the
                 // top, as Windows does, playing on only if repeat is on.
                 val step = queue.next() ?: return Futures.immediateVoidFuture()
+                observeTransport(seekCommand)
                 if (step.place == queue.cursor + 1) return super.handleSeek(here + 1, 0, COMMAND_SEEK_TO_MEDIA_ITEM)
                 if (!step.carriesOn) exo.pause()
                 if (step.place == queue.cursor) {
@@ -469,7 +474,10 @@ class QueuePlayer(
                 // (the playlist, asked with "repeat all", would say its own last item; on
                 // Windows "previous" on the first song starts it again).
                 mediaItemIndex == here || queue.cursor == 0 -> super.handleSeek(here, 0, COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
-                else -> super.handleSeek(here - 1, 0, COMMAND_SEEK_TO_MEDIA_ITEM)
+                else -> {
+                    observeTransport(seekCommand)
+                    super.handleSeek(here - 1, 0, COMMAND_SEEK_TO_MEDIA_ITEM)
+                }
             }
             COMMAND_SEEK_TO_MEDIA_ITEM -> {
                 // "Play that entry of the queue", by its place. If the places have just
@@ -626,6 +634,7 @@ class QueuePlayer(
         // Whatever was handed to the session earlier and has not come back has been overtaken.
         staged.clear()
         queue.adopt(next)
+        observeTransport(COMMAND_SET_MEDIA_ITEM)
         load(startPositionMs)
         if (playNow) startPlaying()
         return true
