@@ -3102,7 +3102,7 @@ look-up of songs still out when the person signs out (a unit test); the phone's 
 ending during the proof of a take (a unit test; the walk's timing never landed there);
 a pool of linking's threads with no room (a unit test).
 
-## What never waits for the Nexus server (E13a, and P1)
+## What never waits for the Nexus server (E13a, P1, and P7's sign-in)
 
 `nexus/NeverWaitsTest` is the backend design's 5.3 for the phone (the Windows repository's
 `docs/backend-design.md`): the app driven through its real entry points on Robolectric, with
@@ -3110,8 +3110,13 @@ Media3's real session service, while everything under `/nexus/` at the music ser
 origin is broken. `nexus/BackendStandIn` is that origin: **HTTPS** (the `localhost.p12`
 certificate, which every OkHttp client made during the test trusts through OkHttp's own
 platform hook, so the app's clients are built as they always are), the music server's paths
-answered as Navidrome answers them (signing in, browsing, search, a three-second FLAC for a
-stream or a download), and `/nexus/` broken in one of these ways:
+answered as Navidrome answers them (browsing, search, a three-second FLAC for a stream or a
+download, and "wrong name or password" for a music login that is no longer the latest), and
+`/nexus/` **a backend that is there while a test signs in** (`backendThere`: `hello`, signing
+in, the session's check, the music login, signing out, each body written by the shared core's
+own encoder through `Core.nexusStandIn`, never by hand), and otherwise broken in one of these
+ways. **Every test signs in through the Nexus server's machine** (`BackendStandIn.signIn`: the
+press, `hello`, the sign-in, the music login handed over), as a person does:
 
 | Case | `/nexus/` |
 |---|---|
@@ -3126,9 +3131,11 @@ stream or a download), and `/nexus/` broken in one of these ways:
 | `DISK_BLOCKED` | Stalled, and `files/nexus` is a pipe nobody reads (the client keeps no file at this stage) |
 | `DISK_FULL` | Stalled, and `files/nexus` is a file, so nothing can be made there |
 
-**The proof is by construction, not by a stopwatch** (`nexus/ComponentHolds`). Before an entry
-point is driven, the client is put in the case's state and every hold on it acknowledged: its
-`hello` kept by the stand-in right now (the stand-in counts the requests it is holding, not the
+**The proof is by construction, not by a stopwatch** (`nexus/ComponentHolds`). Signed in, the
+machine asks whether the session stands at every start and whenever the network comes back:
+that check is the request held (the network is said to be back to have one out when a step
+begins). Before an entry point is driven, the client is put in the case's state and every hold
+on it acknowledged: its check kept by the stand-in right now (the stand-in counts the requests it is holding, not the
 ones that arrived), or answered where the stand-in answers; in `WORKERS_HELD`, each of its
 threads in the test's hold. The entry point is driven to its outcome, which is checked, and
 then every hold is checked to be in place still. An entry point that waited on the client
@@ -3164,19 +3171,23 @@ has sent one, the stand-in (one per test) has had one under `/nexus/` and holds 
 | `aLikeAndAPlayReachTheMusicServer` | A like, and a counted play reported | `like`, `play` |
 | `aPlayNotToldIsToldAgain` | A report the server would not take, held; the server back (the watch's ask and a pass over what is held) | `play_again` |
 | `aPlayIsCountedAsReleased` | `AccountGraph.played` twice, the log flushed; its bytes compared with the released app's | `counted` |
-| `anAccountChangeIsNotHeldUp` | Signed out and another account signed in, with the launcher held too; then let go, the old client let go of and its threads ended | `next_account` |
+| `anAccountChangeIsNotHeldUp` | Signed out and another person signed in through the backend, with the first's check held (not in `WORKERS_HELD`: signing in and out are the machine's own work) | `next_account` |
+| `aRefusedMusicLoginIsAskedForOnce` | The music login changed at the backend: one refusal at the music server, nothing sent with it again (pings, the car's Downloads and Home), the backend asked once, still signed in; then the backend there and the network back: the new login put in place in the same client | (proof only) |
+| `aForcedOutDeviceStopsOnlyWhenTold` | The session ended at the backend, the phone not told: the car's choice, its answer and the resumption card; then told (in the answer to the music login asked for): signed out, the folder still there, nothing kept of the sign-in | `choice`, `chosen`, `resumption_card` (of `the_car_starts_the_service_cold`) |
+| `theMusicLoginChangedWhileOffline` | Offline, the music login's number risen at the backend: a cold start of the service and the car's Downloads, nothing asked of the backend; back online, the new login put in place | `restore` (of `cold_start_puts_the_queue_back_and_plays`) |
 | `aWaitOfFourHundredMillisecondsInAnEntryPointIsCaught` | The car's folders with 400 ms more: must be over its limit | (none) |
 
-The client exists only in a build made with `-PnexusExists=true` (docs/DESIGN.md): these tests
-switch it on for themselves (`NexusBuild.forTests`), and `nexus/NexusSwitchedOffTest` switches it
-off and shows nothing of it is made (no launcher, no thread, no request), so the suite passes
-whichever way the build was made.
+The Nexus server's part is in every build (signing in is the app now): the P1 switch and its
+tests (`NexusSwitchedOffTest`, `NexusClientTest`, `NexusOwnerTest`) are gone with it.
 
 After every test: no connection carried both a request of the music server's and one under
-`/nexus/`; nothing reached the client's own handlers of last resort; and the row shows nothing
-for the account published. Beside it: `nexus/NexusClientTest` (the client alone, on the real
-core) and `nexus/NexusOwnerTest` (in the app's own graph: when it is made, whose it is,
-offline, in use, a failure in it).
+`/nexus/`; nothing reached the part's own handlers of last resort. Beside it:
+`nexus/SignInTest` (end to end through the machine: what is kept, the password typed found in
+no file, a wrong password, and **the local-network permission after a failure in which no
+connection was opened, both ways round**: the address inside with the permission not held, and
+public from here), `SessionTest` (a cold start from what was kept, asking nothing; a renewal in
+place; the folder carried over once; signing out), `net/SubsonicTest`
+(`aRefusedLoginIsNeverSentAgain`).
 
 **The times**, a second and looser alarm. Each step's wall-clock time is written to
 `app/build/nexus-times/run.tsv`. The suite was run on the app as released (E13a) three times,

@@ -912,8 +912,10 @@ How it is built (M1a):
 
 ## Data kept on the phone
 
-- **Account**: server address and username in settings; the password encrypted with a key
-  held in the Android Keystore. Each account has its own downloads, cache and held changes.
+- **Account**: what signing in to the Nexus server leaves (the session, the music login it
+  handed over, who the person is to it), as one thing sealed with a key held in the Android
+  Keystore, never the Nexus password or a music server's password (see "The Nexus server:
+  signing in"). Each person has their own folder: downloads, cache and held changes.
 - **Sign-in and transport**: a sign-in token never goes over plain HTTP beyond the home
   network unless the person typed `http://` themselves, and is warned first. An address typed
   without a scheme is tried over HTTPS, and over plain HTTP only on the home network (this
@@ -4145,178 +4147,18 @@ server offers, and is written down where the rules are (the Windows repository's
 composition that could be remembered; images are asked for at the size shown. Judge speed
 on release builds only.
 
-## Jams and the person's other devices (M6)
+## Jams and the person's other devices (M6): taken out
 
-A port of the Windows app's `src/jam.rs` against its relay (`relay/` in that repository, read
-as the definition of the protocol). Two features, one protocol: a **jam** is one queue that
-several people add to while the music plays where its host is; **linked devices** are the
-person's other copies of the app, listed under "Connect to a device", which the music moves
-to and which are steered from here. Both go through a small relay the owner runs.
+Jams through the relay and linking the person's devices through it (M6, and the later
+linking of the Windows repository's `docs/linking-design.md`) are **gone from the app**, with
+the saved music-server password they were made from (a room's name at the relay was worked out
+from it): the backend design's 5.1, step 1. Their code, screens, settings, the car's and the
+player's service's part in them, their switches (`jamsExist`, `-PlinkExists`) and their tests
+were removed, not switched off. The player's service, the notification and the car act on the
+phone's own queue alone, as they always did with nothing steered. Jams come back when the
+Nexus server hosts them (its step 6); one device steering another with its step 5.
 
-**Switched off in this build** (`jamsExist = false` in app/build.gradle.kts, the one switch;
-the app reads it as `jam/JamBuild`). A security review found that the way linked devices
-prove they are the person's own leaks a guessable fingerprint of the music-server password to
-the relay and its logs (the Windows app does the same; it is to be redesigned once for both),
-and ways a guest or another app can interfere with playback. With it off nothing of it shows
-(no Jam in Settings or Library, no strip, no "Connect to a device" or its volume on Now
-Playing, no route to the jam page: `Navigator.open` refuses one) and nothing of it runs:
-`Graph.jams` is never made (it refuses to be), so no relay is asked anything, no room joined,
-no session opened, no timer set; no relay key is asked for, kept, read or deleted; nothing
-about jams is written. The player's other player (`Steered`) is never shown, so the media
-session, the notification, the car and a headset act on the phone's own queue as before M6.
-The switch also decides whether `app/src/jam/AndroidManifest.xml` is merged into the APK: off,
-the APK has no activity taking a jam's link (no share target, no link filter), no
-`JamService`, and no `FOREGROUND_SERVICE_CONNECTED_DEVICE`, so other apps can find nothing of
-it. The order of choices that came with M6 stays on. `jam/SwitchedOffTest` holds this (with
-the switch on, it fails at the route and at the share target); `jam/`'s own tests build their
-objects directly and run whatever the switch says. With the feature on, `Jams.scheduleRecheck`
-wakes once a second once the ten-minute grace after a pause has run out while linking is on
-(the review's finding): not fixed here, as nothing of it runs in this build.
-
-How it is built (`jam/`, `ui/jam/`, `playback/Steered.kt`):
-
-- **The relay** (`RelayLine`): its address and the app's HTTP client made fit for it. The
-  long waits for news are reads; **anything that changes a jam is sent once** (rule 6): no
-  retry on a dead connection, no redirect followed, and a reply OkHttp would follow up by
-  itself (a 408, a 421, a 503 with `Retry-After`) handed back as it is. No answer, or the
-  relay's own 504 (the host's app didn't answer, and may have done it), is "no answer": the
-  jam is read again and shown, and the person does it again if they still want to. The
-  relay's connections are a pool of their own, closed ten seconds after they are idle and
-  all at once when nothing of the relay is open (rule 1).
-- **Joining** (`GuestSide`, `Jams`): a link pasted on the jam page, or shared to the app from
-  another (`JamLinkActivity`, which only reads the link and puts it in the box: nothing is
-  joined until Join is pressed). While joined, the phone's player shows the jam
-  (`Steered`): `PlayerConnection`'s flows are the jam's, and what is done in the player bar,
-  Now Playing, the queue sheet and anywhere in the app (Play, Add to queue, a menu's Play) is
-  asked of the host, as Windows' `remote*` functions do. The player shows what was asked at
-  once and the host's word follows (`Steering.steer`, Windows' `remote`). A song this
-  phone's library has is shown as anywhere else (its cover, its menu, like); one it doesn't
-  is shown as the host described it, its cover from the relay (`JamCovers`), with no like and
-  no menu. What was playing on the phone pauses (a choice, in the order of choices) and is
-  still there afterwards. A strip in the accent colour above the player says so, with Find
-  songs and Leave jam.
-- **The person's devices** (`RoomSide`, `Answers`, `OwnPlayer`): with a host link entered in
-  Settings, Jam ("Host jams", the link, "Link my devices", this device's name, in Windows'
-  words and order), the phone joins the room worked out from the account's name and
-  password exactly as Windows does (`account_words`: neither is sent), says what it plays,
-  and opens a session of its own that the others steer it through. Connect lists the other
-  devices with what each is doing. Choosing one while music plays here hands it the queue
-  (what plays and everything after it, 3000 songs at most, at the same place) and pauses
-  here; while nothing plays, steers what it has on. The volume of a device being steered is
-  a slider on Now Playing. "Play here" takes the other device's queue and pauses it there.
-- **A queue handed to the phone** (rule 3, `PlaybackService.handOver`): it takes its place
-  in the order of choices as it arrives (before anything is looked up) and plays only if
-  nothing has taken a later place by the time it is ready (`QueuePlayer.playFor`); offline,
-  only its songs that play here are kept, as for any list, and with none it is refused; in a
-  call (the audio mode) or with the sound held by an app that won't give it up (a request
-  for the sound refused) it is refused, and the other device is told why. Being steered
-  (play, pause, a move, the volume) is a choice like a tap here. The phone's volume, as a
-  PC turns it, is its media volume.
-- **Hosting** (`Hosting` in `Jams`, `HostingPage`): "Start a jam" makes the phone's own
-  session public (or opens one); the page shows the link, a code to scan for it (drawn
-  without a library: `Qr`, byte mode at level M, as Windows' `qr_image` draws its own),
-  Android's share sheet, who is there with Remove, "Guests can steer", and End jam. Guests'
-  searches are answered from the phone's copy of the library (`LibrarySnapshot.find`, 40 at
-  most) and covers from the phone's cover store, cut down as Windows cuts them
-  (`GuestCovers`: 128 px for a row, the 640 px copy as it is unless heavy). A song a guest
-  names that the copy doesn't have is asked of the server by id, as Windows does.
-- **Guests are strangers** (rule 5, `Answers`): a guest is never given the server's
-  address, the sign-in or any audio; what they can ask is exactly what Windows answers
-  (`jam_asked`): add (50 at once, songs this library has, not twice), remove (their own
-  unless steering is allowed), and with steering the transport and queue; `hello`, `queue`,
-  `load` and `volume` only for a device that shows the owner's word. Every number and list
-  is bounded as Windows bounds it (100 of the queue told, 40 found, 50 added, 3000 handed),
-  ids that aren't ids are dropped, and a request that isn't understood does nothing. **A jam
-  joined is someone else's server**: everything it sends is read as untrusted
-  (`Wire.kt`): text cut to a line of fit length with what can't be seen taken out, numbers
-  held to what they can mean, ids and cover ids that aren't ids dropped (they would be sent
-  back, or put in an address), at most 100 songs of a queue, and a cover used only if its
-  first bytes are a JPEG, PNG or WebP, no larger than the relay takes and no larger than
-  4096 px a side.
-- **The key** (rule 4, `KeyVault`): the host link's key is sealed with the Android Keystore
-  as the password is, sealed together with the account it belongs to (another account
-  can't open it), in a file of its own beside the password's, never in the settings file,
-  a log or Diagnostics (no line of the jam code logs anything), sent only in the
-  `Authorization` header to the relay whose link it came with, and removed at sign-out. The
-  relay's address is in the settings (the screen shows its host name only).
-
-**When the phone holds a connection to the relay, and what it costs** (rule 1, `Reasons`).
-Windows keeps every linked PC at the relay all the time; a phone doing that from the
-background would keep its radio awake all day. The phone is in the room, with its session
-open, only while one of these is so: **the app's screens are in front; music is playing on
-the phone, or was less than ten minutes ago** (the playback service stays in the foreground
-that long after a pause, so a PC that paused the phone can play it again); **or the phone is
-in a jam, hosting one, or steering another device.** For the last three a foreground service
-of the connected-device kind (`JamService`) runs with a notification that says which ("In
-Jo's jam", "Hosting a jam", "Steering Desk PC") and offers Leave, End jam or Stop steering,
-so Android lets the app hold the connection with its screens closed and the person can see
-it and end it. With none of these, the phone leaves the room, ends its private session, and
-closes the relay's connections: the other devices simply do not list it. **What it costs
-while open**: two requests held open at the relay (the room's news and the session's), each
-answered at once when something changes and otherwise after twenty seconds, so at least six
-small requests a minute (a few hundred bytes each, a few kilobytes a minute), plus a short
-post whenever what the phone is playing changes and every thirty seconds besides. On mobile
-data that keeps the radio from settling into its idle state for as long as it lasts, which is
-why it lasts only while one of the reasons does. Checked on the emulator with `dumpsys
-activity services` and `/proc/net/tcp6` (docs/TESTING.md).
-
-**What the car, the notification and the lock screen show** (rule 2). Nothing of a jam or
-of another device reaches the media session:
-
-| The phone is | The media session, notification, lock screen and car | Play in the car | A headset's or the notification's Play/Pause, Next, Previous |
-|---|---|---|---|
-| playing its own music | its own song, playing (as before) | as before | as before |
-| hosting a jam | its own song (it is what plays), playing or paused; a second notification says "Hosting a jam" | as before: the jam's music is the phone's | as before |
-| in a friend's jam | its own queue, paused where it was (or nothing, if it had none); a second notification says "In Jo's jam" | not carried out: the car's player says "When it's safe, open Nexus Music on your phone to start playing", with Play still offered; the phone's own music does not start over the jam | steer the jam (play/pause, skip, back), as Windows' media keys do, when the host lets guests steer; the phone's own player does not move |
-| steering another of its devices | its own queue, paused (the music moved there); a second notification says "Steering Desk PC" | as in a jam | steer that device, as in a jam |
-
-A headset's keys and the notification's own buttons reach Media3 as media-button events and
-are given to the other player there (`onMediaButtonEvent`, `Steered.key`); a transport command
-under the notification controller's name likewise (`Steered.press`). Any other Play of the
-phone's own player while it shows another is refused (`mayPlay`): the car is one, and so is
-the phone's resume control.
-
-**Joining from a link that is opened.** Android opens a web link in an app by itself only
-for an address the app has proved it owns (an App Link, checked against a file on that
-site). A relay's address is the person's own and can't be known here, so from Android 12 a
-jam link someone taps opens in the browser, on the relay's own page, which works as a guest
-from any phone. The app takes a link two ways: **shared** to it (a chat's Share: always
-works), or **opened** where the app showing it offers a choice of apps (the filter matches
-`https://<any host>/j/…` and `/…/j/…`, not verified). The jam page also has Paste.
-
-### What the design left open, and what was decided (M6)
-
-- **The car while the phone is in a jam** shows the phone's own queue, paused, and its Play
-  is refused with the existing "open the app" line rather than steering a jam the car can't
-  show. A headset steers it, as Windows' media keys do; the lock screen and the media
-  notification's buttons do too, because Android hands them over as the same media keys.
-  So the lock screen can show the phone's own song paused while its Play/Pause pauses the
-  jam. The jam's own notification says what is going on beside it.
-- **When "music was playing" stops being a reason**: ten minutes after it stops, the time
-  Media3 keeps the playback service in the foreground. A PC that paused the phone can play
-  it again within that time, not after.
-- **Moved here from a PC "at the moment it was sent"**: the relay passes a request on to
-  the phone the moment it arrives (the phone's wait is held open there), so its arrival is
-  taken as the moment it was sent. A choice made on the phone in the second before it
-  arrives is not known to be earlier, and the queue from the PC wins over it. That second is
-  the window that remains; anything chosen after the arrival wins.
-- **The phone's volume** as another device turns it is the media volume (what turning a
-  phone up or down means), not a level of the app's own.
-- **Words** are in `res/values/strings_jam.xml`, beside `strings.xml`, so the feature's words
-  are found together; Windows' wording, with "this PC" made "this phone".
-- **The device's name** is the phone's own (Android's device name, else its model), unless
-  one is typed in Settings, Jam.
-- **Not shown on the phone that Windows shows**: the jam window's progress for a cover
-  being sent; the devices' list in a side panel (the phone's is Connect, a sheet from Now
-  Playing).
-
-**What remains, and what needs real devices**: Android Auto in a car with the phone in a
-jam (the emulator car check passes; see TESTING); a real call arriving (the emulator's calls
-don't change the audio mode: rule 3's refusal in a call is shown in the service under
-Robolectric); battery on mobile data while in a jam (the cost above is reasoned, not
-measured on a radio).
-
-### The order of choices, completed (with M6)
+## The order of choices, completed (with M6)
 
 Every choice takes one place in the order of choices, once (`playback/Choices`), so that the
 newest wins and a stop beats what was asked before it. The gaps the M3b review found, each
@@ -4364,142 +4206,77 @@ order they were tapped with everything else the screens send.
 `OrderOfChoicesTest.aPlayTappedJustAfterAPauseIsNotDroppedByThatPause` is the case, with the
 Pause's delivery held, ignored until then.
 
-## The new linking's list, on the Connect sheet (behind a switch that is off)
+## The Nexus server: signing in (P7)
 
-The list of the person's other devices as the new linking knows them (the Windows
-repository's `docs/linking-design.md`; the phone's side is `playback/Linked`, and what it
-hands the screens is the linking engineer's surface document). **It exists only in a build
-with `LinkBuild.on`**, which no released build has; in every other build nothing here is
-reachable and the Connect sheet is as M6 made it.
+**The app's one sign-in is to the Nexus server**, the backend of our own (the Windows
+repository's `docs/backend-design.md`, at `539c8d4` with `backend-slice-notes.md`). It hands the
+app what it needs to reach the music server. The app's own sign-in to Navidrome and its saved
+password are gone. **Everything that decides is the shared core's machine**, `nexus::client`
+(slice C10): signing in, what is kept, a refused music login, sign-out, the devices, the
+password, and every sentence shown. The phone drives it by its four calls, in the order Windows
+makes them (5.5), and does the I/O: `nexus/Nexus.kt` (the driver), `nexus/Line.kt` (its line),
+`nexus/Kept.kt` (where it keeps things), `native/src/client.rs` (the binding).
 
-- **Where:** Now Playing's "Connect to a device" (Windows' devices button), shown in a build
-  with jams as before, and in one with the new linking whether or not jams exist
-  (`ui/link/ConnectView.reachable`: one condition widened, no new button). With neither,
-  as in every released build, it isn't there. In a build without jams the sheet asks
-  nothing of jams (they can't be made there): no jam line, no old "Your devices".
-- **What, in Windows' order and words:** "Connect"; the card naming where the music plays
-  (this phone's name over "This phone", as Windows names the PC: the jam's name for it
-  where jams exist, else the name the other devices list it by, `Linked.State.me`, and
-  "This phone" once with neither; or the device steered and "Playing there" with "Play
-  here" and "Stop steering" on a line of their own, so a long name keeps its room); the jam line where jams
-  exist; "Linked devices (new)": every device but the one steered, each a row of the old
-  list's shape. One here is pressed to pick it (`choose`, and the sheet closes); one not
-  here is drawn at half strength and does nothing; one of another generation is at full
-  strength with the library's sentence under it, wrapped, and does nothing; a Pause beside
-  one that is playing and can be picked (the sheet stays up). The library's note follows.
-  Then the old linking's "Your devices" where jams exist.
-- **Every sentence is the library's**, as handed: what each device is doing ("Looking for
-  it…" before the phone has entered), which of two to update, the note. The sheet writes
-  none of its own for linking: its title, headings and buttons are the Windows app's words.
-  Windows' own "No other device is linked yet." under an empty list is not copied: an empty
-  list shows the library's note, or nothing.
-- **Linking stopped:** nothing is offered (no rows, no "Play here"), and the note is shown:
-  then it is the library's sentence for it, the one the person was told by a note.
-
-## The Nexus server's client (P1: an empty component)
-
-The backend of our own beside the music server is designed in the Windows repository's
-`docs/backend-design.md`. This is the phone's side at its very smallest: slice P1 of that
-design's section 15. **It asks the backend's `hello`, and shows one row under Settings.** It
-reads, sends and keeps nothing else: no sign-in, no plays, no file. All of it is
-`nexus/Nexus.kt`; the review of P1 set most of what follows.
-
-- **Behind a switch that is off.** It exists only in a build made with `-PnexusExists=true`
-  (`BuildConfig.NEXUS`, read through `nexus/NexusBuild.kt`; the pattern of linking's
-  `-PlinkExists`). Without it nothing of it is made: no launcher, no thread, no row under
-  Settings, no request; the app as released (`nexus/NexusSwitchedOffTest`). Its tests switch it
-  on for themselves, so `scripts/check --release` passes either way. **It stays off in every
-  published build until these have been done**, which nothing on this machine can do:
-  - a real phone, on Android 17 and on the phone's own Android, signed in over HTTPS through
-    the owner's real proxy, with the backend absent, stalled and there (and Android 17's
-    permission to reach the home network denied, then granted);
-  - a real car (the design's E13): starting it cold, the queue, voice, with the backend stalled;
-  - a real proxy (E2b): the rule of the design's 6.2 in Nginx Proxy Manager, with and without a
-    content network, and both apps' real clients against it;
-  - gapless joins of cached and downloaded songs with the backend held, and on Android 17
-    (streamed joins were recorded on the Android 16 emulator: docs/TESTING.md).
-- **Where `hello` is, for a music server's address**, is worked out here in Kotlin
-  (`NexusClient.origin` and `HELLO`): the origin's scheme (HTTPS only), host and port, and the
-  path `/nexus/api/hello`. The Windows repository is moving that into `core/src/nexus/`; when it
-  lands, the phone takes it from there.
-- **Not on the way the app starts.** Nothing of it is allocated or dispatched while `Graph` is
-  being made, or before `App.graph` is assigned: `App.onCreate` then calls `Graph.started`,
-  which sets a flag. The launcher (`NexusLauncher`), with the state the row reads, is made by
-  the account watcher that `Graph` already has, off the main thread, once an account is
-  published and the app has started, catching anything that fails in the making. Nothing of
-  the account's (`AccountGraph`), and nothing `Accounts.restored` waits for, makes it or waits
-  on it.
-- **Its own workers, all of them.** The launcher's thread ("nexus-launcher"); for each account
-  a client with its own worker ("nexus-worker", which also does the connect: OkHttp's fast
-  fallback, which hands connects to a scheduler, is off), its own dispatcher's thread
-  ("nexus-calls"), its own connection pool (of one) and **its own OkHttp task runner**
-  ("nexus-okhttp", for the pool's upkeep) where the app's own client uses OkHttp's
-  process-wide one. OkHttp keeps the setter and the constructor that take a task runner to
-  itself: they are reached by name, and `proguard-rules.pro` keeps those names. HTTP/1.1 only,
-  so nothing of HTTP/2 runs. **Shared with the rest of the app, and only these:** the system's
-  DNS and sockets, OkHttp's platform (TLS) and Okio's timeout watchdog.
-- **Never the shared library's load.** It asks the core only once the core is loaded
-  (`Core.isReady`, which takes no lock); otherwise it says "none found" and asks nothing. So it
-  never takes the load's lock, which the next sign-in can need.
-- **Nothing it does can take the app down.** Every failure inside it is caught inside it (an
-  interrupt while connecting, when it is let go of, among them), but a cancellation, which is
-  let through so that its loop ends; its coroutines and threads have handlers of their own
-  besides, which the tests hold to never being reached. Every way out of its loop lets it go.
-- **Let go without anyone waiting.** `stop` returns at once; the rest (cancelling its request,
-  closing its idle connection, which takes its own scheduler's lock, and shutting down its
-  executors, its OkHttp scheduler's included) runs on a thread of its own, each step whatever
-  the one before it did. The new account's client is started before the old one is let go of.
-- **Bound to its account.** What it finds is kept with the account it was found for and the
-  generation of the client that found it (`NexusShown`, in `NexusLauncher.found`), published by
-  compare-and-set on the generation, so an earlier account's late worker never overwrites a
-  later one's. The row shows it only if its account is the one in the session's own signed-in
-  value, the same value the row's heading is drawn from (`Graph.nexusShown`). A client whose
-  account is no longer published drops what it brings back and stops by itself, whether or not
-  the launcher has got to it.
-- **One probe is one request on the wire.** No retry on a failed connection, no redirect
-  followed, and no follow-up of OkHttp's own (a 503 with "Retry-After: 0", a 408, a 421, a
-  401's authenticator): a network interceptor refuses any second attempt of one call before it
-  is sent, and the call is "none found".
-- **Only while it may:** not with offline mode switched on by hand (a car-only start with it
-  on included), not while the phone may not reach the home network (Android 17's permission,
-  as the server watch has it), and only while the app is in use: its screens in front, or
-  music playing or meant to be. At most once an hour; it looks whether it may every minute.
-  The design's 9.4 says this of sending and fetching plays; the client takes it now.
-- **What it asks:** `GET https://<the music server's host and port>/nexus/api/hello`, built
-  from the constant `nexus::proto::HELLO` (written again in Kotlin, `NexusClient.HELLO`),
-  whatever path the music server itself is under, with no query. HTTPS only (plain HTTP is
-  refused by the client itself, whatever the network security configuration allows the rest of
-  the app); an account whose server is plain HTTP has no backend asked after at all.
-- **What counts as found:** decided by the shared core, `nexus::proto::classify`, through
-  `Core.nexusHello`: the status, and for a 200 the body as the transport read it, **to its end
-  or to one byte past 4,096 bytes, and whether reading failed first**. The library is handed
-  that as the reader it asks for. The body of anything but a 200 is not waited for (the core
-  does not read it). No header is looked at. Anything else, a failure to connect included, is
-  "none found".
-- **The row:** Settings, Account, under the signed-in row: "Nexus server", with "Found at
-  music.example.org" (the port too if it is not 443; an IPv6 address in brackets then) or
-  "None found". Nothing to press.
-- **Limits, accepted (the lead, on the recheck of P1):**
-  - **Okio's timeout watchdog** is one thread for the whole process and cannot be given to the
-    client alone: its timeouts ride on it like every other request's. An unchecked failure
-    inside OkHttp's own timeout callback is OkHttp's, as it is for a stream today.
-  - **A worker already past its checks** when the account changes, or offline mode is switched
-    on, may still send its one `hello` (to the old origin, or just after offline mode): its
-    answer is thrown away (the generation and the owner, above).
-  - **Through a system HTTP forward proxy** a fresh connection sends the proxy a `CONNECT`
-    before the one `GET`: "one request" means one request to the origin.
-- **The proof that nothing waits for it** is the suite of the design's 5.3, `nexus/
-  NeverWaitsTest`, run with the backend's side broken in each way and the client's own threads
-  held (docs/TESTING.md, "What never waits for the Nexus server").
-
-**What the shared core is pinned to for this.** `native/Cargo.toml` names `a0bf4d8` of the
-Windows repository: slice C1 (`core::nexus::proto`), directly on 0.40.12, whose core is the
-0.40.11 core this app carried before but for that module. It is **not a release of the
-Windows app**, which "The shared core" above asks of a pin, and it is not on GitHub yet; the
-lock file was made from the local repository and is the one the pushed commit gives. Before
-this can be built anywhere else, that commit has to be pushed (to any branch: a pin names a
-commit, and Cargo fetches it by its id), and before it lands on `main` the lead decides
-whether to wait for a Windows release that carries it.
+- **Start, happened, do, stop.** `Graph.started` makes the driver after the app is already
+  usable, off the main thread; it reads what is kept and **starts** the machine with it, then
+  tells it what **happened**: a press on a screen, an answer, a failure (with, where no
+  connection was opened, where the address leads and whether Android 17's permission is held),
+  the network going or coming back, Offline switched, a minute passing, and the music server
+  refusing the login with its number. It **does** each thing it is given, each one of a closed
+  few: *ask* (one request, HTTPS, to the address the person typed, nothing followed, nothing
+  tried again: `nexusHttp`, `exchange`); *keep* or *forget* (all of one answer's put in place
+  in one step, before what it hands the player is acted on); *show* (the screens draw
+  `Nexus.shown`); *hand* the player a music login, or say one is set aside.
+- **Its own threads, all of them**, as P1's client had: the machine's ("nexus-worker"), the
+  requests' ("nexus-calls"), and its own OkHttp task runner and pool of one.
+- **A cold start never asks it anything** (6.1): `Session` reads the kept music login and who it
+  is for, makes the music server's client from the salt and token handed over
+  (`net/MusicLogin`), takes the person's choices on and publishes the account, without the
+  machine, the backend or the shared library. The car, a Play button, the downloads' job and
+  the resumption card are as they were.
+- **Kept where secrets are kept, and only that** (section 11): `nexus-signin.sealed` (the
+  session, the music login with its number, the account file, a sign-out still to be told: each
+  part exactly as the machine wrote it) and `nexus-device.sealed` (the device's own secret,
+  kept through signing out), sealed by the Keystore and out of backups. **Never the Nexus
+  password**: the screens hand it to the machine once and wipe it (`TextFieldState`, not saved
+  state); the machine holds it for the one call. The password and the jam relay's key that
+  earlier versions kept are deleted when this version first runs.
+- **A person's folder is who they are to the backend** (section 11): the first half of a
+  SHA-256 of the backend's id and the account (`Folders.personOf`). **What is carried over,
+  once:** the first time anyone signs in on this version, if the music login handed to them names
+  the same music server (as the app tidies an address) and the same user as the sign-in the
+  phone had before (`Settings.server` and `username`, as an earlier version left them), that
+  folder (downloads, settings, the queue, Recently played, Lidarr's sealed key) is theirs, for
+  good (`accounts/carried.json`); the earlier sign-in is then forgotten, whoever signed in, so
+  that nobody later is given it. Anyone else starts with a folder of their own. The pins, list
+  choices and theme follow the folder (`sync/Belongs`).
+- **A music login handed over** for the same music server and user is put in place in the
+  client every request already uses (a renewal: nothing is made again); for another, it is
+  another account.
+- **A refused music login never signs anyone out** (6.3). The music server's "wrong name or
+  password" sets that login aside **at the instant it arrives**: every request that would carry
+  it fails unsent from then on, from anywhere (`Subsonic.request`, and `MusicLogin.Gate` on the
+  app's one HTTP client for streams, covers and downloads), so ten callers holding it send it
+  once between them. The machine is told its number, renews it once in the background, and says
+  what is to be said ("Your music sign-in needs renewing…"); what is on the phone plays
+  meanwhile. (The phone sets it aside before the machine's `Hand::Refused`, which then confirms
+  it: see the bulletin's note for the lead.)
+- **Signed out** (here, or by the backend saying so to this session): the account goes at once;
+  the queue and Recently played go; downloads stay. A sign-out the backend couldn't be told of
+  is kept as the machine's small note and told later.
+- **Android 17's local-network permission, at the sign-in screen, for each address on its
+  own** (6.4): the Nexus server's address before it is first connected to (a name judged by
+  where it leads on this network now, `LocalAccess.neededStrictlyFor`, as Lidarr's is), and
+  again after a failure in which no connection was opened (the machine, told where it led and
+  whether the permission is held, says to ask); then the music server's address the backend
+  hands back, before the account is published, and again if a first look at it never connects
+  (`Session.handed`). Each time it is the app's existing explain-and-ask. A TLS failure is not a
+  missing permission. Signing in is a form in the app, and never leaves it.
+- **Settings, Account**: who is signed in with Sign out; the machine's one row for the server;
+  what is to be said about the music sign-in; the person's devices, each one forced out by a
+  press; changing the password. All in the machine's words (`ui/settings/NexusAccount`).
+- **Requests are as they were** (the design's 5.2: cut after step 1, requests are the app's own
+  line to Lidarr until step 4).
 
 ## Milestones
 

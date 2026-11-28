@@ -254,8 +254,7 @@ private fun Account(graph: Graph) {
     // **Everything here is the Nexus server's machine's** (nexus/Nexus.kt): who is signed in,
     // the row for the server, the devices and their words, what changing a password says. The
     // phone draws it and says what was pressed.
-    // (The account's rows come with the next commit: the machine's own screens.)
-    org.medianexus.music.ui.parts.TextButton(stringResource(R.string.sign_out), onClick = { graph.nexus?.press(kotlinx.serialization.json.JsonPrimitive("sign_out")) })
+    NexusAccount(graph)
     // Where Windows has it, in Windows' words. Off, nothing of this is read from the server
     // or written to it. Not shown at all in a build where it doesn't exist (this one: see
     // sync/InStepBuild.kt).
