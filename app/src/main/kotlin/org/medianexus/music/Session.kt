@@ -182,13 +182,13 @@ class Session(
     private fun settle(person: String, music: KeptMusic?): Boolean {
         val before = settings.value
         val settled = folders.settle(person, music, before.server, before.username) { address, user, login -> carriesOver(address, user, login) }
-        if (!settled) {
+        if (settled == Folders.Settled.NOT_KEPT) {
             notices.post(Notice.SignInNotKept)
             return false
         }
-        // (The earlier version's sign-in is not used again by anyone: the decision above is
-        // what is read from now on, whatever happens to this.)
-        if (before.server.isNotEmpty() || before.username.isNotEmpty()) settings.update { it.copy(server = "", username = "") }
+        // (The earlier version's sign-in is not used again by anyone once decided: the decision
+        // above is what is read from now on, whatever happens to this. Undecided, it stays.)
+        if (settled == Folders.Settled.DECIDED && (before.server.isNotEmpty() || before.username.isNotEmpty())) settings.update { it.copy(server = "", username = "") }
         return true
     }
 

@@ -199,19 +199,54 @@ class SessionTest {
         assertEquals(listOf(good), after.notes)
     }
 
+    /** **The owner signs in before their music login is set** (the review of P7b, F1): only who is
+     *  first is recorded; nothing of the earlier folder is decided or cleared; someone else handed
+     *  the same login meanwhile does not get it; after a restart, the owner's first login handed
+     *  names the same server and user: the earlier downloads, queue and history are theirs. */
     @Test
-    fun theCarryOverIsSettledOnceEvenWithNoMusicLogin() = runBlocking<Unit> {
-        val m = made(before = secure to "ada")
-        // The first to sign in on this version is handed no music login: nobody gets the folder.
+    fun theFirstPersonSignedInWithNoMusicLoginGetsTheEarlierFolderAtTheirFirstLogin() = runBlocking<Unit> {
+        Session.sharedRecordForTests = null
+        val dir = folder.newFolder()
+        val m = made(dir, before = secure to "ada")
+        val earlier = accountDirs(File(dir, "files"), File(dir, "cache"), accountKey(secure, "ada")).data.apply { mkdirs() }
+        File(earlier, "queue.json").writeText("{}")
+        File(earlier, "history.json").writeText("[]")
+        File(earlier, "downloads").mkdirs()
+        File(earlier, "downloads/s1.flac").writeText("music")
         assertTrue(m.session.signedInAs(who("7"), null))
+        assertEquals("the earlier sign-in kept while undecided", secure, m.settings.value.server)
+        // Someone else, handed the same music login meanwhile, has a folder of their own.
         m.session.handed(music("ada", at = secure), who("8"))
         val grace = signedIn(m.session)
-        assertNotEquals(accountKey(secure, "ada"), grace.account.key)
-        // Nor the first person, handed it later.
+        assertEquals(Folders.personOf(who("8")), grace.account.key)
+        m.session.forgotten().await()
+        m.settings.flush()
+        // The app starts again; the admin has set the owner's login, and it is handed.
+        val again = made(dir)
+        assertEquals(secure, again.settings.value.server)
+        again.session.handed(music("ada", at = secure), who("7"))
+        val ada = signedIn(again.session)
+        assertEquals("the folder this phone had", accountKey(secure, "ada"), ada.account.key)
+        assertTrue(File(ada.account.dirs.data, "downloads/s1.flac").isFile)
+        assertTrue(File(ada.account.dirs.data, "queue.json").isFile)
+        assertTrue(File(ada.account.dirs.data, "history.json").isFile)
+        assertTrue("devices in step follows it", ada.account.ownsSharedRecord)
+        assertEquals("", again.settings.value.server)
+    }
+
+    /** And a first login that does not name the same server and user still closes it, for good. */
+    @Test
+    fun theFirstPersonsFirstLoginNamingAnotherUserClosesTheEarlierFolder() = runBlocking<Unit> {
+        val m = made(before = secure to "ada")
+        assertTrue(m.session.signedInAs(who("7"), null))
+        m.session.handed(music("grace", at = secure), who("7"))
+        val first = signedIn(m.session)
+        assertEquals(Folders.personOf(who("7")), first.account.key)
+        assertEquals("", m.settings.value.server)
         m.session.forgotten().await()
         m.session.handed(music("ada", at = secure), who("7"))
-        val ada = withTimeout(10_000) { m.session.state.first { it is SessionState.SignedIn && (it as SessionState.SignedIn).person == Folders.personOf(who("7")) } } as SessionState.SignedIn
-        assertEquals(Folders.personOf(who("7")), ada.account.key)
+        val again = withTimeout(10_000) { m.session.state.first { it is SessionState.SignedIn && (it as SessionState.SignedIn).account.username == "ada" } } as SessionState.SignedIn
+        assertEquals(Folders.personOf(who("7")), again.account.key)
     }
 
     @Test
