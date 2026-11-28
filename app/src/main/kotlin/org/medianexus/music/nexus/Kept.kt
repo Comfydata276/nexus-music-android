@@ -127,6 +127,9 @@ class NexusKept(
         sealTo(file, parts.toJson().toString().toByteArray(Charsets.UTF_8), box)
     }
 
+    /** Used when a full phone cannot replace a sign-in with its sign-out notes. */
+    fun forgetSignIn(): Boolean = synchronized(lock) { removeDurably(file) }
+
     /** Whether anything is kept: looked for, not opened (the Play button's receiver asks). */
     fun exists(): Boolean = file.isFile && file.length() > 0
 

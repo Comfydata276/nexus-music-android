@@ -177,7 +177,7 @@ private fun SignInForm(graph: Graph, shown: NexusShown?, onBack: (() -> Unit)?) 
     var withCode by rememberSaveable { mutableStateOf(false) }
     val working = form?.state == "working" || claimed
     val keyboard = LocalSoftwareKeyboardController.current
-    val ready = shown != null && !working && waitLeft == 0L && address.text.isNotBlank() && secret.text.isNotEmpty() &&
+    val ready = shown != null && form?.state != "not_kept" && !working && waitLeft == 0L && address.text.isNotBlank() && secret.text.isNotEmpty() &&
         (if (withCode) chosen.text.isNotEmpty() && again.text.isNotEmpty() else email.text.isNotBlank())
     // (Not saved: after the screen is rebuilt the person presses again, and is asked again.)
     var explaining by remember { mutableStateOf(false) }
@@ -327,7 +327,11 @@ private fun SignInForm(graph: Graph, shown: NexusShown?, onBack: (() -> Unit)?) 
                 }
 
                 // How it went, in the machine's words; then the phone's own about its music.
-                val said = form?.words.orEmpty().ifEmpty { if (phone.choicesNotPutAway) stringResource(R.string.sign_in_choices_not_put_away) else "" }
+                val said = when {
+                    form?.state == "not_kept" -> stringResource(R.string.sign_in_storage_failed)
+                    phone.choicesNotPutAway && form?.words.isNullOrEmpty() -> stringResource(R.string.sign_in_choices_not_put_away)
+                    else -> form?.words.orEmpty()
+                }
                 if (said.isNotEmpty()) {
                     BasicText(said, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.rowDetail.copy(color = if (form?.state == "working") colors.muted else colors.danger))
                 }

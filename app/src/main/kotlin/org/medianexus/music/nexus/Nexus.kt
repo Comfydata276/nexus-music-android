@@ -159,16 +159,18 @@ class Nexus internal constructor(
     /** Whether the machine has been told Offline is on (only touched on [worker]). */
     private var toldOffline = false
 
-    /** What could not be put in place, with everything the machine said after it, in its order:
-     *  tried again before anything else, at the next call (only touched on [worker]). */
-    private var pending: List<JsonObject> = emptyList()
+    /** The machine advanced past a sign-in or device key we could not keep. Only sign-out
+     *  is processed after that, until the next process starts from disk. */
+    private var criticalKeepFailed = false
 
     /** What the machine said after a change to the journal (taken, refused, life moved, send all
      *  again), in its order, waiting for the journal's writer to have made it: never waited for
      *  on this thread, but done when the writer says so ([resume]). Only touched on [worker]. */
     private var awaiting: Awaiting? = null
 
-    private class Awaiting(val rest: MutableList<JsonObject>, val atStart: Boolean, val change: JsonObject)
+    private data class Effects(val items: List<JsonObject>, val atStart: Boolean, val signOut: Boolean)
+    private class Awaiting(val rest: Effects, val change: JsonObject)
+    private val ready = ArrayDeque<Effects>()
 
     /** Whether the last `Keep::DiagSchedule` was durably written (14.4): what a Diagnostics read
      *  is answered with only then. Only touched on [worker]. */
@@ -361,22 +363,27 @@ class Nexus internal constructor(
     }
 
     /** One call to the machine, and everything it gives back done, in its order. On [worker].
-     *  What waited for a failed write is tried first. */
+     *  A sign-out can always go through, including after a failed keep. */
     private fun call(envelope: JsonObject, atStart: Boolean = false) {
-        if (awaiting == null && pending.isNotEmpty()) doAll(pending.also { pending = emptyList() }, atStart = false)
+        val happened = envelope["happened"] as? JsonObject
+        val event = happened?.get("event") as? JsonObject
+        val press = event?.get("pressed") as? JsonObject
+        val signOut = press?.containsKey("sign_out") == true
+        if (criticalKeepFailed && !signOut) return
         val out = Core.nexusCall(buildJsonObject { put("machine", machine); put("call", envelope) })
         val does = (out["do"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: run {
             // (Refused as input: what it said, which names nothing of what it was given.)
             lastFailure = IllegalStateException("the machine said ${out.toString().take(120)} to ${envelope.keys}")
             return
         }
-        // (After a write that failed, or behind a change the journal is making, everything the
-        // machine says waits, in order.)
-        val waiting = awaiting
-        when {
-            waiting != null -> waiting.rest += does
-            pending.isNotEmpty() -> pending = pending + does
-            else -> doAll(does, atStart)
+        ready.addLast(Effects(does, atStart, signOut))
+        drain()
+    }
+
+    private fun drain() {
+        while (awaiting == null && ready.isNotEmpty()) {
+            val batch = ready.removeFirst()
+            if (!criticalKeepFailed || batch.signOut) doAll(batch)
         }
     }
 
@@ -391,7 +398,8 @@ class Nexus internal constructor(
         // (A life moved: the journal has the new one already, published at its Keep; told again,
         // which is nothing if it is the same.)
         publish()
-        doAll(waited.rest.toList(), waited.atStart)
+        ready.addFirst(waited.rest)
+        drain()
     }
 
     /** **Whether the machine still waits for the answer to this ask**: asked on its own thread
@@ -419,37 +427,53 @@ class Nexus internal constructor(
         }.also { bytes.fill(0) }
     }
 
+    private fun writeFailed(what: String) {
+        lastFailure = IllegalStateException("could not write $what")
+    }
+
+    private fun keepFailed(what: String) {
+        writeFailed(what)
+        criticalKeepFailed = true
+        side.notKept()
+        showKeepFailure(showing.value ?: NexusShown.of(JsonObject(emptyMap())))
+    }
+
+    private fun showKeepFailure(shown: NexusShown) {
+        showing.value = shown.copy(
+            screen = if (parts.session) "signed_in" else "sign_in",
+            signIn = shown.signIn.copy(state = "not_kept", words = "", waitS = null),
+        )
+    }
+
     /**
-     * Does what the machine said, **strictly in its order** (5.5), with **what it says to keep or
-     * forget put on the disk, durably, before anything after it is done**. What is kept in the
-     * one file (the sign-in and its notes) and said one after another is written in one step,
-     * which leaves either all of it or none: the new note is never lost before the sign-in it
-     * ends is forgotten. **A write that fails stops there**: nothing that follows it is done
-     * (nothing shown, handed, read or asked on the strength of it), the phone says it could not
-     * be kept, and the rest waits, in order, to be tried again at the next call.
+     * Do each effect in order. A failed sign-in or device key keep stops its batch.
+     * A failed note must never prevent sign-out. Keep the notes with the sign-in in one
+     * replacement when possible. If that write fails at sign-out, unlink the file so
+     * the session cannot come back, and tell the backend from the note in memory.
      */
-    private fun doAll(does: List<JsonObject>, atStart: Boolean) {
+    private fun doAll(batch: Effects) {
+        val does = batch.items
         var parts = this.parts
         var dirty = false
-        var runStart = 0
+        var keepSaved = false
         var forgot = false
-        // Puts what was kept in the file on the disk; true once it is there.
         fun flush(): Boolean {
             if (!dirty) return true
-            if (!kept.save(parts)) return false
+            if (!kept.save(parts)) {
+                if (keepSaved) {
+                    keepFailed("the sign-in")
+                    return false
+                }
+                writeFailed("the sign-out records")
+                if (forgot && !kept.forgetSignIn()) writeFailed("the removal of the sign-in")
+            }
             this.parts = parts
             dirty = false
-            // (The journal hears who is signed in before anything after the write is done.)
+            keepSaved = false
             publish()
-            // Forgotten: the music login goes from the player too (downloads stay).
             if (forgot) side.musicForgotten()
             forgot = false
             return true
-        }
-        fun stopAt(index: Int) {
-            lastFailure = IllegalStateException("not kept, at ${does.getOrNull(index)?.let { thing -> thing.keys.toString() + (thing.values.firstOrNull() as? JsonObject)?.keys }}")
-            pending = does.subList(index, does.size).toList()
-            side.notKept()
         }
         for ((index, thing) in does.withIndex()) {
             val (kind, value) = thing.entries.singleOrNull() ?: continue
@@ -458,23 +482,21 @@ class Nexus internal constructor(
                 "forget" -> (value is JsonPrimitive && value.contentOrNull == "saved") || (value is JsonObject && (value["note"] is JsonObject || value["unreadable_note"] is JsonObject))
                 else -> false
             }
-            if (inFile) {
-                if (!dirty) runStart = index
-                dirty = true
-            } else if (!flush()) {
-                return stopAt(runStart)
-            }
+            if (inFile) dirty = true else if (!flush()) return
             when (kind) {
                 "keep" -> {
                     val (part, kept) = (value as? JsonObject)?.entries?.singleOrNull() ?: continue
                     when (part) {
-                        "device_secret" -> if (!this.kept.keepDeviceSecret(kept)) return stopAt(index)
-                        "saved" -> (kept as? JsonObject)?.let { parts = parts.withSaved(it) }
+                        "device_secret" -> if (!this.kept.keepDeviceSecret(kept)) return keepFailed("the device key")
+                        "saved" -> (kept as? JsonObject)?.let {
+                            parts = parts.withSaved(it)
+                            keepSaved = true
+                        }
                         "note" -> (kept as? JsonObject)?.let { parts = parts.withNote(it) }
-                        // (Before the read it is kept for: a failure stops the read.)
+                        // A read after a failed keep is answered with no report.
                         "diag_schedule" -> {
                             scheduleKept = this.kept.keepDiagSchedule(kept)
-                            if (!scheduleKept) return stopAt(index)
+                            if (!scheduleKept) writeFailed("the Diagnostics schedule")
                         }
                     }
                 }
@@ -483,10 +505,10 @@ class Nexus internal constructor(
                         parts = parts.withSaved(null)
                         forgot = true
                     }
-                    value is JsonPrimitive && value.contentOrNull == "device_secret" -> if (!this.kept.forgetDeviceSecret()) return stopAt(index)
+                    value is JsonPrimitive && value.contentOrNull == "device_secret" -> if (!this.kept.forgetDeviceSecret()) writeFailed("the removal of the device key")
                     value is JsonPrimitive && value.contentOrNull == "diag_schedule" -> {
                         scheduleKept = false
-                        if (!this.kept.forgetDiagSchedule()) return stopAt(index)
+                        if (!this.kept.forgetDiagSchedule()) writeFailed("the removal of the Diagnostics schedule")
                     }
                     // (The person's choice did not read: none made, and the file goes.)
                     value is JsonPrimitive && value.contentOrNull == "diagnostics" -> recording?.let { safe { it.diagnostics.forgetChoice() } }
@@ -499,16 +521,19 @@ class Nexus internal constructor(
                     value is JsonObject && value["unreadable_note"] is JsonObject ->
                         (((value["unreadable_note"] as JsonObject)["index"]) as? JsonPrimitive)?.content?.toIntOrNull()?.let { parts = parts.withoutNoteAt(it) }
                 }
-                "show" -> (value as? JsonObject)?.let { showing.value = NexusShown.of(it) }
-                "hand" -> (value as? JsonObject)?.let { hand(it, atStart) }
+                "show" -> (value as? JsonObject)?.let {
+                    val shown = NexusShown.of(it)
+                    if (criticalKeepFailed) showKeepFailure(shown) else showing.value = shown
+                }
+                "hand" -> (value as? JsonObject)?.let { hand(it, batch.atStart) }
                 "journal" -> (value as? JsonObject)?.let { change ->
                     // A change to the journal: what follows waits for the writer to have made it.
-                    if (journal(change, does.subList(index + 1, does.size), atStart)) return
+                    if (journal(change, batch.copy(items = does.subList(index + 1, does.size)))) return
                 }
                 "ask" -> (value as? JsonObject)?.let(::send)
             }
         }
-        if (!flush()) stopAt(runStart)
+        flush()
     }
 
     /** Hands the player what the machine said (`Do::Hand`), in its place among the rest. */
@@ -536,7 +561,7 @@ class Nexus internal constructor(
      * rest now waits. With no recording (a test of the sign-in alone), every read is answered with
      * nothing waiting.
      */
-    private fun journal(thing: JsonObject, rest: List<JsonObject>, atStart: Boolean): Boolean {
+    private fun journal(thing: JsonObject, rest: Effects): Boolean {
         val (kind, value) = thing.entries.singleOrNull() ?: return false
         val body = value as? JsonObject ?: return false
         val recording = recording
@@ -560,13 +585,13 @@ class Nexus internal constructor(
             safe { recording.journal(thing, scheduleKept, sink) { } }
             return false
         }
-        val waited = Awaiting(rest.toMutableList(), atStart, thing)
+        val waited = Awaiting(rest, thing)
         awaiting = waited
         val done = safe {
             // (Called on the writer's thread, or at once: only puts the rest on this thread.)
             recording.journal(thing, scheduleKept, sink) { made -> onWorker { resume(waited, made) } }
         }
-        if (done == null) resume(waited, false)
+        if (done == null) onWorker { resume(waited, false) }
         return true
     }
 

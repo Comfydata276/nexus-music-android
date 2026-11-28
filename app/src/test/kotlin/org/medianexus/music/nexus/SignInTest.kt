@@ -134,6 +134,53 @@ class SignInTest {
         runBlocking { withTimeout(30_000) { graph.recording.diagnostics.settings.first { !it.signedIn } } }
     }
 
+    @Test
+    fun failedDiagnosticsScheduleDoesNotBlockSignInOrSignOut() {
+        // An occupied destination refuses the atomic rename, as a full phone would.
+        val schedule = File(app.noBackupFilesDir, "nexus-diag-schedule.json")
+        schedule.delete()
+        assertTrue(schedule.mkdirs())
+        File(schedule, "occupied").writeText("test")
+        val graph = plainGraph()
+        standIn.signIn(app)
+        assertTrue(graph.nexusKept.load().session)
+        val nexus = graph.nexus!!
+        nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
+        shown(nexus) { it.screen == "sign_in" }
+        assertFalse(graph.nexusKept.load().session)
+    }
+
+    @Test
+    fun signOutRemovesTheSavedLoginEvenWhenTheNoteCannotBeWritten() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        // Force the sign-in file's replacement to fail while the existing file can be removed.
+        val signIn = Graph.signInFile(app)
+        assertTrue(signIn.isFile)
+        rejectSeals = true
+        val nexus = graph.nexus!!
+        nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
+        shown(nexus) { it.screen == "sign_in" }
+        until { Unit.takeIf { graph.session.state.value == SessionState.SignedOut } }
+        assertFalse(signIn.exists())
+    }
+
+    @Test
+    fun aFailedSavedKeepEndsWorkingAndDoesNotHandOffTheLogin() {
+        standIn.backendThere = true
+        val graph = plainGraph()
+        refuseSaved = true
+        val nexus = nexus(graph)
+        press(nexus)
+        shown(nexus) { it.signIn.state == "not_kept" }
+        assertEquals(SessionState.SignedOut, graph.session.state.value)
+        assertFalse(graph.nexusKept.load().session)
+        nexus.network(true)
+        nexus.workers.first().submit { }.get(10, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals("not_kept", nexus.shown.value?.signIn?.state)
+        assertEquals(SessionState.SignedOut, graph.session.state.value)
+    }
+
     private fun <T : Any> until(what: () -> T?): T = runBlocking {
         withTimeout(30_000) {
             var found = what()
@@ -176,12 +223,20 @@ class SignInTest {
         return plainGraph()
     }
 
+    @Volatile private var rejectSeals = false
+    @Volatile private var refuseSaved = false
+
     /** The app's objects made again, sealing with a box the test runner can open (it has no
      *  Keystore), and made the app's own. */
     private fun plainGraph(): Graph {
         runCatching { app.graph.nexus?.stop() }
         return Graph(app, object : org.medianexus.music.store.SecretBox {
-            override fun seal(plain: ByteArray) = plain
+            override fun seal(plain: ByteArray): ByteArray {
+                if (rejectSeals || (refuseSaved && "\"saved\":" in plain.decodeToString())) {
+                    throw java.io.IOException("test write failure")
+                }
+                return plain
+            }
             override fun open(sealed: ByteArray) = sealed
         }).also { graph ->
             App::class.java.getDeclaredField("graph").apply { isAccessible = true }.set(app, graph)
