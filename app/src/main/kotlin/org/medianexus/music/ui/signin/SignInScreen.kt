@@ -177,7 +177,7 @@ private fun SignInForm(graph: Graph, shown: NexusShown?, onBack: (() -> Unit)?) 
     var withCode by rememberSaveable { mutableStateOf(false) }
     val working = form?.state == "working" || claimed
     val keyboard = LocalSoftwareKeyboardController.current
-    val storageBlocked = form?.state == "not_kept" || form?.state == "not_opened"
+    val storageBlocked = form?.state == "not_kept"
     val ready = shown != null && !storageBlocked && !working && waitLeft == 0L && address.text.isNotBlank() && secret.text.isNotEmpty() &&
         (if (withCode) chosen.text.isNotEmpty() && again.text.isNotEmpty() else email.text.isNotBlank())
     // (Not saved: after the screen is rebuilt the person presses again, and is asked again.)

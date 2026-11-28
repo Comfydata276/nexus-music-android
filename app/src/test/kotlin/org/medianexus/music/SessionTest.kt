@@ -200,6 +200,7 @@ class SessionTest {
         keep(made(dir).kept, music(at = secure), who())
         val file = File(dir, "nexus-signin.sealed")
         val original = file.readBytes()
+        val device = File(dir, "nexus-device.sealed").apply { writeText("kept device") }
         val failed = made(dir, box = object : SecretBox {
             override fun seal(plain: ByteArray): ByteArray = error("must not write during this start")
             override fun open(sealed: ByteArray): ByteArray? {
@@ -210,6 +211,7 @@ class SessionTest {
         assertEquals(SessionState.SignedOut, settled(failed.session))
         assertEquals("not_opened", driver.shown.value?.signIn?.state)
         assertTrue(file.readBytes().contentEquals(original))
+        assertEquals("kept device", device.readText())
         assertEquals(0, driver.sent.get())
 
         val recovered = made(dir)
@@ -352,6 +354,32 @@ class SessionTest {
         val m = made(dir)
         m.session.handed(music(at = secure), who("7"))
         assertEquals(accountKey(secure, "ada"), signedIn(m.session).account.key)
+    }
+
+    @Test
+    fun test1NobodyRecordWithBlankSettingsClaimsOnlyAnExactExistingFolder() = runBlocking<Unit> {
+        val dir = folder.newFolder()
+        val first = Folders.personOf(who("8"))
+        val file = File(dir, "settings.json")
+        val cleared = org.medianexus.music.store.Settings(folder = first)
+        assertTrue(SettingsStore.save(file, cleared))
+        assertTrue(SettingsStore.save(SettingsStore.backupOf(file), cleared))
+        val record = carried(dir).apply { parentFile!!.mkdirs(); writeText("""{"person":"$first"}""") }
+        val legacy = accountKey(secure, "ada")
+        val data = File(record.parentFile, legacy).apply { mkdirs() }
+        File(data, "queue.json").writeText("{}")
+
+        val m = made(dir)
+        m.session.handed(music("grace", at = secure), who("8"))
+        assertEquals(first, signedIn(m.session).account.key)
+        assertEquals("""{"person":"$first"}""", record.readText())
+        m.session.forgotten().await()
+
+        m.session.handed(music(at = "$secure/"), who("7"))
+        val owner = signedIn(m.session).account
+        assertEquals(legacy, owner.key)
+        assertEquals("{}", File(owner.dirs.data, "queue.json").readText())
+        assertEquals(legacy, Folders(record).of(Folders.personOf(who("7"))))
     }
 
     @Test

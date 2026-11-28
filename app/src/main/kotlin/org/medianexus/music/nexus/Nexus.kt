@@ -133,6 +133,9 @@ class Nexus internal constructor(
     /** What is kept, as last put in place. Only touched on [worker]. */
     private var parts = NexusKept.Parts.NONE
 
+    /** The old sign-in is still sealed on disk. Start signed out and allow a fresh sign-in. */
+    private var savedCouldNotOpen = false
+
     private val stopped = AtomicBoolean()
     private val inFlight = java.util.concurrent.ConcurrentHashMap<String, Call>()
     private val random = SecureRandom()
@@ -221,20 +224,17 @@ class Nexus internal constructor(
 
     private fun begin() {
         toldOffline = offlineNow()
-        parts = kept.load() ?: run {
-            // Nothing can be kept on the strength of an empty start while the original
-            // session and sign-out notes are still sealed on disk.
-            val blank = NexusShown.of(JsonObject(emptyMap()))
-            showing.value = blank.copy(screen = "sign_in", signIn = blank.signIn.copy(state = "not_opened"))
-            publish()
-            return
-        }
+        val loaded = kept.load()
+        savedCouldNotOpen = loaded == null
+        parts = loaded ?: NexusKept.Parts.NONE
         // (Waits for the shared library's load if another thread has begun it: only this
         // thread waits.)
         Core.warm()
         machine = Core.nexusMachine()
         val keptJson = buildJsonObject {
-            put("device_secret", kept.deviceSecret() ?: JsonNull)
+            // The same Keystore may be busy. Leave the on-disk device key alone until
+            // a fresh sign-in succeeds. The machine starts with a provisional key.
+            put("device_secret", if (savedCouldNotOpen) JsonNull else kept.deviceSecret() ?: JsonNull)
             put("saved", parts.saved ?: JsonNull)
             // (Every slot as it was read, notes or not: the machine names one that does not read
             // by its place.)
@@ -574,6 +574,7 @@ class Nexus internal constructor(
             }
             this.parts = parts
             dirty = false
+            if (keepSaved) savedCouldNotOpen = false
             keepSaved = false
             publish()
             if (forgot) side.musicForgotten()
@@ -592,7 +593,10 @@ class Nexus internal constructor(
                 "keep" -> {
                     val (part, kept) = (value as? JsonObject)?.entries?.singleOrNull() ?: continue
                     when (part) {
-                        "device_secret" -> if (!this.kept.keepDeviceSecret(kept)) return keepFailed("the device key")
+                        "device_secret" -> {
+                            val provisional = batch.atStart && savedCouldNotOpen
+                            if (!provisional && !this.kept.keepDeviceSecret(kept)) return keepFailed("the device key")
+                        }
                         "saved" -> (kept as? JsonObject)?.let {
                             parts = parts.withSaved(it)
                             keepSaved = true
@@ -628,7 +632,12 @@ class Nexus internal constructor(
                 }
                 "show" -> (value as? JsonObject)?.let {
                     val shown = NexusShown.of(it)
-                    if (criticalKeepFailed) showKeepFailure(shown) else showing.value = shown
+                    when {
+                        criticalKeepFailed -> showKeepFailure(shown)
+                        savedCouldNotOpen && shown.screen == "sign_in" && shown.signIn.state == "idle" ->
+                            showing.value = shown.copy(signIn = shown.signIn.copy(state = "not_opened"))
+                        else -> showing.value = shown
+                    }
                 }
                 "hand" -> (value as? JsonObject)?.let { hand(it, batch.atStart) }
                 "journal" -> (value as? JsonObject)?.let { change ->
