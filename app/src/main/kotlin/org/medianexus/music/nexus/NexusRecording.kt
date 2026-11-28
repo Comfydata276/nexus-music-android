@@ -222,6 +222,7 @@ internal class ListeningJournal(
 
     // Writer's own fields. None is read by the player or the separate reader.
     private var active: JournalScope? = null
+    @Volatile private var destination: RecordingEvent? = null
     private var emit: RecordingEvent? = null
     private var waiting: JsonObject? = null
     private var retriedRead: JsonObject? = null
@@ -270,7 +271,8 @@ internal class ListeningJournal(
     }
 
     fun publish(next: JournalScope?, emit: RecordingEvent) {
-        if (started.get() && current == next) return
+        if (started.get() && current == next && destination == emit) return
+        destination = emit
         startWriter()
         // Publish job precedes all captures that can observe the new scope.
         jobs.offer(Job.Publish(next, emit))

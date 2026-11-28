@@ -217,9 +217,9 @@ internal class CleanDiagnostics(
     }
 
     fun attach(emit: RecordingEvent) {
-        if (send != null) return
+        val changed = send != emit
         send = emit
-        refresh()
+        if (changed) refresh()
     }
 
     private fun startWorker() {

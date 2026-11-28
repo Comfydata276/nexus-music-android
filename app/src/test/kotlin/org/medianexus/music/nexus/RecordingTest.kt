@@ -117,6 +117,22 @@ class RecordingTest {
         assertTrue(id.wire() in text)
     }
 
+    @Test fun replacementDiagnosticsSinkReceivesOffAndTheChoiceSurvivesReopening() {
+        val diag = recording().diagnostics
+        val previous = LinkedBlockingQueue<JsonObject>()
+        val current = LinkedBlockingQueue<JsonObject>()
+        diag.attach { previous.add(it) }
+        diag.attach { current.add(it) }
+        diag.choose(false)
+        val off = generateSequence { current.poll(2, TimeUnit.SECONDS) }
+            .first { "diagnostics_switch" in it }
+        assertEquals(JsonPrimitive(false), off["diagnostics_switch"])
+        assertFalse(previous.any { "diagnostics_switch" in it })
+        val path = File(folder.root, "nexus-diagnostics/choice")
+        runBlocking { withTimeout(8_000) { while (runCatching { path.readText() }.getOrNull() != "0") kotlinx.coroutines.delay(10) } }
+        assertEquals(false, recording().diagnostics.choice())
+    }
+
     @Test fun anAudioFaultBurstIsKeptAsOneCountedJournalEvent() {
         val service = recording()
         val scope = publish(service, 1)
