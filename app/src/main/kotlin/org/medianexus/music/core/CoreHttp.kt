@@ -19,7 +19,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.medianexus.music.nexus.FeatureEndpoint
-import org.medianexus.music.nexus.FeaturePost
 import org.medianexus.music.nexus.FeatureResult
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
@@ -908,7 +907,7 @@ internal object CoreHttp {
         return try {
             val result = runBlocking {
                 withContext(job) {
-                    endpoint.nexus.postFeature(endpoint.scope, FeaturePost("/nexus/api/requests", body.decodeToString()), endpoint::active)
+                    endpoint.nexus.postRequest(endpoint, body.decodeToString())
                 }
             }
             when (result) {

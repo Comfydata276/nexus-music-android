@@ -3,6 +3,8 @@ package org.medianexus.music.nexus
 import java.security.SecureRandom
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.TimeZone
 import java.util.concurrent.ExecutorService
@@ -148,6 +150,7 @@ class Nexus internal constructor(
     private val features = mutableMapOf<Long, FeatureFlight>()
     private val featureResults = mutableMapOf<Long, String>()
     private val featureNumbers = java.util.concurrent.atomic.AtomicLong()
+    private val requestsTurn = Mutex()
 
     private val showing = MutableStateFlow<NexusShown?>(null)
 
@@ -332,6 +335,13 @@ class Nexus internal constructor(
 
     internal fun featureOnline(scope: AppScope): Boolean =
         !stopped.get() && !offlineNow() && appSession.value?.let { it.scope == scope && it.verified && !it.offline } == true
+
+    /** The backend admits one Requests call per account. The shared search can ask for
+     *  artists and releases on parallel workers, so they take turns before submitting. */
+    internal suspend fun postRequest(endpoint: FeatureEndpoint, body: String): FeatureResult =
+        requestsTurn.withLock {
+            postFeature(endpoint.scope, FeaturePost("/nexus/api/requests", body), endpoint::active)
+        }
 
     internal suspend fun postFeature(
         scope: AppScope,
