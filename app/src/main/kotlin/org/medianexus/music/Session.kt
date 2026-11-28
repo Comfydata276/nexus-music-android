@@ -144,14 +144,13 @@ class Session(
             val person = Folders.personOf(who)
             // (A start after the sign-in was kept and before its carry-over was settled finishes
             // that one step now, the same way.)
-            if (!settle(person, music)) return@inOrder
+            if (!settle(person, music)) return@inOrder accountNotTakenOn()
             val restored = signedIn(music, who, generation)
             // **Through the same door as a sign-in**: the account is taken on before it is said
             // to be signed in. If the choices in the settings are another account's and can't
             // be put away, nobody is signed in, and the sign-in screen says why.
             if (!takeOn(restored.account.key)) {
-                signingIn.value = SignInState(choicesNotPutAway = true)
-                current.value = SessionState.SignedOut
+                accountNotTakenOn()
                 return@inOrder
             }
             publish(restored)
@@ -233,7 +232,7 @@ class Session(
         inOrder {
             if (who == null) return@inOrder
             val person = Folders.personOf(who)
-            if (!settle(person, music)) return@inOrder
+            if (!settle(person, music)) return@inOrder accountNotTakenOn()
             val now = current.value as? SessionState.SignedIn
             if (now != null && now.person == person && now.account.key == folders.of(person) &&
                 normalizeServerUrl(music.address) == now.api.server && music.name == now.api.username
@@ -298,7 +297,7 @@ class Session(
             }
         }
         if (!takeOn(account.account.key)) {
-            signingIn.value = SignInState(choicesNotPutAway = true)
+            accountNotTakenOn()
             return
         }
         settings.update { it.copy(folder = account.account.key) }
@@ -307,6 +306,13 @@ class Session(
         // admits nothing more, before this one is in front.
         letGo(current.value as? SessionState.SignedIn)
         publish(account)
+    }
+
+    private fun accountNotTakenOn() {
+        letGo(current.value as? SessionState.SignedIn)
+        signingIn.value = SignInState(choicesNotPutAway = true)
+        current.value = SessionState.SignedOut
+        settings.update { it.copy(folder = "") }
     }
 
     /** The machine set the login of this number, handed under this generation, aside

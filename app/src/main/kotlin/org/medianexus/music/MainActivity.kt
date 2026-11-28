@@ -123,8 +123,10 @@ private fun Root(graph: Graph) {
                 // as the window had.
                 SessionState.Restoring -> Unit
                 SessionState.SignedOut -> {
-                    if (shown?.screen == "signed_in" && !shown.plays) {
-                        org.medianexus.music.ui.signin.SignedInNoMusic(graph, shown)
+                    val phone by graph.session.signIn.collectAsStateWithLifecycle()
+                    val message = org.medianexus.music.ui.signin.signedInWithoutPlaybackMessage(shown, phone)
+                    if (message != null && shown != null) {
+                        org.medianexus.music.ui.signin.SignedInNoMusic(graph, shown, message)
                     } else {
                         SignInScreen(graph)
                     }

@@ -56,7 +56,7 @@
     <string name="password">Password</string>
     <string name="connect">Connect</string>
     <string name="connecting">Connecting…</string>
-    <string name="sign_in_choices_not_put_away">Couldn\'t put away the other account\'s pins and list choices on this phone, so you haven\'t been signed in. Try again.</string>
+    <string name="sign_in_choices_not_put_away">Couldn’t put your account on this phone. Sign out, or close and reopen Nexus Music to try again.</string>
     <string name="password_kept">Your password goes only to your Nexus server, and is never kept on this phone.</string>
     <string name="music_local_network_why">Your music server is on your home network. Android will now ask whether Nexus Music may find and connect to nearby devices: that is what lets it reach your music.</string>
     <string name="music_local_network_refused">Can\'t reach your music server. Nexus Music isn\'t allowed to reach devices on your home network, and if your music server is there, that may be why.</string>

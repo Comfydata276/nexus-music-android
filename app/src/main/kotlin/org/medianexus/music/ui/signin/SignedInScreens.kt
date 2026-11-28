@@ -29,19 +29,24 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.medianexus.music.Graph
 import org.medianexus.music.R
+import org.medianexus.music.SignInState
 import org.medianexus.music.nexus.NexusShown
 import org.medianexus.music.ui.parts.TextButton
 import org.medianexus.music.ui.settings.NexusAccount
 import org.medianexus.music.ui.theme.Theme
 
-/**
- * **Signed in at the Nexus server, with no music login yet** (the machine's screen is
- * `signed_in`, and nothing has been handed to the player): a plain page that stays, saying so in
- * the agreed words, with what the machine says of the music login beneath, the server's notice,
- * and the whole Account section (who, Sign out, devices, password).
- */
+/** A live backend session can be signed out even if the phone has no playable account. */
+@androidx.annotation.StringRes
+internal fun signedInWithoutPlaybackMessage(shown: NexusShown?, phone: SignInState): Int? = when {
+    shown?.screen != "signed_in" -> null
+    phone.choicesNotPutAway -> R.string.sign_in_choices_not_put_away
+    !shown.plays -> R.string.signed_in_no_music
+    else -> null
+}
+
+/** The account and Sign out remain available while the phone has no playable account. */
 @Composable
-fun SignedInNoMusic(graph: Graph, shown: NexusShown) {
+fun SignedInNoMusic(graph: Graph, shown: NexusShown, @androidx.annotation.StringRes message: Int) {
     val colors = Theme.colors
     Column(
         Modifier
@@ -54,7 +59,7 @@ fun SignedInNoMusic(graph: Graph, shown: NexusShown) {
     ) {
         Column(Modifier.widthIn(max = 520.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             BasicText(stringResource(R.string.account), Modifier.semantics { heading() }, style = Theme.type.hero.copy(color = colors.text))
-            BasicText(stringResource(R.string.signed_in_no_music), Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.body.copy(color = colors.text))
+            BasicText(stringResource(message), Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.body.copy(color = colors.text))
             NexusNotice(graph, shown)
             Spacer(Modifier.height(8.dp))
             NexusAccount(graph)

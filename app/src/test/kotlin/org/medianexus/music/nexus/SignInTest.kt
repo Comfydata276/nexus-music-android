@@ -181,6 +181,28 @@ class SignInTest {
         assertEquals(SessionState.SignedOut, graph.session.state.value)
     }
 
+    @Test
+    fun aKeptSignInThatCannotBeTakenOnOffersSignOut() {
+        standIn.backendThere = true
+        val graph = plainGraph()
+        graph.settings.update { it.copy(sharedFor = "old-account", pinnedPlaylists = listOf("a")) }
+        val choices = File(app.filesDir, "accounts/old-account/in-step.json")
+        assertTrue(choices.mkdirs())
+        File(choices, "occupied").writeText("test")
+        val nexus = nexus(graph)
+        press(nexus)
+        val signedIn = shown(nexus) { it.screen == "signed_in" && it.plays }
+        until { graph.session.signIn.value.takeIf { it.choicesNotPutAway } }
+        assertEquals(SessionState.SignedOut, graph.session.state.value)
+        assertEquals(
+            org.medianexus.music.R.string.sign_in_choices_not_put_away,
+            org.medianexus.music.ui.signin.signedInWithoutPlaybackMessage(signedIn, graph.session.signIn.value),
+        )
+        nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
+        shown(nexus) { it.screen == "sign_in" }
+        assertFalse(graph.nexusKept.load()!!.session)
+    }
+
     private fun <T : Any> until(what: () -> T?): T = runBlocking {
         withTimeout(30_000) {
             var found = what()
