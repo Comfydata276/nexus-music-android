@@ -344,7 +344,13 @@ object Core {
     /** Whether an answer to the Nexus server's `hello` is the Nexus server's ([backend]); if
      *  not, why in a word ("redirect", "status", "empty", "too_large", "cut", "not_hello"). */
     @Serializable
-    class HelloFound(val backend: Boolean, val why: String)
+    class HelloFound(
+        val backend: Boolean,
+        val why: String,
+        val backendId: String? = null,
+        /** Valid hello with an omitted default means on. Null means an invalid hello. */
+        val diagnosticsDefault: Boolean? = null,
+    )
 
     /**
      * `nexus::proto::classify`: whether an answer to `GET /nexus/api/hello` is the backend's,
