@@ -31,6 +31,7 @@ import org.medianexus.music.core.Outcome
 import org.medianexus.music.core.SignInDoor
 import org.medianexus.music.core.Words
 import org.medianexus.music.net.LocalNetwork.Nearness
+import org.medianexus.music.nexus.FeatureEndpoint
 import org.medianexus.music.store.Account
 
 /**
@@ -224,12 +225,12 @@ class Requests internal constructor(
     private fun directAllowed(): Boolean = nexusRoute == null || nexusRoute.invoke()?.let { it.direct && it === selected } == true
 
     /** Move the offers and invalidate any direct check already on a worker. */
-    internal suspend fun select(route: RequestsRoute.Usable?) = withContext(io) {
+    internal suspend fun select(route: RequestsRoute.Usable?, leaving: Boolean = false) = withContext(io) {
         turn.withLock {
             if (selected === route) return@withLock
             if (selected?.direct == true && selected !== route) {
                 giveUpAttempt()
-                open?.let { previous ->
+                if (!leaving) open?.let { previous ->
                     open = null
                     synchronized(owner) { live = 0 }
                     afterwards { Core.gateClose(previous.session) }
@@ -1010,7 +1011,7 @@ class Requests internal constructor(
 
     /** Forgets the sign-in in front of Lidarr and hands its token back to the service.
      *  Under [turn]. */
-    private fun dropSignIn(settings: RequestsSettings) {
+    private fun dropSignIn(settings: RequestsSettings, departure: FeatureEndpoint? = null) {
         giveUpAttempt()
         val was = open
         open = null
@@ -1039,7 +1040,9 @@ class Requests internal constructor(
                     // Closing waits out a renewal that is under way, so the token handed
                     // back is the one that is good now.
                     val token = was?.let { Core.gateClose(it.session) }?.takeIf { it.isNotEmpty() } ?: onFile?.secret
-                    if (token != null && (nexusRoute == null || epoch != null)) Core.gateGiveUp(door, token, place, home, epoch)
+                    if (token != null && (nexusRoute == null || epoch != null || departure != null)) {
+                        Core.gateGiveUp(door, token, place, home, epoch, departure)
+                    }
                     // Tidied away only if what is kept is still the very token that was
                     // handed back (its first deletion failed, say). Anything else there by
                     // now is a later sign-in's, and is not this one's to take.
@@ -1080,11 +1083,11 @@ class Requests internal constructor(
      * then nobody is handed this account's requests, or any other's (see
      * [RequestsOwners]).
      */
-    suspend fun leave() = withContext(NonCancellable + io) {
+    internal suspend fun leave(departure: FeatureEndpoint? = null) = withContext(NonCancellable + io) {
         turn.withLock {
             if (kept.exists() || opened) {
                 read()
-                dropSignIn(settingsNow.value)
+                dropSignIn(settingsNow.value, departure)
                 if (!unreadable) write(settingsNow.value.copy(signedIn = "", signingIn = false))
             }
             // (Whatever else was or wasn't there: the key and the token leave the phone.)

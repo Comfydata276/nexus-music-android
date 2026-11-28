@@ -35,6 +35,7 @@ import org.medianexus.music.core.StandIn
 import org.medianexus.music.graph
 import org.medianexus.music.requests.RequestsNow
 import org.medianexus.music.requests.RequestsRoute
+import org.medianexus.music.requests.RequestsSettings
 import org.medianexus.music.requests.RequestsSecrets
 import org.medianexus.music.requests.ServerBatch
 import org.medianexus.music.store.SecretBox
@@ -389,6 +390,43 @@ class SignInTest {
             }
         } finally {
             dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun signingOutOfDirectRequestsRevokesTheRememberedBrowserToken() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        val nexus = graph.nexus!!
+        until { nexus.appSession.value?.takeIf { it.verified } }
+        val account = until { graph.accounts.state.value }
+        val dir = File(app.noBackupFilesDir, "requests/${account.account.key}")
+        val secrets = RequestsSecrets(dir, object : SecretBox {
+            override fun seal(plain: ByteArray) = plain
+            override fun open(sealed: ByteArray) = sealed
+        }, account.account.server, account.account.username)
+        val revokedAfterSignOut = java.util.concurrent.atomic.AtomicReference<Boolean>()
+        StandIn { _, reply ->
+            revokedAfterSignOut.set(nexus.appSession.value == null)
+            reply.json("{}")
+        }.use { service ->
+            val settings = RequestsSettings(address = service.address, service = service.address, client = "fixture", signedIn = "Tester")
+            account.account.dirs.data.mkdirs()
+            File(account.account.dirs.data, "requests.json").writeText(Json.encodeToString(RequestsSettings.serializer(), settings))
+            val token = "direct-test-token"
+            assertTrue(secrets.keepToken(Core.servicePlace(service.address)!!, token))
+            standIn.answer = { request ->
+                if (request.url.encodedPath == "/nexus/api/requests") standIn.feature("requests_unconfigured")
+                else standIn.there(request)
+            }
+            graph.requestsRouter.refresh()
+            until { graph.requestsRouter.directEndpoint() }
+            until { (account.requestsNow.value as? RequestsNow.Off) }
+            nexus.press(buildJsonObject { put("sign_out", buildJsonObject {}) })
+            assertTrue(service.awaitAsked { it.line == "POST /application/o/revoke/" })
+            until { Unit.takeUnless { secrets.exist() } }
+            assertTrue(until { revokedAfterSignOut.get() })
+            assertTrue(service.asked.single().body.contains("token=$token"))
         }
     }
 

@@ -455,6 +455,11 @@ internal object CoreHttp {
      *  (MusicBrainz closes one that has been idle for fifteen seconds). */
     private class RequestFence(val permits: () -> Boolean)
 
+    internal class DirectGoodbye(val endpoint: FeatureEndpoint, val origin: String) {
+        val sent = java.util.concurrent.atomic.AtomicBoolean()
+        fun allowed(): Boolean = endpoint.nexus.allowsDirectGoodbye(endpoint.scope)
+    }
+
     private class Lines(dress: (OkHttpClient.Builder) -> Unit) {
         private val base: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(CONNECT_SECONDS, TimeUnit.SECONDS)
@@ -526,6 +531,7 @@ internal object CoreHttp {
     ) {
         private val began = System.nanoTime()
         @Volatile var directAtStart = directRequests?.invoke()
+        @Volatile internal var goodbye: DirectGoodbye? = null
 
         /** The limit a request of this goes under now, not having been stopped; [SPENT] if
          *  the whole of its time has gone, and then no request is made at all. */
@@ -880,6 +886,10 @@ internal object CoreHttp {
         held.doing?.leave(held.call)
     }
 
+    internal fun allowDirectGoodbye(operation: Long, endpoint: FeatureEndpoint, origin: String) {
+        doings[operation]?.goodbye = DirectGoodbye(endpoint, origin)
+    }
+
     internal fun pinDirectEpoch(operation: Long, epoch: Long) {
         val doing = doings[operation] ?: return
         doing.directAtStart = doing.directAtStart?.takeIf { it.identity == epoch }
@@ -962,7 +972,13 @@ internal object CoreHttp {
         val doing: Doing? = if (asked.operation == 0L) null else doings[asked.operation] ?: return stopped
         val select = directRequests?.takeIf { asked.line == "lidarr" }
         val nexus = doing?.nexus?.first
-        val permit = if (nexus != null) {
+        val goodbye = doing?.goodbye
+        val url = asked.url.toHttpUrlOrNull() ?: return failed(BAD_ADDRESS)
+        val permit = if (goodbye != null) {
+            if (asked.line != "lidarr" || asked.method != "POST" || asked.bound != goodbye.origin ||
+                origin(url) != goodbye.origin || url.encodedPath != "/application/o/revoke/" || !goodbye.allowed()) return stopped
+            RequestFence { goodbye.allowed() && !doing.isStopped && unsent() == null && goodbye.sent.compareAndSet(false, true) }
+        } else if (nexus != null) {
             if (!nexus.active() || doing?.isStopped == true || asked.line == "lidarr") return stopped
             RequestFence { nexus.active() && doing?.isStopped != true && unsent() == null }
         } else if (select != null) {
@@ -978,7 +994,6 @@ internal object CoreHttp {
             }
         }
 
-        val url = asked.url.toHttpUrlOrNull() ?: return failed(BAD_ADDRESS)
         // A secret goes to the place it was given for and nowhere else, whatever address the
         // library was handed or made of it.
         if (asked.bound != null && carriesSecret(asked) && origin(url) != asked.bound) return failed(ELSEWHERE)

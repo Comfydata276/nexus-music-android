@@ -145,7 +145,7 @@ class Nexus internal constructor(
     private val featureSession = MutableStateFlow<AppSession?>(null)
     internal val appSession: StateFlow<AppSession?> = featureSession
     internal val listening = AccountListening(this)
-    private var liveApp: AppSession? = null
+    @Volatile private var liveApp: AppSession? = null
     private var failedLifeMove: AppScope? = null
     private val features = mutableMapOf<Long, FeatureFlight>()
     private val featureResults = mutableMapOf<Long, String>()
@@ -335,6 +335,10 @@ class Nexus internal constructor(
 
     internal fun featureOnline(scope: AppScope): Boolean =
         !stopped.get() && !offlineNow() && appSession.value?.let { it.scope == scope && it.verified && !it.offline } == true
+
+    /** Only the original direct selection's token can be revoked after its session ends. */
+    internal fun allowsDirectGoodbye(scope: AppScope): Boolean =
+        !stopped.get() && !offlineNow() && liveApp?.let { it.scope == scope && !it.offline } != false
 
     /** The backend admits one Requests call per account. The shared search can ask for
      *  artists and releases on parallel workers, so they take turns before submitting. */

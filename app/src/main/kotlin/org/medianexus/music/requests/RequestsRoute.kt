@@ -15,7 +15,7 @@ import org.medianexus.music.nexus.Nexus
 import org.medianexus.music.store.Account
 
 internal sealed interface RequestsRoute {
-    data class Unavailable(val words: String) : RequestsRoute
+    data class Unavailable(val words: String, val sessionEnded: Boolean = false) : RequestsRoute
 
     class Usable(
         val person: String,
@@ -48,7 +48,7 @@ internal class RequestsRouter {
                 else -> CHECKING
             }
             if (session == null || session.offline || !session.verified || looked == 0) {
-                selected.value = RequestsRoute.Unavailable(words)
+                selected.value = RequestsRoute.Unavailable(words, sessionEnded = session == null)
                 return@collectLatest
             }
             val prior = usable()?.takeIf { it.status.scope == session.scope }

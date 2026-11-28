@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.medianexus.music.core.Core
 import org.medianexus.music.core.LibraryLists
+import org.medianexus.music.nexus.FeatureEndpoint
 import org.medianexus.music.store.Account
 import org.medianexus.music.store.writeAtomically
 
@@ -155,6 +156,7 @@ class RequestsOwners internal constructor(
         internal val state = MutableStateFlow(first)
         @Volatile internal var left = false
         internal var follow: Job? = null
+        internal var directForDeparture: FeatureEndpoint? = null
 
         /** Where the account's requests stand for this sign-in. */
         val now: StateFlow<RequestsNow> = state.asStateFlow()
@@ -193,13 +195,18 @@ class RequestsOwners internal constructor(
         val choice = router.forAccount(seat.account)
         val existing = owners[seat.account.key]
         if (choice == null) {
-            if (existing?.seat === seat) {
-                existing.requests.select(null)
-                existing.present(null)
+            // The app scope closes before the account's departure reaches this worker.
+            // Keep its direct selection for that departure's token revocation only.
+            val unavailable = route as? RequestsRoute.Unavailable
+            if (unavailable != null && !unavailable.sessionEnded) {
+                seat.directForDeparture = null
+                if (existing?.seat === seat) existing.requests.select(null)
             }
+            if (existing?.seat === seat) existing.present(null)
             seat.state.value = RequestsNow.Unavailable((route as? RequestsRoute.Unavailable)?.words.orEmpty())
             return
         }
+        seat.directForDeparture = choice.status.takeIf { choice.direct }
         if (choice.direct && !marker(seat.account).exists()) {
             if (existing?.seat === seat) {
                 existing.requests.select(choice)
@@ -266,8 +273,8 @@ class RequestsOwners internal constructor(
         try {
             owner.pages.settled()
         } finally {
-            owner.requests.select(null)
-            owner.requests.leave()
+            owner.requests.select(null, leaving = true)
+            owner.requests.leave(seat.directForDeparture)
         }
     }
 
