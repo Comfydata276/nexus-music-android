@@ -64,11 +64,13 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
         }
     }
 
-    /** For a cold start: with [Broken.WORKERS_HELD], the machine of the graph about to be made is
-     *  held at its first instruction, so it never starts, until the test ends. */
+    /** For a cold start: with [Broken.WORKERS_HELD], the machine of the graph about to be made
+     *  starts (its start is local: it is what publishes the kept login, the review of P7's MUST 1),
+     *  and then **every request it makes is held before it is sent**, until the test ends; its own
+     *  thread and its OkHttp scheduler are held after the start ([coldAcknowledged]). */
     fun holdTheLauncherFromItsStart() {
         if (broken != Broken.WORKERS_HELD) return
-        Nexus.gate = gate("machine from its start")
+        Nexus.beforeAsk = { _ -> requestHeld.set(1); try { holding.await() } catch (_: InterruptedException) {} finally { requestHeld.set(2) } }
     }
 
     /** The app is in use (its screens in front). */
@@ -115,7 +117,6 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
     /** Checks that every hold taken is still in place, after `what` completed. */
     fun stillStuck(what: String) {
         for ((name, state) in held) assertTrue("$what: the hold of the $name had let go", state.get() != 2)
-        if (coldHeld) assertEquals("$what: the machine not held at its start", 1, held["machine from its start"]?.get())
         val client = client ?: return
         when {
             broken == Broken.WORKERS_HELD -> {
@@ -169,7 +170,14 @@ internal class ComponentHolds(private val broken: Broken, private val standIn: B
      */
     fun coldAcknowledged(graph: Graph) {
         if (broken == Broken.WORKERS_HELD) {
-            until("the machine held at its start") { held["machine from its start"]?.get() == 1 }
+            until("the machine has started") { graph.nexus?.started == true }
+            val client = graph.nexus!!
+            this.client = client
+            // (Its first ask, the start's `hello`, held before it is sent.)
+            until("the start's first request is held before it is sent") { requestHeld.get() == 1 }
+            sentWhenHeld = client.sent.get()
+            hold("machine", client.workers[0])
+            holdLock("its OkHttp scheduler", client.runner)
             coldHeld = true
         } else {
             stuck(graph)

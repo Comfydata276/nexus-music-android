@@ -291,6 +291,9 @@ class InStep(
      */
     private suspend fun once(began: Long, still: () -> Boolean, made: Boolean?, pass: Pass): Outcome? {
         pass.disagreed = false
+        // (Nothing is even read where this account may not share: another person handed the
+        // same music user must never be shown this one's record. See `Account.ownsSharedRecord`.)
+        if (!still()) return Outcome.NOT_NOW
         // 1. Ask the server. Nothing of the phone's state is taken yet: what the person
         // does while these answers are on their way is in what is decided.
         val listed = server.playlists()

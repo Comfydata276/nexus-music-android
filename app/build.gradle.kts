@@ -141,6 +141,9 @@ tasks.withType<Test>().configureEach {
     // were up to date, or took their last results from its cache.
     inputs.dir(coreOut.map { it.dir("host") }).withPropertyName("sharedCoreForThisMachine").withPathSensitivity(PathSensitivity.RELATIVE)
     systemProperty("java.library.path", coreOut.get().dir("host").asFile.path)
+    // The JVM has no Android Keystore: the app's own graph, made by Robolectric, seals with a box
+    // that needs none (a debug build only: `App.boxForTheJvm`).
+    systemProperty("nexus.unsealed", "1")
 }
 androidComponents {
     onVariants { variant ->

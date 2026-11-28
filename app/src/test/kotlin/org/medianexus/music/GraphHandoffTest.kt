@@ -50,7 +50,7 @@ class GraphHandoffTest {
 
     @After
     fun stop() {
-        graphs.forEach { it.scope.cancel() }
+        graphs.forEach { it.nexus?.stop(); it.scope.cancel() }
         server.stop()
     }
 
@@ -138,9 +138,13 @@ class GraphHandoffTest {
 
     @Test
     fun theSavedPasswordStartTakesTheAccountOnBeforeAnyoneIsSignedInOrSignsNobodyIn() {
-        // Ada is signed in, and what the sign-in left is kept.
+        // Ada is signed in, and what the sign-in left is kept. (At an HTTPS address, as the Nexus
+        // server hands no other and the machine reads no other at a start; nothing is asked of
+        // it here. Offline, so that the machine's start asks nothing of the backend either.)
         val first = graph()
-        assertTrue(signIn(first, "ada"))
+        first.settings.update { it.copy(offline = true) }
+        first.session.signIn("https://127.0.0.1:9", "ada", "a password")
+        assertTrue(signedIn(first, "ada"))
         // The choices in the settings are another account's (a change of account that did
         // not finish), and they can't be put away: the disk won't take the file.
         first.settings.update { it.copy(sharedFor = "someone-else", pinnedPlaylists = listOf("theirs")) }
@@ -150,7 +154,7 @@ class GraphHandoffTest {
         away.mkdirs()
         // The app starts, with Ada's saved password. She is not signed in over them: the
         // sign-in screen says why, and the choices are still the other account's.
-        val second = graph()
+        val second = graph().also { it.started() }
         assertEquals(SessionState.SignedOut, runBlocking { withTimeout(30_000) { second.session.restored() } })
         assertTrue(second.session.signIn.value.choicesNotPutAway)
         assertNull(second.accounts.state.value)
@@ -158,7 +162,7 @@ class GraphHandoffTest {
         second.scope.cancel()
         // Once they can be put away, the next start signs her in, with the choices hers.
         away.delete()
-        val third = graph()
+        val third = graph().also { it.started() }
         assertTrue(runBlocking { withTimeout(30_000) { third.session.restored() } } is SessionState.SignedIn)
         assertTrue(signedIn(third, "ada"))
         assertEquals(key("ada"), third.settings.value.sharedFor)

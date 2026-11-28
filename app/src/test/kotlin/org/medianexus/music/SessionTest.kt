@@ -106,25 +106,152 @@ class SessionTest {
 
     /** What the machine keeps at a sign-in, in its own shapes, as a cold start reads it. */
     private fun keep(kept: NexusKept, music: KeptMusic, who: KeptAccount) {
-        kept.save(
+        kept.save(NexusKept.Parts(savedJson(music, who), emptyList()))
+    }
+
+    private fun savedJson(music: KeptMusic, who: KeptAccount, signOut: JsonObject? = null): JsonObject = buildJsonObject {
+        put("nexus", who.backend); put("backend_id", who.backendId); put("account", who.account.toLong()); put("email", "ada@example.org"); put("name", "Ada")
+        put("device", 1); put("restore", 1); put("life", 1); put("change", 1); put("session", "ab".repeat(32))
+        if (signOut != null) put("sign_out", signOut)
+        put("music", buildJsonObject { put("address", music.address); put("name", music.name); put("salt", music.handed.salt); put("token", music.handed.token); put("count", music.handed.count.toLong()) })
+    }
+
+    /** **The real start seam**: the shared core's machine, started over what is kept, its Hand
+     *  and Forget fed to the session exactly as the app does (`Graph.makeNexus`). Nothing is
+     *  asked (Offline is on, and no ask is let out anyway). */
+    private fun machine(m: Made): org.medianexus.music.nexus.Nexus = org.medianexus.music.nexus.Nexus(
+        kept = m.kept,
+        side = object : org.medianexus.music.nexus.Nexus.Side {
+            override fun handLogin(music: KeptMusic, account: KeptAccount?, generation: String) = m.session.handed(music, account, generation)
+            override fun restored(music: KeptMusic, account: KeptAccount, generation: String) = m.session.restoredFrom(music, account, generation)
+            override fun started() = m.session.started()
+            override fun signedInAs(account: KeptAccount, music: KeptMusic?) {
+                m.session.signedInAs(account, music)
+            }
+            override fun notKept() = m.session.notKept()
+            override fun musicForgotten() {
+                m.session.forgotten()
+            }
+            override fun inside(host: String): Boolean? = null
+            override val permission: Boolean? get() = null
+        },
+        userAgent = "test", appVersion = "0.41.0", deviceName = "test phone", offlineNow = { true },
+    ).also { machines += it; it.start() }
+
+    private val machines = java.util.concurrent.CopyOnWriteArrayList<org.medianexus.music.nexus.Nexus>()
+
+    @After
+    fun stopMachines() = machines.forEach { it.stop() }
+
+    /** Waits until the session has left Restoring (the machine's start is done). */
+    private fun settled(session: Session): SessionState = runBlocking { withTimeout(10_000) { session.restored() } }
+
+    @Test
+    fun nothingIsPublishedBeforeTheMachineHasStarted() = runBlocking<Unit> {
+        val dir = folder.newFolder()
+        keep(made(dir).kept, music(at = secure), who())
+        val again = made(dir)
+        kotlinx.coroutines.delay(300)
+        assertEquals("published from the file, without the machine", SessionState.Restoring, again.session.state.value)
+        machine(again)
+        assertTrue(settled(again.session) is SessionState.SignedIn)
+    }
+
+    @Test
+    fun aSignedOutLoginFoundAtStartIsForgottenAndNeverPublished() = runBlocking<Unit> {
+        val dir = folder.newFolder()
+        val first = made(dir)
+        val backend = who().backendId
+        val secret = "cd".repeat(32)
+        // A sign-out cut between keeping its note and forgetting the sign-in.
+        first.kept.save(
             NexusKept.Parts(
-                buildJsonObject {
-                    put("nexus", who.backend); put("backend_id", who.backendId); put("account", who.account.toLong()); put("email", "ada@example.org"); put("name", "Ada")
-                    put("device", 1); put("restore", 1); put("life", 1); put("change", 1); put("session", "ab".repeat(32))
-                    put("music", buildJsonObject { put("address", music.address); put("name", music.name); put("salt", music.handed.salt); put("token", music.handed.token); put("count", music.handed.count.toLong()) })
-                },
-                emptyList(),
+                savedJson(music(at = secure), who(), signOut = buildJsonObject { put("session", 5); put("secret", secret) }),
+                listOf(buildJsonObject {
+                    put("request", 9); put("revoke", buildJsonObject { put("session", 5); put("secret", secret) })
+                    put("nexus", who().backend); put("backend_id", backend); put("restore", 1); put("made_ms", System.currentTimeMillis())
+                }),
             ),
         )
+        val again = made(dir)
+        machine(again)
+        assertEquals(SessionState.SignedOut, settled(again.session))
+        withTimeout(10_000) { while (again.kept.load().saved != null) kotlinx.coroutines.delay(10) }
+        assertEquals("the note is kept", 1, again.kept.load().notes.size)
+    }
+
+    @Test
+    fun aSignInFileThatDoesNotOpenIsRetiredAndNobodyIsSignedIn() = runBlocking<Unit> {
+        val dir = folder.newFolder()
+        File(dir, "nexus-signin.sealed").writeText("not what the machine wrote")
+        val again = made(dir)
+        machine(again)
+        assertEquals(SessionState.SignedOut, settled(again.session))
+        assertFalse("its old bytes were left to be taken up later", File(dir, "nexus-signin.sealed").exists())
+    }
+
+    @Test
+    fun notesThatDoNotReadAreForgottenByTheirOwnPlaces() {
+        val good = buildJsonObject { put("backend_id", "b"); put("revoke", buildJsonObject { put("session", 3) }) }
+        val parts = NexusKept.Parts(null, listOf(JsonPrimitive("bad"), JsonPrimitive("worse"), good))
+        // The machine names the first two by the places it was handed them at.
+        val after = parts.withoutNoteAt(0).withoutNoteAt(1)
+        assertEquals(listOf(good), after.notes)
+    }
+
+    @Test
+    fun theCarryOverIsSettledOnceEvenWithNoMusicLogin() = runBlocking<Unit> {
+        val m = made(before = secure to "ada")
+        // The first to sign in on this version is handed no music login: nobody gets the folder.
+        assertTrue(m.session.signedInAs(who("7"), null))
+        m.session.handed(music("ada", at = secure), who("8"))
+        val grace = signedIn(m.session)
+        assertNotEquals(accountKey(secure, "ada"), grace.account.key)
+        // Nor the first person, handed it later.
+        m.session.forgotten().await()
+        m.session.handed(music("ada", at = secure), who("7"))
+        val ada = withTimeout(10_000) { m.session.state.first { it is SessionState.SignedIn && (it as SessionState.SignedIn).person == Folders.personOf(who("7")) } } as SessionState.SignedIn
+        assertEquals(Folders.personOf(who("7")), ada.account.key)
+    }
+
+    @Test
+    fun anotherPersonHandedTheSameMusicUserIsAnotherAccountAndTheFirstLoginIsLetGo() = runBlocking<Unit> {
+        val m = made()
+        m.session.handed(music(), who("7"))
+        val ada = signedIn(m.session)
+        m.session.handed(music(salt = "e".repeat(64)), who("8"))
+        val grace = withTimeout(10_000) { m.session.state.first { it is SessionState.SignedIn && it !== ada } } as SessionState.SignedIn
+        assertNotEquals("renewed in place for someone else", ada.account.key, grace.account.key)
+        assertTrue("the first person's login still admitted", ada.api.login.isRefused)
+    }
+
+    @Test
+    fun aQueueWrittenAfterSignOutIsNotPutBack() = runBlocking<Unit> {
+        val m = made()
+        m.session.handed(music(), who())
+        val ada = signedIn(m.session)
+        val data = ada.account.dirs.data.apply { mkdirs() }
+        File(data, "queue.json").writeText("{}")
+        m.session.forgotten().await()
+        // The queue's saver, which outlives the account, writes its last snapshot late.
+        val late = runCatching { org.medianexus.music.store.writeAtomically(File(data, "queue.json"), "{\"late\":1}".toByteArray()) }
+        assertTrue(late.isFailure)
+        assertFalse(File(data, "queue.json").exists())
+        // Signed in again, the account's files are its own to write.
+        m.session.handed(music(), who())
+        signedIn(m.session)
+        org.medianexus.music.store.writeAtomically(File(data, "queue.json"), "{}".toByteArray())
+        assertTrue(File(data, "queue.json").exists())
     }
 
     @Test
     fun aColdStartPlaysFromWhatSignInLeftAndAsksNothing() = runBlocking<Unit> {
         val dir = folder.newFolder()
         val first = made(dir)
-        keep(first.kept, music(), who())
-        // The app starts again over what was kept.
+        keep(first.kept, music(at = secure), who())
+        // The app starts again over what was kept: through the machine's start.
         val again = made(dir)
+        machine(again)
         val now = signedIn(again.session)
         assertEquals("ada", now.account.username)
         assertEquals(TEST_SALT, now.api.login.now.salt)

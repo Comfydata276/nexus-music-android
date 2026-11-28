@@ -43,7 +43,8 @@ fun writeAtomically(file: File, durable: Boolean = false, write: (java.io.Output
         throw e
     }
     try {
-        Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        // (Refused, after the temp file is gone, if the file is one a sign-out has fenced.)
+        Fence.putting(file) { Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE) }
     } catch (e: IOException) {
         temp.delete()
         throw e
@@ -115,4 +116,71 @@ fun siblingWithExtension(file: File, extension: String): File {
     val dot = name.lastIndexOf('.')
     val stem = if (dot > 0) name.substring(0, dot) else name
     return File(file.parentFile, "$stem.$extension")
+}
+
+/**
+ * **What earlier versions kept of a music server's password, and the jam relay's key, removed
+ * unread** (the backend design's section 11): the files themselves and what an interrupted write
+ * of either left beside them (`.password.sealed.<run>-<n>.tmp`). Never opened. True once none is
+ * left and the folder's list has reached the disk; false if one could not be removed (it is tried
+ * again at the next start).
+ */
+fun sweepLegacySecrets(dir: File): Boolean {
+    var gone = true
+    var removed = false
+    for (file in dir.listFiles().orEmpty()) {
+        val name = file.name
+        val legacy = LEGACY_SECRETS.any { name == it || (name.startsWith(".$it.") && name.endsWith(".tmp")) }
+        if (!legacy) continue
+        if (file.delete()) removed = true else if (file.exists()) gone = false
+    }
+    return gone && (!removed || syncDir(dir))
+}
+
+/** The earlier versions' secret files, by name. */
+private val LEGACY_SECRETS = listOf("password.sealed", "relay-key.sealed")
+
+/**
+ * **What a sign-out removes stays removed** (the backend design's section 11): the queue and
+ * Recently played of an account signed out of are deleted, and no writer still running for it
+ * (the queue's saver, which outlives the account; a history write already under way; a service
+ * saving the queue as it lets go) can put either back. A file is fenced by its folder and name;
+ * every file put in place by [writeAtomically] is checked at its rename, under the same lock as
+ * the deletion, so a rename is either before the deletion (and deleted by it) or refused.
+ */
+object Fence {
+    private val closed = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+    private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    private fun keyOf(dir: File): String = dir.absolutePath
+
+    private fun lockOf(dir: File): Any = locks.getOrPut(keyOf(dir)) { Any() }
+
+    /** Puts `file` in place by `move`, unless it is fenced: then nothing, and this throws. */
+    @Throws(IOException::class)
+    internal fun putting(file: File, move: () -> Unit) {
+        val dir = file.absoluteFile.parentFile ?: return move()
+        synchronized(lockOf(dir)) {
+            if (closed[keyOf(dir)]?.contains(file.name) == true) throw IOException("Signed out: not put back")
+            move()
+        }
+    }
+
+    /** Fences these files of `dir` and deletes them, in one step under the fence. True if none
+     *  is left (and the folder's list has reached the disk). */
+    fun close(dir: File, names: Collection<String>): Boolean = synchronized(lockOf(dir)) {
+        closed.merge(keyOf(dir), names.toSet()) { a, b -> a + b }
+        var gone = true
+        var removed = false
+        for (name in names) {
+            val one = File(dir, name)
+            if (one.delete()) removed = true else if (one.exists()) gone = false
+        }
+        gone && (!removed || syncDir(dir))
+    }
+
+    /** The folder is an account's that is signed in again: its files may be written. */
+    fun open(dir: File) {
+        synchronized(lockOf(dir)) { closed.remove(keyOf(dir)) }
+    }
 }

@@ -14,6 +14,15 @@ data class Account(
      *  cover's address has `artworkIdOf` instead). */
     val key: String,
     val dirs: AccountDirs,
+    /**
+     * **Whether this person may read and write what the music server keeps per music user for
+     * "Keep my devices in step"** (its saved queue and the private record playlist). Two people
+     * at one Nexus server can be handed the same music user, and that record names no Nexus
+     * account: it is the person's only where the phone can tell it is theirs, the first person
+     * to whom the folder this phone had was carried over (section 11). Anyone else's devices
+     * are not kept in step through it (held back, until the record is kept by Nexus account).
+     */
+    val ownsSharedRecord: Boolean = true,
 )
 
 /**

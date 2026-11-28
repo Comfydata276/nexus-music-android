@@ -17,7 +17,7 @@ class App : Application(), SingletonImageLoader.Factory {
         // Before anything is made, since what exists is decided as it is.)
         org.medianexus.music.sync.DebugStep.atStart(this)
         org.medianexus.music.requests.DebugRequests.atStart(this)
-        graph = Graph(this)
+        graph = Graph(this, boxForTheJvm() ?: org.medianexus.music.store.KeystoreBox())
         // (Only now is the Nexus server's part of the app made: see Graph.started.)
         graph.started()
     }
@@ -28,3 +28,19 @@ class App : Application(), SingletonImageLoader.Factory {
 
 /** The app's long-lived objects, from anywhere that has a context. */
 val Context.graph: Graph get() = (applicationContext as App).graph
+
+/**
+ * **For the unit tests on the JVM only**, which have no Android Keystore: what the app's own
+ * graph seals with there (a debug build, run by Gradle's unit-test task, which sets
+ * `nexus.unsealed`). Never on a phone: a release build has no debug flag, and nothing on Android
+ * sets that property.
+ */
+private fun boxForTheJvm(): org.medianexus.music.store.SecretBox? =
+    if (BuildConfig.DEBUG && System.getProperty("nexus.unsealed") == "1") {
+        object : org.medianexus.music.store.SecretBox {
+            override fun seal(plain: ByteArray) = plain.copyOf()
+            override fun open(sealed: ByteArray) = sealed.copyOf()
+        }
+    } else {
+        null
+    }

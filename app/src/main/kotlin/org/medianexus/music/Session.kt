@@ -30,14 +30,15 @@ import org.medianexus.music.nexus.NexusKept
 import org.medianexus.music.store.Account
 import org.medianexus.music.store.AccountDirs
 import org.medianexus.music.store.SettingsStore
-import org.medianexus.music.store.accountKey
 
 /** Whether anyone is signed in. */
 sealed interface SessionState {
     /** Still reading the saved sign-in, just after start-up. */
     data object Restoring : SessionState
     data object SignedOut : SessionState
-    data class SignedIn(val account: Account, val api: Subsonic) : SessionState
+    /** `person`: who they are to the Nexus server ([Folders.personOf]: its backend id and their
+     *  account number), the identity an account is renewed in place under, and nothing else. */
+    data class SignedIn(val account: Account, val api: Subsonic, val person: String = "") : SessionState
 }
 
 /**
@@ -124,24 +125,77 @@ class Session(
     private var waiting: Triple<KeptMusic, KeptAccount, String>? = null
 
     init {
+        // **Nothing is published until the Nexus server's machine has started** (5.5, 6.1): its
+        // start is local (no request), reads what sign-in left, forgets what is not to be used (a
+        // sign-out not yet told, a login that does not read) and hands the player the login it
+        // keeps; only then is an account published ([restoredFrom], [started]). Nothing is asked
+        // of the backend or the music server for it.
         scope.launch(io) { for (step in steps) step() }
-        // The sign-in is opened by the Keystore, which can take a moment: not on the main
-        // thread. Nothing is asked of the backend or the music server here.
+    }
+
+    /**
+     * The machine's start handed the player this login (`Hand::Login` in the answer to `start`):
+     * **published at once**, as the person left it, nothing asked of anyone; where its address
+     * leads is looked at afterwards and told to the machine (6.4). On the machine's thread:
+     * queued.
+     */
+    fun restoredFrom(music: KeptMusic, who: KeptAccount, generation: String) {
         inOrder {
-            val parts = kept.load()
-            val music = parts.music
-            val account = parts.account
-            val restored = if (music != null && account != null) signedIn(music, account, "0") else null
+            val person = Folders.personOf(who)
+            // (A start after the sign-in was kept and before its carry-over was settled finishes
+            // that one step now, the same way.)
+            if (!settle(person, music)) return@inOrder
+            val restored = signedIn(music, who, generation)
             // **Through the same door as a sign-in**: the account is taken on before it is said
             // to be signed in. If the choices in the settings are another account's and can't
             // be put away, nobody is signed in, and the sign-in screen says why.
-            if (restored != null && !takeOn(restored.account.key)) {
+            if (!takeOn(restored.account.key)) {
                 signingIn.value = SignInState(choicesNotPutAway = true)
                 current.value = SessionState.SignedOut
                 return@inOrder
             }
-            current.value = restored ?: SessionState.SignedOut
+            publish(restored)
+            scope.launch(io) {
+                val (inside, permission) = look(music.address)
+                looked(inside, permission, music.handed.count, generation)
+            }
         }
+    }
+
+    /** The machine's start has been done, whatever it handed: with no login handed, nobody is
+     *  signed in on the phone. */
+    fun started() {
+        inOrder { if (current.value == SessionState.Restoring) current.value = SessionState.SignedOut }
+    }
+
+    /**
+     * **A sign-in has succeeded and is kept** (`Keep::Saved` with a session, for `who`, with the
+     * music login it came with or none): the first account's carry-over is settled here, once and
+     * durably, before anything it handed is acted on (section 11). Called on the machine's thread,
+     * and waited for.
+     */
+    fun signedInAs(who: KeptAccount, music: KeptMusic?): Boolean = settle(Folders.personOf(who), music)
+
+    /** Section 11's carry-over, decided once for the first account to sign in on this version
+     *  (see [Folders.settle]); false if it could not be read or kept: then nobody is published,
+     *  and the phone says so. */
+    private fun settle(person: String, music: KeptMusic?): Boolean {
+        val before = settings.value
+        val settled = folders.settle(person, music, before.server, before.username) { address, user, login -> carriesOver(address, user, login) }
+        if (!settled) {
+            notices.post(Notice.SignInNotKept)
+            return false
+        }
+        // (The earlier version's sign-in is not used again by anyone: the decision above is
+        // what is read from now on, whatever happens to this.)
+        if (before.server.isNotEmpty() || before.username.isNotEmpty()) settings.update { it.copy(server = "", username = "") }
+        return true
+    }
+
+    /** Puts `account` in front: its folder may be written again (a sign-out had fenced it). */
+    private fun publish(account: SessionState.SignedIn) {
+        org.medianexus.music.store.Fence.open(account.account.dirs.data)
+        current.value = account
     }
 
     /** Waits until the saved sign-in has been read. */
@@ -165,10 +219,20 @@ class Session(
      *  salt and token handed over. */
     private fun signedIn(music: KeptMusic, who: KeptAccount, generation: String): SessionState.SignedIn {
         val login = MusicLogin(music.handed, generation)
-        login.onRefused = { refusedLogin(it.count, login.generation) }
+        // (Reported with the pass that was refused: its own number and generation.)
+        login.onRefused = { pass -> refusedLogin(pass.handed.count, pass.generation) }
         val api = Subsonic(music.address, music.name, login, http, offline)
-        val key = folders.of(Folders.personOf(who))
-        return SessionState.SignedIn(Account(api.server, api.username, key, dirsFor(key)), api)
+        val person = Folders.personOf(who)
+        val key = folders.of(person)
+        // (The music user's shared record is this person's only if the earlier folder, the one
+        // that used it, was carried over to them: see `Account.ownsSharedRecord`.)
+        return SessionState.SignedIn(Account(api.server, api.username, key, dirsFor(key), ownsSharedRecord = sharedRecordForTests ?: (key != person)), api, person)
+    }
+
+    /** The account in front is let go of before another is published: nothing more is sent with
+     *  its login, and anything waiting on it is let go, unsent. */
+    private fun letGo(was: SessionState.SignedIn?) {
+        was?.api?.login?.retire()
     }
 
     /**
@@ -178,9 +242,12 @@ class Session(
     fun handed(music: KeptMusic, who: KeptAccount?, generation: String = "0") {
         inOrder {
             val now = current.value as? SessionState.SignedIn
-            if (now != null && normalizeServerUrl(music.address) == now.api.server && music.name == now.api.username) {
-                // A renewal: the same music server and user, a new salt and token (or the same
-                // one, at a start). Put in place in the client every request uses, at once.
+            if (now != null && who != null && now.person == Folders.personOf(who) &&
+                normalizeServerUrl(music.address) == now.api.server && music.name == now.api.username
+            ) {
+                // A renewal: **the same person at the same backend**, the same music server and
+                // user, a new salt and token (or the same one). Put in place in the client every
+                // request uses, at once. (Two people handed the same music user are never this.)
                 now.api.login.renew(music.handed, generation)
                 return@inOrder
             }
@@ -205,42 +272,37 @@ class Session(
         inOrder {
             val (music, who, generation) = waiting ?: return@inOrder
             waiting = null
+            // Answered either way: where it leads and the permission, told to the machine again.
+            val (inside, permission) = look(music.address)
+            looked(inside, permission, music.handed.count, generation)
             adopt(music, who, generation, judged = true)
         }
     }
 
     /** Takes on the account a music login is for, and publishes it. In a step. */
     private suspend fun adopt(music: KeptMusic, who: KeptAccount, generation: String, judged: Boolean) {
-        val person = Folders.personOf(who)
-        // **Section 11's carry-over, once:** the first sign-in on this version, if the login
-        // names the same music server and user as the sign-in this phone had before, is given
-        // that folder (its downloads, settings and queue). The earlier sign-in is forgotten
-        // whatever happens, so that nobody later is given it.
-        val before = settings.value
-        if (before.server.isNotEmpty() || before.username.isNotEmpty()) {
-            if (folders.of(person) == person && carriesOver(before.server, before.username, music)) {
-                folders.carry(person, accountKey(before.server, before.username))
-            }
-            settings.update { it.copy(server = "", username = "") }
-        }
+        // **Section 11's carry-over** was settled when the sign-in was kept ([signedInAs]); a
+        // login handed later (a renewal, or another account's) never changes it.
+        if (!settle(Folders.personOf(who), music)) return
         val account = signedIn(music, who, generation)
         // **And again after a failure in which no connection was opened** (6.4): one look at
         // the music server before the account is published, a few seconds at most. Reached,
         // refused, or not the permission's fault: on it goes.
         if (!judged) {
+            // (No answer in that time counts as one that never connected.)
             val failed = withContext(io) {
                 kotlinx.coroutines.withTimeoutOrNull(LOOK_MILLIS) {
                     try {
                         account.api.ping()
-                        null
+                        false
                     } catch (e: org.medianexus.music.net.ApiError.Network) {
-                        e
+                        !e.answered
                     } catch (e: org.medianexus.music.net.ApiError) {
-                        null
+                        false
                     }
-                }
+                } ?: true
             }
-            if (failed != null && !failed.answered && mayBeWhy(music.address)) {
+            if (failed && mayBeWhy(music.address)) {
                 waiting = Triple(music, who, generation)
                 signingIn.value = SignInState(musicMayBeWhy = true)
                 return
@@ -252,12 +314,26 @@ class Session(
         }
         settings.update { it.copy(folder = account.account.key) }
         signingIn.value = SignInState()
-        current.value = account
+        // **The account before is fenced first** (another person, or another login): its login
+        // admits nothing more, before this one is in front.
+        letGo(current.value as? SessionState.SignedIn)
+        publish(account)
     }
 
-    /** The machine set the login of this number aside (`Hand::Refused`). */
-    fun refused(count: String) {
-        (current.value as? SessionState.SignedIn)?.api?.login?.refuseCount(count)
+    /** The machine set the login of this number, handed under this generation, aside
+     *  (`Hand::Refused`). */
+    fun refused(count: String, generation: String? = null) {
+        (current.value as? SessionState.SignedIn)?.api?.login?.refuseCount(count, generation)
+    }
+
+    /** `Hand::NoLogin`: another account was signed in with no music login: the one before is
+     *  not the player's any more. Downloads stay where they are. */
+    fun noLogin() = inOrder {
+        waiting = null
+        signingIn.value = SignInState()
+        letGo(current.value as? SessionState.SignedIn)
+        current.value = SessionState.SignedOut
+        settings.update { it.copy(folder = "") }
     }
 
     /**
@@ -269,10 +345,15 @@ class Session(
         waiting = null
         signingIn.value = SignInState()
         val was = current.value as? SessionState.SignedIn
+        // Nothing more is sent with its login, from anywhere, from this instant.
+        letGo(was)
         current.value = SessionState.SignedOut
         settings.update { it.copy(folder = "") }
+        // **The queue and Recently played go, and stay gone**: fenced and deleted in one step, so
+        // no writer still running for that account (the queue's saver, a history write under way,
+        // the service saving as it lets go) can put either back (see `Fence`).
         if (was != null) withContext(io) {
-            for (name in listOf("queue.json", "queue-place.json", "history.json")) File(was.account.dirs.data, name).delete()
+            if (!org.medianexus.music.store.Fence.close(was.account.dirs.data, SIGNED_OUT_FILES)) notices.post(Notice.SignInNotKept)
         }
     }
 
@@ -284,9 +365,16 @@ class Session(
      *  the next start. */
     fun notKept() = notices.post(Notice.SignInNotKept)
 
-    private companion object {
+    internal companion object {
         /** The look at the music server before an account is published (see [adopt]). */
         const val LOOK_MILLIS = 6_000L
+
+        /** For the tests of keeping devices in step only: whether an account is taken to own the
+         *  music user's shared record, in place of [Account.ownsSharedRecord]'s rule. */
+        @Volatile internal var sharedRecordForTests: Boolean? = null
+
+        /** What a sign-out removes of an account's folder (downloads stay). */
+        val SIGNED_OUT_FILES = listOf("queue.json", "queue-place.json", "history.json")
     }
 }
 

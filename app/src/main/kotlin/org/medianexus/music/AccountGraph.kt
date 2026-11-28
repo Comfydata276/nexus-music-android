@@ -228,7 +228,7 @@ class AccountGraph(
     private val historyRead = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     /** Sharing between devices is switched on, and the server may be asked now. */
-    private fun mayShare(): Boolean = settings.value.sync && !reach.value.offline && !closed
+    private fun mayShare(): Boolean = settings.value.sync && account.ownsSharedRecord && !reach.value.offline && !closed
 
     /** The account has gone ([close]): nothing more is exchanged for it. */
     @Volatile private var closed = false

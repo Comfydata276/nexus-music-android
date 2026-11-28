@@ -273,6 +273,15 @@ class NeverWaitsTest(private val broken: Broken) {
         .putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
 
     /** Makes `graph` the app's own, as a new process would have it. */
+    /** The next service started, past the sign-in's own hold (`SignInService`, started while the
+     *  machine signs in), which says nothing of the player. */
+    private fun nextStartedPlayer(): Intent? {
+        while (true) {
+            val next = shadowOf(app).nextStartedService ?: return null
+            if (next.component?.className != org.medianexus.music.requests.SignInService::class.java.name) return next
+        }
+    }
+
     private fun becomeTheApp(graph: Graph) {
         App::class.java.getDeclaredField("graph").apply { isAccessible = true }.set(app, graph)
     }
@@ -376,7 +385,7 @@ class NeverWaitsTest(private val broken: Broken) {
         Graph.signInFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
         val started = timed("a_direct_play_starts_it_cold", "receiver") {
             PlayButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(app.packageName).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
-            shadowOf(app).nextStartedService
+            nextStartedPlayer()
         }
         assertEquals("the Play button's receiver did not start the player", PlaybackService::class.java.name, started?.component?.className)
         timed("a_direct_play_starts_it_cold", "media_button") {
@@ -399,7 +408,7 @@ class NeverWaitsTest(private val broken: Broken) {
         Graph.signInFile(app).let { if (!it.isFile || it.length() == 0L) { it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(16)) } }
         val started = timed("a_direct_play_starts_it_cold", "old_receiver") {
             androidx.media3.session.MediaButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(ComponentName(app, "androidx.media3.session.MediaButtonReceiver")).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
-            shadowOf(app).nextStartedService
+            nextStartedPlayer()
         }
         assertEquals(PlaybackService::class.java.name, started?.component?.className)
         timed("a_direct_play_starts_it_cold", "old_media_button") {
@@ -418,7 +427,7 @@ class NeverWaitsTest(private val broken: Broken) {
         val test = "a_direct_play_starts_it_cold"
         timed(test, "before_publication") {
             PlayButtonReceiver().onReceive(app, Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(app.packageName).putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)))
-            val started = shadowOf(app).nextStartedService
+            val started = nextStartedPlayer()
             assertEquals(PlaybackService::class.java.name, started?.component?.className)
             val service = service()
             val inside = service.inside()

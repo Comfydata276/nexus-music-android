@@ -334,6 +334,10 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
                     graph.accounts.state.first { it?.api === signedIn.api }
                 }
             }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            // (What was asked and what is shown, said when a sign-in does not come through.)
+            System.err.println("stand-in sign-in timed out: asked ${asked.toList()}; session ${graph.session.state.value.javaClass.simpleName} ${graph.session.signIn.value}; shown ${graph.nexus?.shown?.value?.let { it.screen + "/" + it.signIn.state + "/" + it.signIn.words + "/plays=" + it.plays }}; failure ${Nexus.lastFailure?.let { it.javaClass.name + ": " + it.message + " @ " + it.stackTrace.take(6).joinToString(" < ") }}")
+            throw e
         } finally {
             backendThere = false
         }

@@ -30,6 +30,9 @@ fun Session.signIn(address: String, username: String, password: String) {
         put("device", 1); put("restore", 1); put("life", 1); put("change", 1); put("session", "ab".repeat(32)); put("music", music)
     }
     keptForTests.save(NexusKept.Parts(saved, emptyList()))
+    // (Signed in as the music user's only person, whose record "Keep my devices in step" may use:
+    // the tests of other things are not about who owns it, `Account.ownsSharedRecord`.)
+    Session.sharedRecordForTests = true
     handed(KeptMusic(address, username, handed), who)
 }
 
