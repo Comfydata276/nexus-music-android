@@ -133,6 +133,21 @@ class RecordingTest {
         assertEquals(false, recording().diagnostics.choice())
     }
 
+    @Test fun anUnwritableOffChoiceIsShownAndRetriedOnTheWorker() {
+        val service = recording()
+        val diag = service.diagnostics
+        val blocked = File(folder.root, "nexus-diagnostics/choice")
+        assertTrue(blocked.mkdirs())
+        // A nonempty directory cannot be replaced by the preference file.
+        File(blocked, "held").writeText("fixture")
+        diag.choose(false)
+        waitForSetting(diag) { !it.choiceSaved }
+        assertFalse(diag.settings.value.switchedOn)
+        assertTrue(blocked.deleteRecursively())
+        waitForSetting(diag) { it.choiceSaved }
+        assertEquals(false, recording().diagnostics.choice())
+    }
+
     @Test fun anAudioFaultBurstIsKeptAsOneCountedJournalEvent() {
         val service = recording()
         val scope = publish(service, 1)

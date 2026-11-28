@@ -130,8 +130,10 @@ internal data class DiagnosticsState(
     val signedIn: Boolean = false,
     val offline: Boolean = false,
     val knowsDefault: Boolean = false,
+    val choiceSaved: Boolean = true,
 ) {
     val status: String? get() = when {
+        !choiceSaved -> "The diagnostics choice couldn’t be saved. Trying again."
         !signedIn -> "Sign in to a Nexus server to send diagnostics."
         offline -> "Diagnostics are paused in Offline mode."
         !switchedOn -> "Sending is off."
@@ -165,6 +167,9 @@ internal class CleanDiagnostics(
     private val checkpointQueued = AtomicBoolean()
     private val use = AtomicInteger()
     private var reportedUse: Boolean? = null
+    private var reportedSink: RecordingEvent? = null
+    private var failedChoice: Choice? = null
+    private var choiceRetryAt = 0L
     private val earliestFault = java.util.concurrent.atomic.AtomicLong()
     private val choiceFile = File(root, "choice")
     private val crashFile = File(root, "crash")
@@ -235,10 +240,22 @@ internal class CleanDiagnostics(
     }
 
     private fun run() {
+        var nextCheckpoint = System.nanoTime()
         while (true) {
             val task = work.poll()
-            if (task == null) LockSupport.park()
-            else safe(task)
+            if (task != null) safe(task)
+            val now = System.nanoTime()
+            failedChoice?.takeIf { now - choiceRetryAt >= 0 }?.let(::keepChoice)
+            if (now - nextCheckpoint >= 0 && checkpointQueued.getAndSet(false)) {
+                safe { publishCheckpoint() }
+                nextCheckpoint = now + CHECKPOINT_NANOS
+            }
+            if (task == null && work.isEmpty()) {
+                val checkpointDelay = if (checkpointQueued.get()) nextCheckpoint - System.nanoTime() else Long.MAX_VALUE
+                val choiceDelay = if (failedChoice != null) choiceRetryAt - System.nanoTime() else Long.MAX_VALUE
+                val delay = minOf(checkpointDelay, choiceDelay)
+                if (delay == Long.MAX_VALUE) LockSupport.park() else if (delay > 0) LockSupport.parkNanos(delay)
+            }
         }
     }
 
@@ -283,22 +300,40 @@ internal class CleanDiagnostics(
 
     fun choose(value: Boolean) {
         startWorker()
-        preferred.set(Choice(value))
+        val choice = Choice(value)
+        preferred.set(choice)
         state.value = state.value.copy(switchedOn = value)
-        send?.invoke(recordingEvent("diagnostics_switch", JsonPrimitive(value)))
-        enqueue {
-            safe { writeAtomically(choiceFile, byteArrayOf(if (value) '1'.code.toByte() else '0'.code.toByte()), durable = true) }
-            updateState()
-        }
+        safe { send?.invoke(recordingEvent("diagnostics_switch", JsonPrimitive(value))) }
+        enqueue { keepChoice(choice) }
     }
 
     fun forgetChoice() {
         startWorker()
-        preferred.set(Choice(null))
-        enqueue {
-            choiceFile.delete()
-            updateState()
+        val choice = Choice(null)
+        preferred.set(choice)
+        enqueue { keepChoice(choice) }
+    }
+
+    private fun keepChoice(choice: Choice) {
+        if (preferred.get() !== choice) {
+            if (failedChoice === choice) failedChoice = null
+            return
         }
+        val saved = safe {
+            when (choice.enabled) {
+                null -> {
+                    if (choiceFile.exists()) {
+                        if (!choiceFile.delete()) throw IOException("Diagnostics choice unavailable")
+                        org.medianexus.music.store.syncDirOrFail(root)
+                    }
+                }
+                else -> writeAtomically(choiceFile, byteArrayOf(if (choice.enabled) '1'.code.toByte() else '0'.code.toByte()), durable = true)
+            }
+            true
+        } == true
+        failedChoice = if (saved) null else choice
+        choiceRetryAt = System.nanoTime() + CHOICE_RETRY_NANOS
+        updateState()
     }
 
     fun note(value: DiagnosticNote) = offer(Line.Note(value))
@@ -341,19 +376,21 @@ internal class CleanDiagnostics(
     }
 
     private fun queueCheckpoint() {
-        if (!checkpointQueued.compareAndSet(false, true)) return
-        enqueue {
-            checkpointQueued.set(false)
-            val emit = send
-            val inUse = use.get() != 0
-            if (emit != null && reportedUse != inUse) {
-                reportedUse = inUse
-                emit(recordingEvent("in_use", JsonPrimitive(inUse)))
-            }
-            flushFault()
-            updateState()
-            if (checkpoint() != null || preview.value == null) preview.value = readText()
+        checkpointQueued.set(true)
+        LockSupport.unpark(worker)
+    }
+
+    private fun publishCheckpoint() {
+        val emit = send
+        val inUse = use.get() != 0
+        if (emit != null && (reportedUse != inUse || reportedSink != emit)) {
+            reportedUse = inUse
+            reportedSink = emit
+            emit(recordingEvent("in_use", JsonPrimitive(inUse)))
         }
+        flushFault()
+        updateState()
+        if (checkpoint() != null || preview.value == null) preview.value = readText()
     }
 
     fun clear() {
@@ -416,7 +453,7 @@ internal class CleanDiagnostics(
                 })
             }) as JsonPrimitive).booleanOrNull
         } ?: state.value.switchedOn
-        state.value = DiagnosticsState(on, current.signedIn, current.offline, default != null)
+        state.value = DiagnosticsState(on, current.signedIn, current.offline, default != null, failedChoice == null)
     }
 
     private fun checkpoint(): String? = safe {
@@ -469,6 +506,8 @@ internal class CleanDiagnostics(
     }
 
     companion object {
+        private const val CHECKPOINT_NANOS = 1_000_000_000L
+        private const val CHOICE_RETRY_NANOS = 5_000_000_000L
         private const val MAX_QUEUE = 256
         private const val CRASH_BYTES = 1_024
         private const val VISIBLE = 1
