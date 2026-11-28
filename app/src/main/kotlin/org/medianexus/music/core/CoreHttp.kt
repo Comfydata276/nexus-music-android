@@ -454,7 +454,10 @@ internal object CoreHttp {
 
     /** Each service's connections: kept as long as the Windows app keeps them, and no longer
      *  (MusicBrainz closes one that has been idle for fifteen seconds). */
-    private class DirectSend(val stillSelected: () -> Boolean)
+    private class RequestFence(val once: Boolean = false, val stillSelected: () -> Boolean) {
+        private val attempted = java.util.concurrent.atomic.AtomicBoolean()
+        fun permits(): Boolean = (!once || attempted.compareAndSet(false, true)) && stillSelected()
+    }
 
     private class Lines(dress: (OkHttpClient.Builder) -> Unit) {
         private val base: OkHttpClient = OkHttpClient.Builder()
@@ -477,10 +480,10 @@ internal object CoreHttp {
                 // diagnostics line. It looks; it changes nothing.)
                 .apply {
                     if (!public) eventListenerFactory { call -> Way().also { ways[call] = it } }
-                    if (!public) addNetworkInterceptor { chain ->
-                        val guard = chain.request().tag(DirectSend::class.java)
-                        if (guard != null && !guard.stillSelected()) throw IOException(STOPPED_WORDS)
-                        chain.connection()?.socket()?.inetAddress?.let { family.set(if (it is java.net.Inet6Address) "IPv6" else "IPv4") }
+                    addNetworkInterceptor { chain ->
+                        val guard = chain.request().tag(RequestFence::class.java)
+                        if (guard != null && !guard.permits()) throw IOException(STOPPED_WORDS)
+                        if (!public) chain.connection()?.socket()?.inetAddress?.let { family.set(if (it is java.net.Inet6Address) "IPv6" else "IPv4") }
                         chain.proceed(chain.request())
                     }
                 }
@@ -526,7 +529,7 @@ internal object CoreHttp {
         private val wholeMillis: Long? = null,
     ) {
         private val began = System.nanoTime()
-        internal val directAtStart = directRequests?.invoke()
+        @Volatile var directAtStart = directRequests?.invoke()
 
         /** The limit a request of this goes under now, not having been stopped; [SPENT] if
          *  the whole of its time has gone, and then no request is made at all. */
@@ -850,6 +853,7 @@ internal object CoreHttp {
          *  said Lidarr is (one proxy, two paths). Not the sign-in's traffic, whatever
          *  service was found, and not a look at where a redirect points. */
         val typed: Boolean = false,
+        val direct_epoch: Long? = null,
     )
 
     @Serializable
@@ -878,6 +882,15 @@ internal object CoreHttp {
         } catch (_: Exception) {
         }
         held.doing?.leave(held.call)
+    }
+
+    internal fun pinDirectEpoch(operation: Long, epoch: Long) {
+        val doing = doings[operation] ?: return
+        doing.directAtStart = doing.directAtStart?.takeIf { it.identity == epoch }
+    }
+
+    internal fun pinDirect(operation: Long, endpoint: FeatureEndpoint) {
+        doings[operation]?.directAtStart = endpoint
     }
 
     internal fun useNexus(operation: Long, endpoint: FeatureEndpoint) {
@@ -952,10 +965,14 @@ internal object CoreHttp {
         unsent()?.let { return failed(it) }
         val doing: Doing? = if (asked.operation == 0L) null else doings[asked.operation] ?: return stopped
         val select = directRequests?.takeIf { asked.line == "lidarr" }
-        val permit = if (select != null) {
+        val nexus = doing?.nexus?.first
+        val permit = if (nexus != null) {
+            if (!nexus.active() || doing?.isStopped == true || asked.line == "lidarr") return stopped
+            RequestFence { nexus.active() && doing?.isStopped != true && unsent() == null }
+        } else if (select != null) {
             val started = if (doing == null) select() else doing.directAtStart
-            if (started == null || select() !== started) return stopped
-            DirectSend { select() === started && doing?.isStopped != true && unsent() == null }
+            if (started == null || select() !== started || asked.direct_epoch?.let { it != started.identity } == true) return stopped
+            RequestFence(once = true) { select() === started && doing?.isStopped != true && unsent() == null }
         } else null
         when (doing?.allowance()) {
             Doing.REFUSED -> return stopped
@@ -975,7 +992,7 @@ internal object CoreHttp {
         if (asked.line != "lidarr" && publicOnly && isInside(url.host)) return failed(INSIDE)
         val body = asked.body.orEmpty().encodeToByteArray()
         val request = Request.Builder().url(url).apply {
-            if (permit != null) tag(DirectSend::class.java, permit)
+            if (permit != null) tag(RequestFence::class.java, permit)
             var named = false
             var accepts = false
             for (header in asked.headers) {

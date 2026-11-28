@@ -59,6 +59,8 @@ internal class RequestsRouter {
                 Core.nexusRequestsStatus(endpoint)
             } catch (_: CoreHttp.Busy) {
                 null
+            } catch (_: org.medianexus.music.core.CoreException) {
+                null
             }
             if (!endpoint.active()) return@collectLatest
             val route = (reply?.get("route") as? JsonPrimitive)?.contentOrNull

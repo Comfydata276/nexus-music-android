@@ -69,5 +69,11 @@ internal class FeatureFlight(
 
 /** A Rust Requests operation keeps this endpoint for its entire lifetime. */
 internal class FeatureEndpoint(val nexus: Nexus, val scope: AppScope, private val allowed: () -> Boolean = { true }) {
+    val identity = numbers.incrementAndGet()
+
     fun active(): Boolean = nexus.featureOnline(scope) && allowed()
+
+    private companion object {
+        val numbers = java.util.concurrent.atomic.AtomicLong()
+    }
 }

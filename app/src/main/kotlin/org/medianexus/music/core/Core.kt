@@ -402,16 +402,25 @@ object Core {
         acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusListening)
 
     internal suspend fun nexusRequestsStatus(endpoint: org.medianexus.music.nexus.FeatureEndpoint): JsonObject =
-        CoreHttp.looking { operation ->
-            wired
-            CoreHttp.useNexus(operation, endpoint)
-            val input = kotlinx.serialization.json.buildJsonObject {
-                put("step", "status")
-                put("scope", endpoint.scope.wire)
-                put("operation", operation)
-            }
-            acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusRequests)
-        }
+        nexusRequest(endpoint, "status") {}
+
+    internal suspend fun nexusRequest(
+        endpoint: org.medianexus.music.nexus.FeatureEndpoint,
+        step: String,
+        fields: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit,
+    ): JsonObject = CoreHttp.looking { operation ->
+        wired
+        CoreHttp.useNexus(operation, endpoint)
+        nexusRequestStep(kotlinx.serialization.json.buildJsonObject {
+            put("step", step)
+            put("scope", endpoint.scope.wire)
+            put("operation", operation)
+            fields()
+        })
+    }
+
+    internal fun nexusRequestStep(input: JsonObject): JsonObject =
+        acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusRequests)
 
     /** The phone's storage adapter for the core's journal format and retention rules. */
     internal fun nexusJournal(input: JsonObject): JsonElement =
@@ -458,7 +467,10 @@ object Core {
      *  in an exception's words. */
     private fun <In, T> over(given: In, takes: KSerializer<In>, gives: KSerializer<T>, native: (ByteArray) -> ByteArray?): Outcome<T> {
         wired
-        if (given is LidarrCall) given.lidarr.feature?.let { CoreHttp.useNexus(given.operation, it) }
+        if (given is LidarrCall) {
+            given.lidarr.feature?.let { CoreHttp.useNexus(given.operation, it) }
+            given.lidarr.direct?.let { CoreHttp.pinDirect(given.operation, it) }
+        }
         val out = acrossPrivately(given, takes, Out.serializer(gives), native)
         return when (out.kind) {
             "got" -> Outcome.Got(out.value ?: throw CoreException("The shared library's answer couldn't be read."))
@@ -580,12 +592,13 @@ object Core {
      * changes, and each of its requests has a few seconds and no more
      * ([CoreHttp.finishing]): the browser is waiting for its page.
      */
-    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String, home: String? = null): Outcome<SignedIn> = orBusy { CoreHttp.finishing { operation ->
+    suspend fun gateFinish(door: SignInDoor, code: String, back: String, secret: String, home: String? = null, directEpoch: Long? = null): Outcome<SignedIn> = orBusy { CoreHttp.finishing { operation ->
+        if (directEpoch != null) CoreHttp.pinDirectEpoch(operation, directEpoch)
         over(GateFinishIn(operation, door, code, back, secret, servicePlace(door.service), home), GateFinishIn.serializer(), SignedIn.serializer(), ::gateFinish)
     } }
 
     @Serializable
-    private class GateOpenIn(val door: SignInDoor, val token: String, val bound: String?, val home: String?)
+    private class GateOpenIn(val door: SignInDoor, val token: String, val bound: String?, val home: String?, val direct_epoch: Long?)
 
     /**
      * `gate::Session::new`: a sign-in that's been done, kept open in the library under the
@@ -595,9 +608,9 @@ object Core {
      * token was given for (kept with it): the token, and the passes it buys, are sent to
      * the service there and nowhere else.
      */
-    suspend fun gateOpen(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), home: String? = null, keep: (String) -> Unit): Long = CoreHttp.aside {
+    suspend fun gateOpen(door: SignInDoor, token: String, bound: String? = servicePlace(door.service), home: String? = null, directEpoch: Long? = null, keep: (String) -> Unit): Long = CoreHttp.aside {
         wired
-        acrossPrivately(GateOpenIn(door, token, bound, home), GateOpenIn.serializer(), Long.serializer(), ::gateOpen).also { CoreHttp.keeping(it, keep) }
+        acrossPrivately(GateOpenIn(door, token, bound, home, directEpoch), GateOpenIn.serializer(), Long.serializer(), ::gateOpen).also { CoreHttp.keeping(it, keep) }
     }
 
     /** `gate::Session::close`: ends the sign-in here and hands back its token, for handing

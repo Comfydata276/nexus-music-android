@@ -288,6 +288,15 @@ impl<'a> Asking<'a> {
     }
 }
 
+fn asked_for(connection: &Connection, operation: u64, place: &Place) -> Vec<Asked> {
+    if let Some(scope) = &connection.nexus {
+        return crate::nexus_requests::asked_history(
+            &crate::nexus_requests::backend(scope, operation), place.library().as_ref(),
+        ).unwrap_or_default();
+    }
+    place.asked()
+}
+
 /// What a page or an action came to: found, or stopped. (Why something couldn't be had is
 /// inside what was found, as the library puts it there for showing.)
 fn found<T>(result: Result<T, Stopped>) -> Outcome<T> {
@@ -327,7 +336,9 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageSearch<'l>(env: J
                 wire::publish(operation, &bytes);
             }
         };
-        Ok(found(requests::search(asking.services(), &|| place.library(), &place.offers(given.lidarr.connection), &|| place.singles(), &|| place.asked(), &given.what, &mut publish)))
+        let asked = std::sync::OnceLock::new();
+        let asked = || asked.get_or_init(|| asked_for(&given.lidarr, operation, &place)).clone();
+        Ok(found(requests::search(asking.services(), &|| place.library(), &place.offers(given.lidarr.connection), &|| place.singles(), &asked, &given.what, &mut publish)))
     })
 }
 
@@ -357,7 +368,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_pageArtistPopular<'l>
             Err(why) => return Ok(outcome(Err(why))),
         };
         // (None: said as one with no songs, which is what the screens are told.)
-        let popular = requests::artist_popular(asking.services(), &|| place.library(), &place.offers(given.lidarr.connection), &|| place.singles(), &|| place.asked(), &given.what, &given.name);
+        let popular = requests::artist_popular(asking.services(), &|| place.library(), &place.offers(given.lidarr.connection), &|| place.singles(), &|| asked_for(&given.lidarr, given.operation, &place), &given.what, &given.name);
         Ok(found(popular.map(Option::unwrap_or_default)))
     })
 }

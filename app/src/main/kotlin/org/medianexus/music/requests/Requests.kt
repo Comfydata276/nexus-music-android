@@ -220,12 +220,21 @@ class Requests internal constructor(
     @Volatile private var selected: RequestsRoute.Usable? = null
 
     internal val serverMode: Boolean get() = selected?.direct == false
+    internal val routeNumber: Long get() = selected?.status?.identity ?: 0L
     private fun directAllowed(): Boolean = nexusRoute == null || nexusRoute.invoke()?.let { it.direct && it === selected } == true
 
     /** Move the offers and invalidate any direct check already on a worker. */
     internal suspend fun select(route: RequestsRoute.Usable?) = withContext(io) {
         turn.withLock {
             if (selected === route) return@withLock
+            if (selected?.direct == true && selected !== route) {
+                giveUpAttempt()
+                open?.let { previous ->
+                    open = null
+                    synchronized(owner) { live = 0 }
+                    afterwards { Core.gateClose(previous.session) }
+                }
+            }
             selected = route
             moved()
             checks++
@@ -238,6 +247,9 @@ class Requests internal constructor(
             }
         }
     }
+
+    internal fun activeScope(): org.medianexus.music.nexus.AppScope? =
+        selected?.takeIf { !it.direct && nexusRoute?.invoke() === it && it.status.active() }?.status?.scope
 
     internal fun current(at: LidarrAt): Boolean = at.connection == connection &&
         if (at.feature != null) at.feature?.active() == true else directAllowed()
@@ -330,7 +342,7 @@ class Requests internal constructor(
      *  by, and whether it has been given up meanwhile. */
     /** (`near`: where the sign-in's host was judged to be before the browser opened, for the
      *  diagnostics line only.) */
-    private class Attempt(val door: BrowserReturn, val host: String, val until: Long, val hold: Hold, val near: Nearness? = null) {
+    private class Attempt(val door: BrowserReturn, val host: String, val until: Long, val hold: Hold, val near: Nearness? = null, val direct: org.medianexus.music.nexus.FeatureEndpoint? = null) {
         val retired = MutableStateFlow(false)
 
         /** When the browser was sent to the sign-in page ([System.nanoTime]). */
@@ -464,7 +476,9 @@ class Requests internal constructor(
         val place = placeOf(settings) ?: return null
         val key = keyFor(place) ?: return null
         val session = sessionFor(settings)
-        return LidarrAt(settings.address, key, session, place, connection, home)
+        return LidarrAt(settings.address, key, session, place, connection, home).also {
+            it.direct = selected?.status
+        }
     }
 
     /**
@@ -490,7 +504,7 @@ class Requests internal constructor(
         if (door == null) return null
         val token = tokenFor(door) ?: return null
         val number = synchronized(owner) { (++numbers).also { live = it } }
-        val session = Core.gateOpen(door, token.secret, bound = token.origin, home = home) { fresh -> tokenChanged(number, token.origin, fresh) }
+        val session = Core.gateOpen(door, token.secret, bound = token.origin, home = home, directEpoch = selected?.status?.identity) { fresh -> tokenChanged(number, token.origin, fresh) }
         open = Open(door, session, token.origin, number)
         return session
     }
@@ -830,7 +844,7 @@ class Requests internal constructor(
             // (Taken here, with the app's screen in front: Android allows it only then. Let
             // go however the wait ends, or if it is never begun.)
             val hold = awake()
-            val mine = Attempt(door, host, until = clock() + waitMillis, hold, near)
+            val mine = Attempt(door, host, until = clock() + waitMillis, hold, near, selected?.status)
             attempt = mine
             write(settings.copy(signingIn = true))
             stateNow.value = RequestsState.SigningIn(host)
@@ -876,7 +890,7 @@ class Requests internal constructor(
             // collected for nobody is handed straight back. Nor left to take for ever: see
             // `Core.gateFinish`.)
             tradeSince = System.nanoTime()
-            val done = if (code != null && returned && !mine.retired.value) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home) } else null
+            val done = if (code != null && returned && !mine.retired.value && (nexusRoute == null || mine.direct?.let { it === selected?.status && it.active() } == true)) withContext(NonCancellable) { Core.gateFinish(found, code.code, mine.door.back, secret, home, mine.direct?.identity) } else null
             val token = (done as? Outcome.Got)?.value
             // (The trade went unanswered, and the sign-in may be on the home network without
             // the permission: said so.)
@@ -898,7 +912,7 @@ class Requests internal constructor(
                     if (token != null && place != null && number != 0L) {
                         write(settings.copy(signedIn = shown(token.name), signingIn = false))
                         open?.let { old -> afterwards { Core.gateClose(old.session) } }
-                        open = Open(found, Core.gateOpen(found, token.token, bound = place, home = home) { fresh -> tokenChanged(number, place, fresh) }, place, number)
+                        open = Open(found, Core.gateOpen(found, token.token, bound = place, home = home, directEpoch = selected?.status?.identity) { fresh -> tokenChanged(number, place, fresh) }, place, number)
                         moved()
                         2
                     } else {

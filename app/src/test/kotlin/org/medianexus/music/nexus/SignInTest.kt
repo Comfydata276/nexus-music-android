@@ -163,6 +163,86 @@ class SignInTest {
     }
 
     @Test
+    fun statsAreCachedOnlyForTheirLifeAndDeletionWaitsForTheJournal() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        val nexus = graph.nexus!!
+        val scope = until { nexus.appSession.value?.takeIf { it.verified }?.scope }
+        nexus.press(buildJsonObject { put("notice_seen", buildJsonObject {}) })
+        until { graph.recording.scope() }
+        var allowDeletion = false
+        standIn.answer = { request ->
+            when (request.url.encodedPath) {
+                "/nexus/api/events/stats" -> standIn.feature("stats")
+                "/nexus/api/grant" -> standIn.feature(if (allowDeletion) "granted" else "wrong_login")
+                "/nexus/api/delete-listening-data" -> standIn.feature("signed_out", life = 2)
+                else -> standIn.there(request)
+            }
+        }
+        runBlocking {
+            val read = nexus.listening.read(scope) as ListeningResult.Done
+            assertEquals(0uL, read.value.starts)
+            assertEquals(read.value, nexus.listening.cached(scope))
+            graph.settings.update { it.copy(offline = true) }
+            withTimeout(30_000) { nexus.appSession.first { it?.offline == true } }
+            val before = standIn.asked.count { it == "POST /nexus/api/events/stats" }
+            assertTrue(nexus.listening.read(scope) is ListeningResult.Error)
+            assertEquals(before, standIn.asked.count { it == "POST /nexus/api/events/stats" })
+            assertEquals(read.value, nexus.listening.cached(scope))
+            graph.settings.update { it.copy(offline = false) }
+            withTimeout(30_000) { nexus.appSession.first { it?.offline == false } }
+            assertEquals(ListeningResult.Error("That password didn't match. Try again."), nexus.listening.delete(scope, "wrong password"))
+            assertFalse(standIn.asked.contains("POST /nexus/api/delete-listening-data"))
+            allowDeletion = true
+            val deleted = nexus.listening.delete(scope, PASSWORD) as ListeningResult.Done
+            assertEquals("2", deleted.value.life.toString())
+            assertEquals("2", graph.recording.scope()?.life?.content)
+            assertNull(nexus.listening.cached(scope))
+            assertEquals(0uL, nexus.listening.cached(deleted.value)?.starts)
+        }
+    }
+
+    @Test
+    fun requestsOnlyUseDirectAfterTheCheckedUnconfiguredStatus() {
+        val graph = plainGraph()
+        standIn.signIn(app)
+        val nexus = graph.nexus!!
+        until { nexus.appSession.value?.takeIf { it.verified } }
+        val results = java.util.concurrent.atomic.AtomicReference("requests_ready")
+        standIn.answer = { request ->
+            if (request.url.encodedPath == "/nexus/api/requests") {
+                if (results.get() == "failure") mockwebserver3.MockResponse.Builder().code(503).build()
+                else standIn.feature(results.get())
+            } else standIn.there(request)
+        }
+        val router = graph.requestsRouter
+        fun select(kind: String, next: (org.medianexus.music.requests.RequestsRoute) -> Boolean) = runBlocking {
+            val previous = router.route.value
+            results.set(kind)
+            router.refresh()
+            withTimeout(30_000) { router.route.first { it !== previous && next(it) } }
+        }
+        val usable: (org.medianexus.music.requests.RequestsRoute) -> Boolean = { it is org.medianexus.music.requests.RequestsRoute.Usable }
+        val refused: (org.medianexus.music.requests.RequestsRoute) -> Boolean = { it is org.medianexus.music.requests.RequestsRoute.Unavailable }
+        select("requests_ready", usable)
+        assertNull(router.directEndpoint())
+        select("requests_unconfigured", usable)
+        assertTrue(router.directEndpoint() != null)
+        select("requests_off", refused)
+        assertNull(router.directEndpoint())
+        select("requests_unconfigured", usable)
+        select("requests_denied", refused)
+        assertNull(router.directEndpoint())
+        select("requests_unconfigured", usable)
+        select("failure", refused)
+        assertNull(router.directEndpoint())
+        select("requests_unconfigured", usable)
+        graph.settings.update { it.copy(offline = true) }
+        runBlocking { withTimeout(30_000) { nexus.appSession.first { it?.offline == true } } }
+        assertNull(router.directEndpoint())
+    }
+
+    @Test
     fun failedDiagnosticsScheduleDoesNotBlockSignInOrSignOut() {
         // An occupied destination refuses the atomic rename, as a full phone would.
         val schedule = File(app.noBackupFilesDir, "nexus-diag-schedule.json")

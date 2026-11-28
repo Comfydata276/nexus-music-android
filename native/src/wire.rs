@@ -142,11 +142,12 @@ pub struct Host {
     /// This is the way to Lidarr's own API at the address the person typed: the one thing
     /// that may be on the music server's host and port, if that is where they said it is.
     pub typed: bool,
+    direct_epoch: Option<u64>,
 }
 
 impl Host {
     pub fn new(whose: Whose, line: Line) -> Arc<Host> {
-        Arc::new(Host { whose, line, bound: None, home: None, typed: false })
+        Arc::new(Host { whose, line, bound: None, home: None, typed: false, direct_epoch: None })
     }
 
     /// The same way out, **for an account whose music server is at `home`**: every request
@@ -155,12 +156,12 @@ impl Host {
     /// as a whole happens to hold when the request is made (another account may be signed
     /// in by then, and work that was begun outlives the account it was begun for).
     pub fn at_home(self: Arc<Host>, home: Option<&str>) -> Arc<Host> {
-        Arc::new(Host { whose: self.whose, line: self.line, bound: self.bound.clone(), home: home.map(str::to_string), typed: self.typed })
+        Arc::new(Host { whose: self.whose, line: self.line, bound: self.bound.clone(), home: home.map(str::to_string), typed: self.typed, direct_epoch: self.direct_epoch })
     }
 
     /// The same way out, as the way to Lidarr's own API at the address the person typed.
     pub fn typed(self: Arc<Host>) -> Arc<Host> {
-        Arc::new(Host { whose: self.whose, line: self.line, bound: self.bound.clone(), home: self.home.clone(), typed: true })
+        Arc::new(Host { whose: self.whose, line: self.line, bound: self.bound.clone(), home: self.home.clone(), typed: true, direct_epoch: self.direct_epoch })
     }
 
     /// A way out for requests that carry a secret (Lidarr's key, a pass, a sign-in's code or
@@ -170,7 +171,12 @@ impl Host {
     /// nothing that carries a secret anywhere else, whatever address the library was given
     /// or made. With no origin it is bound to nowhere, and can carry no secret at all.
     pub fn bound(whose: Whose, line: Line, origin: Option<&str>) -> Arc<Host> {
-        Arc::new(Host { whose, line, bound: Some(origin.unwrap_or_default().to_string()), home: None, typed: false })
+        Arc::new(Host { whose, line, bound: Some(origin.unwrap_or_default().to_string()), home: None, typed: false, direct_epoch: None })
+    }
+
+    pub fn at_direct_epoch(self: Arc<Host>, direct_epoch: Option<u64>) -> Arc<Host> {
+        Arc::new(Host { whose: self.whose, line: self.line, bound: self.bound.clone(),
+            home: self.home.clone(), typed: self.typed, direct_epoch })
     }
 
     fn operation(&self) -> u64 {
@@ -200,6 +206,7 @@ struct Asked<'a> {
     home: Option<&'a str>,
     /// Lidarr's own API at the address the person typed (see [`Host::typed`]).
     typed: bool,
+    direct_epoch: Option<u64>,
 }
 
 /// An answer's status and headers, as they come back; its body waits on the Kotlin side
@@ -242,6 +249,7 @@ impl Http for Host {
             bound: self.bound.as_deref(),
             home: self.home.as_deref(),
             typed: self.typed,
+            direct_epoch: self.direct_epoch,
         };
         let frame = serde_json::to_vec(&asked).map_err(|_| Failure::Reach(NO_ANSWER.into()))?;
         let answer = door

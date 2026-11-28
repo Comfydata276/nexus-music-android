@@ -168,6 +168,16 @@ class RequestsPages internal constructor(
         )
     }
 
+    internal val serverBatch = ServerBatch(dir)
+
+    internal suspend fun batch(songs: String? = null): String? {
+        val endpoint = requests.lidarr()?.feature ?: return null
+        return serverBatch.show(endpoint, songs, requests.settings.value.singles)
+    }
+
+    internal fun batchVisible(scope: org.medianexus.music.nexus.AppScope?): Boolean =
+        scope != null && requests.activeScope() == scope
+
     private val askedFile = Kept(File(dir, "asked.json"), ListSerializer(Asked.serializer()), emptyList(), note)
     private val suggestionsFile = Kept(File(dir, "suggestions.json"), KeptSuggestions.serializer(), KeptSuggestions(), note)
 

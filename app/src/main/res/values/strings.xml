@@ -864,6 +864,11 @@
     <string name="nexus_history_delete">Delete history</string>
     <string name="nexus_history_deleting">Deleting…</string>
     <string name="nexus_history_deleted">Your listening history was deleted.</string>
+    <string name="nexus_batch_open">Request a batch…</string>
+    <string name="nexus_batch_request">Request a batch</string>
+    <string name="nexus_batch_lines">Songs to request</string>
+    <string name="nexus_batch_detail">Enter each song on its own line as Artist | Album | Song. Leave Album empty if you only know the song.</string>
+    <string name="nexus_batch_send">Request</string>
     <string name="nexus_requests_server">Your Nexus server handles requests for music.</string>
     <string name="nexus_requests_setup">Requests are switched off. Turn them on in Settings.</string>
     <string name="nexus_records_title">What this server records</string>

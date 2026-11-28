@@ -20,6 +20,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,12 +36,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.medianexus.music.R
 import org.medianexus.music.core.Pending
 import org.medianexus.music.ui.parts.IconButton
 import org.medianexus.music.ui.parts.Refreshable
 import org.medianexus.music.ui.parts.SectionTitle
 import org.medianexus.music.ui.parts.SkeletonRows
+import org.medianexus.music.ui.parts.TextButton
 import org.medianexus.music.ui.parts.TitleBar
 import org.medianexus.music.ui.player.SwipeAway
 import org.medianexus.music.ui.shell.LocalUi
@@ -70,6 +75,30 @@ fun RequestsPage() {
         return
     }
     val pages = here.pages
+    val batch by pages.serverBatch.state.collectAsStateWithLifecycle()
+    val work = rememberCoroutineScope()
+    var batchEntry by remember(here.key) { mutableStateOf(false) }
+    var batchSubmit by remember(here.key) { mutableStateOf(false) }
+    var batchWords by remember(here.key) { mutableStateOf<String?>(null) }
+    LaunchedEffect(here.key) {
+        if (here.server) batchWords = pages.batch()
+    }
+    if (here.server && batchEntry) {
+        BatchEntry(close = { batchEntry = false }, submit = { songs ->
+            batchEntry = false
+            if (!batchSubmit) {
+                batchSubmit = true
+                batchWords = null
+                work.launch {
+                    try {
+                        batchWords = pages.batch(songs)
+                    } finally {
+                        batchSubmit = false
+                    }
+                }
+            }
+        })
+    }
     val model = remember(here.key) { PageLoad { pages.onTheirWay() } }
     Running(here, model, model::run, model::again)
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -108,6 +137,22 @@ fun RequestsPage() {
         TitleBar(stringResource(R.string.requests), onBack = ui.navigator::back)
         Refreshable(state.asking && waiting != null, model::again) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                if (here.server) {
+                    val current = batch.takeIf { pages.batchVisible(it.scope) }
+                    item(key = "batch-action") {
+                        TextButton(stringResource(R.string.nexus_batch_open), onClick = { batchEntry = true },
+                            modifier = Modifier.padding(horizontal = Theme.dimens.pagePad, vertical = 6.dp),
+                            enabled = !here.offline && !batchSubmit && current?.working != true)
+                    }
+                    val notice = batchWords ?: current?.notice
+                    if (!notice.isNullOrEmpty()) item(key = "batch-notice") { Warning(notice) }
+                    itemsIndexed(current?.rows.orEmpty(), key = { index, _ -> "batch/$index" }) { _, line ->
+                        Column(Modifier.fillMaxWidth().padding(horizontal = Theme.dimens.pagePad, vertical = 6.dp)) {
+                            BasicText(line.title, style = Theme.type.rowTitle.copy(color = Theme.colors.text))
+                            BasicText(line.detail, style = Theme.type.rowDetail.copy(color = Theme.colors.muted))
+                        }
+                    }
+                }
                 // What heads the page: why there is no list (or asking again failed), and the
                 // warnings, which hold whether or not a list has been read (with no key, an
                 // artist's setting may still need putting back on Lidarr).

@@ -240,7 +240,7 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
     }
 
     /** A backend that is there: each of the design's calls, answered by the core's own words. */
-    private fun there(request: RecordedRequest): MockResponse {
+    internal fun there(request: RecordedRequest): MockResponse {
         val path = request.url.encodedPath
         backendAnswered += path
         val base = buildJsonObject {
@@ -274,6 +274,14 @@ class BackendStandIn(val broken: Broken, private val https: Boolean = true) {
         val asked = JsonObject(base + ("kind" to JsonPrimitive(kind)) + ("session" to JsonPrimitive("cd".repeat(32))) + ("music" to music))
         return answered(org.medianexus.music.core.Core.nexusStandIn(asked))
     }
+
+    internal fun feature(kind: String, life: Long = 1): MockResponse =
+        answered(org.medianexus.music.core.Core.nexusStandIn(buildJsonObject {
+            put("backend", BACKEND_ID)
+            put("count", musicCount)
+            put("life", life)
+            put("kind", kind)
+        }))
 
     private fun answered(out: org.medianexus.music.core.Core.StandInOut) = MockResponse.Builder().code(out.status).setHeader("Content-Type", "application/json").body(Buffer().write(out.bytes)).build()
 

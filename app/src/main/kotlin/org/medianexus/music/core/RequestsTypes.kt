@@ -98,9 +98,9 @@ data class OutsideArtist(
     val empty: String = "",
     val failed: Boolean = false,
     /** In server mode only rows with the server's removal bit can be acted on. */
-    val removable: Set<Long>? = null,
+    val removable: Set<String>? = null,
 ) {
-    fun canRemove(row: Pending): Boolean = removable?.contains(row.id) ?: true
+    fun canRemove(row: Pending): Boolean = removable?.contains("${row.id}/${row.album}") ?: true
 }
 
 /** The songs an artist is most played for, for the top of their page (`requests::Popular`).

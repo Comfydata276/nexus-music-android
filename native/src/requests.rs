@@ -225,6 +225,8 @@ struct OpenIn {
     bound: Option<String>,
     #[serde(default)]
     home: Option<String>,
+    #[serde(default)]
+    direct_epoch: Option<u64>,
 }
 
 /// `gate::Session::new`: a sign-in that's been done, kept open under the number handed
@@ -236,7 +238,8 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_gateOpen<'l>(env: JNI
         let id = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
         // Asked through a way out that is nobody's: a renewal replaces the token, and is
         // never cut off part-way (see `wire::Whose::Nobodys`).
-        let session = Session::new(given.door.found(), given.token, move |token| wire::keep(id, token), Host::bound(Whose::Nobodys, Line::Lidarr, given.bound.as_deref()).at_home(given.home.as_deref()));
+        let session = Session::new(given.door.found(), given.token, move |token| wire::keep(id, token), Host::bound(Whose::Nobodys, Line::Lidarr, given.bound.as_deref())
+            .at_home(given.home.as_deref()).at_direct_epoch(given.direct_epoch));
         sessions(|open| open.insert(id, Arc::new(session)));
         Ok(id)
     })

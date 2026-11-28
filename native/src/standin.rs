@@ -49,7 +49,11 @@ struct StandInIn {
     music: Option<MusicIn>,
     #[serde(default)]
     count: u64,
+    #[serde(default = "first_life")]
+    life: u64,
 }
+
+fn first_life() -> u64 { 1 }
 
 #[derive(Serialize)]
 struct StandInOut {
@@ -63,7 +67,7 @@ const SESSION_ID: u64 = 11;
 
 fn receipt(given: &StandInIn, count: u64) -> Option<Receipt> {
     Some(Receipt {
-        stamp: Stamp { backend: BackendId::from_hex(&given.backend)?, restore: 1, account: AccountId::new(ACCOUNT)?, life: 1, change: 1, tag: StampTag::from_bytes([7; 32]) },
+        stamp: Stamp { backend: BackendId::from_hex(&given.backend)?, restore: 1, account: AccountId::new(ACCOUNT)?, life: given.life, change: given.life, tag: StampTag::from_bytes([7; 32]) },
         music_login_count: count,
     })
 }
@@ -127,6 +131,27 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_nexusStandIn<'l>(env:
             "signed_out" => reply!((|| Some(Reply::Done { result: SignedOut {}, receipt: receipt(&given, count)? }))()),
             "forced_out" => reply!((|| Some(Reply::Done { result: ForcedOut { music_cut_off: false }, receipt: receipt(&given, count)? }))()),
             "password_changed" => reply!((|| Some(Reply::Done { result: PasswordChanged {}, receipt: receipt(&given, count)? }))()),
+            "stats" => reply!((|| {
+                let result = nexus_core::nexus::events::StatsPage {
+                    starts: 0, recent: Vec::new(), next: None, account_revision: Some(1),
+                };
+                Some(Reply::Done { result, receipt: receipt(&given, count)? })
+            })()),
+            "granted" => reply!((|| Some(Reply::Done {
+                result: account::GrantIssued { grant: account::GrantSecret::from_bytes([4; 32]) },
+                receipt: receipt(&given, count)?,
+            }))()),
+            "requests_ready" | "requests_away" | "requests_unconfigured" | "requests_off" | "requests_denied" => {
+                use nexus_core::nexus::requests::{Answer, Availability, Refusal};
+                let result = match given.kind.as_str() {
+                    "requests_ready" => Answer::Status { lidarr: Availability::Ready },
+                    "requests_away" => Answer::Status { lidarr: Availability::Unavailable },
+                    "requests_unconfigured" => Answer::Refused { reason: Refusal::LidarrNotSetUp },
+                    "requests_off" => Answer::Refused { reason: Refusal::SwitchedOff },
+                    _ => Answer::Refused { reason: Refusal::NotAllowed },
+                };
+                reply!((|| Some(Reply::Done { result, receipt: receipt(&given, count)? }))())
+            }
             "session_ended" => reply!(Some(Reply::<SignedOut>::Refused(Refusal::NotSignedIn(NotSignedIn::SessionEnded)))),
             "wrong_login" => reply!(Some(Reply::<SignInAnswer>::Refused(Refusal::NotAllowed(account::NotAllowed::WrongLogin)))),
             _ => Err(BAD.to_string()),

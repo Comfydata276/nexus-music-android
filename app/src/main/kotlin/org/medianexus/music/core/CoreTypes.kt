@@ -266,6 +266,9 @@ class LidarrAt(
     @kotlinx.serialization.Transient
     internal var feature: org.medianexus.music.nexus.FeatureEndpoint? = null
 
+    @kotlinx.serialization.Transient
+    internal var direct: org.medianexus.music.nexus.FeatureEndpoint? = null
+
     override fun toString(): String = "LidarrAt"
 
     internal companion object {
