@@ -470,6 +470,7 @@ class Graph(
     init {
         quietMedia3(BuildConfig.DEBUG)
         scope.launch { front.collect { recording.diagnostics.visible(it) } }
+        scope.launch { toasts.all.collect { recording.diagnostics.note(org.medianexus.music.nexus.DiagnosticNote.APP_MESSAGE) } }
         scope.launch(Dispatchers.IO) {
             accounts.state.collect {
                 recording.refreshFolder()

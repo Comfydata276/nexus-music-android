@@ -65,3 +65,25 @@ fn replace(path: &Path, data: &[u8]) -> io::Result<()> {
 fn to_value(value: impl serde::Serialize) -> io::Result<Value> {
     serde_json::to_value(value).map_err(invalid)
 }
+
+#[cfg(test)]
+struct TestRoot(std::path::PathBuf);
+
+#[cfg(test)]
+impl TestRoot {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+        let name = format!("Nexus-recording-{}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed));
+        let path = std::env::temp_dir().join(name);
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}

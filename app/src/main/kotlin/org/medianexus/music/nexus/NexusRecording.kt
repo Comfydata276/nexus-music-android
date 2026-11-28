@@ -281,7 +281,7 @@ private class ListeningJournal(
                 put("life", request.getValue("life"))
                 put("events", if (current == target) found ?: EMPTY else EMPTY)
             }))
-            if (found == null && target != null && current == target) {
+            if (found == null && target != null && current == target && alive) {
                 jobs.offer(Job.ReaderMiss(target))
                 LockSupport.unpark(writer)
             }

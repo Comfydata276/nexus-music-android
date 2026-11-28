@@ -109,7 +109,7 @@ impl ObservationKind {
     fn line(self) -> Option<Line> {
         Some(match self {
             Self::Note { label } => match diag::clean_line(&label) {
-                Some(line @ (Line::Note(_))) => line,
+                Some(line @ Line::Note(_)) => line,
                 _ => return None,
             },
             Self::Fault { place, shape, source_line } => Line::Fault(Fault {
@@ -162,5 +162,40 @@ pub(super) fn call(request: Request) -> io::Result<Value> {
             replace(&path, text.as_bytes())?;
             Ok(json!(text))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::TestRoot;
+
+    #[test]
+    fn the_record_accepts_closed_attempts_and_rejects_free_text() {
+        let root = TestRoot::new();
+        let secret = "a song 𐐀 private@example.invalid /hidden";
+        let action = json!({ "root": root.0, "checkpoint": {
+            "about": {
+                "version": "0.6.3", "android_major": 17, "signed_in": true, "offline": false,
+                "https": true, "local_permission": false, "android_auto": true,
+                "loss": { "line_full": 2, "files_full": 3, "refused": 4 },
+            },
+            "clear": false,
+            "observations": [
+                { "at": 1_800_000_000_001u64, "line": { "note": { "label": secret } } },
+                { "at": 1_800_000_000_001u64, "line": { "attempt": {
+                    "reach": "secure", "local": true, "permission": false, "network": "wifi", "failed": true,
+                } } },
+                { "at": 1_800_000_000_001u64, "line": { "session_end": "expired" } },
+            ],
+        } });
+        let written = call(serde_json::from_value(action).unwrap()).unwrap();
+        let reopened = call(serde_json::from_value(json!({ "root": root.0, "read": null })).unwrap()).unwrap();
+        assert_eq!(written, reopened);
+        let text = reopened.as_str().unwrap();
+        assert!(text.contains("Nexus last failure: made secure, local address yes, local permission no, network Wi-Fi"));
+        assert!(text.contains("Nexus session ended: expired"));
+        assert!(!text.contains(secret));
+        assert!(!text.contains("example.invalid"));
     }
 }

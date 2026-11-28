@@ -521,6 +521,7 @@ impl Writer {
     }
 
     fn summary(&mut self, scope: Option<Scope>, counted: u64) -> Value {
+        self.catalogs.retain(|one, _| Some(one) == scope.as_ref());
         let waiting = scope.and_then(|scope| {
             let key = scope.account.key().ok()?;
             let account = self.state.accounts.get(&key)?;
@@ -613,4 +614,110 @@ pub(super) fn call(request: Request) -> io::Result<Value> {
             Action::Read { .. } | Action::Inspect {} => unreachable!(),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::TestRoot;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const BACKEND: &str = "01010101010101010101010101010101";
+    const START: &str = "02020202020202020202020202020202";
+    const NOW: u64 = 1_800_000_000_000;
+
+    fn scope() -> Scope {
+        Scope { account: Account { backend_id: BACKEND.to_owned(), account: 1 }, life: 1 }
+    }
+
+    fn request(root: &TestRoot, action: Value) -> Value {
+        let mut input = action.as_object().unwrap().clone();
+        input.insert("root".to_owned(), json!(root.0));
+        call(serde_json::from_value(Value::Object(input)).unwrap()).unwrap()
+    }
+
+    fn append_start(root: &TestRoot, scope: &Scope) {
+        request(root, json!({ "activate": { "scope": scope, "now": NOW } }));
+        let reply = request(root, json!({
+            "append": {
+                "active": scope, "lost": 0, "now": NOW,
+                "records": [
+                    { "scope": scope, "id": START, "at": NOW, "data": {
+                        "start": {
+                            "song_id": "song", "title": "Title", "artist": "Artist", "album": "Album",
+                            "from": { "kind": "album", "id": "collection" }, "began": "car", "sound": "download", "position_ms": 0,
+                        }
+                    } },
+                    { "scope": scope, "id": START, "at": NOW, "data": {
+                        "position": { "start": START, "position_ms": 1234 }
+                    } },
+                ]
+            }
+        }));
+        assert_eq!(reply["waiting"]["pending"], 1);
+    }
+
+    #[test]
+    fn replay_keeps_ids_and_taken_expiration_uses_the_core_lifetime() {
+        let root = TestRoot::new();
+        let scope = scope();
+        append_start(&root, &scope);
+        let ack = json!({ "taken": { "account": scope.account, "life": scope.life, "ids": [START], "at_ms": NOW } });
+        let result = request(&root, json!({ "change": { "effect": ack, "active": scope, "now": NOW } }));
+        assert_eq!(result["waiting"]["pending"], 0);
+        let result = request(&root, json!({
+            "change": { "effect": { "resend_all": { "backend_id": BACKEND } }, "active": scope, "now": NOW }
+        }));
+        assert_eq!(result["waiting"]["pending"], 1);
+        let reply = read_events(&root.0, &scope, 1, 500, events::BATCH_BYTES, u64::MAX).unwrap();
+        assert_eq!(reply[0]["id"], START);
+        request(&root, json!({ "change": { "effect": ack, "active": scope, "now": NOW + events::KEEP_MS } }));
+        assert!(!scope.segment(&root.0, 1).unwrap().exists());
+        assert_eq!(load(&root.0).unwrap().loss, LossCounts::default());
+    }
+
+    #[test]
+    fn cut_child() {
+        let Some(path) = std::env::var_os("NEXUS_RECORDING_CUT_FIXTURE") else { return; };
+        let path = std::path::PathBuf::from(path);
+        let segment = scope().segment(&path, 1).unwrap();
+        let mut file = OpenOptions::new().append(true).open(segment).unwrap();
+        file.write_all(br#"{"interrupted":"#).unwrap();
+        file.sync_all().unwrap();
+        fs::write(path.join("cut-ready"), []).unwrap();
+        // The parent kills this process with the interrupted event's file still open.
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[test]
+    fn killed_mid_append_recovers_flushed_start_and_counts_the_torn_line_once() {
+        let root = TestRoot::new();
+        let scope = scope();
+        append_start(&root, &scope);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "recording::journal::tests::cut_child"])
+            .env("NEXUS_RECORDING_CUT_FIXTURE", &root.0)
+            .stdout(Stdio::null())
+            .spawn().unwrap();
+        let ready = root.0.join("cut-ready");
+        let until = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(ready.exists());
+        drop(WRITERS.with_borrow_mut(|writers| writers.remove(&root.0)));
+        let recovered = request(&root, json!({ "activate": { "scope": scope, "now": NOW } }));
+        assert_eq!(recovered["loss"]["line_full"], 1);
+        let found = read_events(&root.0, &scope, 1, 500, events::BATCH_BYTES, u64::MAX).unwrap();
+        assert_eq!(found[0]["id"], START);
+        assert_eq!(found[1]["event"]["why"]["kind"], "unknown");
+        assert_eq!(found[1]["event"]["position_ms"], 1234);
+        drop(WRITERS.with_borrow_mut(|writers| writers.remove(&root.0)));
+        let recovered = request(&root, json!({ "activate": { "scope": scope, "now": NOW } }));
+        assert_eq!(recovered["loss"]["line_full"], 1);
+        assert_eq!(recovered["waiting"]["pending"], 2);
+    }
 }
