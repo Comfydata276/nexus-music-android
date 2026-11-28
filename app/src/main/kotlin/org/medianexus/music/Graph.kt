@@ -62,9 +62,9 @@ class Graph(
 
     /** What the player has met, for Settings to show and share (see [Diagnostics]). */
     val diagnostics = Diagnostics(File(context.filesDir, "diagnostics.txt"), scope, Dispatchers.IO)
-    internal val recording = org.medianexus.music.nexus.NexusRecording(context.noBackupFilesDir,
-        folderFor = org.medianexus.music.nexus.Folders(File(context.filesDir, "accounts/carried.json"))::of,
-    )
+    private val folders = org.medianexus.music.nexus.Folders(File(context.filesDir, "accounts/carried.json"))
+
+    internal val recording = org.medianexus.music.nexus.NexusRecording(context.noBackupFilesDir, folderFor = folders::of)
 
 
     /** Who may connect to the player and read covers: this app, callers Android trusts with
@@ -76,7 +76,7 @@ class Graph(
     }
 
     /** Read here, at start-up, because the first frame needs the theme. The file is small. */
-    val settings: SettingsStore = SettingsStore.open(File(context.filesDir, "settings.json"), scope, Dispatchers.IO)
+    val settings: SettingsStore = SettingsStore.open(File(context.filesDir, "settings.json"), scope, Dispatchers.IO, folders::test1ClearedLegacySignIn)
 
     /** The apps the person has been asked about, and has allowed, to control playback
      *  (see [org.medianexus.music.playback.ControlApps]). Made when first asked. */
@@ -118,7 +118,12 @@ class Graph(
     private val takeOn: suspend (String) -> Boolean = { account ->
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             choicesSettled()
-            org.medianexus.music.sync.Belongs.takeOn(settings, account, { key -> accountDirs(context.filesDir, context.cacheDir, key).data }) { diagnostics.note(it) }
+            val before = settings.value
+            val legacy = folders.legacyKey(before.server, before.username)
+            org.medianexus.music.sync.Belongs.takeOn(
+                settings, account, { key -> accountDirs(context.filesDir, context.cacheDir, key).data },
+                legacyChoices = legacy?.let { it to File(context.filesDir, "accounts/.$it.in-step.json") },
+            ) { diagnostics.note(it) }
         }
     }
 
@@ -130,7 +135,7 @@ class Graph(
     val session: Session = Session(
         settings = settings,
         kept = nexusKept,
-        folders = org.medianexus.music.nexus.Folders(File(context.filesDir, "accounts/carried.json")),
+        folders = folders,
         http = http,
         offline = offline,
         dirsFor = { key -> accountDirs(context.filesDir, context.cacheDir, key) },
@@ -335,9 +340,6 @@ class Graph(
                 override fun handLogin(music: org.medianexus.music.nexus.KeptMusic, account: org.medianexus.music.nexus.KeptAccount?, generation: String) = session.handed(music, account, generation)
                 override fun restored(music: org.medianexus.music.nexus.KeptMusic, account: org.medianexus.music.nexus.KeptAccount, generation: String) = session.restoredFrom(music, account, generation)
                 override fun started() = session.started()
-                override fun signedInAs(account: org.medianexus.music.nexus.KeptAccount, music: org.medianexus.music.nexus.KeptMusic?) {
-                    session.signedInAs(account, music)
-                }
                 override fun notKept() = session.notKept()
                 override fun refused(count: String, generation: String) = session.refused(count, generation)
                 override fun musicForgotten() {

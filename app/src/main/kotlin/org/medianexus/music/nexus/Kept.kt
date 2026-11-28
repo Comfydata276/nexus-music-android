@@ -14,6 +14,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import org.medianexus.music.net.Handed
 import org.medianexus.music.store.SecretBox
+import org.medianexus.music.store.accountKey
 import org.medianexus.music.store.writeAtomically
 
 /**
@@ -233,87 +234,54 @@ private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive
  * (downloads, settings, the queue) is kept under who they are to the backend, never under the
  * music server's name and a user's name, which two people can share.
  *
- * **What is carried over, exactly, and once:** the first person to sign in on this version is
- * recorded at once (only who they are); at THAT person's first music login handed (at the
- * sign-in, or later, when the admin sets it), if it names the same music server (its address as
- * the app tidies it) and the same user as the sign-in this phone had before, that folder becomes
- * theirs: its name is kept for them in [carried], and the earlier sign-in is forgotten so that
- * nobody else is ever given it. Until then nothing of the earlier folder is read, shown, written
- * or cleared. Anyone else, and anyone after, has a folder of their own.
+ * The first music login that names the released sign-in's server and user claims that
+ * folder durably. Until then each Nexus account uses its own folder.
  */
 class Folders(private val carried: File) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** The decision, once made: whose it was (the first person to sign in on this version), and
-     *  the earlier version's folder if it went to them (null: it went to nobody). `undecided`:
-     *  only who is first is known; their first music login has not been handed yet. */
+    /** Only assignments with a folder made the decision. Test1 also wrote a first person
+     *  with no folder, both before their first login and after a login that did not match. */
     @Serializable
     private class Carried(val person: String, val folder: String? = null, val undecided: Boolean = false)
 
-    /** What [settle] left. */
-    enum class Settled { NOT_KEPT, UNDECIDED, DECIDED }
+    enum class Settled { OPEN, CLAIMED, NOT_KEPT }
 
-    private sealed interface Read {
-        data object Undecided : Read
-        data object Unreadable : Read
-        class Decided(val carried: Carried) : Read
+    private fun read(): Carried = json.decodeFromString(Carried.serializer(), carried.readText())
+
+    private fun readOrNull(): Carried? = try {
+        read()
+    } catch (_: IOException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
     }
 
-    private fun read(): Read {
-        if (!carried.exists()) return Read.Undecided
-        return try {
-            Read.Decided(json.decodeFromString(Carried.serializer(), carried.readText()))
-        } catch (_: IOException) {
-            Read.Unreadable
-        } catch (_: IllegalArgumentException) {
-            Read.Unreadable
+    private val Carried.claimedFolder: String? get() = folder?.takeUnless { undecided }
+
+    /** Test1 cleared the main settings' server and user after a login that did not match. */
+    fun test1ClearedLegacySignIn(): Boolean = readOrNull()?.let { !it.undecided && it.folder == null } == true
+
+    fun of(person: String): String = readOrNull()?.takeIf { it.person == person }?.claimedFolder ?: person
+
+    /** The legacy folder's name, whether it is still waiting or has an owner. */
+    fun legacyKey(beforeServer: String, beforeUser: String): String? =
+        readOrNull()?.claimedFolder ?: if (beforeServer.isNotEmpty() && beforeUser.isNotEmpty()) accountKey(beforeServer, beforeUser) else null
+
+    /** Called for a handed login, in Session's ordered steps. An unreadable assignment
+     *  is left alone so that a transient read failure cannot hand the folder to someone else. */
+    fun settle(person: String, music: KeptMusic, beforeServer: String, beforeUser: String, carriesOver: (String, String, KeptMusic) -> Boolean): Settled {
+        if (carried.exists()) {
+            val record = readOrNull() ?: return Settled.OPEN
+            if (record.claimedFolder != null) return Settled.CLAIMED
         }
+        if (beforeServer.isEmpty() || beforeUser.isEmpty() || !carriesOver(beforeServer, beforeUser, music)) {
+            return Settled.OPEN
+        }
+        return if (carry(person, accountKey(beforeServer, beforeUser))) Settled.CLAIMED else Settled.NOT_KEPT
     }
 
-    /** The folder for `person` ([personOf]): the one carried over to them, or their own. **A
-     *  decision that can't be read gives nobody the earlier folder** (closed, not open). */
-    fun of(person: String): String = (read() as? Read.Decided)?.carried?.takeIf { it.person == person && !it.undecided }?.folder ?: person
-
-    /**
-     * **Section 11's carry-over, settled once, durably.** The first person to sign in on this
-     * version (`person`) is recorded at their first kept sign-in, whatever was handed; the
-     * comparison is made once, at that person's first music login (`music`, at the sign-in or
-     * handed later): if the earlier version left a sign-in (`beforeServer`, `beforeUser`) and the
-     * login names the same music server and user (the core's `carries_over`), that folder is
-     * theirs for good; otherwise nobody's. Later sign-ins, other people and later logins never
-     * change it. [Settled.DECIDED] once the decision is on the disk (or there was nothing to
-     * decide, or it is another person's), [Settled.UNDECIDED] while the first person has no
-     * music login yet, [Settled.NOT_KEPT] if it could not be kept.
-     */
-    fun settle(person: String, music: KeptMusic?, beforeServer: String, beforeUser: String, carriesOver: (String, String, KeptMusic) -> Boolean): Settled {
-        when (val now = read()) {
-            is Read.Decided -> when {
-                !now.carried.undecided -> return Settled.DECIDED
-                // (Another person: a folder of their own, and the earlier one still waits for the
-                // first person's first login.)
-                now.carried.person != person -> return Settled.UNDECIDED
-            }
-            // (Kept as it is, and nobody given the earlier folder: see [of].)
-            Read.Unreadable -> return Settled.DECIDED
-            Read.Undecided -> if (beforeServer.isEmpty() && beforeUser.isEmpty()) return Settled.DECIDED
-        }
-        val carried = when {
-            music == null -> Carried(person, undecided = true)
-            carriesOver(beforeServer, beforeUser, music) -> Carried(person, org.medianexus.music.store.accountKey(beforeServer, beforeUser))
-            else -> Carried(person)
-        }
-        // (Already recorded as undecided for them, and still no login: nothing to write.)
-        if (carried.undecided && read() is Read.Decided) return Settled.UNDECIDED
-        return try {
-            this.carried.parentFile?.mkdirs()
-            writeAtomically(this.carried, json.encodeToString(Carried.serializer(), carried).toByteArray(Charsets.UTF_8), durable = true)
-            if (carried.undecided) Settled.UNDECIDED else Settled.DECIDED
-        } catch (_: IOException) {
-            Settled.NOT_KEPT
-        }
-    }
-
-    /** Gives `folder` to `person`, for good. True once it is on the disk. (For the tests.) */
+    /** Gives `folder` to `person`, for good. True once it is on the disk. */
     internal fun carry(person: String, folder: String): Boolean = try {
         carried.parentFile?.mkdirs()
         writeAtomically(carried, json.encodeToString(Carried.serializer(), Carried(person, folder)).toByteArray(Charsets.UTF_8), durable = true)

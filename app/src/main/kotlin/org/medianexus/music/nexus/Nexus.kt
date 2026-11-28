@@ -82,10 +82,6 @@ class Nexus internal constructor(
         /** The machine's start has been done (whatever it handed). */
         fun started() {}
 
-        /** A sign-in was kept, on the disk, for `account`, with this music login or none: what
-         *  is decided once for the first sign-in is decided now, before anything it hands. */
-        fun signedInAs(account: KeptAccount, music: KeptMusic?) {}
-
         /** What the machine said to keep could not be written to the disk. */
         fun notKept()
 
@@ -437,7 +433,6 @@ class Nexus internal constructor(
         var dirty = false
         var runStart = 0
         var forgot = false
-        var signedIn: Pair<KeptAccount, KeptMusic?>? = null
         // Puts what was kept in the file on the disk; true once it is there.
         fun flush(): Boolean {
             if (!dirty) return true
@@ -446,8 +441,6 @@ class Nexus internal constructor(
             dirty = false
             // (The journal hears who is signed in before anything after the write is done.)
             publish()
-            signedIn?.let { (account, music) -> if (!atStart) side.signedInAs(account, music) }
-            signedIn = null
             // Forgotten: the music login goes from the player too (downloads stay).
             if (forgot) side.musicForgotten()
             forgot = false
@@ -476,12 +469,7 @@ class Nexus internal constructor(
                     val (part, kept) = (value as? JsonObject)?.entries?.singleOrNull() ?: continue
                     when (part) {
                         "device_secret" -> if (!this.kept.keepDeviceSecret(kept)) return stopAt(index)
-                        "saved" -> (kept as? JsonObject)?.let {
-                            parts = parts.withSaved(it)
-                            val now = NexusKept.Parts(it, emptyList())
-                            val account = now.account
-                            if (now.session && account != null) signedIn = account to now.music
-                        }
+                        "saved" -> (kept as? JsonObject)?.let { parts = parts.withSaved(it) }
                         "note" -> (kept as? JsonObject)?.let { parts = parts.withNote(it) }
                         // (Before the read it is kept for: a failure stops the read.)
                         "diag_schedule" -> {

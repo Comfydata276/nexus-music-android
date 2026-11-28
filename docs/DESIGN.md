@@ -4242,14 +4242,11 @@ makes them (5.5), and does the I/O: `nexus/Nexus.kt` (the driver), `nexus/Line.k
   state); the machine holds it for the one call. The password and the jam relay's key that
   earlier versions kept are deleted when this version first runs.
 - **A person's folder is who they are to the backend** (section 11): the first half of a
-  SHA-256 of the backend's id and the account (`Folders.personOf`). **What is carried over,
-  once:** the first time anyone signs in on this version, if the music login handed to them names
-  the same music server (as the app tidies an address) and the same user as the sign-in the
-  phone had before (`Settings.server` and `username`, as an earlier version left them), that
-  folder (downloads, settings, the queue, Recently played, Lidarr's sealed key) is theirs, for
-  good (`accounts/carried.json`); the earlier sign-in is then forgotten, whoever signed in, so
-  that nobody later is given it. Anyone else starts with a folder of their own. The pins, list
-  choices and theme follow the folder (`sync/Belongs`).
+  SHA-256 of the backend's id and the account (`Folders.personOf`). The first account handed
+  a login for the released sign-in's music server and user (`client::carries_over`, compared
+  with `Settings.server` and `username`) gets its folder for good (`accounts/carried.json`).
+  Until then the earlier folder is left untouched and other accounts use their own folders.
+  Account choices put away while that folder waits are kept beside it (`sync/Belongs`).
 - **A music login handed over** for the same music server and user is put in place in the
   client every request already uses (a renewal: nothing is made again); for another, it is
   another account.

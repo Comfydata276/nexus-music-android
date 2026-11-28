@@ -168,27 +168,17 @@ class Session(
         inOrder { if (current.value == SessionState.Restoring) current.value = SessionState.SignedOut }
     }
 
-    /**
-     * **A sign-in has succeeded and is kept** (`Keep::Saved` with a session, for `who`, with the
-     * music login it came with or none): the first account's carry-over is settled here, once and
-     * durably, before anything it handed is acted on (section 11). Called on the machine's thread,
-     * and waited for.
-     */
-    fun signedInAs(who: KeptAccount, music: KeptMusic?): Boolean = settle(Folders.personOf(who), music)
-
-    /** Section 11's carry-over, decided once for the first account to sign in on this version
-     *  (see [Folders.settle]); false if it could not be read or kept: then nobody is published,
-     *  and the phone says so. */
-    private fun settle(person: String, music: KeptMusic?): Boolean {
+    /** Claims the earlier folder only when the handed login matches the released sign-in. */
+    private fun settle(person: String, music: KeptMusic): Boolean {
         val before = settings.value
-        val settled = folders.settle(person, music, before.server, before.username) { address, user, login -> carriesOver(address, user, login) }
+        val settled = folders.settle(person, music, before.server, before.username, carriesOver)
         if (settled == Folders.Settled.NOT_KEPT) {
             notices.post(Notice.SignInNotKept)
             return false
         }
-        // (The earlier version's sign-in is not used again by anyone once decided: the decision
-        // above is what is read from now on, whatever happens to this. Undecided, it stays.)
-        if (settled == Folders.Settled.DECIDED && (before.server.isNotEmpty() || before.username.isNotEmpty())) settings.update { it.copy(server = "", username = "") }
+        if (settled == Folders.Settled.CLAIMED && (before.server.isNotEmpty() || before.username.isNotEmpty())) {
+            settings.update { it.copy(server = "", username = "") }
+        }
         return true
     }
 
@@ -241,8 +231,11 @@ class Session(
      */
     fun handed(music: KeptMusic, who: KeptAccount?, generation: String = "0") {
         inOrder {
+            if (who == null) return@inOrder
+            val person = Folders.personOf(who)
+            if (!settle(person, music)) return@inOrder
             val now = current.value as? SessionState.SignedIn
-            if (now != null && who != null && now.person == Folders.personOf(who) &&
+            if (now != null && now.person == person && now.account.key == folders.of(person) &&
                 normalizeServerUrl(music.address) == now.api.server && music.name == now.api.username
             ) {
                 // A renewal: **the same person at the same backend**, the same music server and
@@ -251,7 +244,6 @@ class Session(
                 now.api.login.renew(music.handed, generation)
                 return@inOrder
             }
-            if (who == null) return@inOrder
             // **6.4, for the music server's address as the backend handed it**: judged before
             // it is first connected to, and told to the machine. Inside, without the
             // permission: the screen explains and asks, then [continueSignIn].
@@ -281,9 +273,6 @@ class Session(
 
     /** Takes on the account a music login is for, and publishes it. In a step. */
     private suspend fun adopt(music: KeptMusic, who: KeptAccount, generation: String, judged: Boolean) {
-        // **Section 11's carry-over** was settled when the sign-in was kept ([signedInAs]); a
-        // login handed later (a renewal, or another account's) never changes it.
-        if (!settle(Folders.personOf(who), music)) return
         val account = signedIn(music, who, generation)
         // **And again after a failure in which no connection was opened** (6.4): one look at
         // the music server before the account is published, a few seconds at most. Reached,

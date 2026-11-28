@@ -163,8 +163,8 @@ class SettingsStore private constructor(
             namingStrategy = JsonNamingStrategy.SnakeCase
         }
 
-        fun open(file: File, scope: CoroutineScope, io: CoroutineDispatcher): SettingsStore {
-            val (settings, damage) = loadChecked(file)
+        fun open(file: File, scope: CoroutineScope, io: CoroutineDispatcher, test1ClearedLegacySignIn: () -> Boolean = { false }): SettingsStore {
+            val (settings, damage) = loadChecked(file, test1ClearedLegacySignIn)
             return SettingsStore(file, settings, damage, scope, io)
         }
 
@@ -203,7 +203,7 @@ class SettingsStore private constructor(
          * happened. Copies are written beside their place and then moved into it, so one cut
          * short part-way never spoils the copy it was replacing.
          */
-        fun loadChecked(file: File): Pair<Settings, SettingsDamage?> {
+        fun loadChecked(file: File, test1ClearedLegacySignIn: () -> Boolean = { false }): Pair<Settings, SettingsDamage?> {
             val backup = backupOf(file)
             if (!file.exists()) {
                 // A first run, or the file was deleted to start afresh.
@@ -211,6 +211,14 @@ class SettingsStore private constructor(
             }
             val bytes = bytesOf(file)
             decode(bytes)?.let { settings ->
+                // The previous start's settings can still name the released sign-in that test1
+                // cleared. Keep that backup until the folder is claimed or the main file has it.
+                if (settings.server.isEmpty() && settings.username.isEmpty() && test1ClearedLegacySignIn()) {
+                    val prior = read(backup)
+                    if (prior != null && prior.server.isNotEmpty() && prior.username.isNotEmpty()) {
+                        return settings.copy(server = prior.server, username = prior.username) to null
+                    }
+                }
                 // Good: this is the copy to fall back on next time. If it can't be written,
                 // the copy from an earlier start stays.
                 tryWrite(backup, bytes!!)

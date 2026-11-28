@@ -128,7 +128,13 @@ object Belongs {
      * they are moved to a name beside their place (`in-step.json.damaged`, which nothing
      * ever writes to), Diagnostics says so, and the account is taken on with no choices.
      */
-    fun takeOn(settings: SettingsStore, account: String, dataOf: (String) -> File, note: (String) -> Unit = {}): Boolean {
+    fun takeOn(
+        settings: SettingsStore,
+        account: String,
+        dataOf: (String) -> File,
+        legacyChoices: Pair<String, File>? = null,
+        note: (String) -> Unit = {},
+    ): Boolean {
         // First, what a build before this one left in the settings is brought under this
         // one's rules ([MARK]): once, whoever is signed in.
         try {
@@ -161,8 +167,10 @@ object Belongs {
         }
         // This account's own, put away when it last gave way; none kept is none chosen. Read
         // first: if they are there and can't be read, nothing is put away or taken on.
+        val choicesFile = legacyChoices?.takeIf { (key, file) -> key == account && file.exists() }?.second
+            ?: fileIn(dataOf(account))
         val mine = try {
-            val kept = fileIn(dataOf(account))
+            val kept = choicesFile
             try {
                 json.decodeFromString(Kept.serializer(), String(java.nio.file.Files.readAllBytes(kept.toPath()), Charsets.UTF_8))
             } catch (_: java.nio.file.NoSuchFileException) {
@@ -177,7 +185,7 @@ object Belongs {
             // again, and the account goes on with no choices. If they can't be moved, the
             // account is not taken on (they would be written over when it next gives way).
             try {
-                val damaged = fileIn(dataOf(account))
+                val damaged = choicesFile
                 var aside = File(damaged.path + ".damaged")
                 var n = 2
                 while (aside.exists()) aside = File(damaged.path + ".damaged-${n++}")
@@ -201,9 +209,9 @@ object Belongs {
         if (leaving.sharedFor != account && leaving.sharedFor.isNotEmpty()) {
             val kept = Kept(leaving.pinnedPlaylists, leaving.lists, leaving.theme, leaving.choices, leaving.ownSorts, mark = MARK)
             try {
-                val data = dataOf(leaving.sharedFor)
-                data.mkdirs()
-                writeAtomically(fileIn(data), json.encodeToString(Kept.serializer(), kept).toByteArray(), durable = true)
+                val target = legacyChoices?.takeIf { it.first == leaving.sharedFor }?.second
+                    ?: fileIn(dataOf(leaving.sharedFor))
+                writeAtomically(target, json.encodeToString(Kept.serializer(), kept).toByteArray(), durable = true)
             } catch (_: IOException) {
                 note("in step: one account's pins and list choices couldn't be put away on the phone, so the other wasn't taken on")
                 return false
