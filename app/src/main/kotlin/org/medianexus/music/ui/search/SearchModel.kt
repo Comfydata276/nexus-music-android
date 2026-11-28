@@ -64,9 +64,11 @@ class SearchModel(
      *  on it offline): then typing doesn't pause first, as Windows' preview doesn't, and each
      *  keystroke replaces the search before it. */
     private val instant: () -> Boolean = { false },
+    /** A submitted search's observation, given its count when the request finishes. */
+    private val observe: (String) -> ((Int) -> Unit)? = { null },
 ) {
     /** The words, which change of them this is, and whether it is to go at once. */
-    private data class Ask(val query: String, val serial: Long, val now: Boolean = false)
+    private data class Ask(val query: String, val serial: Long, val now: Boolean = false, val report: Boolean = true)
 
     private var serials = 0L
     private val typed = MutableStateFlow(Ask("", 0))
@@ -106,10 +108,15 @@ class SearchModel(
     }
 
     /** Asks again for the words shown, after a failure. */
-    fun retry() {
+    fun retry() = askAgain(report = true)
+
+    /** The library changed under the same submitted search. Keep its displayed result current. */
+    fun libraryChanged() = askAgain(report = false)
+
+    private fun askAgain(report: Boolean) {
         val ask = typed.value
         if (ask.query.isBlank()) return
-        typed.value = Ask(ask.query, ++serials, now = true)
+        typed.value = Ask(ask.query, ++serials, now = true, report = report || ask.report && ask.serial != done)
         now.update { if (it.query == ask.query) it.copy(searching = true, failed = null) else it }
     }
 
@@ -121,14 +128,18 @@ class SearchModel(
             return
         }
         now.update { if (it.query == query) it.copy(searching = true, failed = null) else it }
+        val observation = if (ask.report) observe(query) else null
+        var resultCount = 0
         val found = try {
-            search(query)
+            search(query).also { resultCount = it.songs.size + it.albums.size + it.artists.size }
         } catch (e: ApiError) {
             // What was found before for these same words stays, with the error beside it;
             // under other words (typed since, still within the pause) it isn't said at all.
             now.update { if (it.query == query) it.copy(searching = false, failed = Failure(query, e)) else it }
             done = ask.serial
             return
+        } finally {
+            observation?.invoke(resultCount)
         }
         now.update { if (it.query == query) SearchState(query, Results(query, found)) else it }
         done = ask.serial

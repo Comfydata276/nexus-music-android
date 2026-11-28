@@ -18,6 +18,7 @@ class App : Application(), SingletonImageLoader.Factory {
         org.medianexus.music.sync.DebugStep.atStart(this)
         org.medianexus.music.requests.DebugRequests.atStart(this)
         graph = Graph(this, boxForTheJvm() ?: org.medianexus.music.store.KeystoreBox())
+        graph.recording.diagnostics.installCrashHandler()
         // (Only now is the Nexus server's part of the app made: see Graph.started.)
         graph.started()
     }

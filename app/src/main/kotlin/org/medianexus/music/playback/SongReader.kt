@@ -366,6 +366,7 @@ class SongReader(
     /** The kept-song key this read holds as its writer (see [ConversionWriters]), if any. */
     private var claimed: String? = null
     private var fromKept = false
+    internal val openedFromKept: Boolean get() = fromKept
     private var ended = false
     private var offline = false
     /** Whether offline mode is on now: it can be switched on while a song is being read. */

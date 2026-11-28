@@ -25,6 +25,7 @@ mod client;
 mod standin;
 mod pages;
 mod requests;
+mod recording;
 mod wire;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -857,6 +858,8 @@ struct HelloIn {
 struct HelloOut {
     backend: bool,
     why: &'static str,
+    backend_id: Option<String>,
+    diagnostics_default: Option<bool>,
 }
 
 /// The body as the phone's transport read it, handed to the core as the reader it asks for:
@@ -885,7 +888,7 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_nexusHello<'l>(env: J
     use nexus_core::nexus::proto::{Found, NoBackend, classify};
     call(env, input, |given: HelloIn| {
         let found = classify(given.status, AsRead { bytes: &given.body, whole: given.whole });
-        let why = match found {
+        let why = match &found {
             Found::Backend(_) => "",
             Found::NoBackend(NoBackend::Redirect) => "redirect",
             Found::NoBackend(NoBackend::Status(_)) => "status",
@@ -894,7 +897,14 @@ pub extern "system" fn Java_org_medianexus_music_core_Core_nexusHello<'l>(env: J
             Found::NoBackend(NoBackend::Cut) => "cut",
             Found::NoBackend(NoBackend::NotHello(_)) => "not_hello",
         };
-        Ok(HelloOut { backend: why.is_empty(), why })
+        let (backend_id, diagnostics_default) = match found {
+            Found::Backend(hello) => (
+                Some(hello.id.to_hex()),
+                Some(nexus_core::nexus::diag::enabled(None, hello.diagnostics_default())),
+            ),
+            Found::NoBackend(_) => (None, None),
+        };
+        Ok(HelloOut { backend: why.is_empty(), why, backend_id, diagnostics_default })
     })
 }
 

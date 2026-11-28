@@ -344,7 +344,13 @@ object Core {
     /** Whether an answer to the Nexus server's `hello` is the Nexus server's ([backend]); if
      *  not, why in a word ("redirect", "status", "empty", "too_large", "cut", "not_hello"). */
     @Serializable
-    class HelloFound(val backend: Boolean, val why: String)
+    class HelloFound(
+        val backend: Boolean,
+        val why: String,
+        val backendId: String? = null,
+        /** Valid hello with an omitted default means on. Null means an invalid hello. */
+        val diagnosticsDefault: Boolean? = null,
+    )
 
     /**
      * `nexus::proto::classify`: whether an answer to `GET /nexus/api/hello` is the backend's,
@@ -389,6 +395,14 @@ object Core {
     /** One of the machine's calls, `{"machine": n, "call": <the core's envelope>}` (see
      *  `client/json.rs` in the core): gives what the core wrote, `{"generation", "do"}`. */
     fun nexusCall(input: JsonObject): JsonObject = acrossPrivately(input, JsonObject.serializer(), JsonObject.serializer(), ::nexusCall)
+
+    /** The phone's storage adapter for the core's journal format and retention rules. */
+    internal fun nexusJournal(input: JsonObject): JsonElement =
+        acrossPrivately(input, JsonObject.serializer(), JsonElement.serializer(), ::nexusJournal)
+
+    /** Closed observations, canonical report text and the core's device switch rule. */
+    internal fun nexusDiagnostics(input: JsonObject): JsonElement =
+        acrossPrivately(input, JsonObject.serializer(), JsonElement.serializer(), ::nexusDiagnostics)
 
     /** `client::carries_over`: whether the folder this phone had goes to the person `music`
      *  (a music login as the machine handed it) was handed to. */
@@ -1058,6 +1072,8 @@ object Core {
     @JvmStatic private external fun nexusHello(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusMachine(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusCall(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusJournal(input: ByteArray): ByteArray?
+    @JvmStatic private external fun nexusDiagnostics(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusStandIn(input: ByteArray): ByteArray?
     @JvmStatic private external fun nexusCarriesOver(input: ByteArray): ByteArray?
     @JvmStatic private external fun stop(input: ByteArray): ByteArray?

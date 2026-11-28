@@ -48,3 +48,15 @@
 -keepclassmembers class okhttp3.internal.connection.ConnectionListener$Companion {
     public okhttp3.internal.connection.ConnectionListener getNONE();
 }
+
+# Crash Diagnostics maps structured stack frames to a closed list. Keep the four place
+# names and their nested classes while allowing the rest of the app to be obfuscated.
+-keepattributes SourceFile,LineNumberTable
+-keepnames class org.medianexus.music.playback.PlaybackService
+-keepnames class org.medianexus.music.playback.PlaybackService$*
+-keepnames class org.medianexus.music.playback.QueuePlayer
+-keepnames class org.medianexus.music.playback.QueuePlayer$*
+-keepnames class org.medianexus.music.downloads.DownloadsJob
+-keepnames class org.medianexus.music.downloads.DownloadsJob$*
+-keepnames class org.medianexus.music.nexus.Nexus
+-keepnames class org.medianexus.music.nexus.Nexus$*

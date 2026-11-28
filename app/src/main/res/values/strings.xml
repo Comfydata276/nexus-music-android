@@ -836,4 +836,12 @@
     <!-- The phone's own, until the library has its sentences for these (at the next pin move). -->
     <string name="requests_kept_unreadable">What this phone keeps about requests couldn\'t be read. It has been left as it is, and nothing here can be changed until the app can read it.</string>
     <string name="requests_sign_in_note">You sign in on its own page, in your browser. Your password isn\'t typed into this app or kept by it.</string>
+    <string name="diagnostics_send">Send diagnostics to your Nexus server</string>
+    <string name="diagnostics_send_detail">Sends app and Android versions, settings, timings and counts of what went wrong.</string>
+    <string name="diagnostics_recording_notice">What this server records</string>
+    <string name="diagnostics_hide_notice">Hide notice</string>
+    <string name="diagnostics_read_notice">Read notice</string>
+    <string name="diagnostics_what_sent">What is sent</string>
+    <string name="diagnostics_export">Export</string>
+    <string name="diagnostics_loading_report">Preparing the diagnostics report…</string>
 </resources>

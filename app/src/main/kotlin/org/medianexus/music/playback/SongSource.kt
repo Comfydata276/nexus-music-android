@@ -99,6 +99,7 @@ sealed interface SongCopy {
     data class Download(val file: java.io.File, val modified: Long, val length: Long, override val kbps: Int) : SongCopy
 
     data class Stream(val form: StreamForm) : SongCopy {
+        @Volatile internal var fromKept = false
         override val kbps: Int get() = form.bitrate
     }
 }
@@ -323,8 +324,11 @@ class SongDataSource(
     private fun openStream(lease: SongLease, id: String, where: SongWhere, dataSpec: DataSpec): Long {
         this.where = where
         if (org.medianexus.music.BuildConfig.DEBUG) android.util.Log.d("NexusPlayback", "a song opened ${if (lease.cache == null) "without" else "through"} the kept songs, at byte ${dataSpec.position}")
-        val reader = SongReader(Streams(lease.cache, dataSpec), lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
-        return streamed(lease, id) { reader.open(where, dataSpec.position) { lease.offline } }
+        val streams = Streams(lease.cache, dataSpec)
+        val reader = SongReader(streams, lease.conversions.heads, lease.conversions.writers, pause).also { this.reader = it }
+        return streamed(lease, id) { reader.open(where, dataSpec.position) { lease.offline } }.also {
+            (copy as? SongCopy.Stream)?.fromKept = reader.openedFromKept || streams.openedInCache
+        }
     }
 
     /**
@@ -429,6 +433,9 @@ class SongDataSource(
 
     /** Media3's data sources, as [SongReader] asks for them. */
     private inner class Streams(private val cache: Cache?, private val spec: DataSpec) : SongStreams {
+        var openedInCache = false
+            private set
+
         override fun server(url: String, position: Long): Opened {
             if (org.medianexus.music.BuildConfig.DEBUG) {
                 // (Never the address itself: it carries the sign-in token.)
@@ -461,11 +468,12 @@ class SongDataSource(
 
         override fun kept(url: String, key: String, position: Long): Opened? {
             val cache = cache ?: return null
+            var hadUpstream = false
             val through = CacheDataSource.Factory()
                 .setCache(cache)
                 // The cache asks its upstream where it ended up, to note a redirect in its
                 // index: it is only ever told the address it asked for.
-                .setUpstreamDataSourceFactory { Discreet(http()) }
+                .setUpstreamDataSourceFactory { Discreet(http()) { hadUpstream = true } }
                 // A kept file the system has cleared away is read from the server instead.
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
                 .createDataSource()
@@ -473,7 +481,9 @@ class SongDataSource(
             // length isn't known", which is every fresh conversion. Whether one is worth
             // keeping is decided when it ends (see SongReader).
             val spec = server(url, key, position)
-            return open(through, spec.buildUpon().setFlags(spec.flags and DataSpec.FLAG_DONT_CACHE_IF_LENGTH_UNKNOWN.inv()).build())
+            return open(through, spec.buildUpon().setFlags(spec.flags and DataSpec.FLAG_DONT_CACHE_IF_LENGTH_UNKNOWN.inv()).build()).also {
+                openedInCache = !hadUpstream
+            }
         }
 
         override fun keptOnly(key: String, position: Long): Opened {
@@ -562,11 +572,12 @@ class SongDataSource(
 
     /** A data source that says it is wherever it was asked to go, whatever redirects it
      *  followed to get there. */
-    private class Discreet(private val source: DataSource) : DataSource by source {
+    private class Discreet(private val source: DataSource, private val opened: () -> Unit) : DataSource by source {
         private var asked: Uri? = null
 
         override fun open(dataSpec: DataSpec): Long {
             asked = dataSpec.uri
+            opened()
             return source.open(dataSpec)
         }
 

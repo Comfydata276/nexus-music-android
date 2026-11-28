@@ -61,8 +61,22 @@ fun rememberOutsideSearch(here: RequestsHere?, typed: String): OutsideSearch? {
     if (here == null || !here.connected) return null
     val key = here.key
     val pages = here.pages
+    val recording = LocalUi.current.graph.recording
     val model = remember(key) {
-        OutsideSearch({ query, soFar -> pages.searchShowing(query, soFar) }, kept = AskedChanges.of(here.account).outsideKept?.takeIf { it.first == key }?.second)
+        OutsideSearch({ query, soFar ->
+            val search = recording.search(query, here.account.account.key, requests = true)
+            var count = 0
+            try {
+                pages.searchShowing(query, soFar).also { result ->
+                    if (result is org.medianexus.music.requests.Found.Got) {
+                        val found = result.value
+                        count = found.artists.size + found.albums.size + found.songs.size
+                    }
+                }
+            } finally {
+                recording.found(search, count)
+            }
+        }, kept = AskedChanges.of(here.account).outsideKept?.takeIf { it.first == key }?.second)
     }
     LaunchedEffect(model, typed) { model.type(typed) }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle

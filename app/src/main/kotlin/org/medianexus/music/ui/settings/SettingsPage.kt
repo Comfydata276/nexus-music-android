@@ -105,7 +105,7 @@ fun SettingsPage(graph: Graph, onBack: () -> Unit, onDiagnostics: () -> Unit = {
                 Section.STORAGE -> Storage(graph)
                 Section.REQUESTS -> org.medianexus.music.ui.requests.RequestsSettings()
                 Section.ACCOUNT -> Account(graph)
-                Section.ABOUT -> About(onDiagnostics, onLicences)
+                Section.ABOUT -> About(graph, onDiagnostics, onLicences)
             }
         }
     }
@@ -270,12 +270,27 @@ private fun Account(graph: Graph) {
 }
 
 @Composable
-private fun About(onDiagnostics: () -> Unit, onLicences: () -> Unit) {
+private fun About(graph: Graph, onDiagnostics: () -> Unit, onLicences: () -> Unit) {
     SettingRow(stringResource(R.string.app_version, BuildConfig.VERSION_NAME), stringResource(R.string.about_detail)) {}
-    // As Windows has it under About ("Save diagnostics"): here it is shown, and shared from
-    // there.
-    SettingRow(stringResource(R.string.diagnostics), stringResource(R.string.diagnostics_detail), stacked = true) {
-        TextButton(stringResource(R.string.show_diagnostics), onClick = onDiagnostics)
+    val diagnostics = graph.recording.diagnostics
+    val state by diagnostics.settings.collectAsStateWithLifecycle()
+    val title = stringResource(R.string.diagnostics_send)
+    val what = stringResource(R.string.diagnostics_send_detail)
+    val detail = listOfNotNull(what, state.status).joinToString("\n")
+    SettingRow(title, detail) {
+        Toggle(state.switchedOn, diagnostics::choose, title)
+    }
+    SettingRow(stringResource(R.string.diagnostics), "", stacked = true) {
+        TextButton(stringResource(R.string.diagnostics_what_sent), onClick = onDiagnostics)
+    }
+    if (state.signedIn) {
+        var open by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+        val notice by produceState<String?>(null, open) {
+            value = if (open) withContext(Dispatchers.IO) { diagnostics.recordingNotice() } else null
+        }
+        SettingRow(stringResource(R.string.diagnostics_recording_notice), notice?.substringAfter("\n\n").orEmpty(), stacked = true) {
+            TextButton(stringResource(if (open) R.string.diagnostics_hide_notice else R.string.diagnostics_read_notice), onClick = { open = !open })
+        }
     }
     SettingRow(stringResource(R.string.licences), stringResource(R.string.licences_detail), stacked = true) {
         TextButton(stringResource(R.string.show_licences), onClick = onLicences)

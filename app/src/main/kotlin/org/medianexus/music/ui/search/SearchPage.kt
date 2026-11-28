@@ -87,7 +87,11 @@ fun SearchPage() {
             } else {
                 account?.library?.search?.find(query, LIMITS) ?: Found()
             }
-        }, instant = { graph.watch.offline || account?.library?.search?.instant == true })
+        }, instant = { graph.watch.offline || account?.library?.search?.instant == true }, observe = { query ->
+            account?.let { graph.recording.search(query, it.account.key) }?.let { observation ->
+                { count -> graph.recording.found(observation, count) }
+            }
+        })
     }
     val marks = org.medianexus.music.ui.downloads.rememberDownloadMarks()
     val offline by remember(marks) { androidx.compose.runtime.derivedStateOf { marks.offline } }
@@ -99,7 +103,7 @@ fun SearchPage() {
         account?.copy?.state?.map { it?.takeIf { copy -> copy.complete } }?.distinctUntilChanged() ?: kotlinx.coroutines.flow.flowOf(null)
     }.collectAsStateWithLifecycle(null)
     val likedNow = likedSongs()
-    LaunchedEffect(model, offline, whole, likedNow) { model.retry() }
+    LaunchedEffect(model, offline, whole, likedNow) { model.libraryChanged() }
     // It searches only while the app is in front, as the pages' feeds fetch.
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { model.run() } }
