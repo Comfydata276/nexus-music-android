@@ -69,6 +69,13 @@ internal fun NexusAccount(graph: Graph) {
     shown.music?.let { said ->
         BasicText(said, Modifier.padding(vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.rowDetail.copy(color = colors.warm))
     }
+    // **Where the machine says the local-network permission may be why** (either server's
+    // address, whatever asked): a way to give it, here too (6.4).
+    if (shown.askPermission || shown.musicAskPermission) {
+        val ask = org.medianexus.music.ui.shell.rememberLocalNetworkAsk(graph.localAccess)
+        BasicText(stringResource(R.string.local_network_refused), Modifier.padding(vertical = 6.dp), style = Theme.type.rowDetail.copy(color = colors.warm))
+        TextButton(stringResource(R.string.allow), onClick = { ask(null) })
+    }
 
     // ---- Your devices -------------------------------------------------------------------
     SettingHeading(stringResource(R.string.your_devices))
@@ -139,7 +146,7 @@ private fun ChangePassword(graph: Graph, said: NexusShown.Said) {
             BasicText(said.words, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = Theme.type.rowDetail.copy(color = if (said.state == "changed") Theme.colors.muted else Theme.colors.danger))
         }
         TextButton(
-            stringResource(R.string.change_password),
+            stringResource(if (working) R.string.saving else R.string.change_password),
             onClick = {
                 nexus.press(buildJsonObject {
                     put("change_password", buildJsonObject {
@@ -155,6 +162,11 @@ private fun ChangePassword(graph: Graph, said: NexusShown.Said) {
             primary = true,
             enabled = !working && current.text.isNotEmpty() && new.text.isNotEmpty() && again.text.isNotEmpty(),
         )
+        // Back to the row, with what was typed wiped (a change already sent goes on).
+        TextButton(stringResource(R.string.cancel), onClick = {
+            listOf(current, new, again).forEach { it.clearText(); it.undoState.clearHistory() }
+            open = false
+        }, modifier = Modifier.fillMaxWidth(), enabled = !working)
         Spacer(Modifier.height(4.dp))
     }
 }

@@ -60,6 +60,9 @@ fun Field(
     placeholder: String = "",
     /** Hides what's typed, as a password. */
     secret: Boolean = false,
+    /** Shown as typed, but never copied or cut out of the field (a one-time code): the secure
+     *  field's clipboard rules, with what is typed left visible. Paste still works. */
+    uncopyable: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     /** What the keyboard's action key does; by default it moves on, or closes the keyboard. */
     onKeyboardAction: KeyboardActionHandler? = null,
@@ -95,7 +98,7 @@ fun Field(
         contentDescription = label
         if (contentType != null) this.contentType = contentType
     }
-    if (secret) {
+    if (secret || uncopyable) {
         // Compose's secure field hides the characters on screen but gives accessibility
         // services the password itself (anything reading the screen saw it in full). A
         // password field of the system's gives them only dots. So the field's own semantics
@@ -103,11 +106,12 @@ fun Field(
         // use to focus it, type into it and fill it in.
         val focus = remember { FocusRequester() }
         val dots = remember(state.text.length) { AnnotatedString("•".repeat(state.text.length)) }
+        // (A code shown as typed: its semantics are the field's own text, still with no copy.)
         Box(
             modifier.clearAndSetSemantics {
                 contentDescription = label
-                password()
-                editableText = dots
+                if (secret) password()
+                editableText = if (secret) dots else AnnotatedString(state.text.toString())
                 this.focused = focused
                 if (contentType != null) this.contentType = contentType
                 if (enabled) {
@@ -124,6 +128,7 @@ fun Field(
             BasicSecureTextField(
                 state = state,
                 modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                textObfuscationMode = if (uncopyable) androidx.compose.foundation.text.input.TextObfuscationMode.Visible else androidx.compose.foundation.text.input.TextObfuscationMode.RevealLastTyped,
                 enabled = enabled,
                 textStyle = style,
                 keyboardOptions = keyboardOptions,

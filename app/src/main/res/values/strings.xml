@@ -34,23 +34,30 @@
 
     <!-- Sign-in (LoginPage on Windows) -->
     <string name="sign_in_title">Sign in to Nexus Music</string>
-    <string name="sign_in_intro">Your Nexus server knows where your music is. Sign in with its address and the email and password of your account there.</string>
-    <string name="server_address">Nexus server address</string>
+    <string name="sign_in_intro">Type your Nexus server\'s address, and the email and password of your account there.</string>
+    <string name="code_title">Your first sign-in</string>
+    <string name="code_intro">Type your Nexus server\'s address, the one-time code its admin gave you, and the password you\'ll sign in with from now on.</string>
+    <string name="one_time_code_hint">ABCD EFGH JKMN</string>
+    <string name="choose_password">Choose a password</string>
+    <string name="choose_password_hint">At least 15 characters, and not your email.</string>
+    <string name="same_again">The same again</string>
+    <string name="signing_in">Signing in…</string>
+    <string name="signed_in_no_music">You\'re signed in. Your admin hasn\'t set your music sign-in yet. Ask them to set it on the Nexus server\'s admin page.</string>
+    <string name="server_address">Nexus server</string>
     <string name="server_address_hint">nexus.example.org</string>
     <string name="email">Email</string>
     <string name="one_time_code">One-time code</string>
     <string name="use_code">I have a one-time code</string>
-    <string name="use_password">Sign in with a password</string>
-    <string name="choose_password_intro">At least fifteen characters, and not your email. You\'ll sign in with it on your other devices.</string>
+    <string name="use_password">Sign in with my password instead</string>
     <string name="new_password">New password</string>
     <string name="password_again">Type it again</string>
     <string name="current_password">Present password</string>
-    <string name="sign_in_in_seconds">Sign in (%1$d s)</string>
+    <string name="sign_in_in_seconds">Try again in %1$d s</string>
     <string name="password">Password</string>
     <string name="connect">Connect</string>
     <string name="connecting">Connecting…</string>
     <string name="sign_in_choices_not_put_away">Couldn\'t put away the other account\'s pins and list choices on this phone, so you haven\'t been signed in. Try again.</string>
-    <string name="password_kept">Your password is sent once, to your Nexus server, and is kept nowhere on this phone.</string>
+    <string name="password_kept">Your password goes only to your Nexus server, and is never kept on this phone.</string>
     <string name="music_local_network_why">Your music server is on your home network. Android will now ask whether Nexus Music may find and connect to nearby devices: that is what lets it reach your music.</string>
     <string name="music_local_network_refused">Can\'t reach your music server. Nexus Music isn\'t allowed to reach devices on your home network, and if your music server is there, that may be why.</string>
     <string name="continue_anyway">Continue anyway</string>
@@ -67,6 +74,7 @@
     <string name="theme_detail">Colours for the whole app, including the phone\'s status and navigation bars.</string>
     <string name="theme_named">%1$s theme</string>
     <string name="account">Account</string>
+    <string name="ok">OK</string>
     <string name="signed_in_as">Signed in as %1$s</string>
     <string name="keep_in_step">Keep my devices in step</string>
     <string name="keep_in_step_clock">This phone\'s clock is wrong, so its changes aren\'t being shared.</string>
@@ -80,10 +88,11 @@
     <string name="sign_out">Sign out</string>
     <!-- The Nexus server beside the music server (nexus/Nexus.kt). -->
     <string name="your_devices">Your devices</string>
-    <string name="your_devices_detail">Every device signed in to your account. Any of them can be forced out.</string>
+    <string name="your_devices_detail">The PCs and phones signed in to your account. Signing one out ends its sign-in at once.</string>
     <string name="show">Show</string>
-    <string name="force_out">Force out</string>
-    <string name="forcing_out">Forcing out…</string>
+    <string name="force_out">Sign out</string>
+    <string name="forcing_out">Signing out…</string>
+    <string name="saving">Saving…</string>
     <string name="refresh">Refresh</string>
     <string name="change_password">Change password</string>
     <string name="change_password_detail">Your other devices are signed out when you change it.</string>
@@ -338,6 +347,7 @@
     <string name="offline_mode">Offline mode</string>
     <string name="offline_mode_detail">Plays only what\'s on this phone and doesn\'t contact your server. Likes, ratings and plays are kept and sent when you turn it off.</string>
     <string name="offline_mode_on">Offline mode: only downloaded songs will play</string>
+    <string name="switch_off_offline">Switch off offline mode</string>
     <string name="back_online">Back online</string>
     <string name="download_quality">Download quality</string>
     <string name="download_quality_detail">What new downloads are saved as. Lossless keeps each file exactly as it is on your server; the others save smaller MP3 copies.</string>

@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,20 +111,38 @@ private fun Root(graph: Graph) {
     val colors = remember(settings.theme) { themeNamed(settings.theme) }
     NexusTheme(colors) {
         val session by graph.session.state.collectAsStateWithLifecycle()
+        // **What the Nexus server's machine shows** routes the screen with whether music plays:
+        // signed in with no music login is a page of its own; asked to sign in again while the
+        // music plays keeps the music and offers the form.
+        val shown = org.medianexus.music.ui.settings.nexusShown(graph)
+        var resigning by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+        androidx.compose.runtime.LaunchedEffect(shown?.screen) { if (shown?.screen != "sign_in") resigning = false }
         Box(Modifier.fillMaxSize().background(Theme.colors.base)) {
             when (session) {
                 // A moment at start-up while the saved sign-in is read: the bare background,
                 // as the window had.
                 SessionState.Restoring -> Unit
                 SessionState.SignedOut -> {
-                    SignInScreen(graph)
+                    if (shown?.screen == "signed_in" && !shown.plays) {
+                        org.medianexus.music.ui.signin.SignedInNoMusic(graph, shown)
+                    } else {
+                        SignInScreen(graph)
+                    }
                     // Such as the settings having been found damaged, which is likely why
                     // the sign-in is being asked for.
                     Column(Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.navigationBars)) {
                         NoticeList(graph)
                     }
                 }
-                is SessionState.SignedIn -> Shell(graph)
+                is SessionState.SignedIn -> if (resigning && shown?.screen == "sign_in") {
+                    SignInScreen(graph, onBack = { resigning = false })
+                } else {
+                    Shell(graph)
+                    Column(Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.statusBars)) {
+                        if (shown?.screen == "sign_in") org.medianexus.music.ui.signin.SignInAgainBar(shown) { resigning = true }
+                        if (shown != null) org.medianexus.music.ui.signin.NexusNotice(graph, shown)
+                    }
+                }
             }
         }
     }
